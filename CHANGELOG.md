@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed (2026-04-25) — AAP-43 post-merge follow-up: scrub compacts string arrays
+
+Server-log diagnostic from copy-prod (sess_36ee1b23d481e4ca) revealed the actual root cause behind "Automated analysis failed" was the `NOT PROVIDED` scrub itself: it set `value[i] = undefined` inside `string[]` arrays (e.g. `systems[].scopesRequested: ["NOT PROVIDED"]`), and Zod then rejected the parse with `invalid_type expected string received undefined` regardless of `max_tokens` or response-format. Both parse attempts failed, the partial-report fallback kicked in, and reports came back with `Risk Level: LOW`, zero systems, zero risks.
+
+- `src/analysis/analyzer.ts`: `scrubNotProvidedInPlace` now compacts `undefined` slots out of arrays after the in-place scrub. `["scope1", "NOT PROVIDED", "scope2"]` → `["scope1", "scope2"]`; `["NOT PROVIDED"]` → `[]` (lets the schema's `.default([])` apply correctly).
+- `tests/analysis/analyzer.test.ts`: regression test reproduces the LinkedIn-ICP shape verbatim — `scopesRequested: ["NOT PROVIDED"]` plus mixed arrays — and asserts (a) analysis does not fall back, (b) systems are extracted, (c) no `undefined` slots remain anywhere in scope arrays.
+
+Tests: 258/258 passing.
+
 ### Fixed (2026-04-25) — AAP-43 post-merge: analyzer regression + severity-floor + employment-negation
 
 **Analyzer regression unblocked.** Copy-prod deploy produced reports with `"Automated analysis failed"`, `Systems & Access: No systems were identified`, and `Risk Level: LOW` on 18-question transcripts (AAP-44 added 5 AIUC-1 questions on top of the AAP-43 core 13). Root cause: the OpenAI `chat.completions.create` call in `src/llm/client.ts` had no explicit `max_tokens`, so long JSON payloads were truncated and `JSON.parse` threw, tripping the partial-report fallback.

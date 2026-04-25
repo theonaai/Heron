@@ -77,6 +77,17 @@ function isRiskAboutOrchestrationOnly(
 /**
  * Recursively walk a parsed JSON object and normalize any "NOT PROVIDED"-style
  * string values to `undefined`. Leaves other types untouched. Mutates in place.
+ *
+ * For arrays of strings (e.g. `systems[].scopesRequested`) the scrubbed
+ * elements are *removed* (compacted), not left as `undefined` in place — Zod
+ * rejects `[undefined]` against `z.array(z.string())` even when the array
+ * itself has a `.default([])`. Compacting `["NOT PROVIDED"]` → `[]` lets the
+ * default fire correctly.
+ *
+ * AAP-43 post-merge fix (2026-04-25): the original implementation set
+ * `value[i] = undefined`, which produced the regression observed on copy-
+ * prod — Zod parse failed with `invalid_type expected string received
+ * undefined` and the analyzer fell back to "Automated analysis failed".
  */
 function scrubNotProvidedInPlace(value: unknown): void {
   if (Array.isArray(value)) {
@@ -87,6 +98,13 @@ function scrubNotProvidedInPlace(value: unknown): void {
       } else if (item && typeof item === 'object') {
         scrubNotProvidedInPlace(item);
       }
+    }
+    // Compact: drop `undefined` entries we just produced from scrubbed
+    // strings. Walk back-to-front so splicing doesn't shift unvisited
+    // indices. We never produce `undefined` from object recursion, only
+    // from string scrub, so this only affects string arrays.
+    for (let i = value.length - 1; i >= 0; i--) {
+      if (value[i] === undefined) value.splice(i, 1);
     }
     return;
   }
