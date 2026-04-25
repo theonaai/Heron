@@ -9,7 +9,22 @@ export interface LLMChatOpts {
    * sampling at temperature=0 is the determinism guarantee instead).
    */
   deterministicSeed?: number;
+  /**
+   * When true, instruct the provider to return syntactically valid JSON.
+   * - OpenAI: sets `response_format: { type: 'json_object' }` (requires the
+   *   prompt to contain the word "json", which our analyzer prompts do).
+   * - Gemini: sets `responseMimeType: 'application/json'`.
+   * - Anthropic: no explicit JSON mode; prompt already constrains output.
+   *
+   * Callers that parse the response as JSON (e.g. the transcript analyzer)
+   * should set this to `true`. Callers that expect free-form text (e.g.
+   * follow-up question generation) must leave it `false`.
+   */
+  jsonMode?: boolean;
 }
+
+/** Shared upper bound for analyzer-style JSON outputs across providers. */
+const MAX_OUTPUT_TOKENS = 16384;
 
 export interface LLMClient {
   chat(systemPrompt: string, userMessage: string, opts?: LLMChatOpts): Promise<string>;
@@ -66,10 +81,19 @@ class OpenAILLMClient implements LLMClient {
   }
 
   async chat(systemPrompt: string, userMessage: string, opts?: LLMChatOpts): Promise<string> {
+    // AAP-43 regression fix (2026-04-24): OpenAI chat.completions defaults
+    // `max_tokens` to a per-model cap that can truncate JSON payloads for
+    // long 18-question transcripts (AAP-44 added 5 AIUC-1 questions on top
+    // of the AAP-43 core 13). A truncated JSON then fails `JSON.parse` and
+    // the analyzer falls back with "Automated analysis failed". Matching
+    // Anthropic/Gemini by setting an explicit high cap + requesting JSON
+    // mode when the caller is the transcript analyzer prevents both.
     const response = await this.client.chat.completions.create({
       model: this.model,
       temperature: 0,
+      max_tokens: MAX_OUTPUT_TOKENS,
       ...(opts?.deterministicSeed !== undefined ? { seed: opts.deterministicSeed } : {}),
+      ...(opts?.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -98,6 +122,9 @@ class GeminiLLMClient implements LLMClient {
     };
     if (opts?.deterministicSeed !== undefined) {
       generationConfig.seed = opts.deterministicSeed;
+    }
+    if (opts?.jsonMode) {
+      generationConfig.responseMimeType = 'application/json';
     }
 
     const response = await fetch(url, {

@@ -108,8 +108,18 @@ async function tryParse(
   prompt: string,
   deterministicSeed?: number,
 ): Promise<AnalysisResult | null> {
+  let response: string | undefined;
   try {
-    const response = await llmClient.chat(ANALYSIS_SYSTEM_PROMPT, prompt, { deterministicSeed });
+    // AAP-43 regression fix (2026-04-24): request JSON-mode so OpenAI and
+    // Gemini return a syntactically-valid JSON payload instead of a free-form
+    // string that sometimes truncates or emits prose before the `{`. This
+    // combined with the provider-side `max_tokens` bump in client.ts resolves
+    // the "Automated analysis failed" fallback observed on 18-question
+    // transcripts in the copy-prod deploy.
+    response = await llmClient.chat(ANALYSIS_SYSTEM_PROMPT, prompt, {
+      deterministicSeed,
+      jsonMode: true,
+    });
 
     // Strip markdown fences if present
     let jsonStr = response.trim();
@@ -148,7 +158,16 @@ async function tryParse(
 
     return result;
   } catch (e) {
-    logger.warn(`Parse attempt failed: ${e instanceof Error ? e.message : String(e)}`);
+    // AAP-43 regression fix (2026-04-24): log a bounded preview of the raw
+    // LLM response so the next operator can tell truncation apart from
+    // schema mismatch. Previously the warn line only carried the exception
+    // message, which leaves the "Automated analysis failed" report without
+    // a diagnostic trail.
+    const errMsg = e instanceof Error ? e.message : String(e);
+    const preview = response === undefined
+      ? '(no response — LLM call threw)'
+      : `${response.slice(0, 400)}${response.length > 400 ? `…[+${response.length - 400} chars]` : ''}`;
+    logger.warn(`Parse attempt failed: ${errMsg} | response preview: ${preview}`);
     return null;
   }
 }

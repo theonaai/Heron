@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed (2026-04-25) — AAP-43 post-merge: analyzer regression + severity-floor + employment-negation
+
+**Analyzer regression unblocked.** Copy-prod deploy produced reports with `"Automated analysis failed"`, `Systems & Access: No systems were identified`, and `Risk Level: LOW` on 18-question transcripts (AAP-44 added 5 AIUC-1 questions on top of the AAP-43 core 13). Root cause: the OpenAI `chat.completions.create` call in `src/llm/client.ts` had no explicit `max_tokens`, so long JSON payloads were truncated and `JSON.parse` threw, tripping the partial-report fallback.
+
+- `src/llm/client.ts`: explicit `max_tokens: 16384` on the OpenAI client matches Anthropic/Gemini's explicit caps.
+- New `LLMChatOpts.jsonMode` opts callers into provider-native JSON enforcement: OpenAI `response_format: { type: 'json_object' }`, Gemini `responseMimeType: 'application/json'`, Anthropic left as-is (prompt-only constraint).
+- `src/analysis/analyzer.ts`: passes `jsonMode: true` and logs a bounded preview of the raw LLM response on parse failure so the next operator can distinguish truncation from schema mismatch.
+
+**Severity-floor now covers public PII at scale.** `applySeverityOverrides` previously required SSN/bank-grade sensitive-PII keywords to raise the access/data floor to HIGH. This missed the LinkedIn ICP reference case (public contact info — names, profile URLs, job titles — at 500 profiles/run) that the AAP-43 severity anchor in `src/llm/prompts.ts` explicitly calls HIGH. Result: reports stayed stuck at MEDIUM even with excessive Google `spreadsheets` scope.
+
+- `src/analysis/risk-scorer.ts`: new `SeveritySignals.hasPublicPIIAtScale` — public-PII shape (LinkedIn / scraped profile data) combined with a volume marker (≥500 records per run) or org-wide/cross-tenant blast radius.
+- Floor rules: `access + excessive + (sensitive OR public-at-scale)` → HIGH. `data + public-at-scale + excessive` → HIGH. `data + public-at-scale` → MEDIUM.
+
+**Employment-regex now respects negation.** Annex III §4 employment was still firing on agents that explicitly said `"does not involve hiring"` or `"this is not a hiring agent"` — the raw `allText` still contained the token `hiring`, matching the regex regardless of meaning. Reproduced on the LinkedIn ICP Matcher's Q13 answer.
+
+- `src/compliance/mapper.ts`: two-step gating. First, if `decisionMakingDetails` (LLM-extracted structured field) is present and — after scrubbing a bounded negation window — does not contain an employment token, the signal holds at `false` regardless of transcript text. Second, the transcript itself is scrubbed of `does/do/did/is/are/was/were/has/have not + up-to-3-word filler + keyword` and `no/never/not + up-to-3-word filler + keyword` spans before the regex runs.
+- Targeted test: `tests/compliance/annex-iii-employment.test.ts` now covers the LinkedIn ICP Q13 negation shape and the decisionMakingDetails precedence.
+
+Tests: 257/257 passing (+6 new). Mapping version unchanged — no new controls.
+
 ### Added (2026-04-24) — NIST AI RMF restored
 
 - Restored voluntary framework `nist-ai-rmf` (NIST AI RMF 1.0 + Generative AI Profile NIST-AI-600-1). Cut in AAP-42 scope-reduction but restored here because it is the most widely-referenced voluntary AI risk-management framework in the US (cited in OMB M-24-10 and enterprise procurement).

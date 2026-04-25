@@ -38,6 +38,30 @@ const SENSITIVE_KEYWORDS = [
   'medical', 'salary', 'compensation',
 ];
 
+// ─── Public-PII-at-scale keywords (AAP-43 post-merge fix 2026-04-24) ────────
+//
+// LinkedIn-style agents handle *public* PII (names, emails, profile URLs,
+// titles) which never contains SSN/bank-level sensitivity keywords above, so
+// `hasSensitivePII` is always false. The AAP-43 severity-anchor in
+// src/llm/prompts.ts nevertheless tells the LLM that "OAuth scope
+// `spreadsheets` with 500 PII rows → HIGH", but the rule-based floor could
+// not enforce the same thing because it only recognised sensitive PII.
+//
+// The fix: recognise public PII explicitly. When it is stored at scale (org-
+// wide blast radius, >=500 rows per run, or scraping) floor-severity for
+// access / data risks is raised to HIGH so the LinkedIn ICP case matches
+// the stated anchor even without LLM escalation.
+const PUBLIC_PII_KEYWORDS = [
+  'linkedin', 'profile url', 'full name', 'first name', 'last name',
+  'email', 'phone', 'address', 'scrape', 'scraped', 'scraping',
+  'job title', 'employer', 'company', 'career', 'resume',
+];
+const LARGE_VOLUME_KEYWORDS = [
+  ' 500', '500 rows', '500 profiles', '500 leads', '500 connections',
+  '1000', '10k', '10 000', '10,000', 'at scale', 'scrape', 'scraping',
+  'batch of 5', 'bulk', 'batched',
+];
+
 /**
  * Rubric-driven risk scorer.
  * Computes risk from structured per-system data, not keyword-grepping risk descriptions.
@@ -195,6 +219,15 @@ export interface SeveritySignals {
   hasExcessivePerms: boolean;
   hasOrgWideWrites: boolean;
   hasDecisionsAboutPeople: boolean;
+  /**
+   * AAP-43 post-merge fix (2026-04-24): public PII processed at scale
+   * (>=500 records per run OR org-wide blast radius). This is the LinkedIn
+   * ICP profile: names/emails/LinkedIn URLs aren't SSN-grade, but writing
+   * 500 of them into a Google Sheet still activates GDPR data-minimisation
+   * and least-privilege floors. Used by the access/data severity floor to
+   * raise HIGH when the LLM misses it.
+   */
+  hasPublicPIIAtScale: boolean;
 }
 
 /**
@@ -221,12 +254,29 @@ export function computeSeveritySignals(
     return broad && s.writeOperations.length > 0;
   });
 
+  // Public PII at scale: public personal data (LinkedIn profiles, scraped
+  // contacts, etc.) combined with either an explicit large-volume marker or
+  // an org-wide/cross-tenant blast radius. Either indicator alone is weak;
+  // the combination is the shape reviewers called HIGH on the LinkedIn ICP
+  // reference case.
+  const hasPublicPIIAtScale = systems.some(s => {
+    const haystack =
+      `${s.dataSensitivity} ${s.frequencyAndVolume} ${s.systemId}`.toLowerCase();
+    const mentionsPublicPII = PUBLIC_PII_KEYWORDS.some(k => haystack.includes(k));
+    if (!mentionsPublicPII) return false;
+    const mentionsScale = LARGE_VOLUME_KEYWORDS.some(k => haystack.includes(k));
+    const broadBlast =
+      s.blastRadius === 'org-wide' || s.blastRadius === 'cross-tenant';
+    return mentionsScale || broadBlast;
+  });
+
   return {
     hasSensitivePII,
     hasIrreversibleWrites,
     hasExcessivePerms,
     hasOrgWideWrites,
     hasDecisionsAboutPeople: Boolean(makesDecisionsAboutPeople),
+    hasPublicPIIAtScale,
   };
 }
 
@@ -247,11 +297,21 @@ function inferRiskKind(risk: Risk): RiskKind {
  * MAX(LLM-assigned, floor) so senior-auditor insight isn't lost.
  */
 function severityFloor(kind: RiskKind, signals: SeveritySignals): Severity {
-  const { hasSensitivePII, hasIrreversibleWrites, hasExcessivePerms, hasOrgWideWrites, hasDecisionsAboutPeople } = signals;
+  const {
+    hasSensitivePII,
+    hasIrreversibleWrites,
+    hasExcessivePerms,
+    hasOrgWideWrites,
+    hasDecisionsAboutPeople,
+    hasPublicPIIAtScale,
+  } = signals;
 
   if (kind === 'decisions' && hasDecisionsAboutPeople) return 'high';
 
-  if (kind === 'access' && hasExcessivePerms && hasSensitivePII) return 'high';
+  // Excessive permissions paired with PII of any kind at scale is HIGH.
+  // Covers the LinkedIn ICP reference case where public PII + Google
+  // Sheets `spreadsheets` scope must not be MEDIUM per the prompt-anchor.
+  if (kind === 'access' && hasExcessivePerms && (hasSensitivePII || hasPublicPIIAtScale)) return 'high';
   if (kind === 'access' && hasExcessivePerms) return 'medium';
 
   if (kind === 'write' && (hasOrgWideWrites || (hasIrreversibleWrites && hasSensitivePII))) return 'high';
@@ -259,6 +319,11 @@ function severityFloor(kind: RiskKind, signals: SeveritySignals): Severity {
 
   if (kind === 'data' && hasSensitivePII && (hasIrreversibleWrites || hasExcessivePerms)) return 'high';
   if (kind === 'data' && hasSensitivePII) return 'medium';
+  // Public PII at scale also raises the data-risk floor — retention,
+  // minimisation, and breach-readiness are active obligations regardless
+  // of sensitivity tier once volume crosses the threshold.
+  if (kind === 'data' && hasPublicPIIAtScale && hasExcessivePerms) return 'high';
+  if (kind === 'data' && hasPublicPIIAtScale) return 'medium';
 
   return 'low';
 }

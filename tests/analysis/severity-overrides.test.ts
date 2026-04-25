@@ -107,4 +107,57 @@ describe('computeSeveritySignals (AAP-43 P0 #1c)', () => {
     ]);
     expect(signals.hasSensitivePII).toBe(true);
   });
+
+  // AAP-43 post-merge regression fix (2026-04-24):
+  // LinkedIn ICP reference case — public PII (names, profile URLs, job
+  // titles) at scale (~500 profiles/run) + excessive Google `spreadsheets`
+  // scope must floor to HIGH, matching the severity anchor in the LLM
+  // prompt. Before this fix the floor stopped at MEDIUM because sensitive-
+  // PII keywords (SSN/bank) weren't present in dataSensitivity.
+  it('detects public PII at scale (LinkedIn ICP reference case)', () => {
+    // NB: dataSensitivity avoids the words "PII"/"personal" on purpose —
+    // those already fire hasSensitivePII via SENSITIVE_KEYWORDS. This
+    // fixture models the realistic bad case where the LLM labels the data
+    // with its concrete shape ("names, LinkedIn URLs, job titles") rather
+    // than the compliance-classification word "PII" — which is exactly
+    // when the new signal becomes necessary.
+    const signals = computeSeveritySignals([
+      makeSystem({
+        systemId: 'Google Sheets',
+        dataSensitivity: 'Public contact info: full names, LinkedIn profile URLs, job titles, companies',
+        frequencyAndVolume: 'up to 500 profiles per run, batch of 5',
+      }),
+    ]);
+    expect(signals.hasPublicPIIAtScale).toBe(true);
+    // Classical sensitive PII false (no SSN/bank/PII-label keyword)
+    expect(signals.hasSensitivePII).toBe(false);
+  });
+
+  it('does NOT fire hasPublicPIIAtScale for small-volume public PII', () => {
+    const signals = computeSeveritySignals([
+      makeSystem({
+        dataSensitivity: 'email address of one user',
+        frequencyAndVolume: '1 record per run',
+      }),
+    ]);
+    expect(signals.hasPublicPIIAtScale).toBe(false);
+  });
+
+  it('floors access risk to HIGH when public PII at scale + excessive perms', () => {
+    const systems = [
+      makeSystem({
+        systemId: 'Google Sheets',
+        scopesRequested: ['spreadsheets'],
+        scopesNeeded: ['drive.file'],
+        scopesDelta: ['spreadsheets'],
+        dataSensitivity: 'PII: names, LinkedIn profile URLs',
+        frequencyAndVolume: 'up to 500 leads per run',
+      }),
+    ];
+    const risks = [
+      { severity: 'medium' as const, title: 'Broad Google scope', description: 'OAuth scope is excessive for stated need' },
+    ];
+    const out = applySeverityOverrides(risks, systems);
+    expect(out[0].severity).toBe('high');
+  });
 });
