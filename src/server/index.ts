@@ -467,10 +467,17 @@ function markdownToHtml(md: string): string {
   html = html.replace(/\*\*\[([A-Z]+)\]\s*(.+?)\*\*/g, '<strong>[$1] $2</strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-  // Details/summary
+  // Details/summary + safe inline tags inside them.
+  // The Top-3 + "Additional findings" block in templates.ts wraps the
+  // summary label in <strong>, e.g. "<summary><strong>Additional findings
+  // (2)</strong></summary>". escapeHtml() above turned the inner <strong>
+  // into &lt;strong&gt;, which used to leak into the rendered HTML as
+  // literal text. Unescape these inline tags too — they are the only HTML
+  // we ever emit from the markdown templates, so a global pass is safe.
   html = html.replace(/&lt;details&gt;/g, '<details>');
   html = html.replace(/&lt;\/details&gt;/g, '</details>');
-  html = html.replace(/&lt;summary&gt;(.+?)&lt;\/summary&gt;/g, '<summary>$1</summary>');
+  html = html.replace(/&lt;summary&gt;([\s\S]+?)&lt;\/summary&gt;/g, '<summary>$1</summary>');
+  html = html.replace(/&lt;(\/?)(strong|em)&gt;/g, '<$1$2>');
 
   // Tables
   html = html.replace(/((?:^\|.+\|$\n?)+)/gm, (tableBlock) => {
@@ -585,8 +592,14 @@ async function handleSessionPage(
   <h2>Session <code>${id}</code> <span class="badge badge-${session.status}" id="session-status">${session.status}</span> ${riskBadge}</h2>
   <div class="meta" id="session-meta">${session.questionsAsked} questions &middot; started ${session.createdAt.toISOString().slice(0, 19).replace('T', ' ')} UTC</div>
 
-  <div id="report-section">${reportSection}</div>
+  <!--
+    UI ordering (2026-04-25): Compare-to-previous-report sits ABOVE the
+    rendered report. The compare CTA is short and discoverable; if it
+    sat below the long report a reader would have to scroll past the
+    entire findings table to find the upload button.
+  -->
   <div id="compare-section">${compareSection}</div>
+  <div id="report-section">${reportSection}</div>
 
   <h2>Interview Transcript (<span id="qa-count">${transcript.length}</span> Q&amp;A)</h2>
   <div id="transcript-body">${transcript.length === 0 ? '<p>Waiting for agent to respond...</p>' : transcriptHtml}</div>
