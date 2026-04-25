@@ -4,7 +4,7 @@ import type { QAPair, AccessAssessment, DataNeed, Risk, SystemAssessment } from 
 import { analysisResultSchema, type AnalysisResult, type Recommendation } from '../report/types.js';
 import { ANALYSIS_SYSTEM_PROMPT, buildAnalysisPrompt } from '../llm/prompts.js';
 import * as logger from '../util/logger.js';
-import { scrubUnprovided } from '../util/provided.js';
+import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
 import { isBusinessSystem } from '../util/systems.js';
 
 // Extended result that includes both new per-system data and legacy flat fields
@@ -173,6 +173,17 @@ async function tryParse(
       result.systems.filter(isBusinessSystem).map((s) => s.systemId.toLowerCase()),
     );
     result.risks = result.risks.filter((r) => !isRiskAboutOrchestrationOnly(r, businessSystemIds));
+
+    // Reviewer-feedback fix (2026-04-25): drop "negative" content from
+    // scopesDelta (and scopesNeeded) where the LLM put a constraint
+    // ("read-only access", "scoped to profile scraping", "no write access")
+    // instead of an actual revokable permission. Without this filter the
+    // Permissions Delta block in the report ends up listing those constraints
+    // under "Excessive (can be revoked):" — auditor-hostile inversion.
+    for (const sys of result.systems) {
+      sys.scopesDelta = sys.scopesDelta.filter((s) => !isNegativeScope(s));
+      sys.scopesNeeded = sys.scopesNeeded.filter((s) => !isNegativeScope(s));
+    }
 
     return result;
   } catch (e) {

@@ -47,3 +47,31 @@ export function scrubUnprovided(value: string | null | undefined): string | unde
 export function renderFieldOrUnknown(value: string | null | undefined): string {
   return isProvided(value) ? value : UNKNOWN_PLACEHOLDER;
 }
+
+/**
+ * Detect a "negative-content" string in a `scopesDelta`/excessive-permission
+ * field — i.e. a value that describes a CONSTRAINT or absence rather than an
+ * actual revokable scope.
+ *
+ * Reviewer feedback (2026-04-25): the LinkedIn ICP report rendered
+ *   "Excessive (can be revoked):
+ *     - read-only access to public LinkedIn profile data
+ *     - No write access to LinkedIn
+ *     - Scoped to profile scraping only"
+ * — those are constraints the agent was describing as already-narrow, not
+ * permissions to revoke. The LLM extracted them into `scopesDelta` because
+ * the source question was "what could be safely removed?" and the agent
+ * answered "nothing — I'm already scoped to X". We drop these post-hoc so
+ * they never reach the customer-facing permissions-delta block.
+ */
+export function isNegativeScope(value: string): boolean {
+  const t = value.trim().toLowerCase();
+  if (t.length === 0) return true;
+  // Leading negation keywords ("no write access", "none", "no permissions...")
+  if (/^(no\b|none\b|nothing\b|n\/a\b|not\s+applicable\b)/.test(t)) return true;
+  // Phrases that describe a positive constraint, not an excessive scope
+  if (/\b(read.only|scoped\s+to|limited\s+to|restricted\s+to|bound(ed)?\s+to|only\s+(read|access)|cannot\b|does\s+not\s+(have|grant)|no\s+(write|delete|access|scope))/i.test(t)) return true;
+  // Pure descriptive sentences: "the agent has no excessive permissions"
+  if (/\b(no\s+excessive|no\s+unused|already\s+(narrow|minim)|least.privilege)/i.test(t)) return true;
+  return false;
+}
