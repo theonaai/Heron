@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-25
+
+First npm release since `0.2.3` (2026-03). Bundles four feature additions
+that were never published (AIUC-1 framework, NIST AI RMF restoration,
+AAP-43 audit-quality pass, AAP-32 `heron diff`) plus the post-merge
+regression-recovery work documented below.
+
+### Reviewer-feedback fixes (2026-04-25) — `afa7094`
+
+- **Drop `!!` from header tone.** "Risk Level: HIGH !!" was called out as not-a-serious-document tone; the bold `**Risk Level**: HIGH` label was already strong on its own.
+- **Kill `+N more` truncation.** Framework citations in Compliance Detail and the excessive-scope / write-operation enumerations in `buildGapDescription` now render the full list. The earlier readability cap was made redundant by the `table-layout: fixed` + `overflow-wrap` CSS pass — long lists wrap cleanly inside cells.
+- **Permissions Delta inversion guard.** New `isNegativeScope` predicate in `src/util/provided.ts` detects constraint phrasings ("no write access", "scoped to profile scraping", "read-only") that the LLM was putting into `systems[].scopesDelta`, and the analyzer post-pass strips them before the report renders. 23 unit tests cover positive cases (constraint phrasings dropped) and negatives (real excessive scopes preserved).
+- **"No excessive permissions detected" contradiction.** The positive bullet in `What's Working Well` was firing alongside HIGH excessive-permissions findings in the same report. Now also gated on no high-severity access/scope-creep risk in the risks list.
+- **Heron-self filter** in `isBusinessSystem` verified to drop `Heron Security Review API` from Systems & Access cards. (Heron mentions remaining in the verbatim transcript section are deliberately preserved.)
+
+### UI fixes (2026-04-25) — `da20db1`, `18fa3ae`
+
+- **`table-layout: fixed` + `overflow-wrap: anywhere`** on rendered report tables. Long unbreakable tokens (e.g. an OAuth scope URL inside a finding description) used to push the Description column wide enough to squeeze Finding down to one-word-per-line wrapping; columns now allocate proportionally regardless of cell content.
+- **Inline `<strong>` / `<em>` inside `<summary>`** now unescape correctly. The Top-3 + "Additional findings (N)" block was rendering `<strong>Additional findings (2)</strong>` as literal text; the markdown-to-HTML pass now whitelists those inline tags too.
+- **Compare-block moved above Report-block** on the session detail page. The CTA is short and the report is long; the upload affordance was effectively invisible buried below the findings table.
+
 ### Fixed (2026-04-25) — AAP-43 post-merge follow-up: scrub compacts string arrays
 
 Server-log diagnostic from copy-prod (sess_36ee1b23d481e4ca) revealed the actual root cause behind "Automated analysis failed" was the `NOT PROVIDED` scrub itself: it set `value[i] = undefined` inside `string[]` arrays (e.g. `systems[].scopesRequested: ["NOT PROVIDED"]`), and Zod then rejected the parse with `invalid_type expected string received undefined` regardless of `max_tokens` or response-format. Both parse attempts failed, the partial-report fallback kicked in, and reports came back with `Risk Level: LOW`, zero systems, zero risks.
