@@ -423,7 +423,16 @@ const SHARED_CSS = `
   .report-rendered { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 32px; line-height: 1.6; }
   .report-rendered h1 { font-size: 1.5em; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
   .report-rendered h2 { font-size: 1.2em; margin-top: 28px; border-bottom: 1px solid #f0f0f0; padding-bottom: 6px; color: #1e293b; }
-  .report-rendered table { margin: 12px 0; font-size: 0.9em; }
+  /*
+    Long unbreakable tokens in cells (e.g. an OAuth scope URL inside a
+    finding description) used to push the Description column wide enough
+    to squeeze the Finding column down to one word per line. table-layout
+    fixed allocates columns proportionally regardless of content; the
+    overflow-wrap rule lets long URLs break mid-word so they fit the
+    allocated width.
+  */
+  .report-rendered table { margin: 12px 0; font-size: 0.9em; table-layout: fixed; }
+  .report-rendered table th, .report-rendered table td { overflow-wrap: anywhere; word-break: break-word; vertical-align: top; }
   .report-rendered p { margin: 8px 0; }
   .report-rendered strong { color: #0f172a; }
   .report-rendered hr { border: none; border-top: 1px solid #e5e7eb; margin: 24px 0; }
