@@ -81,25 +81,47 @@ class OpenAILLMClient implements LLMClient {
   }
 
   async chat(systemPrompt: string, userMessage: string, opts?: LLMChatOpts): Promise<string> {
-    // AAP-43 regression fix (2026-04-24): OpenAI chat.completions defaults
+    // AAP-43 regression fix (2026-04-25): OpenAI-compatible providers default
     // `max_tokens` to a per-model cap that can truncate JSON payloads for
     // long 18-question transcripts (AAP-44 added 5 AIUC-1 questions on top
     // of the AAP-43 core 13). A truncated JSON then fails `JSON.parse` and
-    // the analyzer falls back with "Automated analysis failed". Matching
-    // Anthropic/Gemini by setting an explicit high cap + requesting JSON
-    // mode when the caller is the transcript analyzer prevents both.
-    const response = await this.client.chat.completions.create({
+    // the analyzer falls back with "Automated analysis failed".
+    //
+    // Two-stage attempt: first try with `response_format: json_object` when
+    // the caller asked for JSON mode (this guarantees a parseable payload on
+    // OpenAI proper); if the gateway rejects the parameter (LiteLLM /
+    // OpenRouter / vLLM passthrough to a non-OpenAI model often does), fall
+    // back to the same call without `response_format`. `max_tokens` is set
+    // unconditionally — it's the actual fix for the truncation regression.
+    const baseRequest = {
       model: this.model,
       temperature: 0,
       max_tokens: MAX_OUTPUT_TOKENS,
       ...(opts?.deterministicSeed !== undefined ? { seed: opts.deterministicSeed } : {}),
-      ...(opts?.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: userMessage },
       ],
-    });
+    };
 
+    if (opts?.jsonMode) {
+      try {
+        const response = await this.client.chat.completions.create({
+          ...baseRequest,
+          response_format: { type: 'json_object' as const },
+        });
+        return response.choices[0]?.message?.content ?? '';
+      } catch (e) {
+        // Common gateway error message shapes: "Unrecognized parameter",
+        // "Unknown parameter response_format", "not supported by model".
+        const msg = e instanceof Error ? e.message : String(e);
+        const isParamError = /response_format|json[_ ]object|unrecognized|unknown.*parameter|not supported/i.test(msg);
+        if (!isParamError) throw e;
+        // Fall through to non-JSON-mode attempt
+      }
+    }
+
+    const response = await this.client.chat.completions.create(baseRequest);
     return response.choices[0]?.message?.content ?? '';
   }
 }
