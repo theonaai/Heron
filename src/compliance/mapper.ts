@@ -190,10 +190,55 @@ export function detectSignals(
   // `decidesAboutPeople` interview flag. A regex-only match on transcript
   // words like "employer" or "candidate" fired Annex III §4 on agents that
   // never made employment decisions (e.g. curriculum-generation agents).
+  //
+  // AAP-43 post-merge fix (2026-04-24): the gate still fails on a common
+  // shape — the LinkedIn ICP agent answers Q13 with negations like
+  // "does not involve hiring, credit scoring..." — the keyword is present
+  // but its meaning is negated. Two guards:
+  //   1. Trust `decisionMakingDetails` first (the LLM-extracted summary
+  //      field). If it is provided and does NOT match the regex, do not
+  //      fall back to `allText`; the structured field already represents
+  //      the agent's self-classification.
+  //   2. If we must use `allText`, scrub negation windows (`does not
+  //      involve <keyword>`, `not a <keyword>`, `never <keyword>`) before
+  //      matching.
   const employmentRegex = /\b(hir(e|ing)?|recruit(er|ing)?|employ(ee|er|ment)?|candidates?|resumes?|applicants?)\b/i;
-  const hasEmploymentDecisions = decidesAboutPeople && employmentRegex.test(
-    (decisionMakingDetails ?? '') + ' ' + allText,
+  // Negation-stripping regex: scrub a short window (up to 3 filler words)
+  // between the negation cue and the employment keyword. Covers:
+  //   - "does not involve hiring"
+  //   - "did not include any candidates"
+  //   - "is not a hiring agent"
+  //   - "is not an employment-screening tool"
+  //   - "not used for recruiting"
+  //   - "never hires"
+  //   - "this agent is not about hiring"
+  const EMPLOYMENT_KW = '(?:hir(?:e|ing)?|recruit(?:er|ing)?|employ(?:ee|er|ment)?|candidates?|resumes?|applicants?)';
+  const FILL = '(?:\\w+(?:[- ]\\w+){0,2}\\s+){0,3}';
+  const negationStrippingRegex = new RegExp(
+    [
+      // auxiliary + not + (optional filler up to 3 words) + keyword
+      `\\b(?:does|do|did|is|are|was|were|has|have|had|doesn't|don't|didn't|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't)\\s+not\\s+${FILL}${EMPLOYMENT_KW}`,
+      // "no" or "never" + up to 3 words + keyword
+      `\\b(?:no|never)\\s+${FILL}${EMPLOYMENT_KW}`,
+      // bare "not" + up to 3 words + keyword ("not a hiring", "not about hiring")
+      `\\bnot\\s+${FILL}${EMPLOYMENT_KW}`,
+    ].join('|'),
+    'gi',
   );
+  const detailsHasEmployment =
+    typeof decisionMakingDetails === 'string' &&
+    decisionMakingDetails.length > 0 &&
+    employmentRegex.test(decisionMakingDetails.replace(negationStrippingRegex, ' '));
+  const detailsExplicitlyNonEmployment =
+    typeof decisionMakingDetails === 'string' &&
+    decisionMakingDetails.length > 10 &&
+    !employmentRegex.test(decisionMakingDetails.replace(negationStrippingRegex, ' '));
+  const allTextScrubbed = allText.replace(negationStrippingRegex, ' ');
+  const hasEmploymentDecisions =
+    decidesAboutPeople && (
+      detailsHasEmployment ||
+      (!detailsExplicitlyNonEmployment && employmentRegex.test(allTextScrubbed))
+    );
 
   const combinedText = (decisionMakingDetails ?? '') + ' ' + allText;
 

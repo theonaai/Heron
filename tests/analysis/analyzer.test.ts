@@ -138,4 +138,77 @@ describe('analyzer', () => {
     expect(result.dataNeeds.some(d => d.system.includes('SAP'))).toBe(true);
     expect(result.dataNeeds.some(d => d.system.includes('HubSpot'))).toBe(true);
   });
+
+  // AAP-43 post-merge regression (2026-04-25):
+  // The "NOT PROVIDED" scrub used to set `arr[i] = undefined` inside
+  // string-typed arrays (e.g. systems[].scopesRequested), which Zod
+  // rejected with `invalid_type expected string received undefined`,
+  // tipping the analyzer into the "Automated analysis failed" fallback.
+  // Reproduced verbatim against copy-prod logs from sess_36ee1b23d481e4ca.
+  it('compacts NOT PROVIDED out of string arrays instead of producing [undefined]', async () => {
+    const llmResponse = JSON.stringify({
+      summary: 'Lead-scanning agent',
+      agentPurpose: 'LinkedIn ICP matcher',
+      agentTrigger: 'manual',
+      systems: [
+        {
+          systemId: 'LinkedIn (via Apify) → REST API → API key',
+          // The exact shape that broke parsing on copy-prod:
+          scopesRequested: ['NOT PROVIDED'],
+          scopesNeeded: ['NOT PROVIDED'],
+          scopesDelta: [],
+          dataSensitivity: 'PII (public LinkedIn profile data)',
+          blastRadius: 'single-user',
+          frequencyAndVolume: '500 profiles per run',
+          writeOperations: [],
+        },
+        {
+          systemId: 'Google Sheets, REST API via OAuth2',
+          scopesRequested: ['https://www.googleapis.com/auth/spreadsheets', 'NOT PROVIDED'],
+          scopesNeeded: ['drive.file', 'NOT PROVIDED', 'NOT PROVIDED'],
+          scopesDelta: ['spreadsheets'],
+          dataSensitivity: 'PII (names, profile URLs)',
+          blastRadius: 'single-user',
+          frequencyAndVolume: '~100 calls per run',
+          writeOperations: [],
+        },
+      ],
+      risks: [
+        { severity: 'medium', title: 'Broad scope', description: 'Google Sheets scope exceeds need', mitigation: 'Switch to drive.file' },
+      ],
+      recommendations: ['Narrow Google Sheets scope to drive.file'],
+      recommendation: 'APPROVE WITH CONDITIONS',
+      overallRiskLevel: 'medium',
+    });
+
+    const mockLLM: LLMClient = {
+      chat: vi.fn().mockResolvedValue(llmResponse),
+    };
+
+    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+
+    // Must NOT fall back — analysis must succeed.
+    expect(result.summary).not.toContain('analysis failed');
+    expect(result.systems.length).toBe(2);
+
+    // Pure-NOT-PROVIDED arrays compact to empty.
+    expect(result.systems[0].scopesRequested).toEqual([]);
+    expect(result.systems[0].scopesNeeded).toEqual([]);
+
+    // Mixed arrays keep only the real strings.
+    expect(result.systems[1].scopesRequested).toEqual([
+      'https://www.googleapis.com/auth/spreadsheets',
+    ]);
+    expect(result.systems[1].scopesNeeded).toEqual(['drive.file']);
+    expect(result.systems[1].scopesDelta).toEqual(['spreadsheets']);
+
+    // Result must contain no `undefined` slots in any string array.
+    for (const sys of result.systems) {
+      for (const arr of [sys.scopesRequested, sys.scopesNeeded, sys.scopesDelta]) {
+        for (const v of arr) {
+          expect(typeof v).toBe('string');
+        }
+      }
+    }
+  });
 });

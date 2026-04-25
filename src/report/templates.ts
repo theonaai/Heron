@@ -59,7 +59,11 @@ export function renderMarkdownReport(report: AuditReport): string {
 // ─── Header ──────────────────────────────────────────────────────────────────
 
 function renderHeader(report: AuditReport): string {
-  const riskIcon = report.overallRiskLevel === 'critical' || report.overallRiskLevel === 'high' ? '!!' : '';
+  // Reviewer feedback (2026-04-25): the prior `!!` exclamation marker on
+  // HIGH/CRITICAL headers ("Risk Level: HIGH !!") was called out as
+  // "not a serious-document tone" — CISOs do not want excitement in audit
+  // headers. The `**Risk Level**: HIGH` label itself is already strong;
+  // the riskIcon adds nothing and undercuts credibility. Dropped.
   const dqPart = report.dataQuality ? ` | **Data Quality**: ${report.dataQuality.score}/100` : '';
 
   // AAP-43 P1 #5: single overall regulatory status label (replaces
@@ -75,7 +79,7 @@ function renderHeader(report: AuditReport): string {
 
   return `# Agent Access Audit Report
 
-**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | **Risk Level**: ${report.overallRiskLevel.toUpperCase()} ${riskIcon}${dqPart}${regLine}`;
+**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | **Risk Level**: ${report.overallRiskLevel.toUpperCase()}${dqPart}${regLine}`;
 }
 
 // ─── Scope & Methodology ────────────────────────────────────────────────────
@@ -373,8 +377,22 @@ function renderPositiveFindings(report: AuditReport): string {
   }
 
   // No excessive scopes
+  // Reviewer feedback (2026-04-25): a single report had both
+  // "No excessive permissions detected" AND a HIGH "Broad Google OAuth
+  // write scope exceeds stated single-sheet/single-folder need" finding —
+  // a direct internal contradiction. Root cause: the LLM put the broad-
+  // scope finding into `risks` (with a HIGH severity) but did not populate
+  // `scopesDelta`, so the structural counter said zero excessive scopes.
+  // Gate the positive on BOTH: zero scopesDelta entries AND no high-
+  // severity risk that the finding-type inferrer classifies as access /
+  // excessive-permissions / scope-creep.
   const totalExcessive = systems.reduce((n, s) => n + s.scopesDelta.length, 0);
-  if (totalExcessive === 0 && systems.length > 0) {
+  const hasAccessRisk = report.risks.some((r) => {
+    if (r.severity !== 'high' && r.severity !== 'critical') return false;
+    const t = inferFindingType(r);
+    return t === 'excessive-access' || t === 'scope-creep';
+  });
+  if (totalExcessive === 0 && systems.length > 0 && !hasAccessRisk) {
     positives.push('No excessive permissions detected — follows least-privilege principle');
   }
 
@@ -623,14 +641,14 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
   switch (findingType) {
     case 'excessive-access':
       if (excessiveScopes.length > 0) {
-        return `Agent holds permissions beyond stated need on ${systems.length} system(s). Excessive scopes detected: ${excessiveScopes.slice(0, 3).join('; ')}${excessiveScopes.length > 3 ? ` (+${excessiveScopes.length - 3} more)` : ''}. Narrow each to the minimum required scope.`;
+        return `Agent holds permissions beyond stated need on ${systems.length} system(s). Excessive scopes detected: ${excessiveScopes.join('; ')}. Narrow each to the minimum required scope.`;
       }
       return `Agent holds permissions beyond stated need on ${systemNames || 'connected systems'}. Review and narrow scopes to the minimum required (least-privilege).`;
 
     case 'write-risk':
       if (writes.length > 0) {
         const qualifier = hasIrreversible ? 'including irreversible operations' : 'all reported as reversible';
-        return `Agent performs ${writes.length} write operation(s) (${qualifier}): ${writes.slice(0, 3).join('; ')}${writes.length > 3 ? ` (+${writes.length - 3} more)` : ''}. Require approval, monitoring, and rollback paths for high-impact operations.`;
+        return `Agent performs ${writes.length} write operation(s) (${qualifier}): ${writes.join('; ')}. Require approval, monitoring, and rollback paths for high-impact operations.`;
       }
       return 'Write operations detected that can affect users or downstream systems. Require approval, monitoring, and rollback paths.';
 
@@ -692,10 +710,14 @@ function renderFindingFirstDetail(c: StructuredCompliance, report?: AuditReport)
     const label = GAP_LABELS[findingType] ?? findingType;
     const description = buildGapDescription(findingType, report);
 
-    // Group controls by framework for compact "Affects" line.
-    // AAP-43 P2 #9: cap at 3 most-relevant controls per framework. Listing
-    // all 10 Annex III articles dilutes the signal — senior auditors pick
-    // the tightest citation. Remainder is summarized as "+N more".
+    // Group controls by framework for the "Affects" line.
+    // Reviewer feedback (2026-04-25): the prior "+N more" truncation
+    // ("AIUC-1 (A001, A002, A005, +1 more)") hides the very citations the
+    // report is asserting — in an audit deliverable, you don't redact
+    // your evidence. The earlier AAP-43 P2 #9 cap (3 per framework) was
+    // motivated by readability, not by citation hygiene. With the
+    // table-layout: fixed + overflow-wrap CSS now in place, long control
+    // lists wrap cleanly inside their cells, so we show the full list.
     const byFramework = new Map<string, string[]>();
     for (const f of flags) {
       const fwName = frameworkShortName(f.frameworkId);
@@ -706,16 +728,9 @@ function renderFindingFirstDetail(c: StructuredCompliance, report?: AuditReport)
       byFramework.set(fwName, existing);
     }
 
-    const MAX_CONTROLS_PER_FRAMEWORK = 3;
-    const affectsParts = [...byFramework.entries()].map(([fw, ctrls]) => {
-      if (ctrls.length === 0) return fw;
-      if (ctrls.length <= MAX_CONTROLS_PER_FRAMEWORK) {
-        return `${fw} (${ctrls.join(', ')})`;
-      }
-      const top = ctrls.slice(0, MAX_CONTROLS_PER_FRAMEWORK);
-      const rest = ctrls.length - MAX_CONTROLS_PER_FRAMEWORK;
-      return `${fw} (${top.join(', ')}, +${rest} more)`;
-    });
+    const affectsParts = [...byFramework.entries()].map(([fw, ctrls]) =>
+      ctrls.length === 0 ? fw : `${fw} (${ctrls.join(', ')})`,
+    );
 
     out += `#### ${label}\n\n`;
     out += `${description}\n\n`;

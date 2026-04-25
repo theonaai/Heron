@@ -423,7 +423,16 @@ const SHARED_CSS = `
   .report-rendered { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 32px; line-height: 1.6; }
   .report-rendered h1 { font-size: 1.5em; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
   .report-rendered h2 { font-size: 1.2em; margin-top: 28px; border-bottom: 1px solid #f0f0f0; padding-bottom: 6px; color: #1e293b; }
-  .report-rendered table { margin: 12px 0; font-size: 0.9em; }
+  /*
+    Long unbreakable tokens in cells (e.g. an OAuth scope URL inside a
+    finding description) used to push the Description column wide enough
+    to squeeze the Finding column down to one word per line. table-layout
+    fixed allocates columns proportionally regardless of content; the
+    overflow-wrap rule lets long URLs break mid-word so they fit the
+    allocated width.
+  */
+  .report-rendered table { margin: 12px 0; font-size: 0.9em; table-layout: fixed; }
+  .report-rendered table th, .report-rendered table td { overflow-wrap: anywhere; word-break: break-word; vertical-align: top; }
   .report-rendered p { margin: 8px 0; }
   .report-rendered strong { color: #0f172a; }
   .report-rendered hr { border: none; border-top: 1px solid #e5e7eb; margin: 24px 0; }
@@ -467,10 +476,17 @@ function markdownToHtml(md: string): string {
   html = html.replace(/\*\*\[([A-Z]+)\]\s*(.+?)\*\*/g, '<strong>[$1] $2</strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-  // Details/summary
+  // Details/summary + safe inline tags inside them.
+  // The Top-3 + "Additional findings" block in templates.ts wraps the
+  // summary label in <strong>, e.g. "<summary><strong>Additional findings
+  // (2)</strong></summary>". escapeHtml() above turned the inner <strong>
+  // into &lt;strong&gt;, which used to leak into the rendered HTML as
+  // literal text. Unescape these inline tags too — they are the only HTML
+  // we ever emit from the markdown templates, so a global pass is safe.
   html = html.replace(/&lt;details&gt;/g, '<details>');
   html = html.replace(/&lt;\/details&gt;/g, '</details>');
-  html = html.replace(/&lt;summary&gt;(.+?)&lt;\/summary&gt;/g, '<summary>$1</summary>');
+  html = html.replace(/&lt;summary&gt;([\s\S]+?)&lt;\/summary&gt;/g, '<summary>$1</summary>');
+  html = html.replace(/&lt;(\/?)(strong|em)&gt;/g, '<$1$2>');
 
   // Tables
   html = html.replace(/((?:^\|.+\|$\n?)+)/gm, (tableBlock) => {
@@ -585,8 +601,14 @@ async function handleSessionPage(
   <h2>Session <code>${id}</code> <span class="badge badge-${session.status}" id="session-status">${session.status}</span> ${riskBadge}</h2>
   <div class="meta" id="session-meta">${session.questionsAsked} questions &middot; started ${session.createdAt.toISOString().slice(0, 19).replace('T', ' ')} UTC</div>
 
-  <div id="report-section">${reportSection}</div>
+  <!--
+    UI ordering (2026-04-25): Compare-to-previous-report sits ABOVE the
+    rendered report. The compare CTA is short and discoverable; if it
+    sat below the long report a reader would have to scroll past the
+    entire findings table to find the upload button.
+  -->
   <div id="compare-section">${compareSection}</div>
+  <div id="report-section">${reportSection}</div>
 
   <h2>Interview Transcript (<span id="qa-count">${transcript.length}</span> Q&amp;A)</h2>
   <div id="transcript-body">${transcript.length === 0 ? '<p>Waiting for agent to respond...</p>' : transcriptHtml}</div>

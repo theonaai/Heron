@@ -4,6 +4,7 @@ import {
   scrubUnprovided,
   renderFieldOrUnknown,
   UNKNOWN_PLACEHOLDER,
+  isNegativeScope,
 } from '../../src/util/provided.js';
 
 describe('isProvided (AAP-43 P0 #2)', () => {
@@ -42,5 +43,39 @@ describe('renderFieldOrUnknown', () => {
   });
   it('returns the value when present', () => {
     expect(renderFieldOrUnknown('real data')).toBe('real data');
+  });
+});
+
+// Reviewer-feedback fix (2026-04-25): Permissions Delta inversion.
+// LinkedIn ICP report rendered constraints under "Excessive (can be revoked):"
+// because the LLM put negative-content strings into systems[].scopesDelta.
+describe('isNegativeScope (Permissions Delta inversion guard)', () => {
+  it.each([
+    ['No write access to LinkedIn', true],
+    ['no write access', true],
+    ['none', true],
+    ['nothing', true],
+    ['n/a', true],
+    ['not applicable', true],
+    ['read-only access to public LinkedIn profile data', true],
+    ['Read-only', true],
+    ['scoped to profile scraping only', true],
+    ['Scoped to a single sheet', true],
+    ['limited to read of own files', true],
+    ['restricted to /api/v2', true],
+    ['cannot delete', true],
+    ['does not have write permissions', true],
+    ['no excessive permissions identified', true],
+    ['already narrow', true],
+    ['follows least-privilege', true],
+    // Real excessive scopes — must NOT be flagged
+    ['https://www.googleapis.com/auth/spreadsheets', false],
+    ['drive', false],
+    ['admin', false],
+    ['repo', false],
+    ['bigquery.dataOwner', false],
+    ['Broad spreadsheets read across all files', false],
+  ])('%s → %s', (input, expected) => {
+    expect(isNegativeScope(input)).toBe(expected);
   });
 });

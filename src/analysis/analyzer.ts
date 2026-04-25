@@ -4,7 +4,7 @@ import type { QAPair, AccessAssessment, DataNeed, Risk, SystemAssessment } from 
 import { analysisResultSchema, type AnalysisResult, type Recommendation } from '../report/types.js';
 import { ANALYSIS_SYSTEM_PROMPT, buildAnalysisPrompt } from '../llm/prompts.js';
 import * as logger from '../util/logger.js';
-import { scrubUnprovided } from '../util/provided.js';
+import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
 import { isBusinessSystem } from '../util/systems.js';
 
 // Extended result that includes both new per-system data and legacy flat fields
@@ -77,6 +77,17 @@ function isRiskAboutOrchestrationOnly(
 /**
  * Recursively walk a parsed JSON object and normalize any "NOT PROVIDED"-style
  * string values to `undefined`. Leaves other types untouched. Mutates in place.
+ *
+ * For arrays of strings (e.g. `systems[].scopesRequested`) the scrubbed
+ * elements are *removed* (compacted), not left as `undefined` in place — Zod
+ * rejects `[undefined]` against `z.array(z.string())` even when the array
+ * itself has a `.default([])`. Compacting `["NOT PROVIDED"]` → `[]` lets the
+ * default fire correctly.
+ *
+ * AAP-43 post-merge fix (2026-04-25): the original implementation set
+ * `value[i] = undefined`, which produced the regression observed on copy-
+ * prod — Zod parse failed with `invalid_type expected string received
+ * undefined` and the analyzer fell back to "Automated analysis failed".
  */
 function scrubNotProvidedInPlace(value: unknown): void {
   if (Array.isArray(value)) {
@@ -87,6 +98,13 @@ function scrubNotProvidedInPlace(value: unknown): void {
       } else if (item && typeof item === 'object') {
         scrubNotProvidedInPlace(item);
       }
+    }
+    // Compact: drop `undefined` entries we just produced from scrubbed
+    // strings. Walk back-to-front so splicing doesn't shift unvisited
+    // indices. We never produce `undefined` from object recursion, only
+    // from string scrub, so this only affects string arrays.
+    for (let i = value.length - 1; i >= 0; i--) {
+      if (value[i] === undefined) value.splice(i, 1);
     }
     return;
   }
@@ -108,8 +126,18 @@ async function tryParse(
   prompt: string,
   deterministicSeed?: number,
 ): Promise<AnalysisResult | null> {
+  let response: string | undefined;
   try {
-    const response = await llmClient.chat(ANALYSIS_SYSTEM_PROMPT, prompt, { deterministicSeed });
+    // AAP-43 regression fix (2026-04-24): request JSON-mode so OpenAI and
+    // Gemini return a syntactically-valid JSON payload instead of a free-form
+    // string that sometimes truncates or emits prose before the `{`. This
+    // combined with the provider-side `max_tokens` bump in client.ts resolves
+    // the "Automated analysis failed" fallback observed on 18-question
+    // transcripts in the copy-prod deploy.
+    response = await llmClient.chat(ANALYSIS_SYSTEM_PROMPT, prompt, {
+      deterministicSeed,
+      jsonMode: true,
+    });
 
     // Strip markdown fences if present
     let jsonStr = response.trim();
@@ -146,9 +174,29 @@ async function tryParse(
     );
     result.risks = result.risks.filter((r) => !isRiskAboutOrchestrationOnly(r, businessSystemIds));
 
+    // Reviewer-feedback fix (2026-04-25): drop "negative" content from
+    // scopesDelta (and scopesNeeded) where the LLM put a constraint
+    // ("read-only access", "scoped to profile scraping", "no write access")
+    // instead of an actual revokable permission. Without this filter the
+    // Permissions Delta block in the report ends up listing those constraints
+    // under "Excessive (can be revoked):" — auditor-hostile inversion.
+    for (const sys of result.systems) {
+      sys.scopesDelta = sys.scopesDelta.filter((s) => !isNegativeScope(s));
+      sys.scopesNeeded = sys.scopesNeeded.filter((s) => !isNegativeScope(s));
+    }
+
     return result;
   } catch (e) {
-    logger.warn(`Parse attempt failed: ${e instanceof Error ? e.message : String(e)}`);
+    // AAP-43 regression fix (2026-04-24): log a bounded preview of the raw
+    // LLM response so the next operator can tell truncation apart from
+    // schema mismatch. Previously the warn line only carried the exception
+    // message, which leaves the "Automated analysis failed" report without
+    // a diagnostic trail.
+    const errMsg = e instanceof Error ? e.message : String(e);
+    const preview = response === undefined
+      ? '(no response — LLM call threw)'
+      : `${response.slice(0, 400)}${response.length > 400 ? `…[+${response.length - 400} chars]` : ''}`;
+    logger.warn(`Parse attempt failed: ${errMsg} | response preview: ${preview}`);
     return null;
   }
 }

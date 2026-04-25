@@ -32,4 +32,48 @@ describe('Annex III §4 employment gating (AAP-43 P1 #4)', () => {
     const signals = detectSignals([], transcript, false);
     expect(signals.hasEmploymentDecisions).toBe(false);
   });
+
+  // AAP-43 post-merge regression fix (2026-04-24):
+  // LinkedIn ICP Matcher answered Q13 with a negation-rich statement:
+  // "This does not involve hiring, credit scoring, insurance, content
+  // moderation..." — the word `hiring` is there but its meaning is
+  // negated. The old regex matched anyway, firing Annex III §4 falsely.
+  it('does NOT fire when transcript explicitly negates employment', () => {
+    const transcript = [
+      qa(
+        'q1',
+        'The agent qualifies LinkedIn connections as ICP matches for sales outreach. This does not involve hiring, credit scoring, insurance, content moderation, access control, or employee evaluation. The classification is advisory and non-binding.',
+      ),
+    ];
+    const signals = detectSignals([], transcript, true, 'Sales/marketing lead qualification. Does not involve hiring or recruitment.');
+    expect(signals.hasEmploymentDecisions).toBe(false);
+    const cls = classifyEUAIAct(signals);
+    expect(cls.annexIIICategories.some((c) => c.includes('employment'))).toBe(false);
+  });
+
+  it('prefers decisionMakingDetails over allText when details explicitly exclude employment', () => {
+    // transcript has "hiring" as a bare word (e.g. in a question), but the
+    // structured decisionMakingDetails field clearly denies employment use.
+    const transcript = [
+      qa('q1', 'Example of regulated decisions might include hiring, credit scoring, insurance.', 'purpose'),
+    ];
+    const signals = detectSignals(
+      [],
+      transcript,
+      true,
+      'Sales lead qualification — this is not a hiring or candidate-screening agent.',
+    );
+    expect(signals.hasEmploymentDecisions).toBe(false);
+  });
+
+  it('still fires when decisionMakingDetails unambiguously says hiring', () => {
+    const transcript = [qa('q1', 'Resume screening agent for the recruiting team.')];
+    const signals = detectSignals(
+      [],
+      transcript,
+      true,
+      'Screens candidate resumes for the recruiting team; top matches get fast-tracked to hiring managers.',
+    );
+    expect(signals.hasEmploymentDecisions).toBe(true);
+  });
 });
