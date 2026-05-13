@@ -23,6 +23,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 
 import {
   HeronMCPServer,
+  LruReportStore,
   startStdioMCPServer,
   type AuditPipeline,
   type ReportDiffer,
@@ -118,6 +119,26 @@ interface HttpServerArgs {
 }
 
 /**
+ * Wire transport.onclose so a closed session id is removed from the
+ * `transports` registry. Chains onto any existing onclose so the SDK's
+ * own cleanup (if it ever attaches one) still runs. Exposed as a
+ * named export so the F-3 test in `mcp-serve-cleanup.test.ts` can
+ * verify the wiring without spinning up a full HTTP transport.
+ * (F-3, PR #14 round 3.)
+ */
+export function wireTransportCleanup(
+  registry: Record<string, unknown>,
+  sid: string,
+  transport: { onclose?: (() => void) | undefined },
+): void {
+  const prev = transport.onclose;
+  transport.onclose = (): void => {
+    try { if (typeof prev === 'function') prev(); } catch { /* noop */ }
+    delete registry[sid];
+  };
+}
+
+/**
  * Memory-DoS cap on individual HTTP request bodies. Bigger than this
  * and the server returns 413 without allocating the rest of the
  * payload. Tuned for MCP JSON-RPC: a single legitimate audit_agent
@@ -202,7 +223,13 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
-          onsessioninitialized: (sid: string) => { transports[sid] = transport!; },
+          onsessioninitialized: (sid: string) => {
+            transports[sid] = transport!;
+            // F-3: clean up the registry when the SDK closes the
+            // transport. Without this, a long-running server leaks one
+            // SDK transport tree per session forever.
+            wireTransportCleanup(transports, sid, transport!);
+          },
         });
         const wrapper = new HeronMCPServer(args.deps);
         const mcp = wrapper.buildMcpServer();
@@ -478,11 +505,48 @@ export function assertValidReportId(id: unknown): asserts id is string {
  * even if the regex were ever loosened, writes/reads outside the store
  * dir would still throw.
  */
+export interface FileSystemReportStoreOptions {
+  /**
+   * Maximum number of records held in the in-memory cache. Defaults
+   * to 200. Older records are evicted; the on-disk files are untouched,
+   * so a subsequent `get` will hydrate them back through a cache miss.
+   * (F-3: bounded cache prevents the long-running OSS server from
+   * pinning every report's markdown in RAM forever.)
+   */
+  cacheCap?: number;
+}
+
+/**
+ * Disk-backed report store with a bounded in-memory cache.
+ *
+ * Cache is backed by `LruReportStore` so its size never exceeds the
+ * configured cap (default 200). Older records are evicted from memory;
+ * the on-disk files are untouched, so a subsequent `get` simply pays
+ * the cost of one file read to hydrate them again.
+ *
+ * The test in `mcp-serve-cleanup.test.ts` reads the `cache` field
+ * through an `unknown` cast to assert the bound holds — keep the name
+ * `cache` so that test keeps working.
+ */
 export class FileSystemReportStore implements ReportStore {
-  private cache = new Map<string, StoredReport>();
+  // The cache itself: an LruReportStore. We also expose a Map view
+  // for tests through the `cache` field — both refer to the same
+  // underlying byId Map inside LruReportStore so the test's
+  // `cache.size` check sees the bounded store accurately.
+  private readonly cache: Map<string, StoredReport>;
+  private readonly lru: LruReportStore;
   private readonly resolvedDir: string;
-  constructor(private readonly dir: string) {
+  constructor(
+    private readonly dir: string,
+    options: FileSystemReportStoreOptions = {},
+  ) {
     this.resolvedDir = resolve(dir);
+    this.lru = new LruReportStore(options.cacheCap ?? 200);
+    // Reach into the LRU's private `byId` once at construction time so
+    // we can keep a Map reference for direct inspection. We never
+    // bypass the LRU contract for puts/gets — those still go through
+    // its put/get methods.
+    this.cache = (this.lru as unknown as { byId: Map<string, StoredReport> }).byId;
   }
 
   put(record: StoredReport): void {
@@ -490,7 +554,7 @@ export class FileSystemReportStore implements ReportStore {
     const mdPath = this.safeResolve(`${record.reportId}.md`);
     const metaPath = this.safeResolve(`${record.reportId}.meta.json`);
 
-    this.cache.set(record.reportId, record);
+    this.lru.put(record);
     mkdirSync(this.dir, { recursive: true });
     writeFileSync(mdPath, record.report, 'utf-8');
     writeFileSync(
@@ -511,7 +575,7 @@ export class FileSystemReportStore implements ReportStore {
 
   get(id: string): StoredReport | undefined {
     assertValidReportId(id);
-    const hit = this.cache.get(id);
+    const hit = this.lru.get(id);
     if (hit) return hit;
     const metaPath = this.safeResolve(`${id}.meta.json`);
     const reportPath = this.safeResolve(`${id}.md`);
@@ -521,7 +585,7 @@ export class FileSystemReportStore implements ReportStore {
       ...meta,
       report: readFileSync(reportPath, 'utf-8'),
     };
-    this.cache.set(id, record);
+    this.lru.put(record);
     return record;
   }
 

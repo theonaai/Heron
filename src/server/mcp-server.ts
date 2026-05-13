@@ -95,15 +95,54 @@ export interface HeronMCPServerDeps {
   differ: ReportDiffer;
 }
 
-class InMemoryReportStore implements ReportStore {
-  private byId = new Map<string, StoredReport>();
-  put(record: StoredReport): void {
-    this.byId.set(record.reportId, record);
+/**
+ * Bounded LRU report store. Capped at `cap` entries (default 200);
+ * when full, the least-recently-used entry is evicted on insert.
+ *
+ * Both `put` and `get` count as accesses — touching an entry moves it
+ * to the most-recently-used slot. We exploit Map's insertion-order
+ * iteration: on access, delete then re-insert so the entry becomes
+ * the newest, and on overflow `Map.keys().next().value` gives the
+ * oldest in O(1).
+ *
+ * F-3 (PR #14 round 3): the previous unbounded store was a memory
+ * leak for long-running servers. Hosted (AAP-47) will swap this for a
+ * persistent store; the OSS default keeps reports until eviction.
+ */
+export class LruReportStore implements ReportStore {
+  private readonly byId = new Map<string, StoredReport>();
+
+  constructor(private readonly cap: number = 200) {
+    if (!Number.isInteger(cap) || cap <= 0) {
+      throw new Error(`LruReportStore cap must be a positive integer; got ${cap}`);
+    }
   }
+
+  put(record: StoredReport): void {
+    // Treat re-put as an access: delete the old position, then
+    // re-insert so this id becomes the newest.
+    if (this.byId.has(record.reportId)) {
+      this.byId.delete(record.reportId);
+    }
+    this.byId.set(record.reportId, record);
+    if (this.byId.size > this.cap) {
+      const oldest = this.byId.keys().next().value;
+      if (oldest !== undefined) this.byId.delete(oldest);
+    }
+  }
+
   get(id: string): StoredReport | undefined {
-    return this.byId.get(id);
+    const hit = this.byId.get(id);
+    if (hit === undefined) return undefined;
+    // Touch — move to MRU.
+    this.byId.delete(id);
+    this.byId.set(id, hit);
+    return hit;
   }
 }
+
+/** Backwards-compatible alias — the default in-memory store is now LRU. */
+class InMemoryReportStore extends LruReportStore {}
 
 // ─── Tool definitions (locked surface) ────────────────────────────────────
 
