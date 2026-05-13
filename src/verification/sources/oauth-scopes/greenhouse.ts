@@ -49,6 +49,18 @@ import type {
 export const GREENHOUSE_BASE_URL = 'https://harvest.greenhouse.io/v1/';
 
 /**
+ * Default per-probe timeout in milliseconds.
+ *
+ * F-3 (PR #16 round 2): probes must abort after a bounded wall-clock
+ * so a slowloris or unresponsive Greenhouse instance cannot hang the
+ * verification run at the OS socket timeout (often minutes). Operators
+ * can override via the env var `HERON_GREENHOUSE_PROBE_TIMEOUT_MS` if
+ * their tenancy has documented slow endpoints; invalid values fall
+ * back to this default rather than erroring.
+ */
+export const GREENHOUSE_PROBE_TIMEOUT_MS_DEFAULT = 10_000;
+
+/**
  * Probe table — one entry per scope we attempt to discover.
  *
  * `path` is concatenated to `GREENHOUSE_BASE_URL` verbatim. `scope`
@@ -163,6 +175,7 @@ export async function readGreenhouseScopes(args: ReadGreenhouseArgs): Promise<Re
 
   const http: HttpClient = args.httpClient ?? defaultHttpClient();
   const authHeader = buildBasicAuthHeader(args.apiKey);
+  const timeoutMs = resolveProbeTimeoutMs();
 
   // Issue the baseline probe first; if `users/me` doesn't succeed
   // with 2xx we cannot prove the key is even valid.
@@ -170,8 +183,19 @@ export async function readGreenhouseScopes(args: ReadGreenhouseArgs): Promise<Re
   const meUrl = `${baseUrl}${meEntry.path}`;
   let meResult: ProbeOutcome;
   try {
-    meResult = await runProbe(http, meUrl, authHeader);
+    meResult = await runProbe(http, meUrl, authHeader, timeoutMs);
   } catch (err) {
+    // F-3: distinguish timeout (AbortError) from other transport
+    // failures so the report can reflect the cause precisely.
+    if (isAbortError(err)) {
+      return {
+        ok: false,
+        error: {
+          kind: 'timeout',
+          message: `Greenhouse Harvest baseline probe timed out after ${timeoutMs}ms.`,
+        },
+      };
+    }
     // Transport-level error on the baseline probe → unavailable.
     // `cause` is preserved but with the API key scrubbed in case the
     // transport echoed it back.
@@ -218,8 +242,16 @@ export async function readGreenhouseScopes(args: ReadGreenhouseArgs): Promise<Re
     const url = `${baseUrl}${probe.path}`;
     let outcome: ProbeOutcome;
     try {
-      outcome = await runProbe(http, url, authHeader);
+      outcome = await runProbe(http, url, authHeader, timeoutMs);
     } catch (err) {
+      // F-3: surface timeouts distinctly so the auditor can tell a
+      // hung probe from a transport error (DNS, TLS, etc).
+      if (isAbortError(err)) {
+        warnings.push(
+          `Probe for scope '${probe.scope}' failed: timeout after ${timeoutMs}ms; scope omitted.`,
+        );
+        continue;
+      }
       // Transport error — record a warning and skip this scope.
       warnings.push(
         `Probe for scope '${probe.scope}' failed: ${scrubMessage(err, args.apiKey)}`,
@@ -257,7 +289,12 @@ type ProbeOutcome =
   | { kind: 'auth-error'; status: number }
   | { kind: 'server-error'; status: number };
 
-async function runProbe(http: HttpClient, url: string, authHeader: string): Promise<ProbeOutcome> {
+async function runProbe(
+  http: HttpClient,
+  url: string,
+  authHeader: string,
+  timeoutMs: number,
+): Promise<ProbeOutcome> {
   // F-2 (PR #16 round 2): manual redirect handling to prevent SSRF
   // guard bypass via redirect chains. Default `redirect: 'follow'`
   // would re-send the `Authorization: Basic <base64>` header to a
@@ -267,6 +304,17 @@ async function runProbe(http: HttpClient, url: string, authHeader: string): Prom
   // `http://169.254.169.254/` and harvest credentials via cloud
   // metadata, defeating `validateTargetEndpoint`. With manual
   // redirect, any 3xx is treated as a probe failure here.
+  //
+  // F-3: AbortSignal.timeout bounds each probe at a configurable
+  // wall-clock so a slowloris or hung Greenhouse host cannot stall
+  // the entire verification run. AbortError is caught at the call
+  // site and surfaced as a `timeout` warning / error.
+  //
+  // NOTE (F-4 deferred): the response body is currently discarded —
+  // only `res.status` is inspected. If a future revision parses the
+  // body, add a size cap (e.g. 1 MiB) and reject over-bound responses
+  // here, since `AbortSignal.timeout` does not bound the body-read
+  // phase by default. See F-4 in the PR #16 security audit.
   const res = await http(url, {
     method: 'GET',
     headers: {
@@ -274,6 +322,7 @@ async function runProbe(http: HttpClient, url: string, authHeader: string): Prom
       'Accept': 'application/json',
     },
     redirect: 'manual',
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status >= 200 && res.status < 300) {
     return { kind: 'ok', status: res.status };
@@ -284,6 +333,36 @@ async function runProbe(http: HttpClient, url: string, authHeader: string): Prom
   // 3xx falls through to server-error — see F-2 note above. A redirect
   // is a probe failure, not a successful scope discovery.
   return { kind: 'server-error', status: res.status };
+}
+
+/**
+ * F-3: resolve the per-probe timeout. The env var
+ * `HERON_GREENHOUSE_PROBE_TIMEOUT_MS` overrides the default for
+ * operator flexibility. Invalid values (non-numeric, zero, negative,
+ * non-finite, absurdly large) fall back to the default rather than
+ * raising — verification must not crash on a malformed knob.
+ */
+function resolveProbeTimeoutMs(): number {
+  const raw = process.env.HERON_GREENHOUSE_PROBE_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return GREENHOUSE_PROBE_TIMEOUT_MS_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 600_000) {
+    return GREENHOUSE_PROBE_TIMEOUT_MS_DEFAULT;
+  }
+  return Math.floor(n);
+}
+
+/**
+ * F-3: distinguish AbortError (timeout) from other thrown errors.
+ * Node's fetch throws a `DOMException` with `name === 'AbortError'`
+ * when an AbortSignal triggers, but tests / polyfills may throw a
+ * plain `Error` with the same `name`. Match on `name` rather than
+ * `instanceof DOMException` to stay portable.
+ */
+function isAbortError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const name = (err as { name?: unknown }).name;
+  return name === 'AbortError' || name === 'TimeoutError';
 }
 
 /**
