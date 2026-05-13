@@ -126,6 +126,28 @@ Heron connects directly to your agent's chat API and runs the interview itself.
 npx heron-ai scan --target http://your-agent/v1/chat/completions
 ```
 
+#### Mode C: Scan an MCP server (`heron-ai scan --mcp`)
+
+If your agent exposes its tools through an MCP server, Heron can connect to the server directly and emit a tool-inventory report — what the server declares it can do, with input schemas and behavior hints (`readOnlyHint`, `destructiveHint`, …) preserved verbatim. Useful as Source #1 for declared-vs-actual scope verification.
+
+Three input shapes for the `--mcp` flag:
+
+```bash
+# 1) HTTP(s) MCP server. Bearer token (optional) from HERON_MCP_BEARER env var.
+heron-ai scan --mcp https://example.com/mcp
+
+# 2) Stdio server, shorthand. Command and args after stdio:
+heron-ai scan --mcp 'stdio:node ./my-mcp-server.js'
+
+# 3) Full JSON config — supports env vars, cwd, explicit bearer tokens.
+heron-ai scan --mcp '{"kind":"stdio","command":"node","args":["server.js"]}'
+heron-ai scan --mcp '{"kind":"http","url":"https://example.com/mcp","bearerToken":"sk-..."}'
+```
+
+The report is written to `./reports/mcp-scan_<id>.md` (or `.json` with `-f json`).
+
+The MCP transport config shape (`MCPTransportConfig`) is locked in `src/connectors/mcp-types.ts` — both this client and the upcoming `heron mcp-serve` mode (Heron AS an MCP server, follow-up PR) consume the same types so the verification engine downstream sees one shape.
+
 ### Option 2: Hosted version (no setup)
 
 Sign in at **https://heron.ing** and paste this into your AI agent's chat:
