@@ -2,6 +2,12 @@ import type { AuditReport, QAPair, DataQuality, Risk, SystemAssessment, WriteOpe
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import { isBusinessSystem } from '../util/systems.js';
+import type {
+  DiffEntry,
+  SourceVerification,
+  VerificationReport,
+  VerificationVerdict,
+} from '../verification/types.js';
 
 // ─── AAP-43 P1 #5: overall regulatory status ──────────────────────────────
 
@@ -842,4 +848,175 @@ function severityOrder(severity: string): number {
     case 'low': return 1;
     default: return 0;
   }
+}
+
+// ─── Verification (AAP-48) ───────────────────────────────────────────────
+
+/**
+ * Render the Markdown "Verification" section for a `VerificationReport`.
+ *
+ * Exported so the MCP-scan CLI path can splice the section into its existing
+ * tool-inventory report without going through the full interrogation report.
+ * The same renderer will be called from the full report pipeline once
+ * AAP-49 wires it in.
+ *
+ * Output escaping: MCP-server-supplied strings (tool descriptions,
+ * annotations) are treated as untrusted. We escape `<`, `>`, leading `!`
+ * + `[` (image syntax), and pipe characters to defend against layout
+ * injection and credential-leaking hot-linked images. The same pattern
+ * mirrors the PR #14 F-6 hardening; when the wider report renderer
+ * adopts a shared escape helper, swap this inline helper for it.
+ */
+export function renderVerificationSection(report: VerificationReport): string {
+  const lines: string[] = [];
+  lines.push('## Verification');
+  lines.push('');
+
+  // Verdict summary table — one row per source.
+  lines.push('| Source | Verdict | Findings |');
+  lines.push('| --- | --- | --- |');
+  for (const s of report.sources) {
+    const verdictLabel = formatVerdict(s.verdict);
+    const findingsCell = s.verdict === 'unverified' ? '—' : String(s.diffs.length);
+    lines.push(`| ${escapeCell(s.sourceId)} | ${verdictLabel} | ${findingsCell} |`);
+  }
+  lines.push('');
+
+  // Findings — flatten across sources, sort by severity desc, then kind.
+  lines.push('### Findings');
+  lines.push('');
+  const allDiffs: DiffEntry[] = report.sources.flatMap(s => s.diffs);
+  if (allDiffs.length === 0) {
+    lines.push('_No discrepancies found._');
+  } else {
+    const sorted = [...allDiffs].sort((a, b) => {
+      const sevDelta = severityOrder(b.severity) - severityOrder(a.severity);
+      if (sevDelta !== 0) return sevDelta;
+      // Stable secondary sort by kind so the rendered order matches the
+      // golden snapshots regardless of map insertion order.
+      const kindRank: Record<DiffEntry['kind'], number> = { extra: 0, mismatch: 1, missing: 2 };
+      return kindRank[a.kind] - kindRank[b.kind];
+    });
+    for (const d of sorted) {
+      lines.push(...renderDiffEntry(d));
+    }
+  }
+  lines.push('');
+
+  // Sources — per-source provenance and error surfacing.
+  lines.push('### Sources');
+  lines.push('');
+  for (const s of report.sources) {
+    lines.push(renderSourceLine(s));
+  }
+
+  return lines.join('\n');
+}
+
+function formatVerdict(v: VerificationVerdict): string {
+  switch (v) {
+    case 'verified': return 'Verified';
+    case 'discrepancy': return 'Discrepancy';
+    case 'unverified': return 'Unverified';
+    default: {
+      const _exhaustive: never = v;
+      void _exhaustive;
+      return String(v);
+    }
+  }
+}
+
+function renderDiffEntry(d: DiffEntry): string[] {
+  const sev = d.severity.toUpperCase();
+  const src = escapeText(d.source);
+
+  if (d.kind === 'extra') {
+    const name = d.dimension === 'tool'
+      ? (d.actual as { name: string }).name
+      : `${(d.actual as { service: string }).service}:${(d.actual as { scope: string }).scope}`;
+    const header = d.dimension === 'tool'
+      ? `- **[${sev}] Extra ${d.dimension} \`${escapeInlineCode(name)}\`** (${src})`
+      : `- **[${sev}] Extra ${d.dimension} \`${escapeInlineCode(name)}\`** (${src})`;
+    const out: string[] = [header];
+    if (d.dimension === 'tool') {
+      const desc = (d.actual as { description?: string }).description;
+      if (desc) out.push(`  - Description: ${escapeText(desc)}`);
+    }
+    return out;
+  }
+
+  if (d.kind === 'missing') {
+    const name = d.dimension === 'tool'
+      ? (d.declared as { name: string }).name
+      : `${(d.declared as { service: string }).service}:${(d.declared as { scope: string }).scope}`;
+    return [
+      `- **[${sev}] Missing ${d.dimension} \`${escapeInlineCode(name)}\`** (${src}, declared but not exposed by the source)`,
+    ];
+  }
+
+  // mismatch
+  const decl = d.dimension === 'tool'
+    ? (d.declared as { name: string; description?: string })
+    : null;
+  const act = d.dimension === 'tool'
+    ? (d.actual as { name: string; description?: string })
+    : null;
+  if (decl && act) {
+    const out: string[] = [
+      `- **[${sev}] Mismatch on tool \`${escapeInlineCode(act.name)}\`** (${src}, declared description differs from actual)`,
+    ];
+    if (decl.description) out.push(`  - Declared: ${escapeText(decl.description)}`);
+    if (act.description) out.push(`  - Actual: ${escapeText(act.description)}`);
+    return out;
+  }
+  // Scope mismatches do not currently fire (the differ does not produce
+  // them), but keep a sensible fallback so the renderer never crashes on
+  // a future expansion.
+  return [`- **[${sev}] Mismatch on ${d.dimension}** (${src})`];
+}
+
+function renderSourceLine(s: SourceVerification): string {
+  const id = escapeText(s.sourceId);
+  if (s.error) {
+    return `- ${id} — **read failed** (${escapeText(s.error.kind)}): ${escapeText(s.error.message)}`;
+  }
+  const ts = s.inventory?.capturedAt ?? '(unknown)';
+  const toolCount = s.inventory?.tools?.length;
+  const scopeCount = s.inventory?.scopes?.length;
+  const parts: string[] = [];
+  if (toolCount !== undefined) parts.push(`${toolCount} tool${toolCount === 1 ? '' : 's'}`);
+  if (scopeCount !== undefined) parts.push(`${scopeCount} scope${scopeCount === 1 ? '' : 's'}`);
+  const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  return `- ${id} — read succeeded at ${escapeText(ts)}${detail}`;
+}
+
+// ─── Escape helpers — defence against hostile MCP server strings ──────────
+
+/**
+ * Escape a chunk of body text. Replaces angle brackets (HTML escape, blocks
+ * raw `<script>`), neutralises Markdown image syntax (`![alt](url)`), and
+ * normalises pipes so untrusted text cannot break out of a table cell.
+ *
+ * We do NOT use a full Markdown sanitiser — the goal is to defang structural
+ * injection, not to redact content. A reviewer still sees the literal text
+ * the server tried to push.
+ */
+function escapeText(value: string): string {
+  return value
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    // Defang Markdown image syntax: `![alt](url)` becomes `! [alt](url)` so
+    // the parser does not interpret it as an image.
+    .replace(/!\[/g, '! [')
+    .replace(/\|/g, '\\|');
+}
+
+/** For values that sit inside `\`backticks\`` we strip stray backticks. */
+function escapeInlineCode(value: string): string {
+  return value.replace(/`/g, '');
+}
+
+/** Cell content: text-escape + collapse newlines so the row stays on one line. */
+function escapeCell(value: string): string {
+  return escapeText(value).replace(/\r?\n/g, ' ');
 }
