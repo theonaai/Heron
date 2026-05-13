@@ -27,9 +27,16 @@ import type {
 
 export interface RunVerificationArgs {
   declared: DeclaredInventory[];
+  /**
+   * Source adapters with their config blobs. We use `DeterministicSource<unknown>`
+   * (not `<any>`) so the orchestrator stays strict — heterogeneous adapter
+   * config shapes mean the call-site cannot statically prove which config goes
+   * with which adapter, so the call site casts to the adapter's concrete
+   * config type at construction time. The orchestrator itself never inspects
+   * the config; it forwards verbatim to `adapter.read`.
+   */
   sources: Array<{
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    adapter: DeterministicSource<any>;
+    adapter: DeterministicSource<unknown>;
     config: unknown;
   }>;
   agentLabel: string;
