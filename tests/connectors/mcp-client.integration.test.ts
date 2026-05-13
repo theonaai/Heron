@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { MCPClient } from '../../src/connectors/mcp-client.js';
@@ -63,21 +65,37 @@ describe('MCPClient — http transport', () => {
   beforeAll(async () => {
     bearer = 'sk-test-' + Math.random().toString(36).slice(2);
 
-    // Create one McpServer and its Streamable HTTP transport, wired together
-    // by the SDK. The HTTP server below validates Bearer auth and then hands
-    // requests off to the transport.
-    const mcp = new McpServer({ name: 'http-test-server', version: '0.0.1' });
-    mcp.registerTool(
-      'http_tool',
-      {
-        description: 'A tool only reachable over HTTP.',
-        inputSchema: { msg: z.string().describe('message to echo back') },
-      },
-      async ({ msg }) => ({ content: [{ type: 'text', text: msg }] }),
-    );
+    // Factory: each new MCP session gets its own server + transport pair.
+    // Matches the SDK's canonical streamable-HTTP setup (see
+    // examples/server/simpleStreamableHttp.js).
+    const buildServer = () => {
+      const mcp = new McpServer({ name: 'http-test-server', version: '0.0.1' });
+      mcp.registerTool(
+        'http_tool',
+        {
+          description: 'A tool only reachable over HTTP.',
+          inputSchema: { msg: z.string().describe('message to echo back') },
+        },
+        async ({ msg }) => ({ content: [{ type: 'text', text: msg }] }),
+      );
+      return mcp;
+    };
 
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    await mcp.connect(transport);
+    // Buffer body once per request so we can both (a) sniff for the
+    // initialize message and (b) hand it to handleRequest as parsedBody.
+    const readBody = (req: import('node:http').IncomingMessage): Promise<unknown> =>
+      new Promise((resolveBody, rejectBody) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => {
+          const s = Buffer.concat(chunks).toString('utf8');
+          if (!s) return resolveBody(undefined);
+          try { resolveBody(JSON.parse(s)); } catch (e) { rejectBody(e); }
+        });
+        req.on('error', rejectBody);
+      });
+
+    const transports: Record<string, StreamableHTTPServerTransport> = {};
 
     httpServer = createServer(async (req, res) => {
       // Crude bearer check — good enough for the auth-failure path.
@@ -88,24 +106,41 @@ describe('MCPClient — http transport', () => {
         res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
       }
-      // Buffer request body, then defer to the transport.
-      const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c as Buffer));
-      req.on('end', () => {
-        const bodyStr = Buffer.concat(chunks).toString('utf8');
-        let body: unknown;
-        try {
-          body = bodyStr.length > 0 ? JSON.parse(bodyStr) : undefined;
-        } catch {
-          body = undefined;
+
+      try {
+        const body = await readBody(req);
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        let transport: StreamableHTTPServerTransport | undefined =
+          sessionId ? transports[sessionId] : undefined;
+
+        if (!transport) {
+          if (!isInitializeRequest(body)) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              jsonrpc: '2.0', id: null,
+              error: { code: -32000, message: 'Bad Request: no session and not initialize' },
+            }));
+            return;
+          }
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            enableJsonResponse: true,
+            onsessioninitialized: (sid) => { transports[sid] = transport!; },
+          });
+          const mcp = buildServer();
+          await mcp.connect(transport);
         }
-        transport.handleRequest(req, res, body).catch((err) => {
-          // The transport handles its own error responses; only surface
-          // unhandled rejections in test output.
-          // eslint-disable-next-line no-console
-          console.error('transport.handleRequest threw', err);
-        });
-      });
+
+        await transport.handleRequest(req, res, body);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('transport.handleRequest threw', err);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end();
+        }
+      }
     });
 
     await new Promise<void>((resolveListen) => {
