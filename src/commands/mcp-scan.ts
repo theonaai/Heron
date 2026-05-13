@@ -9,6 +9,8 @@ import { generateId } from '../util/id.js';
 import { escapeInlineCode, escapeText } from '../util/markdown-escape.js';
 import { runVerification } from '../verification/orchestrator.js';
 import { McpToolsSource, normalizeRawTool } from '../verification/sources/mcp-tools.js';
+import { OAuthScopesSource } from '../verification/sources/oauth-scopes.js';
+import type { OAuthScopesSourceConfig } from '../verification/sources/oauth-scopes.js';
 import { renderVerificationSection } from '../report/templates.js';
 import type {
   DeclaredInventory,
@@ -16,8 +18,20 @@ import type {
   DeclaredTool,
 } from '../verification/types.js';
 
-/** Identifier set for sources the CLI can currently verify. */
-const KNOWN_VERIFY_SOURCES = ['mcp-tools'] as const;
+/**
+ * Identifier set for sources the CLI can currently verify.
+ *
+ * Syntax:
+ *  - `mcp-tools` — Role A MCP-server tool inventory (PR #15).
+ *  - `oauth-scopes:<connector>` — OAuth-scope probe per connector.
+ *    Today: `oauth-scopes:greenhouse`. Future PRs add
+ *    `oauth-scopes:bamboohr`, `oauth-scopes:google-workspace`.
+ *
+ * The OAuth-scopes form uses a `:` discriminator so it's easy for
+ * the CLI parser to extend without breaking back-compat. New
+ * connectors land by adding their identifier to this list.
+ */
+const KNOWN_VERIFY_SOURCES = ['mcp-tools', 'oauth-scopes:greenhouse'] as const;
 type VerifySource = typeof KNOWN_VERIFY_SOURCES[number];
 
 export interface RunMcpScanOptions {
@@ -164,8 +178,28 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<s
         config: { transport: args.transportConfig },
       };
     }
+    if (id === 'oauth-scopes:greenhouse') {
+      const apiKey = process.env.HERON_GREENHOUSE_API_KEY;
+      if (!apiKey || apiKey.length === 0) {
+        // Surface a plain-text error — no stack trace shown to the user.
+        // The CLI catches Error.message and logs it via `logger.error`.
+        throw new Error(
+          'Please set HERON_GREENHOUSE_API_KEY env var to use Greenhouse verification (--verify oauth-scopes:greenhouse). Do NOT pass the API key on the command line — argv is visible to other processes via `ps`.',
+        );
+      }
+      const config: OAuthScopesSourceConfig = {
+        connector: 'greenhouse',
+        credentials: { apiKey },
+      };
+      return {
+        adapter: new OAuthScopesSource(),
+        config,
+      };
+    }
     // Unreachable — parseVerifyFlag rejects unknowns.
-    throw new Error(`Unsupported verify source: ${id}`);
+    const _exhaustive: never = id;
+    void _exhaustive;
+    throw new Error(`Unsupported verify source: ${String(id)}`);
   });
 
   const report = await runVerification({

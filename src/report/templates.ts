@@ -992,7 +992,18 @@ function renderSourceLine(s: SourceVerification): string {
   if (toolCount !== undefined) parts.push(`${toolCount} tool${toolCount === 1 ? '' : 's'}`);
   if (scopeCount !== undefined) parts.push(`${scopeCount} scope${scopeCount === 1 ? '' : 's'}`);
   const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-  return `- ${id} — read succeeded at ${escapeText(ts)}${detail}`;
+  const head = `- ${id} — read succeeded at ${escapeText(ts)}${detail}`;
+  // F-1 (PR #16 round 2): surface warnings under the source line so an
+  // auditor reading the report can tell a partial read from a complete
+  // one. Without this, a 4-probe oauth-scopes source with 2 failed
+  // probes would render identically to a clean run.
+  if (s.warnings && s.warnings.length > 0) {
+    const warned = s.warnings
+      .map(w => `  - warning: ${escapeText(w)}`)
+      .join('\n');
+    return `${head}\n${warned}`;
+  }
+  return head;
 }
 
 // Escape helpers — see `src/util/markdown-escape.ts`. Re-imported above as

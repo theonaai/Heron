@@ -71,12 +71,20 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
     const diffs = diff(args.declared, result.inventory);
     const verdict: VerificationVerdict = diffs.length === 0 ? 'verified' : 'discrepancy';
 
-    sourceResults.push({
+    // F-1 (PR #16 round 2): propagate `warnings` from the source result
+    // onto the `SourceVerification` so the renderer can surface partial
+    // reads — without this, a 4-probe source with 2 failed probes would
+    // render as a clean "Verified" verdict.
+    const entry: SourceVerification = {
       sourceId: adapter.id,
       verdict,
       diffs,
       inventory: result.inventory,
-    });
+    };
+    if (result.warnings !== undefined && result.warnings.length > 0) {
+      entry.warnings = result.warnings;
+    }
+    sourceResults.push(entry);
   }
 
   return {

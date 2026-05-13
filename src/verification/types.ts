@@ -197,7 +197,20 @@ export type VerificationVerdict = 'verified' | 'discrepancy' | 'unverified';
  * it into a `SourceVerification`.
  */
 export type DeterministicSourceResult =
-  | { ok: true; inventory: ActualInventory }
+  | {
+      ok: true;
+      inventory: ActualInventory;
+      /**
+       * Optional warnings — present when the source read succeeded but
+       * was partial (some probes failed with 5xx, timeout, or 3xx). The
+       * orchestrator propagates these onto `SourceVerification.warnings`
+       * so the report renderer can surface them. Without this field, a
+       * partial read would render as a clean "Verified" verdict and
+       * auditors would not see that scope discovery was incomplete.
+       * Tracking: PR #16 round 2, finding F-1.
+       */
+      warnings?: string[];
+    }
   | { ok: false; error: DeterministicSourceError };
 
 export type DeterministicSourceErrorKind =
@@ -250,6 +263,14 @@ export interface SourceVerification {
   inventory?: ActualInventory;
   /** Present when the source read failed; verdict is then `unverified`. */
   error?: DeterministicSourceError;
+  /**
+   * Optional warnings when the source read succeeded but was partial
+   * (e.g. some scope probes returned 5xx, timed out, or were blocked
+   * by a redirect-handling guard). The renderer surfaces these under
+   * the source line so an auditor can tell a partial read from a
+   * complete one. Tracking: PR #16 round 2, finding F-1.
+   */
+  warnings?: string[];
 }
 
 /**
