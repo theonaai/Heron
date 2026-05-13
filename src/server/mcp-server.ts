@@ -613,26 +613,48 @@ function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush: () =>
   // does not coalesce updates that share a numeric value. `pct` is
   // preferred when supplied; otherwise we use a call counter so each
   // stage shows up distinct on the client side.
+  //
+  // Critical sequencing detail: each notification is serialised through
+  // `sendTail` so the underlying transport.send() calls happen one at a
+  // time, and we yield to the event loop with `setImmediate` between each
+  // send. Without that gap, multiple JSON-RPC messages (and the final
+  // tool response) can land in a single chunk on the client transport's
+  // 'data' event. The client SDK processes such a chunk in a synchronous
+  // loop: it schedules each notification handler as a microtask but runs
+  // the response handler synchronously, which deletes the per-request
+  // progress handler before the queued notification microtasks fire.
+  // The trailing notifications are then routed to nothing and dropped.
+  // Yielding between writes lets the OS pipe drain so each notification
+  // appears in its own 'data' event on the client and is dispatched
+  // before the response handler ever runs.
   let counter = 0;
-  const pending: Promise<void>[] = [];
+  let sendTail: Promise<void> = Promise.resolve();
   const progress = (n: ProgressNotification): void => {
     if (progressToken === undefined) return;
     counter += 1;
     const total = typeof n.pct === 'number' ? 100 : undefined;
     const progressValue = typeof n.pct === 'number' ? n.pct : counter;
     const message = n.message ?? n.stage;
-    const p = extra
-      .sendNotification({
-        method: 'notifications/progress',
-        params: {
-          progressToken,
-          progress: progressValue,
-          ...(total !== undefined ? { total } : {}),
-          message,
-        },
+    sendTail = sendTail
+      .then(async () => {
+        await extra.sendNotification({
+          method: 'notifications/progress',
+          params: {
+            progressToken,
+            progress: progressValue,
+            ...(total !== undefined ? { total } : {}),
+            message,
+          },
+        });
+        // Yield one macrotask so the OS pipe / HTTP response stream
+        // actually drains this notification before the next write.
+        // Without it, the receiver's 'data' event coalesces with the
+        // next message and the SDK's synchronous response handler tears
+        // down the per-request progress handler before queued
+        // notification microtasks can dispatch.
+        await new Promise<void>((r) => setImmediate(r));
       })
       .catch(() => undefined);
-    pending.push(p);
   };
 
   const ctx: RequestContext = {
@@ -642,8 +664,7 @@ function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush: () =>
     signal: extra.signal,
   };
   const flush = async (): Promise<void> => {
-    if (pending.length === 0) return;
-    await Promise.all(pending);
+    await sendTail;
   };
   return { ctx, flush };
 }

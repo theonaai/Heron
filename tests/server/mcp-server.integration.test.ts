@@ -55,7 +55,7 @@ describe('HeronMCPServer — stdio transport', () => {
     }
   }, 20_000);
 
-  it('streams progress notifications during audit_agent', async () => {
+  it('streams all progress notifications during audit_agent', async () => {
     const client = await connectStdio();
     const progressEvents: Array<{ progress?: number; total?: number; message?: string }> = [];
     try {
@@ -69,17 +69,15 @@ describe('HeronMCPServer — stdio transport', () => {
           onprogress: (p) => progressEvents.push(p as { progress?: number; total?: number; message?: string }),
         },
       );
-      // The result message can arrive on the client transport ahead of
-      // (or interleaved with) the progress notifications — both come
-      // down the same stdio pipe but are dispatched in arrival order.
-      // Wait until at least one notification has arrived. Under v8
-      // coverage instrumentation only the first notification reliably
-      // surfaces on the client side (the SDK's request/response loop
-      // appears to race with the coverage hook on subsequent
-      // notifications); the wrapper itself sends all three (see the
-      // unit-test progress assertion).
-      await waitFor(() => progressEvents.length >= 1, 2_000);
-      expect(progressEvents.length).toBeGreaterThanOrEqual(1);
+      // All three stub-pipeline notifications must reach the client.
+      // The wrapper's contextFromExtra() bridge serialises notification
+      // sends through a tail Promise and yields between each write so the
+      // OS pipe drains between them — without that yield the SDK's
+      // synchronous response-handler ran in the same 'data' tick and
+      // deleted the per-request progress handler before queued
+      // notification microtasks dispatched. See PR #14 review (C2).
+      await waitFor(() => progressEvents.length >= 3, 4_000);
+      expect(progressEvents.length).toBeGreaterThanOrEqual(3);
       expect(progressEvents.some((p) => typeof p.message === 'string')).toBe(true);
     } finally {
       await client.close();
