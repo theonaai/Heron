@@ -16,7 +16,8 @@
  *   - Table cells: escape `|` and collapse newlines.
  *   - Inline code: strip backticks (cannot terminate the span), strip
  *     CR/LF (CommonMark inline-code does not span line breaks; a literal
- *     newline allows arbitrary Markdown on the next line), and
+ *     newline allows arbitrary Markdown on the next line), strip the
+ *     wider control-char + Unicode line-separator set (round 4 N1), and
  *     HTML-escape `<` / `>` (defence in depth for HTML renderers that
  *     do not auto-escape code-span content).
  *   - Operator-supplied strings echoed into error messages: strip
@@ -59,6 +60,18 @@
  */
 const CONTROL_CHAR_REGEX = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
 
+/**
+ * Same character class as `CONTROL_CHAR_REGEX`, dedicated to
+ * `escapeInlineCode`. Separate `RegExp` instance so the `/g` flag
+ * lastIndex state cannot leak between the two callers. Identical
+ * class definition — keep them in lock-step if either is widened.
+ *
+ * The U+2028 / U+2029 codepoints are written as `\u2028` / `\u2029`
+ * escapes (not raw) because they are line terminators in JS source
+ * and esbuild rejects them inside a regex literal.
+ */
+const INLINE_CODE_STRIP_REGEX = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+
 const DEFAULT_MAX_LEN = 256;
 
 /**
@@ -99,11 +112,25 @@ export function escapeText(value: string): string {
  * including `## heading` injection and `[link](url)` exfiltration on the
  * next line). HTML-escapes `<` and `>` as defence in depth against
  * downstream HTML renderers that don't auto-escape code-span content.
+ *
+ * N1 (PR #15 round 4): widened the control-character strip to match
+ * `truncateControlChars`. The narrow `[\r\n]` regex left U+2028,
+ * U+2029, DEL `\x7f`, and the C1 block `\x80-\x9f` un-stripped. Those
+ * characters are real line terminators in many HTML renderers
+ * (Marked with `breaks: true`, innerHTML consumers) and re-open the
+ * F-1 newline-injection class on the render path even after round 3
+ * fixed the error-message path. Same strip set, replaced with a space
+ * to keep visual layout inside the span predictable.
+ *
+ * Strip pattern matches `CONTROL_CHAR_REGEX` (sans the truncate-to-
+ * length step — render code does not silently drop past a length
+ * bound; that bound belongs in the source-boundary normaliser, see
+ * `normalizeActualTool` in `verification/sources/mcp-tools.ts`).
  */
 export function escapeInlineCode(value: string): string {
   return value
     .replace(/`/g, '')
-    .replace(/[\r\n]/g, ' ')
+    .replace(INLINE_CODE_STRIP_REGEX, ' ')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }

@@ -109,11 +109,11 @@ describe('escapeInlineCode', () => {
     // re-opens the F-1 heading-injection vector in any HTML renderer
     // that honours U+2028 as a line break (Marked with `breaks: true`,
     // innerHTML consumers).
-    expect(escapeInlineCode('safe ## PWNED')).toBe('safe  ## PWNED');
+    expect(escapeInlineCode('safe ## PWNED')).toBe('safe ## PWNED');
   });
 
   it('strips U+2029 (PARAGRAPH SEPARATOR)', () => {
-    expect(escapeInlineCode('safe ## PWNED')).toBe('safe  ## PWNED');
+    expect(escapeInlineCode('safe ## PWNED')).toBe('safe ## PWNED');
   });
 
   it('strips \\x7f (DEL)', () => {
