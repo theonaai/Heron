@@ -21,6 +21,9 @@ program
   .option('-t, --target <url>', 'Target agent URL (OpenAI-compatible chat API)')
   .option('--target-type <type>', 'Connection type: http or interactive', 'http')
   .option('--mcp <config>', 'Connect to an MCP server (JSON config, http(s):// URL, or stdio:<command [args...]>) and emit a tool inventory report')
+  .option('--verify <sources>', 'Comma-separated verification sources to run alongside --mcp (currently: mcp-tools)')
+  .option('--declared-tools <names>', 'Comma-separated list of declared tool names (paired with --verify=mcp-tools)')
+  .option('--agent-label <label>', 'Label for the verification report header (defaults to the MCP server label)')
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
@@ -38,12 +41,19 @@ program
         // do not speak chat — instead we read tools/list and emit a
         // tool-inventory report. Role B (heron mcp-serve) is in a follow-up
         // PR; see src/connectors/mcp-types.ts and Linear AAP-46.
-        const { runMcpScan } = await import('../src/commands/mcp-scan.js');
+        const { runMcpScan, parseVerifyFlag } = await import('../src/commands/mcp-scan.js');
+        const verifySources = typeof opts.verify === 'string' ? parseVerifyFlag(opts.verify) : [];
+        const declaredTools = typeof opts.declaredTools === 'string' && opts.declaredTools.trim() !== ''
+          ? opts.declaredTools.split(',').map((s: string) => ({ name: s.trim() })).filter((t: { name: string }) => t.name.length > 0)
+          : [];
         await runMcpScan({
           mcp: opts.mcp,
           outputPath: opts.output,
           reportDir: opts.reportDir ?? './reports',
           format: (opts.format === 'json' ? 'json' : 'markdown'),
+          verify: verifySources,
+          declaredTools,
+          ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
         });
         return;
       }

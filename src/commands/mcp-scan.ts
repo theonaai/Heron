@@ -5,12 +5,36 @@ import { MCPClient } from '../connectors/mcp-client.js';
 import type { MCPTransportConfig, ToolInventoryRecord } from '../connectors/mcp-types.js';
 import * as logger from '../util/logger.js';
 import { generateId } from '../util/id.js';
+import { runVerification } from '../verification/orchestrator.js';
+import { McpToolsSource } from '../verification/sources/mcp-tools.js';
+import { renderVerificationSection } from '../report/templates.js';
+import type {
+  DeclaredInventory,
+  DeclaredScope,
+  DeclaredTool,
+} from '../verification/types.js';
+
+/** Identifier set for sources the CLI can currently verify. */
+const KNOWN_VERIFY_SOURCES = ['mcp-tools'] as const;
+type VerifySource = typeof KNOWN_VERIFY_SOURCES[number];
 
 export interface RunMcpScanOptions {
   mcp: string;
   outputPath?: string;
   reportDir: string;
   format: 'markdown' | 'json';
+  /**
+   * Sources to run verification against. Currently the only supported value
+   * is 'mcp-tools'. When undefined/empty, verification is skipped entirely
+   * and the report is unchanged (backwards-compatible).
+   */
+  verify?: VerifySource[];
+  /** Declared tools (from interview transcript or supplied directly). */
+  declaredTools?: DeclaredTool[];
+  /** Declared scopes (reserved for OAuth-source verification, not used yet). */
+  declaredScopes?: DeclaredScope[];
+  /** Human-readable agent label for the verification report header. */
+  agentLabel?: string;
 }
 
 /**
@@ -47,9 +71,34 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     throw new Error(`MCP scan failed (${result.error.kind}): ${result.error.message}`);
   }
 
-  const rendered = opts.format === 'json'
-    ? JSON.stringify(result.value, null, 2)
-    : renderToolInventoryMarkdown(result.value);
+  // ─── Verification (AAP-48, optional) ────────────────────────────────────
+  //
+  // When --verify is set we run the verification orchestrator AGAINST THE
+  // SAME server we just scanned. Doing a second `tools/list` would be
+  // wasteful, but the MCP-tools source is cheap enough (and keeps the
+  // adapter independently testable) that the duplication is acceptable
+  // for v1. If profiling later shows it matters, we can pass the already-
+  // captured ToolInventoryRecord into the orchestrator directly.
+  let verificationMarkdown = '';
+  if (opts.verify && opts.verify.length > 0 && opts.format === 'markdown') {
+    verificationMarkdown = await runVerificationForCli({
+      transportConfig: config,
+      verifySources: opts.verify,
+      declaredTools: opts.declaredTools ?? [],
+      declaredScopes: opts.declaredScopes ?? [],
+      agentLabel: opts.agentLabel ?? label,
+    });
+  }
+
+  let rendered: string;
+  if (opts.format === 'json') {
+    rendered = JSON.stringify(result.value, null, 2);
+  } else {
+    rendered = renderToolInventoryMarkdown(result.value);
+    if (verificationMarkdown) {
+      rendered = `${rendered}\n\n---\n\n${verificationMarkdown}\n`;
+    }
+  }
 
   mkdirSync(opts.reportDir, { recursive: true });
   const ext = opts.format === 'json' ? 'json' : 'md';
@@ -63,6 +112,67 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   logger.raw('');
 
   return result.value;
+}
+
+/**
+ * Parse a comma-separated `--verify` flag value into a list of known source
+ * IDs. Throws on unknown values rather than silently ignoring them — better
+ * to fail fast than skip verification a caller asked for.
+ */
+export function parseVerifyFlag(raw: string): VerifySource[] {
+  if (!raw || raw.trim() === '') return [];
+  const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+  const out: VerifySource[] = [];
+  for (const p of parts) {
+    if ((KNOWN_VERIFY_SOURCES as readonly string[]).includes(p)) {
+      out.push(p as VerifySource);
+    } else {
+      throw new Error(
+        `Unknown --verify source: '${p}'. Known sources: ${KNOWN_VERIFY_SOURCES.join(', ')}.`,
+      );
+    }
+  }
+  return out;
+}
+
+interface RunVerificationForCliArgs {
+  transportConfig: MCPTransportConfig;
+  verifySources: VerifySource[];
+  declaredTools: DeclaredTool[];
+  declaredScopes: DeclaredScope[];
+  agentLabel: string;
+}
+
+async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<string> {
+  const declared: DeclaredInventory[] = [];
+  if (args.declaredTools.length > 0 || args.declaredScopes.length > 0) {
+    const inv: DeclaredInventory = {
+      source: 'interview',
+      capturedAt: new Date().toISOString(),
+    };
+    if (args.declaredTools.length > 0) inv.tools = args.declaredTools;
+    if (args.declaredScopes.length > 0) inv.scopes = args.declaredScopes;
+    declared.push(inv);
+  }
+
+  const sources = args.verifySources.map((id) => {
+    if (id === 'mcp-tools') {
+      return {
+        adapter: new McpToolsSource(),
+        config: { transport: args.transportConfig },
+      };
+    }
+    // Unreachable — parseVerifyFlag rejects unknowns.
+    throw new Error(`Unsupported verify source: ${id}`);
+  });
+
+  const report = await runVerification({
+    declared,
+    sources,
+    agentLabel: args.agentLabel,
+  });
+
+  return renderVerificationSection(report);
 }
 
 /**
