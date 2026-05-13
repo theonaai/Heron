@@ -1,0 +1,76 @@
+/**
+ * Verification orchestrator — wires source adapters + differ into a single
+ * `VerificationReport` for one agent.
+ *
+ * For each requested source:
+ *  - Call `adapter.read(config)`.
+ *  - On success: run `diff(declared, inventory)`; verdict is `verified`
+ *    when zero diffs, `discrepancy` otherwise.
+ *  - On failure: verdict is `unverified`; the source's error is preserved
+ *    in `SourceVerification.error` so the report renderer can surface it.
+ *
+ * Sources are read sequentially. For v1 we expect 1-3 sources per run and
+ * the cost of parallelism (entangled error handling, fan-out coordination)
+ * is not worth the latency savings. If real-world configurations grow past
+ * ~5 sources we can revisit.
+ */
+
+import { diff } from './differ.js';
+import type {
+  DeclaredInventory,
+  DeterministicSource,
+  SourceVerification,
+  VerificationReport,
+  VerificationVerdict,
+} from './types.js';
+
+export interface RunVerificationArgs {
+  declared: DeclaredInventory[];
+  sources: Array<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    adapter: DeterministicSource<any>;
+    config: unknown;
+  }>;
+  agentLabel: string;
+  /**
+   * Wall-clock override (for tests / snapshots). Defaults to `new Date()`.
+   */
+  now?: () => Date;
+}
+
+export async function runVerification(args: RunVerificationArgs): Promise<VerificationReport> {
+  const now = args.now ?? (() => new Date());
+  const capturedAt = now().toISOString();
+
+  const sourceResults: SourceVerification[] = [];
+
+  for (const { adapter, config } of args.sources) {
+    const result = await adapter.read(config);
+    if (!result.ok) {
+      sourceResults.push({
+        sourceId: adapter.id,
+        verdict: 'unverified',
+        diffs: [],
+        error: result.error,
+      });
+      continue;
+    }
+
+    const diffs = diff(args.declared, result.inventory);
+    const verdict: VerificationVerdict = diffs.length === 0 ? 'verified' : 'discrepancy';
+
+    sourceResults.push({
+      sourceId: adapter.id,
+      verdict,
+      diffs,
+      inventory: result.inventory,
+    });
+  }
+
+  return {
+    capturedAt,
+    agentLabel: args.agentLabel,
+    declared: args.declared,
+    sources: sourceResults,
+  };
+}
