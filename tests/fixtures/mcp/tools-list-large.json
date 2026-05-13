@@ -1,0 +1,1808 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "tool_000",
+        "description": "Synthetic tool number 0 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_001",
+        "description": "Synthetic tool number 1 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_002",
+        "description": "Synthetic tool number 2 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_003",
+        "description": "Synthetic tool number 3 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_004",
+        "description": "Synthetic tool number 4 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_005",
+        "description": "Synthetic tool number 5 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_006",
+        "description": "Synthetic tool number 6 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_007",
+        "description": "Synthetic tool number 7 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_008",
+        "description": "Synthetic tool number 8 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_009",
+        "description": "Synthetic tool number 9 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_010",
+        "description": "Synthetic tool number 10 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_011",
+        "description": "Synthetic tool number 11 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_012",
+        "description": "Synthetic tool number 12 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_013",
+        "description": "Synthetic tool number 13 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_014",
+        "description": "Synthetic tool number 14 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_015",
+        "description": "Synthetic tool number 15 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_016",
+        "description": "Synthetic tool number 16 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_017",
+        "description": "Synthetic tool number 17 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_018",
+        "description": "Synthetic tool number 18 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_019",
+        "description": "Synthetic tool number 19 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_020",
+        "description": "Synthetic tool number 20 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_021",
+        "description": "Synthetic tool number 21 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_022",
+        "description": "Synthetic tool number 22 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_023",
+        "description": "Synthetic tool number 23 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_024",
+        "description": "Synthetic tool number 24 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_025",
+        "description": "Synthetic tool number 25 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_026",
+        "description": "Synthetic tool number 26 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_027",
+        "description": "Synthetic tool number 27 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_028",
+        "description": "Synthetic tool number 28 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_029",
+        "description": "Synthetic tool number 29 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_030",
+        "description": "Synthetic tool number 30 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_031",
+        "description": "Synthetic tool number 31 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_032",
+        "description": "Synthetic tool number 32 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_033",
+        "description": "Synthetic tool number 33 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_034",
+        "description": "Synthetic tool number 34 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_035",
+        "description": "Synthetic tool number 35 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_036",
+        "description": "Synthetic tool number 36 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_037",
+        "description": "Synthetic tool number 37 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_038",
+        "description": "Synthetic tool number 38 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_039",
+        "description": "Synthetic tool number 39 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_040",
+        "description": "Synthetic tool number 40 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_041",
+        "description": "Synthetic tool number 41 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_042",
+        "description": "Synthetic tool number 42 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_043",
+        "description": "Synthetic tool number 43 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_044",
+        "description": "Synthetic tool number 44 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_045",
+        "description": "Synthetic tool number 45 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_046",
+        "description": "Synthetic tool number 46 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_047",
+        "description": "Synthetic tool number 47 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_048",
+        "description": "Synthetic tool number 48 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_049",
+        "description": "Synthetic tool number 49 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_050",
+        "description": "Synthetic tool number 50 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_051",
+        "description": "Synthetic tool number 51 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_052",
+        "description": "Synthetic tool number 52 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_053",
+        "description": "Synthetic tool number 53 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_054",
+        "description": "Synthetic tool number 54 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_055",
+        "description": "Synthetic tool number 55 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_056",
+        "description": "Synthetic tool number 56 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_057",
+        "description": "Synthetic tool number 57 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_058",
+        "description": "Synthetic tool number 58 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_059",
+        "description": "Synthetic tool number 59 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_060",
+        "description": "Synthetic tool number 60 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_061",
+        "description": "Synthetic tool number 61 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_062",
+        "description": "Synthetic tool number 62 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_063",
+        "description": "Synthetic tool number 63 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_064",
+        "description": "Synthetic tool number 64 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_065",
+        "description": "Synthetic tool number 65 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_066",
+        "description": "Synthetic tool number 66 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_067",
+        "description": "Synthetic tool number 67 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_068",
+        "description": "Synthetic tool number 68 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_069",
+        "description": "Synthetic tool number 69 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_070",
+        "description": "Synthetic tool number 70 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_071",
+        "description": "Synthetic tool number 71 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_072",
+        "description": "Synthetic tool number 72 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_073",
+        "description": "Synthetic tool number 73 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_074",
+        "description": "Synthetic tool number 74 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_075",
+        "description": "Synthetic tool number 75 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_076",
+        "description": "Synthetic tool number 76 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_077",
+        "description": "Synthetic tool number 77 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_078",
+        "description": "Synthetic tool number 78 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_079",
+        "description": "Synthetic tool number 79 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_080",
+        "description": "Synthetic tool number 80 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_081",
+        "description": "Synthetic tool number 81 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_082",
+        "description": "Synthetic tool number 82 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_083",
+        "description": "Synthetic tool number 83 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_084",
+        "description": "Synthetic tool number 84 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_085",
+        "description": "Synthetic tool number 85 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_086",
+        "description": "Synthetic tool number 86 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_087",
+        "description": "Synthetic tool number 87 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_088",
+        "description": "Synthetic tool number 88 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_089",
+        "description": "Synthetic tool number 89 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_090",
+        "description": "Synthetic tool number 90 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_091",
+        "description": "Synthetic tool number 91 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_092",
+        "description": "Synthetic tool number 92 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_093",
+        "description": "Synthetic tool number 93 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_094",
+        "description": "Synthetic tool number 94 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_095",
+        "description": "Synthetic tool number 95 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_096",
+        "description": "Synthetic tool number 96 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_097",
+        "description": "Synthetic tool number 97 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_098",
+        "description": "Synthetic tool number 98 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_099",
+        "description": "Synthetic tool number 99 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_100",
+        "description": "Synthetic tool number 100 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_101",
+        "description": "Synthetic tool number 101 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_102",
+        "description": "Synthetic tool number 102 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_103",
+        "description": "Synthetic tool number 103 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_104",
+        "description": "Synthetic tool number 104 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_105",
+        "description": "Synthetic tool number 105 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_106",
+        "description": "Synthetic tool number 106 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_107",
+        "description": "Synthetic tool number 107 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_108",
+        "description": "Synthetic tool number 108 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_109",
+        "description": "Synthetic tool number 109 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_110",
+        "description": "Synthetic tool number 110 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_111",
+        "description": "Synthetic tool number 111 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_112",
+        "description": "Synthetic tool number 112 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_113",
+        "description": "Synthetic tool number 113 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_114",
+        "description": "Synthetic tool number 114 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_115",
+        "description": "Synthetic tool number 115 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_116",
+        "description": "Synthetic tool number 116 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_117",
+        "description": "Synthetic tool number 117 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_118",
+        "description": "Synthetic tool number 118 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      },
+      {
+        "name": "tool_119",
+        "description": "Synthetic tool number 119 for performance fixture.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "arg": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg"
+          ]
+        }
+      }
+    ]
+  }
+}

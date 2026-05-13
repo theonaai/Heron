@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      { "name": "ping", "description": "No-arg liveness check." },
+      { "name": "whoami", "description": "Return the calling user identity." }
+    ]
+  }
+}

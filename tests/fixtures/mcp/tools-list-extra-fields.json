@@ -1,0 +1,20 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "issue_create",
+        "description": "Create a Jira issue.",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "project": { "type": "string" }, "summary": { "type": "string" } },
+          "required": ["project", "summary"]
+        },
+        "annotations": { "destructiveHint": false },
+        "x-vendor-rate-limit": "10/min",
+        "x-vendor-cost-credits": 3
+      }
+    ]
+  }
+}
