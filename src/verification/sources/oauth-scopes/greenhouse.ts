@@ -258,12 +258,22 @@ type ProbeOutcome =
   | { kind: 'server-error'; status: number };
 
 async function runProbe(http: HttpClient, url: string, authHeader: string): Promise<ProbeOutcome> {
+  // F-2 (PR #16 round 2): manual redirect handling to prevent SSRF
+  // guard bypass via redirect chains. Default `redirect: 'follow'`
+  // would re-send the `Authorization: Basic <base64>` header to a
+  // 3xx Location target. An attacker controlling a host that passes
+  // the SSRF policy check (e.g. a public domain pointed at by
+  // HERON_GREENHOUSE_BASE_URL) could redirect to
+  // `http://169.254.169.254/` and harvest credentials via cloud
+  // metadata, defeating `validateTargetEndpoint`. With manual
+  // redirect, any 3xx is treated as a probe failure here.
   const res = await http(url, {
     method: 'GET',
     headers: {
       'Authorization': authHeader,
       'Accept': 'application/json',
     },
+    redirect: 'manual',
   });
   if (res.status >= 200 && res.status < 300) {
     return { kind: 'ok', status: res.status };
@@ -271,6 +281,8 @@ async function runProbe(http: HttpClient, url: string, authHeader: string): Prom
   if (res.status === 401 || res.status === 403) {
     return { kind: 'auth-error', status: res.status };
   }
+  // 3xx falls through to server-error — see F-2 note above. A redirect
+  // is a probe failure, not a successful scope discovery.
   return { kind: 'server-error', status: res.status };
 }
 
