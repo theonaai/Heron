@@ -20,6 +20,7 @@ program
   .description('Interrogate an agent by connecting to its API')
   .option('-t, --target <url>', 'Target agent URL (OpenAI-compatible chat API)')
   .option('--target-type <type>', 'Connection type: http or interactive', 'http')
+  .option('--mcp <config>', 'Connect to an MCP server (JSON config, http(s):// URL, or stdio:<command [args...]>) and emit a tool inventory report')
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
@@ -31,8 +32,24 @@ program
   .option('-v, --verbose', 'Show detailed interview progress')
   .action(async (opts) => {
     try {
+      if (opts.mcp) {
+        // AAP-46 Role A: MCP transport replaces the OpenAI-compatible HTTP
+        // path. The interrogation pipeline is bypassed because MCP servers
+        // do not speak chat — instead we read tools/list and emit a
+        // tool-inventory report. Role B (heron mcp-serve) is in a follow-up
+        // PR; see src/connectors/mcp-types.ts and Linear AAP-46.
+        const { runMcpScan } = await import('../src/commands/mcp-scan.js');
+        await runMcpScan({
+          mcp: opts.mcp,
+          outputPath: opts.output,
+          reportDir: opts.reportDir ?? './reports',
+          format: (opts.format === 'json' ? 'json' : 'markdown'),
+        });
+        return;
+      }
+
       if (!opts.target && !opts.config && opts.targetType !== 'interactive') {
-        console.error('Either --target <url>, --config <path>, or --target-type interactive is required');
+        console.error('Either --target <url>, --config <path>, --target-type interactive, or --mcp <config> is required');
         process.exit(1);
       }
 
