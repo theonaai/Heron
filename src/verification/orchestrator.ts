@@ -18,10 +18,12 @@
 import { diff } from './differ.js';
 import type {
   ActualInventory,
+  ActualScope,
   ActualTool,
   DeclaredInventory,
   DeterministicSource,
   DeterministicSourceError,
+  DiffEntry,
   SourceVerification,
   VerificationReport,
   VerificationVerdict,
@@ -101,6 +103,12 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
  * those blobs do not flow into AAP-49's planned JSON export, the
  * approval audit trail, or any other serialised artefact.
  *
+ * N5 (PR #15 round 4): the diff path also carries `_extra` —
+ * `differ.cloneActualTool` defensively copies it into every
+ * `DiffEntry.actual` (both `kind: 'extra'` and `kind: 'mismatch'`),
+ * so the round-3 inventory-side strip alone was not enough. The strip
+ * is now applied symmetrically to diff entries too.
+ *
  * The current Markdown renderer never emits `cause` or `_extra`, but
  * AAP-49 plans a JSON export of the same report and any future
  * serialisation must route through this helper so neither field leaks.
@@ -110,8 +118,10 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
  *
  * Returns a deep-enough-cloned report:
  *   - Every source's `error.cause` is removed.
- *   - Every tool's `_extra` is removed (inventory itself is cloned
- *     down to the tools array; the original report stays unmutated).
+ *   - Every tool's `_extra` is removed from `sources[*].inventory.tools`.
+ *   - Every tool's `_extra` is removed from
+ *     `sources[*].diffs[*].actual` (when the diff carries an `actual`).
+ *   - Original report stays unmutated.
  */
 export function toSafeJSON(report: VerificationReport): VerificationReport {
   return {
@@ -129,6 +139,7 @@ export function toSafeJSON(report: VerificationReport): VerificationReport {
       if (s.inventory) {
         cloned.inventory = stripInventoryExtras(s.inventory);
       }
+      cloned.diffs = s.diffs.map(stripDiffEntryExtras);
       return cloned;
     }),
   };
@@ -152,4 +163,41 @@ function stripInventoryExtras(inventory: ActualInventory): ActualInventory {
     return rest;
   });
   return { ...inventory, tools };
+}
+
+/**
+ * N5: return a copy of a `DiffEntry` with `_extra` stripped from the
+ * `actual` field when present. Only `kind: 'extra'` and
+ * `kind: 'mismatch'` carry `actual`; `missing` has none and passes
+ * through untouched. Scope-dimension diffs carry an `ActualScope`
+ * which has no `_extra` field at the type level — we still narrow on
+ * the `dimension` so the destructure stays well-typed and a future
+ * widening of `ActualScope` cannot silently leak.
+ */
+function stripDiffEntryExtras(entry: DiffEntry): DiffEntry {
+  if (entry.kind === 'missing') return entry;
+  if (entry.dimension !== 'tool') {
+    // Scope-dimension diff. `actual` is `ActualScope` — no `_extra`.
+    // Re-emit a shallow clone so the rest of the diff is also a copy.
+    return entry.kind === 'extra'
+      ? { ...entry, actual: { ...(entry.actual as ActualScope) } }
+      : {
+          ...entry,
+          actual: { ...(entry.actual as ActualScope) },
+          declared: { ...entry.declared },
+        };
+  }
+  const actual = entry.actual as ActualTool;
+  if (actual._extra === undefined) {
+    // Still re-emit a shallow clone so caller sees an independent object.
+    return entry.kind === 'extra'
+      ? { ...entry, actual: { ...actual } }
+      : { ...entry, actual: { ...actual }, declared: { ...entry.declared } };
+  }
+  const { _extra: _drop, ...rest } = actual;
+  void _drop;
+  const cleanedActual: ActualTool = rest;
+  return entry.kind === 'extra'
+    ? { ...entry, actual: cleanedActual }
+    : { ...entry, actual: cleanedActual, declared: { ...entry.declared } };
 }
