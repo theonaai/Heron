@@ -29,37 +29,57 @@ import {
   readGreenhouseScopes,
   type HttpClient as GreenhouseHttpClient,
 } from './oauth-scopes/greenhouse.js';
+import {
+  readBambooHRScopes,
+  type HttpClient as BambooHRHttpClient,
+} from './oauth-scopes/bamboohr.js';
 import type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
 
 export type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
 
 /**
- * Test-only HTTP client override.
+ * Test-only HTTP client overrides.
  *
- * Set this from tests via `__setGreenhouseHttpClientForTesting(stub)`
- * to redirect the Greenhouse connector's fetch calls. Clearing it
- * (passing `undefined`) restores the default `globalThis.fetch`.
+ * Set these from tests to redirect a connector's fetch calls.
+ * Clearing them (passing `undefined`) restores the default
+ * `globalThis.fetch`.
  *
- * This is INTENTIONALLY a module-level variable rather than a config
- * field on `OAuthScopesSourceConfig`: the CLI path doesn't know
+ * These are INTENTIONALLY module-level variables rather than config
+ * fields on `OAuthScopesSourceConfig`: the CLI path doesn't know
  * about `httpClient`, so we cannot funnel it through the config
  * shape without growing a CLI-test footgun. Module-level testing
- * hook is honest about its purpose.
+ * hooks are honest about their purpose.
+ *
+ * `HttpClient` is structurally the same signature for every
+ * connector (`(url, init?) => Promise<Response>`), so a single
+ * "any HTTP client" type alias would technically suffice — we keep
+ * separate overrides per connector so a test for connector A cannot
+ * accidentally redirect a probe issued by connector B.
  */
-let testHttpClientOverride: GreenhouseHttpClient | undefined;
+let testGreenhouseHttpClient: GreenhouseHttpClient | undefined;
+let testBambooHRHttpClient: BambooHRHttpClient | undefined;
 
 /** @internal test-only — DO NOT use in production code. */
 export function __setGreenhouseHttpClientForTesting(client: GreenhouseHttpClient | undefined): void {
-  testHttpClientOverride = client;
+  testGreenhouseHttpClient = client;
+}
+
+/** @internal test-only — DO NOT use in production code. */
+export function __setBambooHRHttpClientForTesting(client: BambooHRHttpClient | undefined): void {
+  testBambooHRHttpClient = client;
 }
 
 export interface OAuthScopesSourceOptions {
   /**
-   * Optional injected HTTP client — bypasses `globalThis.fetch`.
-   * Primarily used by tests. CLI paths leave this undefined and let
-   * the test-only `__setGreenhouseHttpClientForTesting` setter
-   * override `globalThis.fetch` instead, because CLI flag parsing
-   * does not propagate object fields through Commander.
+   * Optional injected HTTP client — bypasses `globalThis.fetch` for
+   * every connector this adapter dispatches to. Primarily used by
+   * tests. CLI paths leave this undefined and let the per-connector
+   * `__set<Connector>HttpClientForTesting` setters override
+   * `globalThis.fetch` instead, because CLI flag parsing does not
+   * propagate object fields through Commander.
+   *
+   * Single signature works for every connector because the
+   * connector-side `HttpClient` types are structurally identical.
    */
   httpClient?: GreenhouseHttpClient;
 }
@@ -86,7 +106,7 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
     }
 
     if (validation.config.connector === 'greenhouse') {
-      const httpClient = this.httpClient ?? testHttpClientOverride;
+      const httpClient = this.httpClient ?? testGreenhouseHttpClient;
       const result = await readGreenhouseScopes({
         apiKey: validation.config.credentials.apiKey,
         ...(httpClient !== undefined ? { httpClient } : {}),
@@ -106,17 +126,22 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
     }
 
     if (validation.config.connector === 'bamboohr') {
-      // Implementation lands in commit 3. The type discriminator
-      // already exists so call sites can be written against the final
-      // shape; this branch is RED until the implementation arrives.
-      return {
-        ok: false,
-        error: { kind: 'invalid_config', message: 'bamboohr connector not implemented yet' },
-      };
+      const httpClient = this.httpClient ?? testBambooHRHttpClient;
+      const result = await readBambooHRScopes({
+        apiKey: validation.config.credentials.apiKey,
+        subdomain: validation.config.credentials.subdomain,
+        ...(httpClient !== undefined ? { httpClient } : {}),
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error };
+      }
+      return result.warnings !== undefined && result.warnings.length > 0
+        ? { ok: true, inventory: result.inventory, warnings: result.warnings }
+        : { ok: true, inventory: result.inventory };
     }
 
-    // Unreachable when both connectors are handled above — the
-    // exhaustiveness check guards future widening.
+    // Unreachable when every connector variant is handled above —
+    // the exhaustiveness check guards future widening.
     const _exhaustive: never = validation.config;
     void _exhaustive;
     return {

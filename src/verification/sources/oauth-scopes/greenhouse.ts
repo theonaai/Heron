@@ -35,6 +35,11 @@ import type {
   ActualScope,
   DeterministicSourceError,
 } from '../../types.js';
+import {
+  scrubCauseValue,
+  scrubCredentials,
+  scrubMessage as scrubErrorMessage,
+} from './scrub.js';
 
 /**
  * Default Greenhouse Harvest base URL. The trailing slash matters:
@@ -380,62 +385,28 @@ function buildBasicAuthHeader(apiKey: string): string {
 }
 
 /**
- * Strip the API key out of any string that may have echoed it back.
- *
- * Defensive scrub: even if the transport layer's error message
- * includes the bearer/basic token verbatim, we never propagate it.
+ * Greenhouse-specific Basic-Auth password: empty string.
+ * BambooHR uses `'x'`; Greenhouse uses `''`. Carried through to the
+ * shared scrub helper so the right `base64(<key>:<pwd>)` form is
+ * redacted from echoed transport errors.
  */
+const GREENHOUSE_BASIC_AUTH_OPTIONS = { basicAuthPassword: '' };
+
 function scrubMessage(err: unknown, apiKey: string): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return scrub(raw, apiKey);
+  return scrubErrorMessage(err, apiKey, GREENHOUSE_BASIC_AUTH_OPTIONS);
 }
 
 function scrubCause(err: unknown, apiKey: string): unknown {
-  if (err instanceof Error) {
-    // Construct a fresh Error so the cause has a clean message and
-    // does not retain a reference to the original (which may carry
-    // request bodies / headers in the stack).
-    const scrubbed = new Error(scrub(err.message, apiKey));
-    scrubbed.name = err.name;
-    return scrubbed;
-  }
-  return scrub(String(err), apiKey);
+  return scrubCauseValue(err, apiKey, GREENHOUSE_BASIC_AUTH_OPTIONS);
 }
 
 /**
- * F-5 (PR #16 round 2): safety gate — never redact keys shorter than
- * `SCRUB_MIN_KEY_LENGTH`. A 1-char or 2-char string would otherwise
- * eat every occurrence of itself in unrelated log text. validateConfig
- * already enforces >= 16 chars, but scrub() is the last line of
- * defence: if a future caller bypasses validation, scrub() still
- * refuses to do collateral damage.
- *
- * 8 is comfortably below the 16-char validation minimum AND above
- * any plausible English word or short identifier that could appear
- * verbatim in an error message.
- */
-const SCRUB_MIN_KEY_LENGTH = 8;
-
-function scrub(value: string, apiKey: string): string {
-  if (!apiKey || apiKey.length < SCRUB_MIN_KEY_LENGTH) return value;
-  // Replace the raw key AND any base64-encoded form (the Basic Auth
-  // header value), since transport errors sometimes echo the header.
-  const b64 = Buffer.from(`${apiKey}:`, 'utf-8').toString('base64');
-  let out = value;
-  // Use split/join (not regex) so an apiKey containing regex
-  // metacharacters does not break the scrub.
-  while (out.includes(apiKey)) out = out.split(apiKey).join('[REDACTED]');
-  while (out.includes(b64)) out = out.split(b64).join('[REDACTED]');
-  return out;
-}
-
-/**
- * Test-only re-export of `scrub` so the F-5 unit tests can verify the
- * safety gate directly. Not intended for production callers — the only
- * production scrub path is the one inside this module.
+ * Test-only re-export of the scrub helper so the F-5 unit tests can
+ * verify the safety gate directly. Greenhouse callers always go
+ * through the module-private `scrubMessage` / `scrubCause` above.
  */
 export function scrubForTesting(value: string, apiKey: string): string {
-  return scrub(value, apiKey);
+  return scrubCredentials(value, apiKey, GREENHOUSE_BASIC_AUTH_OPTIONS);
 }
 
 /**
