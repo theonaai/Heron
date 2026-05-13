@@ -17,6 +17,8 @@
 
 import { diff } from './differ.js';
 import type {
+  ActualInventory,
+  ActualTool,
   DeclaredInventory,
   DeterministicSource,
   DeterministicSourceError,
@@ -91,27 +93,63 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
  * possibly credentialed URLs if a lower-level transport echoes them.
  * It is intentionally internal-only.
  *
- * The current Markdown renderer never emits `cause`, but AAP-49 plans
- * a JSON export of the same report and any future serialisation must
- * route through this helper so `cause` cannot leak.
+ * N2 (PR #15 round 3): `ActualTool._extra` preserves unknown
+ * server-supplied fields verbatim for forward compatibility. A hostile
+ * MCP server can push arbitrarily large or arbitrarily shaped blobs
+ * through `_extra`. We keep it internally (the differ may eventually
+ * grow vendor-aware comparisons) but strip it on safe-json export so
+ * those blobs do not flow into AAP-49's planned JSON export, the
+ * approval audit trail, or any other serialised artefact.
+ *
+ * The current Markdown renderer never emits `cause` or `_extra`, but
+ * AAP-49 plans a JSON export of the same report and any future
+ * serialisation must route through this helper so neither field leaks.
  *
  * Usage:
  *   JSON.stringify(toSafeJSON(report))
  *
- * Returns a shallow-cloned report with every source's `error.cause`
- * removed. The input report is not mutated.
+ * Returns a deep-enough-cloned report:
+ *   - Every source's `error.cause` is removed.
+ *   - Every tool's `_extra` is removed (inventory itself is cloned
+ *     down to the tools array; the original report stays unmutated).
  */
 export function toSafeJSON(report: VerificationReport): VerificationReport {
   return {
     ...report,
     sources: report.sources.map((s) => {
-      if (!s.error) return s;
-      const safeError: DeterministicSourceError = {
-        kind: s.error.kind,
-        message: s.error.message,
-        // `cause` deliberately omitted — see F-3 note above.
-      };
-      return { ...s, error: safeError };
+      const cloned: SourceVerification = { ...s };
+      if (s.error) {
+        const safeError: DeterministicSourceError = {
+          kind: s.error.kind,
+          message: s.error.message,
+          // `cause` deliberately omitted — see F-3 note above.
+        };
+        cloned.error = safeError;
+      }
+      if (s.inventory) {
+        cloned.inventory = stripInventoryExtras(s.inventory);
+      }
+      return cloned;
     }),
   };
+}
+
+/**
+ * N2: return a copy of `inventory` with `_extra` stripped from every
+ * tool. The inventory itself is shallow-cloned; tools is replaced with
+ * a fresh array of stripped tool objects. Original inventory is not
+ * mutated. Annotations are passed by reference — they are server-
+ * controlled keys but the differ already trusts that shape; AAP-49
+ * routing will reshape annotations separately when it lands.
+ */
+function stripInventoryExtras(inventory: ActualInventory): ActualInventory {
+  if (!inventory.tools) return inventory;
+  const tools = inventory.tools.map<ActualTool>((t) => {
+    if (t._extra === undefined) return t;
+    // Destructure to drop `_extra` cleanly without mutating the input.
+    const { _extra: _drop, ...rest } = t;
+    void _drop;
+    return rest;
+  });
+  return { ...inventory, tools };
 }

@@ -82,7 +82,15 @@ export interface ActualTool {
   description?: string;
   /** Server-supplied behaviour hints (readOnlyHint, destructiveHint, …). */
   annotations?: Record<string, unknown>;
-  /** Forward-compat: unknown server fields preserved verbatim. */
+  /**
+   * Forward-compat: unknown server fields preserved verbatim.
+   *
+   * **Internal-only — never serialise.** Hostile MCP servers can push
+   * arbitrarily large or arbitrarily shaped blobs through this field.
+   * Route all serialisation through `toSafeJSON` (see `orchestrator.ts`)
+   * which strips `_extra` to bound server-controlled output.
+   * Tracking: PR #15 round 3, finding N2.
+   */
   _extra?: Record<string, unknown>;
 }
 
