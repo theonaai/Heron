@@ -87,6 +87,60 @@ describe('escapeInlineCode', () => {
   it('returns plain text unchanged when no metacharacters are present', () => {
     expect(escapeInlineCode('hello')).toBe('hello');
   });
+
+  // ─── N1 round 4: parity with truncateControlChars ────────────────────
+  //
+  // Round 3 widened `truncateControlChars` to strip U+2028, U+2029, DEL,
+  // and the C1 block. `escapeInlineCode` is the parallel defence used at
+  // render time — applied to every backtick-wrapped value in both
+  // `renderVerificationSection` (round 2) and `renderToolInventoryMarkdown`
+  // (round 4 cluster 1). Inventory data flows through
+  // `escapeInlineCode`, NOT `truncateControlChars`. If the strip set
+  // differs, the same hostile payload still injects on the render path
+  // even though the error-message path is clean.
+  //
+  // Contract: `escapeInlineCode` must strip the same control-char set
+  // as `truncateControlChars` (minus the truncate-to-length step, which
+  // is render-irrelevant — inline code that's "too long" is a layout
+  // problem, not a security problem).
+
+  it('strips U+2028 (LINE SEPARATOR) so it cannot inject a new line in the code span', () => {
+    // Without the strip, a hostile name like `safe<U+2028>## PWNED`
+    // re-opens the F-1 heading-injection vector in any HTML renderer
+    // that honours U+2028 as a line break (Marked with `breaks: true`,
+    // innerHTML consumers).
+    expect(escapeInlineCode('safe ## PWNED')).toBe('safe  ## PWNED');
+  });
+
+  it('strips U+2029 (PARAGRAPH SEPARATOR)', () => {
+    expect(escapeInlineCode('safe ## PWNED')).toBe('safe  ## PWNED');
+  });
+
+  it('strips \\x7f (DEL)', () => {
+    expect(escapeInlineCode('a\x7fb')).toBe('a b');
+  });
+
+  it('strips \\x85 (NEL — C1 next line)', () => {
+    expect(escapeInlineCode('a\x85b')).toBe('a b');
+  });
+
+  it('strips \\x9f (top of C1 controls)', () => {
+    expect(escapeInlineCode('a\x9fb')).toBe('a b');
+  });
+
+  it('strips \\x80 (bottom of C1 controls)', () => {
+    expect(escapeInlineCode('a\x80b')).toBe('a b');
+  });
+
+  it('strips the full ASCII C0 range (\\x00-\\x1f) — superset of the original CR/LF strip', () => {
+    expect(escapeInlineCode('a\x00\x01\x09\x1eb')).toBe('a    b');
+  });
+
+  it('preserves printable Unicode (emoji, CJK, accented Latin)', () => {
+    // Regression guard: the widened strip must not eat legitimate
+    // non-ASCII content (a CJK tool name, an emoji label).
+    expect(escapeInlineCode('café 漢字 🐦')).toBe('café 漢字 🐦');
+  });
 });
 
 describe('escapeTableCell', () => {
