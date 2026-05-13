@@ -310,11 +310,13 @@ async function runProbe(
   // the entire verification run. AbortError is caught at the call
   // site and surfaced as a `timeout` warning / error.
   //
-  // NOTE (F-4 deferred): the response body is currently discarded —
-  // only `res.status` is inspected. If a future revision parses the
-  // body, add a size cap (e.g. 1 MiB) and reject over-bound responses
-  // here, since `AbortSignal.timeout` does not bound the body-read
-  // phase by default. See F-4 in the PR #16 security audit.
+  // NOTE: Response body is currently discarded (only status code is read).
+  // If future code parses the body, add a size cap (e.g., 1 MiB) and reject
+  // over-bound responses. AbortSignal.timeout does not bound the body-read
+  // phase by default, so a hostile / oversized body could otherwise stream
+  // arbitrarily long. Track via Linear AAP-48 follow-up; see F-4 in the
+  // PR #16 security audit (deferred — latent today, no exploit path while
+  // we read only `res.status`).
   const res = await http(url, {
     method: 'GET',
     headers: {
