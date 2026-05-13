@@ -26,7 +26,7 @@ import type {
   ToolInventoryRecord,
 } from '../../connectors/mcp-types.js';
 import { validateTargetEndpoint } from '../../connectors/url-policy.js';
-import { truncateControlChars } from '../../util/markdown-escape.js';
+import { stripControlChars, truncateControlChars } from '../../util/markdown-escape.js';
 import type {
   ActualInventory,
   ActualTool,
@@ -160,21 +160,102 @@ function translateErrorKind(kind: MCPClientErrorKind): DeterministicSourceErrorK
 }
 
 /**
+ * Architectural chokepoint (PR #15 round 4): byte bound on `_extra` JSON.
+ *
+ * Hostile MCP servers can push arbitrarily large blobs through the
+ * forward-compat `_extra` field. Round-3 closed the inventory-side
+ * leak via `toSafeJSON`; round-4 closed the diff-side leak. Both are
+ * downstream defences. The chokepoint here makes the input data
+ * already safe so future renderers / serialisers (AAP-49 JSON export,
+ * AAP-51 vertical pack) cannot accidentally re-expose the blob.
+ *
+ * 4 KB picked deliberately: large enough for any plausible vendor
+ * forward-compat field (a few key/value pairs, a small object), small
+ * enough that ten thousand tools cannot blow up memory on a single
+ * scan. Bound is on `JSON.stringify(_extra).length` (UTF-16 code-unit
+ * length) — close to byte size for ASCII content, conservative for
+ * multi-byte content (a multi-byte-heavy `_extra` will hit the bound
+ * sooner than its UTF-8 byte size suggests, which is fine).
+ *
+ * Past the bound: replace `_extra` with `{__truncated: true,
+ * originalSize: <length>}` so consumers see a typed
+ * `Record<string, unknown>` plus a clear sentinel they can branch on.
+ * Forward-compat semantics are preserved: under-bound `_extra` values
+ * pass through verbatim.
+ */
+export const MAX_EXTRA_JSON_SIZE = 4096;
+
+/**
+ * Architectural chokepoint (PR #15 round 4): normalise an `ActualTool`
+ * at the source boundary so downstream renderers / serialisers inherit
+ * clean data without having to call escape helpers at every site.
+ *
+ * Strips control characters (ASCII C0 `\x00-\x1f`, DEL `\x7f`, C1
+ * `\x80-\x9f`, U+2028, U+2029) from `name` and `description` using
+ * `stripControlChars` from `util/markdown-escape.ts`. Stripped — not
+ * replaced with a space — because `name` is a primary key rendered as
+ * inline code; preserving its printable shape matters more than
+ * preserving the original byte length.
+ *
+ * Bounds `_extra` by `MAX_EXTRA_JSON_SIZE` JSON-stringify length.
+ * Past the bound, the field becomes `{__truncated: true,
+ * originalSize: <length>}` so the typed shape is preserved.
+ *
+ * Leaves `annotations` alone — it has a typed shape and is consumed
+ * by AAP-49's planned compliance routing, which will reshape it.
+ *
+ * Never mutates the input — returns a fresh object.
+ *
+ * Renderers (`renderToolInventoryMarkdown`, `renderVerificationSection`)
+ * keep their `escapeInlineCode` / `escapeText` calls for defence in
+ * depth. `toSafeJSON` keeps stripping `_extra` for the serialisation
+ * boundary. The combination — clean data IN + escape helpers + safe
+ * serialisation — means a new renderer added in AAP-49 / AAP-51 does
+ * not have to remember the full set of escape rules to stay safe.
+ */
+export function normalizeActualTool(tool: ActualTool): ActualTool {
+  const out: ActualTool = { name: stripControlChars(tool.name) };
+  if (tool.description !== undefined) {
+    out.description = stripControlChars(tool.description);
+  }
+  if (tool.annotations !== undefined) {
+    out.annotations = { ...tool.annotations };
+  }
+  if (tool._extra !== undefined) {
+    const serialised = JSON.stringify(tool._extra);
+    if (serialised.length <= MAX_EXTRA_JSON_SIZE) {
+      // Under-bound: forward-compat content survives intact. Clone so a
+      // downstream consumer cannot mutate our copy by reference.
+      out._extra = { ...tool._extra };
+    } else {
+      out._extra = { __truncated: true, originalSize: serialised.length };
+    }
+  }
+  return out;
+}
+
+/**
  * Shape-map a Role A `ToolInventoryRecord` into the verification engine's
  * `ActualInventory`. The two shapes are intentionally close but not
  * identical — `ToolInventoryRecord` carries Role A transport metadata
  * (server label, serverInfo handshake) that the verification engine does
  * not consume. The mapping drops those fields rather than widening
  * `ActualInventory` to absorb every source's quirks.
+ *
+ * Round 4 chokepoint: every tool runs through `normalizeActualTool`
+ * before it enters `ActualInventory`. Downstream code (differ,
+ * renderers, serialisers) sees data that's already had control chars
+ * stripped from `name`/`description` and `_extra` bounded to
+ * `MAX_EXTRA_JSON_SIZE`. The escape helpers and `toSafeJSON` stripping
+ * remain in place as defence in depth.
  */
 function shapeInventory(rec: ToolInventoryRecord): ActualInventory {
-  const tools: ActualTool[] = rec.tools.map((t) => {
-    const out: ActualTool = { name: t.name };
-    if (t.description !== undefined) out.description = t.description;
-    if (t.annotations !== undefined) out.annotations = { ...t.annotations };
-    if (t._extra !== undefined) out._extra = { ...t._extra };
-    return out;
-  });
+  const tools: ActualTool[] = rec.tools.map((t) => normalizeActualTool({
+    name: t.name,
+    ...(t.description !== undefined ? { description: t.description } : {}),
+    ...(t.annotations !== undefined ? { annotations: t.annotations } : {}),
+    ...(t._extra !== undefined ? { _extra: t._extra } : {}),
+  }));
   return {
     source: 'mcp-tools',
     capturedAt: rec.capturedAt,

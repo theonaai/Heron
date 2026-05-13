@@ -146,6 +146,32 @@ export function escapeTableCell(value: string): string {
 }
 
 /**
+ * Strip the full control-character / line-separator set without any
+ * length truncation. Same character class as `truncateControlChars`
+ * (ASCII C0 `\x00-\x1f`, DEL `\x7f`, C1 `\x80-\x9f`, U+2028, U+2029),
+ * but the strip is non-lossy on the length axis — callers can keep
+ * arbitrarily long content and apply their own bound separately.
+ *
+ * Round 4 chokepoint: `normalizeActualTool` (in
+ * `verification/sources/mcp-tools.ts`) uses this on tool `name` and
+ * `description` at the source boundary, so every downstream renderer
+ * and serialiser inherits clean data without having to remember which
+ * escape helper to call. Renderers keep their helpers as defence-in-
+ * depth, but the data is already safe.
+ *
+ * Stripped — not replaced with a space — because the primary use site
+ * is `ActualTool.name` (rendered as inline-code primary key in
+ * Markdown). Collapsing to spaces would corrupt a name like
+ * `list_files` if it ever contained a literal C0 byte; stripping
+ * preserves the printable shape. The marker that an attacker tried
+ * to push (`## INJECTED`) still survives in the output, just not on
+ * a fresh line.
+ */
+export function stripControlChars(value: string): string {
+  return value.replace(CONTROL_CHAR_REGEX, '');
+}
+
+/**
  * Hygiene wrapper for operator- or server-supplied strings echoed into
  * error messages. Strips ASCII C0 controls (`\x00-\x1f`), DEL (`\x7f`),
  * C1 controls (`\x80-\x9f`), and the Unicode line separators U+2028 /
@@ -157,7 +183,7 @@ export function truncateControlChars(
   value: string,
   maxLen: number = DEFAULT_MAX_LEN,
 ): string {
-  const stripped = value.replace(CONTROL_CHAR_REGEX, '');
+  const stripped = stripControlChars(value);
   if (stripped.length <= maxLen) return stripped;
   return stripped.slice(0, maxLen);
 }

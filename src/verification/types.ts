@@ -78,7 +78,29 @@ export interface ActualInventory {
 }
 
 export interface ActualTool {
+  /**
+   * Post-sanitisation tool primary key.
+   *
+   * Round 4 chokepoint: every `ActualTool` that originated from an
+   * external source (MCP server, OAuth provider, agent declaration)
+   * goes through `normalizeActualTool` at the source boundary, which
+   * strips ASCII C0, DEL, C1, and U+2028 / U+2029 from this field.
+   * Downstream code may treat `name` as control-char-free — renderers
+   * still call `escapeInlineCode` as defence in depth, but the data is
+   * already safe at the boundary. See
+   * `verification/sources/mcp-tools.ts`.
+   */
   name: string;
+  /**
+   * Post-sanitisation tool description.
+   *
+   * Same chokepoint as `name`: stripped of ASCII C0, DEL, C1, and
+   * U+2028 / U+2029 at the source boundary. Renderers continue to
+   * apply `escapeText` for the Markdown-metacharacter defence (HTML,
+   * links, images, pipes), which the chokepoint does NOT cover — the
+   * chokepoint targets the control-flow class of bug, render-layer
+   * escapes target the structural-injection class.
+   */
   description?: string;
   /** Server-supplied behaviour hints (readOnlyHint, destructiveHint, …). */
   annotations?: Record<string, unknown>;
@@ -89,7 +111,18 @@ export interface ActualTool {
    * arbitrarily large or arbitrarily shaped blobs through this field.
    * Route all serialisation through `toSafeJSON` (see `orchestrator.ts`)
    * which strips `_extra` to bound server-controlled output.
-   * Tracking: PR #15 round 3, finding N2.
+   *
+   * Round 4 chokepoint additionally caps the byte size of `_extra` at
+   * the source boundary — see `MAX_EXTRA_JSON_SIZE` in
+   * `verification/sources/mcp-tools.ts`. Over-bound `_extra` becomes
+   * `{__truncated: true, originalSize: <bytes>}` so the typed shape
+   * survives and downstream code can branch on `__truncated`. The
+   * field still exists for forward-compat; under-bound content passes
+   * through.
+   *
+   * Tracking: PR #15 round 3 finding N2 (inventory leak), round 4
+   * finding N5 (diff leak), round 4 architectural chokepoint (4 KB
+   * bound at boundary).
    */
   _extra?: Record<string, unknown>;
 }
