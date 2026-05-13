@@ -1,0 +1,74 @@
+{
+  "server": "golden-fixture",
+  "tools": [
+    {
+      "name": "search_jobs",
+      "description": "Search the company's open job requisitions in Greenhouse.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Free-text search query"
+          },
+          "department": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "get_candidate",
+      "description": "Fetch a single candidate record by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "list_offers",
+      "description": "List offers attached to a candidate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "candidateId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidateId"
+        ]
+      }
+    },
+    {
+      "name": "advance_stage",
+      "description": "Move a candidate to the next pipeline stage.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "candidateId": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidateId",
+          "stage"
+        ]
+      }
+    }
+  ],
+  "capturedAt": "2026-05-13T12:00:00.000Z"
+}
