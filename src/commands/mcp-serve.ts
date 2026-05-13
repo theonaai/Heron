@@ -117,12 +117,74 @@ interface HttpServerArgs {
   deps: { auditPipeline: AuditPipeline; reportStore: ReportStore; differ: ReportDiffer };
 }
 
+/**
+ * Memory-DoS cap on individual HTTP request bodies. Bigger than this
+ * and the server returns 413 without allocating the rest of the
+ * payload. Tuned for MCP JSON-RPC: a single legitimate audit_agent
+ * payload is well under 1 KiB; 1 MiB is generous headroom while
+ * staying small enough that a million concurrent oversize requests
+ * cannot drown the process. (F-2 mitigation.)
+ */
+const MAX_BODY_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Idle / slow-loris timeout for individual HTTP requests. The default
+ * is 30 s; override via `HERON_MCP_HTTP_TIMEOUT_MS` for testing.
+ * (F-2 mitigation.)
+ */
+function getHttpTimeoutMs(): number {
+  const fromEnv = Number(process.env.HERON_MCP_HTTP_TIMEOUT_MS);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return 30_000;
+}
+
 async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
   const transports: Record<string, StreamableHTTPServerTransport> = {};
+  const timeoutMs = getHttpTimeoutMs();
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // F-2 (slow loris): if the request stalls past the timeout, close
+    // the socket and reply 408 (best-effort — Node may have already
+    // sent some bytes; we just want the resource back).
+    //
+    // We arm the timeout on the underlying socket rather than on
+    // `httpServer.requestTimeout` because the latter has surprisingly
+    // coarse rounding in Node 20+ (an 8s minimum, then half-second
+    // granularity) — a 2 s `requestTimeout` value can still wait 30 s
+    // before firing. The socket-level timer respects ms exactly and is
+    // sufficient for what we need: drop a stalled half-open request.
+    req.socket.setTimeout(timeoutMs);
+    const onTimeout = (): void => {
+      if (!res.headersSent) {
+        res.statusCode = 408;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          jsonrpc: '2.0', id: null,
+          error: { code: -32000, message: 'Request Timeout' },
+        }));
+      } else {
+        res.end();
+      }
+      req.socket.destroy();
+    };
+    req.socket.once('timeout', onTimeout);
+
     try {
-      const body = await readBody(req);
+      const bodyResult = await readBody(req);
+      if (bodyResult.kind === 'too_large') {
+        if (!res.headersSent) {
+          res.statusCode = 413;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0', id: null,
+            error: { code: -32000, message: 'Payload Too Large' },
+          }));
+        }
+        // Drain the socket so it can be reused / closed cleanly.
+        req.destroy();
+        return;
+      }
+      const body = bodyResult.value;
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport: StreamableHTTPServerTransport | undefined =
         sessionId ? transports[sessionId] : undefined;
@@ -156,6 +218,16 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
     }
   });
 
+  // F-2: also enforce the timeout at the server level so connections
+  // that hang BEFORE the request handler even runs (e.g. a slow loris
+  // dribbling headers in) still get cut. `headersTimeout` covers that
+  // window; the per-request `socket.setTimeout` inside the handler
+  // covers everything after. `requestTimeout` in Node 20+ has coarse
+  // rounding that turns a 2 s value into 30 s, so we don't rely on it
+  // — the socket-level timer in the handler is the real timeout.
+  httpServer.headersTimeout = timeoutMs;
+  httpServer.keepAliveTimeout = Math.min(timeoutMs, 5_000);
+
   return new Promise((resolveStart) => {
     httpServer.listen(args.port, '127.0.0.1', () => {
       // `listen(0, ...)` makes the OS pick a free port — read it back
@@ -177,14 +249,42 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
   });
 }
 
-function readBody(req: IncomingMessage): Promise<unknown> {
+/**
+ * Read the request body, JSON-parse it, AND enforce the MAX_BODY_BYTES
+ * cap. Returns either `{kind:'ok', value}` or `{kind:'too_large'}`.
+ * Rejects on transport-level / JSON-parse errors as before.
+ *
+ * The cap is enforced incrementally: each chunk is added to a running
+ * byte-count and we bail out as soon as we exceed the limit, so the
+ * server allocates ~MAX_BODY_BYTES, not the full attacker-controlled
+ * size, before responding 413. (F-2 mitigation.)
+ */
+type ReadBodyResult =
+  | { kind: 'ok'; value: unknown }
+  | { kind: 'too_large' };
+
+function readBody(req: IncomingMessage): Promise<ReadBodyResult> {
   return new Promise((res, rej) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c as Buffer));
+    let total = 0;
+    let tooLarge = false;
+    req.on('data', (c: Buffer) => {
+      if (tooLarge) return;
+      total += c.length;
+      if (total > MAX_BODY_BYTES) {
+        tooLarge = true;
+        // Drop accumulated chunks immediately so we don't keep the
+        // memory around while waiting for 'end'.
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => {
+      if (tooLarge) return res({ kind: 'too_large' });
       const s = Buffer.concat(chunks).toString('utf8');
-      if (!s) return res(undefined);
-      try { res(JSON.parse(s)); } catch (e) { rej(e); }
+      if (!s) return res({ kind: 'ok', value: undefined });
+      try { res({ kind: 'ok', value: JSON.parse(s) }); } catch (e) { rej(e); }
     });
     req.on('error', rej);
   });

@@ -16,43 +16,14 @@
  * Tracking: PR #14 security audit round 3, finding F-2.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { connect as netConnect } from 'node:net';
 
-import { runMcpServe } from '../../src/commands/mcp-serve.js';
-
-let handle: { close: () => Promise<void>; port?: number };
-let port: number;
-let prevTimeout: string | undefined;
-let prevApiKey: string | undefined;
-
-beforeAll(async () => {
-  prevApiKey = process.env.HERON_LLM_API_KEY;
-  process.env.HERON_LLM_API_KEY = process.env.HERON_LLM_API_KEY ?? 'sk-ant-fake-limits';
-  // Use a 2-second timeout instead of the production 30s so the
-  // slow-loris test runs in a reasonable wall-clock window.
-  prevTimeout = process.env.HERON_MCP_HTTP_TIMEOUT_MS;
-  process.env.HERON_MCP_HTTP_TIMEOUT_MS = '2000';
-
-  const dir = mkdtempSync(resolve(tmpdir(), 'heron-mcp-limits-'));
-  handle = await runMcpServe({ port: 0, reportDir: dir });
-  if (handle.port === undefined) {
-    throw new Error('runMcpServe returned no port for HTTP mode');
-  }
-  port = handle.port;
-}, 15_000);
-
-afterAll(async () => {
-  if (handle) await handle.close();
-  if (prevApiKey === undefined) delete process.env.HERON_LLM_API_KEY;
-  else process.env.HERON_LLM_API_KEY = prevApiKey;
-  if (prevTimeout === undefined) delete process.env.HERON_MCP_HTTP_TIMEOUT_MS;
-  else process.env.HERON_MCP_HTTP_TIMEOUT_MS = prevTimeout;
-});
+import { runMcpServe, type MCPServeHandle } from '../../src/commands/mcp-serve.js';
 
 interface RawResponse {
   statusCode?: number;
@@ -78,13 +49,32 @@ function rawRequest(opts: RequestOptions, body: Buffer | string): Promise<RawRes
   });
 }
 
+async function spinUpServer(): Promise<MCPServeHandle & { port: number }> {
+  process.env.HERON_LLM_API_KEY = process.env.HERON_LLM_API_KEY ?? 'sk-ant-fake-limits';
+  process.env.HERON_MCP_HTTP_TIMEOUT_MS = '2000';
+  const dir = mkdtempSync(resolve(tmpdir(), 'heron-mcp-limits-'));
+  const handle = await runMcpServe({ port: 0, reportDir: dir });
+  if (handle.port === undefined) throw new Error('runMcpServe returned no port');
+  return handle as MCPServeHandle & { port: number };
+}
+
 describe('HTTP transport — body size cap (F-2)', () => {
+  let handle: MCPServeHandle & { port: number };
+
+  beforeAll(async () => {
+    handle = await spinUpServer();
+  }, 15_000);
+
+  afterAll(async () => {
+    if (handle) await handle.close();
+  });
+
   it('rejects a 2 MiB body with 413 Payload Too Large', async () => {
     const huge = Buffer.alloc(2 * 1024 * 1024, 0x41); // 2 MiB of 'A'
     const res = await rawRequest(
       {
         host: '127.0.0.1',
-        port,
+        port: handle.port,
         path: '/mcp',
         method: 'POST',
         headers: {
@@ -103,7 +93,7 @@ describe('HTTP transport — body size cap (F-2)', () => {
     await rawRequest(
       {
         host: '127.0.0.1',
-        port,
+        port: handle.port,
         path: '/mcp',
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': String(huge.length) },
@@ -116,7 +106,7 @@ describe('HTTP transport — body size cap (F-2)', () => {
     const small = await rawRequest(
       {
         host: '127.0.0.1',
-        port,
+        port: handle.port,
         path: '/mcp',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -137,7 +127,7 @@ describe('HTTP transport — body size cap (F-2)', () => {
     const res = await rawRequest(
       {
         host: '127.0.0.1',
-        port,
+        port: handle.port,
         path: '/mcp',
         method: 'POST',
         headers: {
@@ -152,13 +142,27 @@ describe('HTTP transport — body size cap (F-2)', () => {
 });
 
 describe('HTTP transport — slow-loris timeout (F-2)', () => {
+  // Fresh server for this test — the body-cap suite churns large
+  // request/response cycles that can leave Node's HTTP machinery in a
+  // state where `req.setTimeout` on a brand-new connection takes
+  // longer to fire than the 2s we expect. Isolating gets us a clean
+  // floor.
+  let handle: MCPServeHandle & { port: number };
+
+  beforeAll(async () => {
+    handle = await spinUpServer();
+  }, 15_000);
+
+  afterAll(async () => {
+    if (handle) await handle.close();
+  });
+
   it('aborts a stalled request after the configured timeout', async () => {
-    // Open a raw socket, send partial headers, then never finish.
-    // After HERON_MCP_HTTP_TIMEOUT_MS (2s above), the server should
-    // close the connection. We just need to prove the socket
-    // actually closes — we don't care about the exact response
-    // bytes; some Node versions write nothing on req.setTimeout.
+    // Open a raw socket, send headers only, then never send the body.
+    // After HERON_MCP_HTTP_TIMEOUT_MS (2s) the server should close.
+    const port = handle.port;
     const start = Date.now();
+    let serverFinAt = 0;
     await new Promise<void>((res) => {
       const sock = netConnect({ host: '127.0.0.1', port }, () => {
         sock.write('POST /mcp HTTP/1.1\r\n');
@@ -168,15 +172,24 @@ describe('HTTP transport — slow-loris timeout (F-2)', () => {
         sock.write('\r\n');
         // No body — just hang.
       });
-      sock.on('close', () => res());
-      sock.on('error', () => res());
+      const finish = (): void => {
+        if (serverFinAt === 0) {
+          serverFinAt = Date.now();
+          sock.destroy();
+        }
+        res();
+      };
+      sock.on('end', finish);
+      sock.on('close', finish);
+      sock.on('error', finish);
       // Hard ceiling — the test fails if the server forgets to close.
       setTimeout(() => {
+        if (serverFinAt === 0) serverFinAt = Date.now();
         sock.destroy();
         res();
       }, 5_000);
     });
-    const elapsed = Date.now() - start;
+    const elapsed = serverFinAt - start;
     // Timeout is 2s; close must come before our 5s ceiling.
     expect(elapsed).toBeLessThan(5_000);
     // And it must NOT come immediately (otherwise we're not testing
