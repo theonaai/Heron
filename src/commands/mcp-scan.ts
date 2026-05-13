@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import { MCPClient } from '../connectors/mcp-client.js';
 import type { MCPTransportConfig, ToolInventoryRecord } from '../connectors/mcp-types.js';
+import { validateTargetEndpoint } from '../connectors/url-policy.js';
 import * as logger from '../util/logger.js';
 import { generateId } from '../util/id.js';
 import { runVerification } from '../verification/orchestrator.js';
@@ -48,7 +49,7 @@ export interface RunMcpScanOptions {
  * waiting for that work.
  */
 export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventoryRecord> {
-  const config = parseMcpFlag(opts.mcp);
+  const config = await parseMcpFlag(opts.mcp);
   const scanId = generateId('mcp-scan');
   const label = describeConfig(config);
 
@@ -184,29 +185,54 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<s
  *    `{kind:'http', url, bearerToken?: process.env.HERON_MCP_BEARER}`.
  *  - Path string starting with `stdio:` — `stdio:node server.js` becomes
  *    `{kind:'stdio', command:'node', args:['server.js']}`.
+ *
+ * N3 (PR #15 round 3): every HTTP transport URL — whether supplied as a
+ * bare URL or wrapped in a JSON config — is run through
+ * `validateTargetEndpoint` BEFORE this function returns. Without that
+ * check, `heron scan --mcp http://169.254.169.254/` (no `--verify`)
+ * would reach AWS metadata directly via `MCPClient`. The host-policy
+ * check matches the one McpToolsSource already applies internally
+ * (round 2 finding I1); applying it at the parser makes the trust
+ * boundary single. stdio transports are skipped — no network surface.
+ *
+ * The function is async because the host-policy check does a DNS
+ * lookup for hostnames. Call sites await accordingly.
  */
-export function parseMcpFlag(raw: string): MCPTransportConfig {
+export async function parseMcpFlag(raw: string): Promise<MCPTransportConfig> {
   const trimmed = raw.trim();
+  let cfg: MCPTransportConfig;
   if (trimmed.startsWith('{')) {
     const parsed = JSON.parse(trimmed) as unknown;
-    return validateMcpConfig(parsed);
-  }
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    const cfg: MCPTransportConfig = { kind: 'http', url: trimmed };
+    cfg = validateMcpConfig(parsed);
+  } else if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    cfg = { kind: 'http', url: trimmed };
     const bearer = process.env.HERON_MCP_BEARER;
     if (bearer) cfg.bearerToken = bearer;
-    return cfg;
-  }
-  if (trimmed.startsWith('stdio:')) {
+  } else if (trimmed.startsWith('stdio:')) {
     const rest = trimmed.slice('stdio:'.length).trim();
     if (!rest) throw new Error('--mcp stdio: form requires a command');
     const parts = splitArgs(rest);
     const [command, ...args] = parts;
-    return { kind: 'stdio', command, args };
+    cfg = { kind: 'stdio', command, args };
+  } else {
+    throw new Error(
+      `Unrecognized --mcp value: ${raw}. Expected a JSON config, an http(s):// URL, or stdio:<command> [args...].`,
+    );
   }
-  throw new Error(
-    `Unrecognized --mcp value: ${raw}. Expected a JSON config, an http(s):// URL, or stdio:<command> [args...].`,
-  );
+
+  // N3: SSRF guard at the trust boundary. HTTP transports MUST pass
+  // the same host-policy check that gates audit_agent and McpToolsSource.
+  // stdio transports have no network surface and are returned as-is.
+  if (cfg.kind === 'http') {
+    const policy = await validateTargetEndpoint(cfg.url);
+    if (!policy.ok) {
+      throw new Error(
+        `--mcp http URL rejected by target_endpoint policy: ${policy.error.message}`,
+      );
+    }
+  }
+
+  return cfg;
 }
 
 function validateMcpConfig(value: unknown): MCPTransportConfig {

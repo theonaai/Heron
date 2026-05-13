@@ -30,14 +30,17 @@ describe('heron scan --mcp', () => {
     }
   });
 
-  it('parseMcpFlag accepts JSON, http URL, and stdio: forms', () => {
-    expect(parseMcpFlag('http://example.com/mcp')).toEqual({
+  it('parseMcpFlag accepts JSON, http URL, and stdio: forms', async () => {
+    // N3 (round 3): parseMcpFlag became async because every http(s)
+    // URL now runs through the SSRF host-policy check (DNS lookup
+    // for hostnames). example.com is a public host, so it passes.
+    expect(await parseMcpFlag('http://example.com/mcp')).toEqual({
       kind: 'http', url: 'http://example.com/mcp',
     });
-    expect(parseMcpFlag('stdio:node server.js --foo')).toEqual({
+    expect(await parseMcpFlag('stdio:node server.js --foo')).toEqual({
       kind: 'stdio', command: 'node', args: ['server.js', '--foo'],
     });
-    expect(parseMcpFlag('{"kind":"stdio","command":"x","args":["y"]}')).toEqual({
+    expect(await parseMcpFlag('{"kind":"stdio","command":"x","args":["y"]}')).toEqual({
       kind: 'stdio', command: 'x', args: ['y'],
     });
   });
