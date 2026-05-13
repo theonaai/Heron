@@ -129,4 +129,56 @@ describe('truncateControlChars', () => {
   it('returns short strings unchanged', () => {
     expect(truncateControlChars('short')).toBe('short');
   });
+
+  // ─── N1 (PR #15 round 3): Unicode line separators ────────────────────
+  //
+  // The original regex `/[\x00-\x1f]/g` covers only ASCII C0 controls.
+  // Survivors include `\x7f` (DEL), `\x85` (NEL), U+2028 (LINE SEPARATOR),
+  // U+2029 (PARAGRAPH SEPARATOR), and the C1 block (`\x80-\x9f`). U+2028
+  // and U+2029 are real line terminators in JS string literals and many
+  // renderers (Marked with `breaks: true`, innerHTML consumers) treat
+  // them as line breaks — re-opening the F-1 newline-injection class
+  // for non-strict CommonMark viewers. Extend coverage.
+
+  it('strips U+2028 (LINE SEPARATOR) so it cannot break the bullet layout', () => {
+    expect(truncateControlChars('a b')).toBe('ab');
+  });
+
+  it('strips U+2029 (PARAGRAPH SEPARATOR)', () => {
+    expect(truncateControlChars('a b')).toBe('ab');
+  });
+
+  it('strips \\x7f (DEL)', () => {
+    expect(truncateControlChars('a\x7fb')).toBe('ab');
+  });
+
+  it('strips \\x85 (NEL — C1 next line)', () => {
+    expect(truncateControlChars('a\x85b')).toBe('ab');
+  });
+
+  it('strips \\x9f (top of C1 controls)', () => {
+    expect(truncateControlChars('a\x9fb')).toBe('ab');
+  });
+
+  it('strips \\x80 (bottom of C1 controls)', () => {
+    expect(truncateControlChars('a\x80b')).toBe('ab');
+  });
+
+  it('reproduces the full F-1 heading-injection vector via U+2028 and neutralises it', () => {
+    // Without the U+2028 strip, a hostile string of the form
+    //   `safe<U+2028>## PWNED<U+2028>[exfil](https://x)`
+    // would re-open F-1 in any HTML renderer that treats U+2028 as a
+    // line break (Marked with `breaks: true`, innerHTML consumers).
+    const hostile = 'safe ## PWNED [exfil](https://x)';
+    const out = truncateControlChars(hostile);
+    expect(out).not.toContain(' ');
+    expect(out).not.toContain(' ');
+  });
+
+  it('preserves printable Unicode (emoji, CJK, accented Latin) — only separators/controls go', () => {
+    // Regression guard: the widened regex must not eat legitimate
+    // non-ASCII characters that an operator might paste into an error
+    // message (e.g. a CJK agent name, an emoji in a label).
+    expect(truncateControlChars('café 漢字 🐦')).toBe('café 漢字 🐦');
+  });
 });
