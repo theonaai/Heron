@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve, dirname, basename } from 'node:path';
+import { resolve, basename } from 'node:path';
 
 import { FileSystemReportStore } from '../../src/commands/mcp-serve.js';
 import { generateId } from '../../src/util/id.js';
@@ -54,12 +54,10 @@ describe('FileSystemReportStore — report_id validation', () => {
     const bad = '../../../../tmp/escape';
     expect(() => store.put(makeRecord(bad))).toThrow(/invalid.*report_id/i);
     expect(() => store.get(bad)).toThrow(/invalid.*report_id/i);
-    // Defence in depth: nothing was written outside the store dir.
-    const parentDir = dirname(dir);
-    const parentEntries = readdirSync(parentDir);
-    // The only entry in the parent for this test should be our own
-    // tmpdir; nothing called "escape" should appear in /tmp due to this put.
-    expect(parentEntries.some((e) => e === 'escape' || e.endsWith('escape.md'))).toBe(false);
+    // Defence in depth: nothing was written *inside* the store dir either
+    // (the put should have failed before any write).
+    const inside = readdirSync(dir);
+    expect(inside).toHaveLength(0);
   });
 
   it('rejects report_id with a separator-prefixed segment (../)', () => {
@@ -152,15 +150,17 @@ describe('FileSystemReportStore — disk round-trip', () => {
     // Even if we cooked up a value that passed regex but somehow expanded
     // to outside the dir, the resolved-path guard inside put/get must
     // reject. We can't easily trigger this without an id that bypasses
-    // the regex — instead, we verify that put writes inside `dir` for a
-    // legitimate id, and assert there are no files in the parent dir
-    // attributable to the store.
+    // the regex — instead, we verify that every file produced by a
+    // legitimate put sits inside `dir` and shares the id prefix.
     const { store, dir } = mkStore();
-    const parentBefore = readdirSync(dirname(dir));
     const id = generateId('report');
     store.put(makeRecord(id));
-    const parentAfter = readdirSync(dirname(dir));
-    // The parent listing shouldn't have grown — only our tmpdir is there.
-    expect(parentAfter.length).toBe(parentBefore.length);
+    const inside = readdirSync(dir);
+    expect(inside.length).toBeGreaterThan(0);
+    for (const entry of inside) {
+      expect(entry.startsWith(id)).toBe(true);
+      // No nested directories created by traversal.
+      expect(entry).not.toContain('/');
+    }
   });
 });

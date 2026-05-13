@@ -312,21 +312,66 @@ class HeronReportDiffer implements ReportDiffer {
 // ─── Filesystem-backed report store ───────────────────────────────────────
 
 /**
+ * Shape constraint for `report_id` — anything outside this set is rejected
+ * before it touches the filesystem. Matches the surface of
+ * `generateId('report')` (prefix + underscore + hex), but is intentionally
+ * a little looser (alnum, underscore, hyphen) to leave headroom for future
+ * id schemes without re-cutting every call site.
+ *
+ * The hosted side of AAP-47 will feed `report_id` straight from the MCP
+ * tool input — i.e. from a potentially untrusted MCP host. Without this
+ * regex, a value like `../../etc/passwd` flows into `path.resolve(this.dir,
+ * `${id}.md`)` and writes outside the report directory.
+ */
+const REPORT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+export class ReportIdValidationError extends Error {
+  constructor(public readonly value: string) {
+    super(`invalid report_id: ${JSON.stringify(value)}`);
+    this.name = 'ReportIdValidationError';
+  }
+}
+
+/**
+ * Validate the shape of a `report_id`. Throws `ReportIdValidationError`
+ * when invalid. Exported so MCP tool handlers can apply the same check
+ * before reaching into the store.
+ */
+export function assertValidReportId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || !REPORT_ID_PATTERN.test(id)) {
+    throw new ReportIdValidationError(typeof id === 'string' ? id : String(id));
+  }
+}
+
+/**
  * Disk-backed store: writes each report to `${dir}/${reportId}.md` and
  * a sidecar `${reportId}.meta.json`. Reads either from the in-memory
  * cache or by parsing the metadata sidecar — so reports survive server
  * restarts and `get_report` works across processes.
+ *
+ * Both `put` and `get` reject any `report_id` that doesn't match
+ * `REPORT_ID_PATTERN` up front. As belt-and-suspenders, the resolved
+ * path is checked against `resolve(this.dir)` after `path.resolve` — so
+ * even if the regex were ever loosened, writes/reads outside the store
+ * dir would still throw.
  */
 export class FileSystemReportStore implements ReportStore {
   private cache = new Map<string, StoredReport>();
-  constructor(private readonly dir: string) {}
+  private readonly resolvedDir: string;
+  constructor(private readonly dir: string) {
+    this.resolvedDir = resolve(dir);
+  }
 
   put(record: StoredReport): void {
+    assertValidReportId(record.reportId);
+    const mdPath = this.safeResolve(`${record.reportId}.md`);
+    const metaPath = this.safeResolve(`${record.reportId}.meta.json`);
+
     this.cache.set(record.reportId, record);
     mkdirSync(this.dir, { recursive: true });
-    writeFileSync(resolve(this.dir, `${record.reportId}.md`), record.report, 'utf-8');
+    writeFileSync(mdPath, record.report, 'utf-8');
     writeFileSync(
-      resolve(this.dir, `${record.reportId}.meta.json`),
+      metaPath,
       JSON.stringify(
         {
           reportId: record.reportId,
@@ -342,10 +387,11 @@ export class FileSystemReportStore implements ReportStore {
   }
 
   get(id: string): StoredReport | undefined {
+    assertValidReportId(id);
     const hit = this.cache.get(id);
     if (hit) return hit;
-    const metaPath = resolve(this.dir, `${id}.meta.json`);
-    const reportPath = resolve(this.dir, `${id}.md`);
+    const metaPath = this.safeResolve(`${id}.meta.json`);
+    const reportPath = this.safeResolve(`${id}.md`);
     if (!existsSync(metaPath) || !existsSync(reportPath)) return undefined;
     const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as Omit<StoredReport, 'report'>;
     const record: StoredReport = {
@@ -354,5 +400,23 @@ export class FileSystemReportStore implements ReportStore {
     };
     this.cache.set(id, record);
     return record;
+  }
+
+  /**
+   * Resolve `name` against `this.dir` and assert that the resulting
+   * absolute path is still inside `this.dir`. Throws otherwise. The
+   * regex guard above should already make this unreachable, but we keep
+   * it as a second line of defence — small cost, large blast radius if
+   * we ever loosen the regex without remembering this site.
+   */
+  private safeResolve(name: string): string {
+    const candidate = resolve(this.resolvedDir, name);
+    const prefix = this.resolvedDir.endsWith('/')
+      ? this.resolvedDir
+      : `${this.resolvedDir}/`;
+    if (candidate !== this.resolvedDir && !candidate.startsWith(prefix)) {
+      throw new ReportIdValidationError(name);
+    }
+    return candidate;
   }
 }

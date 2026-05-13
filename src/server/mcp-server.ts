@@ -187,13 +187,25 @@ const auditAgentInputSchema = z.object({
   options: z.record(z.unknown()).optional(),
 });
 
+/**
+ * Tool-input shape for `report_id`. Must match the shape the wrapper's
+ * own `generateId('report')` produces and the `REPORT_ID_PATTERN` in
+ * `mcp-serve.ts`. Tightening this at the schema level means the store
+ * never receives a malformed id through the public tool surface — so
+ * the path-traversal class of bug can't reach the filesystem layer in
+ * the first place. The store keeps its own check as belt-and-suspenders.
+ */
+const reportIdField = z
+  .string({ required_error: 'report_id is required' })
+  .regex(/^[A-Za-z0-9_-]{1,128}$/, 'report_id must match /^[A-Za-z0-9_-]{1,128}$/');
+
 const getReportInputSchema = z.object({
-  report_id: z.string({ required_error: 'report_id is required' }),
+  report_id: reportIdField,
 });
 
 const compareReportsInputSchema = z.object({
-  report_id_a: z.string({ required_error: 'report_id_a is required' }),
-  report_id_b: z.string({ required_error: 'report_id_b is required' }),
+  report_id_a: reportIdField.describe('report_id_a'),
+  report_id_b: reportIdField.describe('report_id_b'),
 });
 
 // ─── Wrapper ──────────────────────────────────────────────────────────────
