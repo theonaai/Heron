@@ -317,7 +317,7 @@ class HeronReportDiffer implements ReportDiffer {
  * cache or by parsing the metadata sidecar — so reports survive server
  * restarts and `get_report` works across processes.
  */
-class FileSystemReportStore implements ReportStore {
+export class FileSystemReportStore implements ReportStore {
   private cache = new Map<string, StoredReport>();
   constructor(private readonly dir: string) {}
 
