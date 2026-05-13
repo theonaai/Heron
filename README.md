@@ -169,7 +169,50 @@ The per-source verdict is one of three states — always be explicit which one f
 | **Discrepancy** | The source read succeeded but at least one diff surfaced (extra capability, missing capability, or mismatched details). |
 | **Unverified** | The source could not be read (auth failure, unreachable, timeout, malformed config). We cannot make a claim either way — the report says so. |
 
-Out of scope for this PR (follow-ups): the `oauth-scopes` source (Greenhouse, BambooHR, Google Workspace) and the `agent-declaration` source (git + Theona MCP backends). Both will plug into the same `--verify=<sources-csv>` flag once they land.
+##### Verification: OAuth scopes (Greenhouse)
+
+The `oauth-scopes:greenhouse` source determines what an agent's Greenhouse Harvest API key can actually read by probing a small set of read-only endpoints (`users/me`, `jobs`, `candidates`, `applications`). Each probe that returns 2xx becomes one `{service: greenhouse, scope: <name>:read}` entry; 401/403 means the key does not have that scope. The Verification section then diffs the observed scope set against the scopes you declared.
+
+```bash
+# REQUIRED — pass the API key via env, never CLI args.
+export HERON_GREENHOUSE_API_KEY="<your-harvest-api-key>"
+
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify oauth-scopes:greenhouse \
+  --agent-label 'hr-agent-pilot' \
+  --report-dir ./reports
+```
+
+Combine with `mcp-tools` to verify tools and scopes in one pass:
+
+```bash
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify mcp-tools,oauth-scopes:greenhouse \
+  --declared-tools 'lookup_candidate,send_reply' \
+  --agent-label 'hr-agent-pilot'
+```
+
+**Credentials handling — read this before you run it against production.**
+
+- The Greenhouse API key is read from `HERON_GREENHOUSE_API_KEY` only. There is intentionally no CLI flag — argv is visible to other processes on the same host via `ps`, and shell history persists it to disk. Set the env var inline for a single invocation, or source it from a secrets manager.
+- The connector NEVER logs, echoes, or surfaces the key. Error messages, partial-read warnings, and the rendered Markdown report are scrubbed of both the raw key and its base64-encoded Basic-Auth form.
+- Only READ probes are issued. The connector never writes to a Greenhouse tenant. A future opt-in `--probe-writes` flag is tracked for staging-only use.
+- Default base URL is hardcoded to `https://harvest.greenhouse.io/v1/`. The `HERON_GREENHOUSE_BASE_URL` env var lets you point the connector at a local proxy for testing — that path is gated by the same SSRF check (`validateTargetEndpoint`) that protects the audit-agent target endpoint, so it cannot be abused to hit cloud-metadata or RFC1918 hosts.
+
+**What the probes cover today.**
+
+| Scope emitted | Probe endpoint | Notes |
+| --- | --- | --- |
+| `me:read` | `GET /v1/users/me` | Baseline auth check. 401 here → whole read is `unauthorized`. |
+| `jobs:read` | `GET /v1/jobs?per_page=1` | |
+| `candidates:read` | `GET /v1/candidates?per_page=1` | |
+| `applications:read` | `GET /v1/applications?per_page=1` | |
+
+A probe that returns 5xx or times out leaves its scope absent and surfaces a warning so the auditor knows the read was partial — better than silently claiming a scope is missing.
+
+Out of scope for this PR (follow-ups): the `oauth-scopes:bamboohr` and `oauth-scopes:google-workspace` connectors, and the `agent-declaration` source (git + Theona MCP backends). Workday and Lever connectors are deferred to v1.1.
 
 #### Mode D: Heron AS an MCP server (`heron mcp-serve`)
 
@@ -238,6 +281,8 @@ The wrapper is transport-agnostic — the same code powers stdio for local use a
 | `HERON_MCP_HTTP_TIMEOUT_MS` | `30000` | Per-request socket timeout for HTTP mode. Lower in tests; keep >= 5 s in production. |
 | `HERON_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated allow-list passed to `StreamableHTTPServerTransport` for DNS-rebinding protection. |
 | `HERON_ALLOWED_ORIGINS` | `http://127.0.0.1[:port],http://localhost[:port]` | Same, for the `Origin` header. |
+| `HERON_GREENHOUSE_API_KEY` | unset | Greenhouse Harvest API key for `--verify oauth-scopes:greenhouse`. Set via env (never via CLI flag — argv leaks to other processes via `ps`). Used only to build the HTTP Basic Auth header on probe requests; never logged or surfaced in the rendered report. |
+| `HERON_GREENHOUSE_BASE_URL` | unset (defaults to `https://harvest.greenhouse.io/v1/`) | Override the Greenhouse Harvest base URL for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`, so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
 
 The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
 
