@@ -6,6 +6,7 @@ import type { MCPTransportConfig, ToolInventoryRecord } from '../connectors/mcp-
 import { validateTargetEndpoint } from '../connectors/url-policy.js';
 import * as logger from '../util/logger.js';
 import { generateId } from '../util/id.js';
+import { escapeInlineCode, escapeText } from '../util/markdown-escape.js';
 import { runVerification } from '../verification/orchestrator.js';
 import { McpToolsSource } from '../verification/sources/mcp-tools.js';
 import { renderVerificationSection } from '../report/templates.js';
@@ -300,6 +301,17 @@ function describeConfig(cfg: MCPTransportConfig): string {
  * Render the tool inventory as a small Markdown audit fragment. Mirrors the
  * structure used by the main report's "Systems" section so the verification
  * engine can later splice this in without reformatting.
+ *
+ * N4 (PR #15 round 4): the inventory output is itself derived from a
+ * possibly-hostile MCP server. `tool.name` is wrapped in a backtick-
+ * delimited heading (`` ### `<name>` ``) and would let a newline,
+ * backtick, U+2028, or angle bracket break out of the code span and
+ * inject Markdown. `tool.description` is body text and would let a
+ * `[text](url)` / `![alt](url)` / `<script>` payload reach the saved
+ * `.md`. We route both through the same escape helpers
+ * (`escapeInlineCode` / `escapeText`) that `renderVerificationSection`
+ * uses — defence-in-depth on top of the boundary normalisation done in
+ * `shapeInventory` (see `verification/sources/mcp-tools.ts`).
  */
 export function renderToolInventoryMarkdown(rec: ToolInventoryRecord): string {
   const lines: string[] = [];
@@ -318,10 +330,10 @@ export function renderToolInventoryMarkdown(rec: ToolInventoryRecord): string {
     lines.push('_Server declared no tools._');
   }
   for (const tool of rec.tools) {
-    lines.push(`### \`${tool.name}\``);
+    lines.push(`### \`${escapeInlineCode(tool.name)}\``);
     if (tool.description) {
       lines.push('');
-      lines.push(tool.description);
+      lines.push(escapeText(tool.description));
     }
     if (tool.annotations) {
       const hints = Object.entries(tool.annotations)
