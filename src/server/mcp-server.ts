@@ -19,6 +19,8 @@
  * Tracking: https://linear.app/theona/issue/AAP-46
  */
 
+import { createHash } from 'node:crypto';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -627,6 +629,24 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
+ * Stable, non-secret identifier for a bearer token.
+ *
+ * sha256-truncated-to-16-lowercase-hex. Used in `authPrincipal.tokenId`
+ * so the raw token is never stored alongside session state, never
+ * surfaces in a log line / report / support dump, and rotation
+ * tooling has a stable handle that doesn't itself need to be kept
+ * secret. (F-5, PR #14 round 3.)
+ *
+ * 64 bits of hash is more than enough to disambiguate the credentials
+ * a single Heron deployment will see in its lifetime, while staying
+ * small enough to grep cleanly. SHA-256 truncation is the standard
+ * recipe — preimage resistance survives truncation.
+ */
+export function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+/**
  * Build a `RequestContext` from the SDK's `RequestHandlerExtra`. Maps
  * the SDK's `authInfo` (or absence thereof) to our `AuthPrincipal`
  * shape, and bridges progress notifications onto MCP's
@@ -640,10 +660,14 @@ function isAbortError(err: unknown): boolean {
  * progress handler before late notifications can be processed by the
  * client.
  */
-function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush: () => Promise<void> } {
+export function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush: () => Promise<void> } {
+  // F-5: never store the raw bearer token. `tokenId` is the
+  // sha256-truncated hash, which is what every downstream consumer
+  // (logger, audit, transcript, support dump) sees. The raw token
+  // never escapes the SDK's transport layer.
   const authPrincipal = extra.authInfo
     ? {
-        tokenId: extra.authInfo.token,
+        tokenId: hashToken(extra.authInfo.token),
         scopes: extra.authInfo.scopes ?? [],
         ...(extra.authInfo.clientId !== undefined
           ? { clientId: extra.authInfo.clientId }
@@ -734,7 +758,7 @@ function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush: () =>
  * union — the SDK's strict union of `notifications/*` method names
  * would force a per-method branch here for no functional gain.
  */
-interface ExtraLike {
+export interface ExtraLike {
   signal: AbortSignal;
   authInfo?: { token: string; clientId?: string; scopes?: string[]; extra?: Record<string, unknown> };
   sessionId?: string;
