@@ -400,8 +400,22 @@ function scrubCause(err: unknown, apiKey: string): unknown {
   return scrub(String(err), apiKey);
 }
 
+/**
+ * F-5 (PR #16 round 2): safety gate — never redact keys shorter than
+ * `SCRUB_MIN_KEY_LENGTH`. A 1-char or 2-char string would otherwise
+ * eat every occurrence of itself in unrelated log text. validateConfig
+ * already enforces >= 16 chars, but scrub() is the last line of
+ * defence: if a future caller bypasses validation, scrub() still
+ * refuses to do collateral damage.
+ *
+ * 8 is comfortably below the 16-char validation minimum AND above
+ * any plausible English word or short identifier that could appear
+ * verbatim in an error message.
+ */
+const SCRUB_MIN_KEY_LENGTH = 8;
+
 function scrub(value: string, apiKey: string): string {
-  if (!apiKey || apiKey.length === 0) return value;
+  if (!apiKey || apiKey.length < SCRUB_MIN_KEY_LENGTH) return value;
   // Replace the raw key AND any base64-encoded form (the Basic Auth
   // header value), since transport errors sometimes echo the header.
   const b64 = Buffer.from(`${apiKey}:`, 'utf-8').toString('base64');
@@ -411,6 +425,15 @@ function scrub(value: string, apiKey: string): string {
   while (out.includes(apiKey)) out = out.split(apiKey).join('[REDACTED]');
   while (out.includes(b64)) out = out.split(b64).join('[REDACTED]');
   return out;
+}
+
+/**
+ * Test-only re-export of `scrub` so the F-5 unit tests can verify the
+ * safety gate directly. Not intended for production callers — the only
+ * production scrub path is the one inside this module.
+ */
+export function scrubForTesting(value: string, apiKey: string): string {
+  return scrub(value, apiKey);
 }
 
 /**

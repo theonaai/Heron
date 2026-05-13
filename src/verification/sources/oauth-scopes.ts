@@ -144,11 +144,36 @@ function validateConfig(
   if (typeof creds.apiKey !== 'string' || creds.apiKey.length === 0) {
     return invalid('greenhouse credentials require a non-empty string apiKey');
   }
+  // F-5 (PR #16 round 2): tighten validation. A real Greenhouse Harvest
+  // API key is 40-character hex; we accept anything >= 16 chars with
+  // no whitespace to bound the failure modes:
+  //  - 1-char keys produce noisy 401s on Greenhouse and corrupt the
+  //    scrub() redaction with collateral matches.
+  //  - whitespace-bearing keys are almost always a config error
+  //    (paste with newline, env var with trailing space).
+  // The bound also keeps the audit story honest: a too-short "key"
+  // never causes a real Authorization header to leave the process.
+  const apiKey = creds.apiKey;
+  if (apiKey.length < 16) {
+    return invalid('greenhouse apiKey must be at least 16 characters');
+  }
+  // F-6 (PR #16 round 2): upper bound — a 1MB+ env-var value should be
+  // rejected before we Base64 it into an Authorization header. 256 chars
+  // is comfortably above real Greenhouse keys (40 chars hex).
+  if (apiKey.length > 256) {
+    return invalid('greenhouse apiKey suspiciously long; check env var configuration');
+  }
+  if (apiKey.trim() !== apiKey) {
+    return invalid('greenhouse apiKey must not have leading or trailing whitespace');
+  }
+  if (!/^\S+$/.test(apiKey)) {
+    return invalid('greenhouse apiKey must not contain whitespace');
+  }
   return {
     ok: true,
     config: {
       connector: 'greenhouse',
-      credentials: { apiKey: creds.apiKey },
+      credentials: { apiKey },
     },
   };
 }

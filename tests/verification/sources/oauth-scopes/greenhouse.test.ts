@@ -25,7 +25,13 @@ import type { ActualScope } from '../../../../src/verification/types.js';
  * constructor / function arg, returning configured `Response`s.
  */
 
-const FAKE_KEY = 'fake-test-key';
+// 16+ char fake keys (meets the F-5 validation minimum). The string
+// content is not load-bearing — only the length and absence of
+// whitespace matter for the OAuthScopesSource.read() path. Direct
+// callers of readGreenhouseScopes() bypass that validator, but we
+// keep both keys above the minimum so the same constants are reusable
+// across both call paths.
+const FAKE_KEY = 'fake-test-key-1234';
 const FAKE_KEY_SHOULD_NOT_LEAK = 'super-secret-do-not-leak-me';
 
 /**

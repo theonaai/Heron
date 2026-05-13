@@ -77,7 +77,7 @@ describe('heron scan --verify=oauth-scopes:greenhouse', () => {
   });
 
   it('--verify oauth-scopes:greenhouse with API key set → produces Verification section with scope diffs', async () => {
-    process.env.HERON_GREENHOUSE_API_KEY = 'fake-test-key';
+    process.env.HERON_GREENHOUSE_API_KEY = 'fake-test-key-1234';
     const cfg = JSON.stringify({
       kind: 'stdio',
       command: process.execPath,
@@ -137,7 +137,7 @@ describe('heron scan --verify=oauth-scopes:greenhouse', () => {
   }, 15_000);
 
   it('combined --verify mcp-tools,oauth-scopes:greenhouse → both sources appear in the report', async () => {
-    process.env.HERON_GREENHOUSE_API_KEY = 'fake-test-key';
+    process.env.HERON_GREENHOUSE_API_KEY = 'fake-test-key-1234';
     const cfg = JSON.stringify({
       kind: 'stdio',
       command: process.execPath,
