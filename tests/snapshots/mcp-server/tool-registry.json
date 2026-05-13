@@ -1,0 +1,63 @@
+[
+  {
+    "name": "audit_agent",
+    "description": "Run a Heron audit against a target agent endpoint. Interrogates the agent, analyzes the transcript, maps findings to compliance frameworks, and returns a markdown audit report plus a report id you can pass to get_report or compare_reports.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target_endpoint": {
+          "type": "string",
+          "description": "URL of the target agent (OpenAI-compatible chat API)."
+        },
+        "options": {
+          "type": "object",
+          "description": "Optional pipeline tuning knobs (e.g. maxFollowUps).",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "target_endpoint"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_report",
+    "description": "Retrieve a previously-generated Heron audit report by its id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "report_id": {
+          "type": "string",
+          "description": "The report id returned by a prior audit_agent call."
+        }
+      },
+      "required": [
+        "report_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "compare_reports",
+    "description": "Compare two Heron audit reports by id and return a markdown diff highlighting what was resolved, what changed, and what was added between the two audits.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "report_id_a": {
+          "type": "string",
+          "description": "Older report id."
+        },
+        "report_id_b": {
+          "type": "string",
+          "description": "Newer report id."
+        }
+      },
+      "required": [
+        "report_id_a",
+        "report_id_b"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

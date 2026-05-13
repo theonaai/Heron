@@ -146,7 +146,79 @@ heron-ai scan --mcp '{"kind":"http","url":"https://example.com/mcp","bearerToken
 
 The report is written to `./reports/mcp-scan_<id>.md` (or `.json` with `-f json`).
 
-The MCP transport config shape (`MCPTransportConfig`) is locked in `src/connectors/mcp-types.ts` — both this client and the upcoming `heron mcp-serve` mode (Heron AS an MCP server, follow-up PR) consume the same types so the verification engine downstream sees one shape.
+The MCP transport config shape (`MCPTransportConfig`) is locked in `src/connectors/mcp-types.ts` — both this client and the `heron mcp-serve` mode (below) consume the same types so the verification engine downstream sees one shape.
+
+#### Mode D: Heron AS an MCP server (`heron mcp-serve`)
+
+Run Heron as a local MCP server that any MCP host (Claude Desktop, Cursor, your own agent) can connect to. Exposes three tools:
+
+- **`audit_agent`** — run a full Heron audit against a target agent endpoint. Input: `{target_endpoint: string, options?: object}`. Output: `{report_markdown, report_id, summary}`.
+- **`get_report`** — fetch a previously-generated audit report by id. Input: `{report_id}`. Output: `{report_markdown, metadata}`.
+- **`compare_reports`** — diff two audit reports. Input: `{report_id_a, report_id_b}`. Output: `{diff_markdown}`.
+
+Default transport is stdio (drop-in for any MCP host that spawns the server as a subprocess). HTTP transport is available for advanced testing and for future hosted deployments — the same transport-agnostic wrapper backs both.
+
+```bash
+# Local stdio MCP server (default — for Claude Desktop / Cursor / etc.)
+heron-ai mcp-serve
+
+# HTTP transport on a custom port (advanced — for local hosted-mode testing)
+heron-ai mcp-serve --port 7350
+
+# Provide an LLM config file explicitly
+heron-ai mcp-serve --audit-config ./heron.yaml --report-dir ./audit-reports
+```
+
+**Claude Desktop config** — add this snippet to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS; equivalent path on Windows / Linux):
+
+```json
+{
+  "mcpServers": {
+    "heron": {
+      "command": "npx",
+      "args": ["-y", "heron-ai", "mcp-serve"],
+      "env": {
+        "HERON_LLM_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop and you can ask it to call `audit_agent`, `get_report`, or `compare_reports` from any chat.
+
+**Cursor config** — add to `~/.cursor/mcp.json` (or use Cursor's Settings → MCP Servers UI):
+
+```json
+{
+  "mcpServers": {
+    "heron": {
+      "command": "npx",
+      "args": ["-y", "heron-ai", "mcp-serve"],
+      "env": {
+        "HERON_LLM_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+The wrapper is transport-agnostic — the same code powers stdio for local use and HTTP for the future hosted side. See `src/server/mcp-types.ts` for the locked interface contract (`RequestContext`, `MCPServerError`, `MCPServerResult<T>`).
+
+##### Security knobs
+
+`heron mcp-serve` ships with strict defaults. Every knob below loosens them; flip only when you know what you're doing.
+
+| Env var | Default | What it does |
+| --- | --- | --- |
+| `HERON_ALLOW_PRIVATE_TARGETS` | unset | When `1`, the `audit_agent` SSRF guard is disabled. Without this, the tool rejects target endpoints that resolve to loopback, RFC1918, link-local (incl. cloud metadata `169.254.169.254`), or non-`http(s)` schemes. Enable only for local testing against an agent on a private network. |
+| `HERON_MCP_HTTP_TIMEOUT_MS` | `30000` | Per-request socket timeout for HTTP mode. Lower in tests; keep >= 5 s in production. |
+| `HERON_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated allow-list passed to `StreamableHTTPServerTransport` for DNS-rebinding protection. |
+| `HERON_ALLOWED_ORIGINS` | `http://127.0.0.1[:port],http://localhost[:port]` | Same, for the `Origin` header. |
+
+The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
+
+DNS-rebinding mitigation note: the `target_endpoint` policy resolves the host once and then `HttpConnector` connects by hostname. A TTL-0 DNS record could in principle flip between check and connect; this raises the bar substantially but does not fully eliminate the TOCTOU class. Tracked as a follow-up.
 
 ### Option 2: Hosted version (no setup)
 
