@@ -157,6 +157,13 @@ function validateConfig(
   if (apiKey.length < 16) {
     return invalid('greenhouse apiKey must be at least 16 characters');
   }
+  // F-6 (PR #16 round 2): upper bound. A multi-MB env-var value should
+  // be rejected before we Base64-encode it into an Authorization header
+  // on every probe. 256 chars is comfortably above real Greenhouse keys
+  // (40 chars hex). The error message stays free of the key itself.
+  if (apiKey.length > 256) {
+    return invalid('greenhouse apiKey suspiciously long; check env var configuration');
+  }
   if (apiKey.trim() !== apiKey) {
     return invalid('greenhouse apiKey must not have leading or trailing whitespace');
   }
