@@ -28,6 +28,21 @@ const STDIO_FIXTURE = resolve(__dirname, '../fixtures/mcp-server/stdio-heron-ser
  */
 
 describe('HeronMCPServer — stdio transport', () => {
+  // SSRF guard (F-1) blocks unresolvable `stub.example` / `slow.example`
+  // hostnames used in these fixtures. The fixture pipeline never makes
+  // a network call (it's a stub); flip the documented escape hatch for
+  // the duration of the suite so the wrapper-level behaviour tests pass.
+  // The subprocess inherits process.env so this propagates.
+  let prevAllowPrivate: string | undefined;
+  beforeAll(() => {
+    prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
+  });
+  afterAll(() => {
+    if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
+  });
+
   it('lists all three tools', async () => {
     const client = await connectStdio();
     try {
@@ -118,8 +133,13 @@ describe('HeronMCPServer — stdio transport', () => {
 describe('HeronMCPServer — HTTP transport', () => {
   let httpServer: Server;
   let port: number;
+  let prevAllowPrivate: string | undefined;
 
   beforeAll(async () => {
+    // SSRF guard escape hatch (see stdio suite above) — stub pipeline,
+    // no real network call.
+    prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
     // Build wrapper with the same stub pipeline used in the unit tests.
     const pipeline: AuditPipeline = {
       async run(input, ctx) {
@@ -186,6 +206,8 @@ describe('HeronMCPServer — HTTP transport', () => {
 
   afterAll(async () => {
     await new Promise<void>((r) => httpServer.close(() => r()));
+    if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
   });
 
   it('connects over HTTP transport and calls audit_agent end-to-end', async () => {

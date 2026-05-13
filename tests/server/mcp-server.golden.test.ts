@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -56,6 +56,19 @@ const stubDiffer: ReportDiffer = {
 };
 
 describe('HeronMCPServer — golden snapshots', () => {
+  // SSRF guard (F-1) blocks the unresolvable `golden.example` host used
+  // in the fixture. Flip the documented escape hatch for the suite —
+  // the deterministic pipeline never makes a network call.
+  let prevAllowPrivate: string | undefined;
+  beforeEach(() => {
+    prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
+  });
+  afterEach(() => {
+    if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
+  });
+
   it('tool registry matches snapshot', () => {
     const server = new HeronMCPServer({
       auditPipeline: deterministicPipeline,

@@ -94,6 +94,12 @@ describe('FileSystemReportStore — put/get round-trip', () => {
 
 describe('FileSystemReportStore — end-to-end through HeronMCPServer.get_report', () => {
   it('audit_agent writes through the store; get_report reads it back', async () => {
+    // SSRF guard (F-1) blocks unresolvable placeholder hostnames. The
+    // test runs against a fake pipeline that never makes a network
+    // call, so flip the documented escape hatch on for this case.
+    const prev = process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
+    try {
     const dir = mkdtempSync(resolve(tmpdir(), 'heron-mcp-serve-e2e-'));
     const store = new FileSystemReportStore(dir);
 
@@ -173,5 +179,9 @@ describe('FileSystemReportStore — end-to-end through HeronMCPServer.get_report
     expect(reReadResult.ok).toBe(true);
     if (!reReadResult.ok) return;
     expect(reReadResult.value.report_markdown).toBe(auditResult.value.report_markdown);
+    } finally {
+      if (prev === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
+      else process.env.HERON_ALLOW_PRIVATE_TARGETS = prev;
+    }
   });
 });

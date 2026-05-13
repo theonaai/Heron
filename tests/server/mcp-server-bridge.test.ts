@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -29,6 +29,19 @@ import {
  */
 
 describe('HeronMCPServer — in-process bridge coverage', () => {
+  // SSRF guard (F-1) blocks unresolvable / non-HTTP hosts. The pipeline
+  // here is a stub that never makes a network call; flip the documented
+  // escape hatch on for the suite so we can use placeholder URLs.
+  let prevAllowPrivate: string | undefined;
+  beforeEach(() => {
+    prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
+  });
+  afterEach(() => {
+    if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
+  });
+
   it('delivers every progress notification through contextFromExtra', async () => {
     const pipeline: AuditPipeline = {
       async run(input, ctx) {
@@ -60,7 +73,7 @@ describe('HeronMCPServer — in-process bridge coverage', () => {
       const result = await client.callTool(
         {
           name: 'audit_agent',
-          arguments: { target_endpoint: 'inmem://target' },
+          arguments: { target_endpoint: 'http://inmem.target/v1' },
         },
         undefined,
         {

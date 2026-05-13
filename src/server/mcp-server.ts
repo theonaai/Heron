@@ -23,6 +23,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
+import { validateTargetEndpoint } from '../connectors/url-policy.js';
 import { generateId } from '../util/id.js';
 import type {
   AuditAgentInput,
@@ -377,6 +378,16 @@ export class HeronMCPServer {
           message: issue?.message ?? 'invalid input',
         },
       };
+    }
+    // SSRF guard (F-1, PR #14 round 3): refuse cloud metadata, loopback,
+    // RFC1918, link-local and non-HTTP schemes BEFORE handing the
+    // endpoint to the audit pipeline. The pipeline calls fetch() on the
+    // raw URL and surfaces the response body in the transcript, so an
+    // unvalidated target_endpoint is a credential-exfiltration class
+    // issue, not a connectivity nit.
+    const policy = await validateTargetEndpoint(parsed.data.target_endpoint);
+    if (!policy.ok) {
+      return { ok: false, error: policy.error };
     }
     if (ctx.signal.aborted) {
       return {

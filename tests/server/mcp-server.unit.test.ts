@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
   HeronMCPServer,
@@ -130,12 +130,28 @@ describe('HeronMCPServer.audit_agent', () => {
   let server: HeronMCPServer;
   let pipeline: FakeAuditPipeline;
   let store: FakeReportStore;
+  let prevAllowPrivate: string | undefined;
 
   beforeEach(() => {
+    // These tests use placeholder hostnames like `https://agent.example.com`
+    // and `http://x` that intentionally bypass real DNS resolution. The
+    // SSRF guard (F-1) blocks unresolvable hosts; flip the documented
+    // escape hatch on for the duration of this suite so the unit tests
+    // can keep exercising the wrapper's branching without launching a
+    // mock DNS server. Real SSRF coverage lives in
+    // `tests/connectors/url-policy.test.ts` and
+    // `tests/server/audit-agent-ssrf.test.ts`.
+    prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
     const s = makeServer();
     server = s.server;
     pipeline = s.pipeline;
     store = s.store;
+  });
+
+  afterEach(() => {
+    if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
+    else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
   });
 
   it('happy path: returns report markdown, id, and summary', async () => {
