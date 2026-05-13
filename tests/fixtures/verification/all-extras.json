@@ -1,0 +1,39 @@
+{
+  "label": "Empty declared + 3 actual tools → 3 extras",
+  "declared": [],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo" },
+      { "name": "list_files" },
+      { "name": "fake_delete", "description": "Pretend to delete." }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "extra",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "actual": { "name": "echo" },
+      "severity": "high"
+    },
+    {
+      "kind": "extra",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "actual": { "name": "list_files" },
+      "severity": "high"
+    },
+    {
+      "kind": "extra",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "actual": {
+        "name": "fake_delete",
+        "description": "Pretend to delete."
+      },
+      "severity": "high"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "label": "Multiple declared inventories merge — a tool declared in one source counts as declared overall",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "echo" }
+      ]
+    },
+    {
+      "source": "agent-declaration",
+      "capturedAt": "2026-05-13T09:30:00.000Z",
+      "tools": [
+        { "name": "list_files" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo" },
+      { "name": "list_files" }
+    ]
+  },
+  "expected": []
+}

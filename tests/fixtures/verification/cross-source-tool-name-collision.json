@@ -1,0 +1,35 @@
+{
+  "label": "Tool name 'echo' declared via interview is not the same primary key as 'echo' declared via agent-declaration with a different description — merged by name only, not by source",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "echo", "description": "Quietly logs a message." }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo", "description": "Echoes a string back." }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "mismatch",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "declared": {
+        "name": "echo",
+        "description": "Quietly logs a message."
+      },
+      "actual": {
+        "name": "echo",
+        "description": "Echoes a string back."
+      },
+      "severity": "high"
+    }
+  ]
+}

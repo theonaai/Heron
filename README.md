@@ -148,6 +148,29 @@ The report is written to `./reports/mcp-scan_<id>.md` (or `.json` with `-f json`
 
 The MCP transport config shape (`MCPTransportConfig`) is locked in `src/connectors/mcp-types.ts` — both this client and the `heron mcp-serve` mode (below) consume the same types so the verification engine downstream sees one shape.
 
+##### Verification: declared vs actual (`--verify`)
+
+Add `--verify=mcp-tools` to compare the tools the MCP server actually exposes against a declared inventory you supply (typically extracted from an interrogation transcript). The Markdown report grows a **Verification** section listing extra, missing, or mismatched tools with default severity (extras `HIGH`, missing `MEDIUM`, mismatches `HIGH`).
+
+```bash
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify mcp-tools \
+  --declared-tools 'lookup_candidate,send_reply,schedule_meeting' \
+  --agent-label 'hr-agent-pilot' \
+  --report-dir ./reports
+```
+
+The per-source verdict is one of three states — always be explicit which one fired:
+
+| Verdict | Meaning |
+| --- | --- |
+| **Verified** | The source read succeeded and the declared inventory matches the actual inventory exactly. |
+| **Discrepancy** | The source read succeeded but at least one diff surfaced (extra capability, missing capability, or mismatched details). |
+| **Unverified** | The source could not be read (auth failure, unreachable, timeout, malformed config). We cannot make a claim either way — the report says so. |
+
+Out of scope for this PR (follow-ups): the `oauth-scopes` source (Greenhouse, BambooHR, Google Workspace) and the `agent-declaration` source (git + Theona MCP backends). Both will plug into the same `--verify=<sources-csv>` flag once they land.
+
 #### Mode D: Heron AS an MCP server (`heron mcp-serve`)
 
 Run Heron as a local MCP server that any MCP host (Claude Desktop, Cursor, your own agent) can connect to. Exposes three tools:

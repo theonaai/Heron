@@ -1,0 +1,24 @@
+{
+  "label": "Unicode tool names round-trip cleanly through the differ",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "сообщить" },
+        { "name": "送信" },
+        { "name": "tool-with-émoji-🚀" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "сообщить" },
+      { "name": "送信" },
+      { "name": "tool-with-émoji-🚀" }
+    ]
+  },
+  "expected": []
+}

@@ -1,0 +1,10 @@
+{
+  "label": "Empty declared + empty actual → no diffs",
+  "declared": [],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": []
+  },
+  "expected": []
+}

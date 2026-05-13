@@ -1,0 +1,39 @@
+{
+  "label": "3 declared tools, 3 matching by name but one description differs → 1 mismatch",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "echo", "description": "Echo the input back." },
+        { "name": "list_files", "description": "List files in directory." },
+        { "name": "send_email", "description": "Send a notification email." }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo", "description": "Echo the input back." },
+      { "name": "list_files", "description": "List files in directory." },
+      { "name": "send_email", "description": "Send arbitrary email to anyone." }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "mismatch",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "declared": {
+        "name": "send_email",
+        "description": "Send a notification email."
+      },
+      "actual": {
+        "name": "send_email",
+        "description": "Send arbitrary email to anyone."
+      },
+      "severity": "high"
+    }
+  ]
+}
