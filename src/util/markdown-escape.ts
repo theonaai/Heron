@@ -20,8 +20,9 @@
  *     HTML-escape `<` / `>` (defence in depth for HTML renderers that
  *     do not auto-escape code-span content).
  *   - Operator-supplied strings echoed into error messages: strip
- *     control characters (`\x00-\x1f`) and truncate to a reasonable
- *     length so they cannot break the bullet layout.
+ *     control characters (ASCII C0, DEL, C1) and the Unicode line
+ *     separators U+2028 / U+2029, and truncate to a reasonable length
+ *     so they cannot break the bullet layout.
  *
  * What we DO NOT do:
  *   - Full Markdown sanitisation. The goal is to defang structural
@@ -29,7 +30,34 @@
  *     literal text the server tried to push.
  */
 
-const CONTROL_CHAR_REGEX = /[\x00-\x1f]/g;
+/**
+ * Characters stripped by `truncateControlChars`.
+ *
+ *   \x00-\x1f    ASCII C0 controls (incl. NUL, BS, TAB, LF, CR, ESC).
+ *   \x7f         DEL.
+ *   \x80-\x9f    C1 controls (incl. NEL `\x85`, which some terminals
+ *                and HTML renderers treat as a line break).
+ *   \u2028       LINE SEPARATOR — a real line terminator in JS string
+ *                literals and in many HTML renderers (Marked with
+ *                `breaks: true`, innerHTML consumers).
+ *   \u2029       PARAGRAPH SEPARATOR — same hazard class as U+2028.
+ *
+ * N1 (PR #15 round 3): widened from the original `/[\x00-\x1f]/g`.
+ * Without U+2028/U+2029 the F-1 heading-injection vector re-opens for
+ * any renderer that treats them as line breaks. Without DEL/C1 the
+ * hostile string can carry NEL through error messages and break the
+ * bullet layout in terminals/renderers that honour it.
+ *
+ * Note: TAB (\x09), LF (\x0a), CR (\x0d) are all inside \x00-\x1f and
+ * are stripped here as before. Callers that need to PRESERVE newlines
+ * (e.g. inside a fenced code block) must use a different helper —
+ * `truncateControlChars` is explicitly for one-liners (error messages,
+ * bullet items). U+2028 and U+2029 are written as `\u2028` / `\u2029`
+ * escape sequences because the literal characters are line terminators
+ * in JS source — esbuild/V8 fail to parse a regex literal that contains
+ * a raw U+2028/U+2029 between the slashes.
+ */
+const CONTROL_CHAR_REGEX = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
 
 const DEFAULT_MAX_LEN = 256;
 
@@ -92,10 +120,11 @@ export function escapeTableCell(value: string): string {
 
 /**
  * Hygiene wrapper for operator- or server-supplied strings echoed into
- * error messages. Strips ASCII control characters (`\x00-\x1f`) and
- * truncates to a sane length (default 256) so an attacker cannot break
- * the bullet layout of a rendered report or push a multi-MB blob
- * through the renderer.
+ * error messages. Strips ASCII C0 controls (`\x00-\x1f`), DEL (`\x7f`),
+ * C1 controls (`\x80-\x9f`), and the Unicode line separators U+2028 /
+ * U+2029, then truncates to a sane length (default 256) so an attacker
+ * cannot break the bullet layout of a rendered report or push a multi-MB
+ * blob through the renderer.
  */
 export function truncateControlChars(
   value: string,
