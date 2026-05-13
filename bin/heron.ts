@@ -136,6 +136,29 @@ program
     }
   });
 
+// ─── mcp-serve: Heron as MCP server (AAP-46 Role B) ─────────────────────
+
+program
+  .command('mcp-serve')
+  .description('Launch Heron as a local MCP server (stdio by default; --port for HTTP)')
+  .option('--port <port>', 'Switch to HTTP transport on the given port (advanced)')
+  .option('--audit-config <path>', 'Path to heron.yaml — used for LLM credentials etc.')
+  .option('--report-dir <dir>', 'Directory to persist reports', './reports')
+  .action(async (opts) => {
+    try {
+      const { runMcpServe } = await import('../src/commands/mcp-serve.js');
+      await runMcpServe({
+        ...(opts.port !== undefined ? { port: parseInt(String(opts.port), 10) } : {}),
+        ...(opts.auditConfig !== undefined ? { auditConfigPath: opts.auditConfig as string } : {}),
+        reportDir: opts.reportDir as string,
+      });
+      // Keep the process alive — stdio + HTTP transports own the event loop.
+    } catch (err) {
+      logger.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
 // ─── install-skill: install Claude Code skill ───────────────────────────────
 
 program
@@ -264,7 +287,7 @@ async function interactiveStart(): Promise<void> {
 }
 
 const args = process.argv.slice(2);
-const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
+const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'mcp-serve', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
 
 if (!hasSubcommand && args.length > 0) {
   // Legacy: flags without subcommand → scan
