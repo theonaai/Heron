@@ -8,7 +8,7 @@ import * as logger from '../util/logger.js';
 import { generateId } from '../util/id.js';
 import { escapeInlineCode, escapeText } from '../util/markdown-escape.js';
 import { runVerification } from '../verification/orchestrator.js';
-import { McpToolsSource } from '../verification/sources/mcp-tools.js';
+import { McpToolsSource, normalizeRawTool } from '../verification/sources/mcp-tools.js';
 import { renderVerificationSection } from '../report/templates.js';
 import type {
   DeclaredInventory,
@@ -312,6 +312,24 @@ function describeConfig(cfg: MCPTransportConfig): string {
  * (`escapeInlineCode` / `escapeText`) that `renderVerificationSection`
  * uses — defence-in-depth on top of the boundary normalisation done in
  * `shapeInventory` (see `verification/sources/mcp-tools.ts`).
+ *
+ * N4 (PR #15 round 5, Option A — architectural): round-4 left a
+ * residual leak. `shapeInventory`'s chokepoint runs only on the
+ * verification path; this renderer consumed the RAW `ToolInventoryRecord`
+ * from `MCPClient.listTools()` and never benefited from the
+ * `normalizeActualTool` strip. Result: a hostile description like
+ * `"safe\n## INJECTED HEADING\n"` produced a real H2 heading in the
+ * saved `.md` because `escapeText` does not touch newlines.
+ *
+ * Round-5 fix routes every raw tool through `normalizeRawTool` — a
+ * thin shim over `normalizeActualTool` that operates on `MCPToolEntry`
+ * (see `verification/sources/mcp-tools.ts`). Control characters
+ * (ASCII C0, DEL, C1, U+2028, U+2029) are stripped from `name` and
+ * `description` BEFORE the Markdown escape helpers run. Single
+ * chokepoint for control chars; render-layer helpers as defence-in-
+ * depth for Markdown metacharacters. Trade-off: multi-paragraph
+ * descriptions collapse to single-line text — acceptable for an
+ * audit fragment.
  */
 export function renderToolInventoryMarkdown(rec: ToolInventoryRecord): string {
   const lines: string[] = [];
@@ -329,7 +347,11 @@ export function renderToolInventoryMarkdown(rec: ToolInventoryRecord): string {
   if (rec.tools.length === 0) {
     lines.push('_Server declared no tools._');
   }
-  for (const tool of rec.tools) {
+  for (const rawTool of rec.tools) {
+    // Round-5 chokepoint: strip control chars at the renderer
+    // boundary so the escape helpers downstream only have to defend
+    // against Markdown metacharacters (links, images, HTML, pipes).
+    const tool = normalizeRawTool(rawTool);
     lines.push(`### \`${escapeInlineCode(tool.name)}\``);
     if (tool.description) {
       lines.push('');

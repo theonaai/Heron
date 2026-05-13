@@ -22,6 +22,7 @@
 import { MCPClient } from '../../connectors/mcp-client.js';
 import type {
   MCPClientErrorKind,
+  MCPToolEntry,
   MCPTransportConfig,
   ToolInventoryRecord,
 } from '../../connectors/mcp-types.js';
@@ -231,6 +232,35 @@ export function normalizeActualTool(tool: ActualTool): ActualTool {
       out._extra = { __truncated: true, originalSize: serialised.length };
     }
   }
+  return out;
+}
+
+/**
+ * Round 5 (PR #15): chokepoint shim for renderers that consume the
+ * raw Role A `MCPToolEntry` shape directly — namely
+ * `renderToolInventoryMarkdown` in `commands/mcp-scan.ts`, which
+ * never goes through `shapeInventory`/`ActualInventory` and was the
+ * residual N4 leak after round 4.
+ *
+ * Internally re-uses `normalizeActualTool` so the control-char strip
+ * set, the `_extra` byte bound, and any future tightening stay in
+ * one place. The shim preserves `inputSchema` on the way out because
+ * the renderer surface might one day surface it (it does not today),
+ * but does not normalise it — schemas are typed and live in the same
+ * "leave alone" bucket as `annotations`.
+ */
+export function normalizeRawTool(tool: MCPToolEntry): MCPToolEntry {
+  const normalised = normalizeActualTool({
+    name: tool.name,
+    ...(tool.description !== undefined ? { description: tool.description } : {}),
+    ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
+    ...(tool._extra !== undefined ? { _extra: tool._extra } : {}),
+  });
+  const out: MCPToolEntry = { name: normalised.name };
+  if (normalised.description !== undefined) out.description = normalised.description;
+  if (tool.inputSchema !== undefined) out.inputSchema = tool.inputSchema;
+  if (normalised.annotations !== undefined) out.annotations = normalised.annotations;
+  if (normalised._extra !== undefined) out._extra = normalised._extra;
   return out;
 }
 
