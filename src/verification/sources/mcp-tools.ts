@@ -19,6 +19,8 @@
  * see a half-built config and emit a vaguer error.
  */
 
+import { createHash } from 'node:crypto';
+
 import { MCPClient } from '../../connectors/mcp-client.js';
 import type {
   MCPClientErrorKind,
@@ -215,7 +217,20 @@ export const MAX_EXTRA_JSON_SIZE = 4096;
  * not have to remember the full set of escape rules to stay safe.
  */
 export function normalizeActualTool(tool: ActualTool): ActualTool {
-  const out: ActualTool = { name: stripControlChars(tool.name) };
+  const strippedName = stripControlChars(tool.name);
+  // R4-1 (PR #15 round 5): if the strip changed the name, append a
+  // stable hash prefix derived from the ORIGINAL name so the
+  // normalised name cannot collide with a legitimate tool whose
+  // unstripped name already equals the stripped form. Without this,
+  // hostile names 'admin\ndelete', 'admin\x00delete', 'admin delete'
+  // would all normalise to 'admindelete' and the differ's
+  // `Map<name, tool>` dedupe would silently drop all but the first
+  // — letting a hostile MCP server hide a destructive tool behind a
+  // legitimate one.
+  const finalName = strippedName === tool.name
+    ? strippedName
+    : disambiguateName(strippedName, tool.name);
+  const out: ActualTool = { name: finalName };
   if (tool.description !== undefined) {
     out.description = stripControlChars(tool.description);
   }
@@ -233,6 +248,58 @@ export function normalizeActualTool(tool: ActualTool): ActualTool {
     }
   }
   return out;
+}
+
+/**
+ * R4-1 disambiguation suffix length — 4 hex chars (16 bits of hash).
+ *
+ * Picked deliberately: long enough that an adversary crafting two
+ * hostile names whose strip+hash collide must compute roughly 2^16
+ * candidates (birthday-bound by 2^8 ~256), and even then the
+ * resulting collision only re-creates the pre-fix R4-1 behaviour
+ * for that one pair. Short enough that the rendered name stays
+ * readable in audit reports — long hex strings on names are noise.
+ *
+ * Adversary economics: collision-finding is cheap, but a collision
+ * here only causes the auditor to see ONE entry instead of two.
+ * That is the same failure mode as a legitimate name that happens
+ * to match a hostile-stripped name — already surfaced as one
+ * `extra` diff entry. Defence-in-depth is not free here: hashing
+ * the original costs CPU on every tool, and longer suffixes cost
+ * readability. 4 chars matches the spec's example.
+ */
+const NAME_DISAMBIGUATION_HASH_LEN = 4;
+
+/**
+ * R4-1 (PR #15 round 5): build a disambiguated tool name when the
+ * raw `stripControlChars` pass changed the original.
+ *
+ * Format: `${stripped}-${hash}` where `hash` is the first
+ * `NAME_DISAMBIGUATION_HASH_LEN` hex chars of SHA-256 over the
+ * ORIGINAL name. Two hostile variants whose stripped forms collide
+ * (`admin\ndelete` and `admin\x00delete` both → `admindelete`) get
+ * DIFFERENT hashes because their originals differ — so they no
+ * longer collide in the differ's `Map<name, tool>` dedupe.
+ *
+ * Why hash the original, not the stripped name? Hashing the
+ * stripped name would give every variant the same hash and we'd
+ * be back to a collision (`admindelete-3f8a` for all three
+ * variants). Hashing the original is what makes each variant
+ * uniquely identifiable in the audit trail.
+ *
+ * Why SHA-256 (not a faster non-crypto hash)? We are not relying
+ * on the hash for security — a collision here downgrades audit
+ * resolution but does not bypass the strip. SHA-256 is the
+ * lingua-franca choice that any reviewer can verify by hand if
+ * needed; the cost is negligible at typical inventory sizes
+ * (hundreds of tools at most).
+ */
+function disambiguateName(stripped: string, original: string): string {
+  const hash = createHash('sha256')
+    .update(original)
+    .digest('hex')
+    .slice(0, NAME_DISAMBIGUATION_HASH_LEN);
+  return `${stripped}-${hash}`;
 }
 
 /**

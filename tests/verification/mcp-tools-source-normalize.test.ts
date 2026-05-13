@@ -25,17 +25,32 @@ import type { ActualTool } from '../../src/verification/types.js';
  *  - Leave `annotations` alone (typed-shape, handled by AAP-49 routing).
  *  - Leave benign tools structurally unchanged.
  *  - Never mutate the input tool — return a fresh object.
+ *
+ * R4-1 (round 5) addendum: when stripping CHANGES the name, the
+ * output is `'<stripped>-<4hex>'` — a stable hash suffix keyed off
+ * the ORIGINAL name. Closes the primary-key collision class of bug
+ * (`admin\ndelete` and `admindelete` no longer dedupe to one). The
+ * stripped name itself still matches the pre-fix expectation up to
+ * the suffix, hence the regex-based assertions on the affected
+ * tests below.
  */
 
+/** Matches a name that got a round-5 disambiguation suffix. */
+const STRIPPED_HASH_RE = /-[0-9a-f]{4}$/;
+
 describe('normalizeActualTool — chokepoint at the source boundary', () => {
-  it('strips ASCII C0 controls from name', () => {
+  it('strips ASCII C0 controls from name (R4-1: appends disambiguation hash since strip changed the name)', () => {
     const out = normalizeActualTool({ name: 'tool\x00\x01\x09\x1ename' });
-    expect(out.name).toBe('toolname');
+    // Round 5: when stripping changes the name, the output gains a
+    // `-<4hex>` suffix so a hostile name cannot collide with a
+    // legitimate `toolname` in the differ's primary-key dedupe.
+    expect(out.name).toMatch(/^toolname-[0-9a-f]{4}$/);
   });
 
   it('strips CR/LF from name (subset of C0 — locks the heading-injection vector)', () => {
     const out = normalizeActualTool({ name: 'safe\n## INJECTED' });
-    expect(out.name).toBe('safe## INJECTED');
+    // R4-1: name changed → hash suffix appended.
+    expect(out.name).toMatch(/^safe## INJECTED-[0-9a-f]{4}$/);
     // The marker survives so a reviewer sees the literal text the
     // server tried to push, but the leading newline is gone — `##` is
     // no longer the first thing on a new line, so no heading can form.
@@ -46,16 +61,20 @@ describe('normalizeActualTool — chokepoint at the source boundary', () => {
     const out = normalizeActualTool({ name: 'safe ## PWNED' });
     expect(out.name).not.toContain(' ');
     expect(out.name).toContain('PWNED');
+    // R4-1: hash suffix appended because U+2028 was stripped.
+    expect(out.name).toMatch(STRIPPED_HASH_RE);
   });
 
   it('strips U+2029 (PARAGRAPH SEPARATOR) from name', () => {
     const out = normalizeActualTool({ name: 'safe ## PWNED' });
     expect(out.name).not.toContain(' ');
+    // R4-1: hash suffix appended because U+2029 was stripped.
+    expect(out.name).toMatch(STRIPPED_HASH_RE);
   });
 
-  it('strips DEL and C1 (\\x7f, \\x80, \\x85, \\x9f) from name', () => {
+  it('strips DEL and C1 (\\x7f, \\x80, \\x85, \\x9f) from name (R4-1: appends hash)', () => {
     const out = normalizeActualTool({ name: 'a\x7fb\x80c\x85d\x9fe' });
-    expect(out.name).toBe('abcde');
+    expect(out.name).toMatch(/^abcde-[0-9a-f]{4}$/);
   });
 
   it('preserves printable Unicode in name (emoji, CJK, accented Latin)', () => {
