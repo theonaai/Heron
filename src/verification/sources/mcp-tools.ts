@@ -25,6 +25,7 @@ import type {
   MCPTransportConfig,
   ToolInventoryRecord,
 } from '../../connectors/mcp-types.js';
+import { validateTargetEndpoint } from '../../connectors/url-policy.js';
 import type {
   ActualInventory,
   ActualTool,
@@ -46,6 +47,24 @@ export class McpToolsSource implements DeterministicSource<MCPToolsSourceConfig>
     const validation = validateConfig(config);
     if (!validation.ok) {
       return { ok: false, error: validation.error };
+    }
+
+    // I1 (PR #15 round 2): SSRF guard for HTTP transport. Run the URL
+    // through the same host-policy check that gates `audit_agent` so a
+    // hostile config cannot point verification at a cloud metadata
+    // endpoint or RFC1918 internal service. stdio transports have no
+    // network surface and are skipped.
+    if (validation.transport.kind === 'http') {
+      const policy = await validateTargetEndpoint(validation.transport.url);
+      if (!policy.ok) {
+        return {
+          ok: false,
+          error: {
+            kind: 'invalid_config',
+            message: `http transport URL rejected by target_endpoint policy: ${policy.error.message}`,
+          },
+        };
+      }
     }
 
     const client = new MCPClient(validation.transport);
