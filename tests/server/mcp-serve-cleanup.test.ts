@@ -183,11 +183,16 @@ describe('startHttpServer — transports map is cleaned up on session close (F-3
   // (`__transportsForTest`) plus the registry's wiring (`onclose`
   // listener) as a named module export. The test asserts that after a
   // simulated transport-close, the registry no longer holds the sid.
+  //
+  // Round 4 update: the registry is now a `Map` rather than a plain
+  // object — CodeQL flagged the plain-object form as a
+  // prototype-pollution sink (see
+  // `tests/server/mcp-serve-prototype-pollution.test.ts`).
   it('registry size shrinks to zero after transport.onclose fires', async () => {
     const mcpServeModule = await import('../../src/commands/mcp-serve.js');
     expect(typeof mcpServeModule.wireTransportCleanup).toBe('function');
 
-    const registry: Record<string, { onclose?: () => void }> = {};
+    const registry = new Map<string, { onclose?: () => void }>();
     const fakeTransport = { onclose: undefined as undefined | (() => void) };
     mcpServeModule.wireTransportCleanup(
       registry,
@@ -196,14 +201,14 @@ describe('startHttpServer — transports map is cleaned up on session close (F-3
     );
     // The registry stores the transport. (Production code puts it there
     // in `onsessioninitialized`; the helper is called at the same point.)
-    registry['sid-X'] = fakeTransport as unknown as { onclose?: () => void };
-    expect(Object.keys(registry)).toEqual(['sid-X']);
+    registry.set('sid-X', fakeTransport as unknown as { onclose?: () => void });
+    expect(Array.from(registry.keys())).toEqual(['sid-X']);
 
     // Now simulate the SDK closing the transport — the wiring should
     // delete the registry entry.
     expect(typeof fakeTransport.onclose).toBe('function');
     fakeTransport.onclose!();
-    expect(Object.keys(registry)).toEqual([]);
+    expect(Array.from(registry.keys())).toEqual([]);
   });
 });
 

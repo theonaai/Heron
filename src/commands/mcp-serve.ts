@@ -125,16 +125,23 @@ interface HttpServerArgs {
  * named export so the F-3 test in `mcp-serve-cleanup.test.ts` can
  * verify the wiring without spinning up a full HTTP transport.
  * (F-3, PR #14 round 3.)
+ *
+ * The registry is a `Map<string, ...>` rather than a plain object so
+ * that a malicious `Mcp-Session-Id` header (`__proto__`, `constructor`,
+ * `prototype`) cannot reach `Object.prototype`. CodeQL flagged the
+ * earlier `delete registry[sid]` line as a prototype-polluting
+ * assignment sink — Maps have no prototype-string property surface,
+ * which removes the sink class entirely. (PR #14 round 4.)
  */
 export function wireTransportCleanup(
-  registry: Record<string, unknown>,
+  registry: Map<string, unknown>,
   sid: string,
   transport: { onclose?: (() => void) | undefined },
 ): void {
   const prev = transport.onclose;
   transport.onclose = (): void => {
     try { if (typeof prev === 'function') prev(); } catch { /* noop */ }
-    delete registry[sid];
+    registry.delete(sid);
   };
 }
 
@@ -196,7 +203,12 @@ function parseEnvList(name: string): string[] | undefined {
 }
 
 async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
-  const transports: Record<string, StreamableHTTPServerTransport> = {};
+  // Use a `Map` rather than a plain object so the user-controlled
+  // session id (from the `Mcp-Session-Id` header) cannot reach
+  // `Object.prototype` through `transports[sid] = ...` /
+  // `delete transports[sid]`. CodeQL flagged the plain-object form as
+  // a prototype-polluting assignment sink in PR #14 round 4.
+  const transports = new Map<string, StreamableHTTPServerTransport>();
   const timeoutMs = getHttpTimeoutMs();
   // Captured after listen() — the SDK transport needs the bound port
   // to build a default allow-list, but `listen(0)` only resolves it
@@ -249,7 +261,7 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
       const body = bodyResult.value;
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport: StreamableHTTPServerTransport | undefined =
-        sessionId ? transports[sessionId] : undefined;
+        sessionId ? transports.get(sessionId) : undefined;
 
       if (!transport) {
         if (!isInitializeRequest(body)) {
@@ -272,7 +284,7 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
           allowedHosts,
           allowedOrigins,
           onsessioninitialized: (sid: string) => {
-            transports[sid] = transport!;
+            transports.set(sid, transport!);
             // F-3: clean up the registry when the SDK closes the
             // transport. Without this, a long-running server leaks one
             // SDK transport tree per session forever.
