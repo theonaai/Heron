@@ -1,0 +1,22 @@
+{
+  "label": "Scope dimension exact match → no diffs",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "scopes": [
+        { "service": "greenhouse", "scope": "applications:read" },
+        { "service": "greenhouse", "scope": "candidates:read" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "oauth-scopes",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "scopes": [
+      { "service": "greenhouse", "scope": "applications:read" },
+      { "service": "greenhouse", "scope": "candidates:read" }
+    ]
+  },
+  "expected": []
+}

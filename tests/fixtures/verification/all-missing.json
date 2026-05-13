@@ -1,0 +1,42 @@
+{
+  "label": "3 declared tools + empty actual → 3 missing",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "lookup_candidate" },
+        { "name": "send_reply" },
+        { "name": "schedule_meeting" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": []
+  },
+  "expected": [
+    {
+      "kind": "missing",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "declared": { "name": "lookup_candidate" },
+      "severity": "medium"
+    },
+    {
+      "kind": "missing",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "declared": { "name": "send_reply" },
+      "severity": "medium"
+    },
+    {
+      "kind": "missing",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "declared": { "name": "schedule_meeting" },
+      "severity": "medium"
+    }
+  ]
+}

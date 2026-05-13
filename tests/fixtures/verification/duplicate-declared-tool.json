@@ -1,0 +1,21 @@
+{
+  "label": "Duplicate declared tool names are deduped by primary key (no double-counting)",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "send_reply" },
+        { "name": "send_reply", "description": "second mention same name" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "send_reply" }
+    ]
+  },
+  "expected": []
+}

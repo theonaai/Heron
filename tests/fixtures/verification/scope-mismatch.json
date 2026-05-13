@@ -1,0 +1,35 @@
+{
+  "label": "Scope dimension — declared gmail:read, actual gmail:modify → 1 missing + 1 extra (different scope strings, not a mismatch)",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "scopes": [
+        { "service": "gmail", "scope": "gmail:read" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "oauth-scopes",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "scopes": [
+      { "service": "gmail", "scope": "gmail:modify" }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "missing",
+      "dimension": "scope",
+      "source": "oauth-scopes",
+      "declared": { "service": "gmail", "scope": "gmail:read" },
+      "severity": "medium"
+    },
+    {
+      "kind": "extra",
+      "dimension": "scope",
+      "source": "oauth-scopes",
+      "actual": { "service": "gmail", "scope": "gmail:modify" },
+      "severity": "high"
+    }
+  ]
+}

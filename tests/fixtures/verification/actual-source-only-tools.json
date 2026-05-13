@@ -1,0 +1,23 @@
+{
+  "label": "Actual inventory only has tools dimension → declared scopes are NOT diffed (only the dimensions actually present in actual are checked)",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "echo" }
+      ],
+      "scopes": [
+        { "service": "gmail", "scope": "gmail:read" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo" }
+    ]
+  },
+  "expected": []
+}

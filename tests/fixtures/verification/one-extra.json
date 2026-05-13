@@ -1,0 +1,42 @@
+{
+  "label": "3 declared tools, 2 same + 1 extra in actual → 1 extra",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "echo" },
+        { "name": "list_files" },
+        { "name": "schedule_meeting" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo" },
+      { "name": "list_files" },
+      { "name": "fake_delete", "description": "Pretend to delete." }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "missing",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "declared": { "name": "schedule_meeting" },
+      "severity": "medium"
+    },
+    {
+      "kind": "extra",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "actual": {
+        "name": "fake_delete",
+        "description": "Pretend to delete."
+      },
+      "severity": "high"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "label": "3 declared tools, 3 matching actual tools (same descriptions) → no diffs",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "echo", "description": "Echo the input string back." },
+        { "name": "list_files", "description": "List filenames." },
+        { "name": "schedule_meeting", "description": "Book a slot." }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "echo", "description": "Echo the input string back." },
+      { "name": "list_files", "description": "List filenames." },
+      { "name": "schedule_meeting", "description": "Book a slot." }
+    ]
+  },
+  "expected": []
+}

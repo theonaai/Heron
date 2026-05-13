@@ -1,0 +1,43 @@
+{
+  "label": "Mixed dimensions — tools + scopes in the same inventory",
+  "declared": [
+    {
+      "source": "interview",
+      "capturedAt": "2026-05-13T09:00:00.000Z",
+      "tools": [
+        { "name": "lookup_candidate" }
+      ],
+      "scopes": [
+        { "service": "greenhouse", "scope": "applications:read" }
+      ]
+    }
+  ],
+  "actual": {
+    "source": "mcp-tools",
+    "capturedAt": "2026-05-13T10:00:00.000Z",
+    "tools": [
+      { "name": "lookup_candidate" },
+      { "name": "fake_delete" }
+    ],
+    "scopes": [
+      { "service": "greenhouse", "scope": "applications:read" },
+      { "service": "greenhouse", "scope": "candidates:write" }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "extra",
+      "dimension": "tool",
+      "source": "mcp-tools",
+      "actual": { "name": "fake_delete" },
+      "severity": "high"
+    },
+    {
+      "kind": "extra",
+      "dimension": "scope",
+      "source": "mcp-tools",
+      "actual": { "service": "greenhouse", "scope": "candidates:write" },
+      "severity": "high"
+    }
+  ]
+}
