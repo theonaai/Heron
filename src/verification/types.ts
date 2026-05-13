@@ -169,7 +169,14 @@ export type DeterministicSourceErrorKind =
 export interface DeterministicSourceError {
   kind: DeterministicSourceErrorKind;
   message: string;
-  /** Original thrown value or wrapped lower-level error, preserved for debug. */
+  /**
+   * Original thrown value or wrapped lower-level error, preserved for
+   * debug only. **Internal-only — never serialise.** Stack traces and
+   * lower-level transport echoes may include env-derived paths or
+   * credentialed URLs. Route all serialisation through
+   * `toSafeJSON` (see `orchestrator.ts`) which strips `cause`.
+   * Tracking: PR #15 round 2, finding F-3.
+   */
   cause?: unknown;
 }
 

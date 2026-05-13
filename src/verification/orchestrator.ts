@@ -19,6 +19,7 @@ import { diff } from './differ.js';
 import type {
   DeclaredInventory,
   DeterministicSource,
+  DeterministicSourceError,
   SourceVerification,
   VerificationReport,
   VerificationVerdict,
@@ -72,5 +73,38 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
     agentLabel: args.agentLabel,
     declared: args.declared,
     sources: sourceResults,
+  };
+}
+
+/**
+ * Serialisation-safe copy of a `VerificationReport`.
+ *
+ * F-3 (PR #15 round 2): `DeterministicSourceError.cause` holds the
+ * original thrown value — stack traces, possibly env-derived paths,
+ * possibly credentialed URLs if a lower-level transport echoes them.
+ * It is intentionally internal-only.
+ *
+ * The current Markdown renderer never emits `cause`, but AAP-49 plans
+ * a JSON export of the same report and any future serialisation must
+ * route through this helper so `cause` cannot leak.
+ *
+ * Usage:
+ *   JSON.stringify(toSafeJSON(report))
+ *
+ * Returns a shallow-cloned report with every source's `error.cause`
+ * removed. The input report is not mutated.
+ */
+export function toSafeJSON(report: VerificationReport): VerificationReport {
+  return {
+    ...report,
+    sources: report.sources.map((s) => {
+      if (!s.error) return s;
+      const safeError: DeterministicSourceError = {
+        kind: s.error.kind,
+        message: s.error.message,
+        // `cause` deliberately omitted — see F-3 note above.
+      };
+      return { ...s, error: safeError };
+    }),
   };
 }

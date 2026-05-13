@@ -101,11 +101,15 @@ describe('McpToolsSource error messages — F-4 control-char hygiene', () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.kind).toBe('invalid_config');
-    // The injected newlines / brackets must not survive into the
-    // message verbatim — they would break the bullet layout of the
-    // rendered report.
+    // The injected newlines and other ASCII control characters must
+    // not survive into the message verbatim — they would break the
+    // bullet layout of the rendered report. The printable payload
+    // remains (so a reviewer sees what the operator sent), but
+    // structurally inert.
     expect(r.error.message).not.toContain('\n');
-    expect(r.error.message).not.toContain('## PWNED');
+    expect(r.error.message).not.toContain('\r');
+    // Truncate also bounds the length so a multi-MB blob cannot run.
+    expect(r.error.message.length).toBeLessThan(512);
   });
 
   it('truncates excessively long operator-supplied kind values', async () => {

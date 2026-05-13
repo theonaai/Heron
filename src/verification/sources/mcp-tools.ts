@@ -26,6 +26,7 @@ import type {
   ToolInventoryRecord,
 } from '../../connectors/mcp-types.js';
 import { validateTargetEndpoint } from '../../connectors/url-policy.js';
+import { truncateControlChars } from '../../util/markdown-escape.js';
 import type {
   ActualInventory,
   ActualTool,
@@ -128,7 +129,10 @@ function validateConfig(
     }
     return { ok: true, transport: t as unknown as MCPTransportConfig };
   }
-  return invalid(`unknown transport kind: ${String(t.kind)}`);
+  // F-4: operator-supplied `kind` is echoed into the error message.
+  // Strip control characters and truncate so a hostile value cannot
+  // break the bullet layout of the rendered report.
+  return invalid(`unknown transport kind: ${truncateControlChars(String(t.kind))}`);
 }
 
 function invalid(message: string): { ok: false; error: DeterministicSourceError } {
