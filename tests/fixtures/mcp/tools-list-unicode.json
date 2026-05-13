@@ -1,0 +1,22 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "поиск_сотрудника",
+        "description": "Найти сотрудника в базе данных HR — поддерживает кириллицу и emoji 🦅.",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "имя": { "type": "string" } },
+          "required": ["имя"]
+        }
+      },
+      {
+        "name": "查询订单",
+        "description": "查询订单状态 (Chinese-language tool).",
+        "inputSchema": { "type": "object", "properties": {} }
+      }
+    ]
+  }
+}

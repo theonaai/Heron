@@ -13,7 +13,15 @@
     "test:watch": "vitest",
     "lint": "tsc --noEmit"
   },
-  "keywords": ["ai", "agent", "audit", "security", "mcp", "interrogation", "access-control"],
+  "keywords": [
+    "ai",
+    "agent",
+    "audit",
+    "security",
+    "mcp",
+    "interrogation",
+    "access-control"
+  ],
   "license": "MIT",
   "files": [
     "dist/",
@@ -27,6 +35,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.0.0",
     "openai": "^4.70.0",
     "yaml": "^2.4.0",
@@ -34,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "tsx": "^4.21.0",
     "typescript": "~5.8.0",
     "vitest": "^2.0.0"

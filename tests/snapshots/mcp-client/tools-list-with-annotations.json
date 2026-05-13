@@ -1,0 +1,41 @@
+{
+  "server": "golden-fixture",
+  "tools": [
+    {
+      "name": "delete_repo",
+      "description": "Permanently delete a GitHub repository.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fullName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fullName"
+        ]
+      },
+      "annotations": {
+        "title": "Delete repository",
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "list_repos",
+      "description": "List repositories visible to the authenticated user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "List repositories",
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "capturedAt": "2026-05-13T12:00:00.000Z"
+}

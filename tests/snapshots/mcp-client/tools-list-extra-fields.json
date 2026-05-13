@@ -1,0 +1,32 @@
+{
+  "server": "golden-fixture",
+  "tools": [
+    {
+      "name": "issue_create",
+      "description": "Create a Jira issue.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "summary"
+        ]
+      },
+      "annotations": {
+        "destructiveHint": false
+      },
+      "_extra": {
+        "x-vendor-rate-limit": "10/min",
+        "x-vendor-cost-credits": 3
+      }
+    }
+  ],
+  "capturedAt": "2026-05-13T12:00:00.000Z"
+}
