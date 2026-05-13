@@ -159,9 +159,50 @@ function getHttpTimeoutMs(): number {
   return 30_000;
 }
 
+/**
+ * Resolve the per-transport DNS-rebinding allow lists from env vars.
+ * Both lists default to localhost on the bound port (the only
+ * legitimate caller for the OSS local server). Hosted (AAP-47) sets
+ * the env vars to its own values.
+ *
+ * F-4 (PR #14 round 3): without these flags any page in the
+ * operator's browser can drive a request at `127.0.0.1:<port>/mcp` via
+ * DNS rebinding.
+ */
+function getAllowedHostsAndOrigins(port: number): {
+  allowedHosts: string[];
+  allowedOrigins: string[];
+} {
+  const allowedHosts = parseEnvList('HERON_ALLOWED_HOSTS') ?? [
+    `127.0.0.1:${port}`,
+    `localhost:${port}`,
+  ];
+  const allowedOrigins = parseEnvList('HERON_ALLOWED_ORIGINS') ?? [
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+    'http://127.0.0.1',
+    'http://localhost',
+  ];
+  return { allowedHosts, allowedOrigins };
+}
+
+function parseEnvList(name: string): string[] | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
   const transports: Record<string, StreamableHTTPServerTransport> = {};
   const timeoutMs = getHttpTimeoutMs();
+  // Captured after listen() — the SDK transport needs the bound port
+  // to build a default allow-list, but `listen(0)` only resolves it
+  // post-bind. We read `httpServer.address()` at transport-construction
+  // time, but `args.port` is the requested value, possibly 0.
+  let boundPort = 0;
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // F-2 (slow loris): if the request stalls past the timeout, close
@@ -220,9 +261,16 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
           }));
           return;
         }
+        // F-4: pass DNS-rebinding-protection flags so cross-origin
+        // browser pages can't drive the local MCP server. Defaults are
+        // restrictive (localhost only); env overrides for AAP-47.
+        const { allowedHosts, allowedOrigins } = getAllowedHostsAndOrigins(boundPort);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
+          enableDnsRebindingProtection: true,
+          allowedHosts,
+          allowedOrigins,
           onsessioninitialized: (sid: string) => {
             transports[sid] = transport!;
             // F-3: clean up the registry when the SDK closes the
@@ -265,6 +313,9 @@ async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
         typeof addr === 'object' && addr !== null && 'port' in addr
           ? (addr as { port: number }).port
           : args.port;
+      // Make the actual bound port visible to transport construction
+      // below — the DNS-rebinding allow-list keys on it (F-4).
+      boundPort = actualPort;
       process.stderr.write(`Heron MCP server listening on http://127.0.0.1:${actualPort}/mcp\n`);
       resolveStart({
         port: actualPort,
