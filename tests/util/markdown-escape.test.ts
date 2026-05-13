@@ -25,8 +25,10 @@ describe('escapeText', () => {
   });
 
   it('defangs Markdown image syntax (![alt](url))', () => {
+    // Two layers: `![` becomes `! [`, then both `[` and `]` get escaped
+    // so the trailing `(url)` cannot pair with anything.
     expect(escapeText('![pwn](https://evil/x.png)')).toBe(
-      '! [pwn](https://evil/x.png)',
+      '! \\[pwn\\](https://evil/x.png)',
     );
   });
 
@@ -46,10 +48,10 @@ describe('escapeText', () => {
   });
 
   it('does not double-escape the [ that lived inside a Markdown image (![)', () => {
-    // The ![ defang already inserts a space; the trailing [ should still
-    // be escaped, producing `! \\[alt](url)`. This keeps the image
+    // The ![ defang already inserts a space; the trailing [ and ] are
+    // then escaped, producing `! \[alt\](u)`. This keeps the image
     // syntax defanged AND breaks any nested link syntax.
-    expect(escapeText('![alt](u)')).toBe('! \\[alt](u)');
+    expect(escapeText('![alt](u)')).toBe('! \\[alt\\](u)');
   });
 
   it('returns plain text unchanged when no metacharacters are present', () => {

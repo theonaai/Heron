@@ -37,22 +37,47 @@ const DEFAULT_MAX_LEN = 256;
  * Escape a chunk of body text emitted into rendered Markdown.
  *
  * Defangs HTML angle brackets, Markdown image syntax (`![alt](url)`),
- * and pipe characters so untrusted text cannot break out of a table
- * cell. (Cluster 2 adds defence against bare `[text](url)` link syntax.)
+ * Markdown link syntax (`[text](url)`), and pipe characters so untrusted
+ * text cannot break out of a table cell or render as a clickable link.
+ *
+ * F-2 hardening: the prior version defanged `![` but let bare `[text](url)`
+ * pass through, which a downstream HTML renderer turns into a clickable
+ * `javascript:` link given a hostile tool description.
  */
 export function escapeText(value: string): string {
   return value
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    // Defang Markdown image syntax: `![alt](url)` becomes `! [alt](url)`
-    // so the parser does not interpret it as an image.
+    // Defang Markdown image syntax FIRST: `![alt](url)` becomes
+    // `! [alt](url)`. Done before the bare-`[` escape so we insert the
+    // space, then the next pass backslash-escapes the now-isolated `[`.
     .replace(/!\[/g, '! [')
+    // Defang Markdown link syntax: `[text](url)` — escape both brackets
+    // so the link cannot render. Reviewers still see the literal text,
+    // including the `\[` / `\]` artefacts. Escaping only `[` is enough
+    // to break the parser, but escaping `]` too is symmetrical and
+    // defends against any renderer that's tolerant of an unescaped `[`.
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
     .replace(/\|/g, '\\|');
 }
 
-/** For values that sit inside `\`backticks\`` we strip stray backticks. */
+/**
+ * Escape a value that will sit inside `\`backticks\``.
+ *
+ * Strips backticks (they would terminate the span). F-1 hardening: also
+ * strips CR / LF (CommonMark inline-code cannot span line breaks — a
+ * literal newline terminates the span and allows arbitrary Markdown,
+ * including `## heading` injection and `[link](url)` exfiltration on the
+ * next line). HTML-escapes `<` and `>` as defence in depth against
+ * downstream HTML renderers that don't auto-escape code-span content.
+ */
 export function escapeInlineCode(value: string): string {
-  return value.replace(/`/g, '');
+  return value
+    .replace(/`/g, '')
+    .replace(/[\r\n]/g, ' ')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**
