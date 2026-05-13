@@ -205,6 +205,21 @@ Restart Claude Desktop and you can ask it to call `audit_agent`, `get_report`, o
 
 The wrapper is transport-agnostic — the same code powers stdio for local use and HTTP for the future hosted side. See `src/server/mcp-types.ts` for the locked interface contract (`RequestContext`, `MCPServerError`, `MCPServerResult<T>`).
 
+##### Security knobs
+
+`heron mcp-serve` ships with strict defaults. Every knob below loosens them; flip only when you know what you're doing.
+
+| Env var | Default | What it does |
+| --- | --- | --- |
+| `HERON_ALLOW_PRIVATE_TARGETS` | unset | When `1`, the `audit_agent` SSRF guard is disabled. Without this, the tool rejects target endpoints that resolve to loopback, RFC1918, link-local (incl. cloud metadata `169.254.169.254`), or non-`http(s)` schemes. Enable only for local testing against an agent on a private network. |
+| `HERON_MCP_HTTP_TIMEOUT_MS` | `30000` | Per-request socket timeout for HTTP mode. Lower in tests; keep >= 5 s in production. |
+| `HERON_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated allow-list passed to `StreamableHTTPServerTransport` for DNS-rebinding protection. |
+| `HERON_ALLOWED_ORIGINS` | `http://127.0.0.1[:port],http://localhost[:port]` | Same, for the `Origin` header. |
+
+The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
+
+DNS-rebinding mitigation note: the `target_endpoint` policy resolves the host once and then `HttpConnector` connects by hostname. A TTL-0 DNS record could in principle flip between check and connect; this raises the bar substantially but does not fully eliminate the TOCTOU class. Tracked as a follow-up.
+
 ### Option 2: Hosted version (no setup)
 
 Sign in at **https://heron.ing** and paste this into your AI agent's chat:

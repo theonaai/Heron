@@ -79,10 +79,14 @@ export async function validateTargetEndpoint(input: unknown): Promise<ValidateRe
     return { ok: true, value: parsed.toString() };
   }
 
-  // `URL` strips IPv6 brackets in `.hostname` but keeps them in
-  // `.host`. `isIP` accepts the unbracketed form, which is exactly
-  // what `.hostname` gives us.
-  const host = parsed.hostname;
+  // `URL.hostname` returns the bracketed form for IPv6 literals
+  // (`[2001:db8::1]`). `isIP` only recognises the unbracketed form,
+  // so we strip enclosing brackets before classifying.
+  const rawHost = parsed.hostname;
+  const host =
+    rawHost.startsWith('[') && rawHost.endsWith(']')
+      ? rawHost.slice(1, -1)
+      : rawHost;
   const ipVersion = isIP(host);
   if (ipVersion === 4) {
     if (isBlockedIPv4(host)) {

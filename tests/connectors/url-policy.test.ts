@@ -177,6 +177,33 @@ describe('validateTargetEndpoint — IPv6 host policy', () => {
     if (r.ok) return;
     expect(r.error.kind).toBe('invalid_input');
   });
+
+  it('rejects [::ffff:127.0.0.1] (IPv4-mapped IPv6 loopback)', async () => {
+    // The IPv4-mapped form should be re-checked as an IPv4 — 127.0.0.1
+    // is loopback, so this URL must be rejected.
+    const r = await validateTargetEndpoint('http://[::ffff:127.0.0.1]/');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_input');
+  });
+
+  it('rejects [::ffff:169.254.169.254] (IPv4-mapped AWS metadata)', async () => {
+    const r = await validateTargetEndpoint('http://[::ffff:169.254.169.254]/');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_input');
+  });
+
+  it('accepts [2001:4860:4860::8888] (Google public DNS — fully-expanded form)', async () => {
+    // Exercises the no-`::` IPv6 path and the public-range accept.
+    const r = await validateTargetEndpoint('http://[2001:4860:4860:0:0:0:0:8888]/');
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepts [2606:4700:4700::1111] (Cloudflare public DNS — `::` form)', async () => {
+    const r = await validateTargetEndpoint('http://[2606:4700:4700::1111]/');
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe('validateTargetEndpoint — DNS hostname resolution', () => {
