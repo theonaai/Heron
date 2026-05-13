@@ -69,6 +69,12 @@ describe('HeronMCPServer — stdio transport', () => {
           onprogress: (p) => progressEvents.push(p as { progress?: number; total?: number; message?: string }),
         },
       );
+      // The result message can arrive on the client transport ahead of
+      // (or interleaved with) the progress notifications — both come
+      // down the same stdio pipe but are dispatched in arrival order.
+      // Yield a couple of event-loop ticks to let any trailing
+      // notifications flush before asserting.
+      await new Promise((r) => setTimeout(r, 50));
       // The stdio fixture emits 3 stages — interrogating, analyzing,
       // rendering. We don't pin exact counts (wrapper may add bookends)
       // but require at least one notification carrying a message field.

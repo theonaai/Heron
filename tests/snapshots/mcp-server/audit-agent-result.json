@@ -1,0 +1,9 @@
+{
+  "report_markdown": "# Golden Audit\n\nTarget: https://golden.example/v1\n",
+  "report_id": "report_golden_fixture",
+  "summary": {
+    "risk_level": "medium",
+    "findings_count": 2,
+    "recommendation": "APPROVE WITH CONDITIONS"
+  }
+}
