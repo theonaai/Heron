@@ -91,6 +91,127 @@ describe('toSafeJSON — F-3 cause never leaks', () => {
   });
 });
 
+describe('toSafeJSON — N2 _extra never leaks', () => {
+  /**
+   * N2 (PR #15 round 3): `ActualTool._extra` is preserved verbatim by
+   * `McpToolsSource.shapeInventory` for forward-compat — unknown server
+   * fields go in there so the verification path does not have to be
+   * re-shipped every time the MCP spec grows a field. The hazard: a
+   * hostile MCP server can push arbitrarily large or arbitrarily
+   * shaped blobs into `_extra`, and if `toSafeJSON` lets them through
+   * any JSON export carries the blob with it. Less severe than F-3
+   * (server content vs. Heron internals) but worth bounding.
+   *
+   * Contract: `toSafeJSON` strips `_extra` from every `ActualTool` in
+   * every source's inventory. Original report stays unmutated.
+   */
+
+  it('strips _extra from every tool in every source inventory', () => {
+    const huge = 'X'.repeat(100_000);
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'extra-leak-test',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'verified',
+        diffs: [],
+        inventory: {
+          source: 'mcp-tools',
+          capturedAt: '2026-05-13T10:00:00.000Z',
+          tools: [
+            {
+              name: 'echo',
+              _extra: {
+                malicious: '<script>alert(1)</script>',
+                huge,
+              },
+            },
+            {
+              name: 'list_files',
+              annotations: { readOnlyHint: true },
+              _extra: { vendor_field: 'vendor-only' },
+            },
+          ],
+        },
+      }],
+    };
+
+    const safe = toSafeJSON(report);
+
+    // Field-level assertions on the cloned report.
+    const tools = safe.sources[0].inventory?.tools ?? [];
+    expect(tools).toHaveLength(2);
+    for (const t of tools) {
+      expect(t).not.toHaveProperty('_extra');
+    }
+    // Known fields stay where they belong.
+    expect(tools[0].name).toBe('echo');
+    expect(tools[1].name).toBe('list_files');
+    expect(tools[1].annotations).toEqual({ readOnlyHint: true });
+
+    // Serialised output must not carry the hostile payload at all.
+    const serialised = JSON.stringify(safe);
+    expect(serialised).not.toContain('_extra');
+    expect(serialised).not.toContain('<script>');
+    expect(serialised).not.toContain('vendor-only');
+    expect(serialised).not.toContain(huge);
+    // Sanity floor: serialised output is bounded by the visible fields,
+    // not by the size of the stripped `_extra`. With `huge` at 100KB
+    // the unsafe output would be ~100KB+; the safe one stays small.
+    expect(serialised.length).toBeLessThan(2_000);
+  });
+
+  it('does not mutate the input report when stripping _extra', () => {
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'extra-mutation-test',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'verified',
+        diffs: [],
+        inventory: {
+          source: 'mcp-tools',
+          capturedAt: '2026-05-13T10:00:00.000Z',
+          tools: [
+            { name: 'echo', _extra: { still: 'here' } },
+          ],
+        },
+      }],
+    };
+
+    toSafeJSON(report);
+    // Original keeps `_extra` — we returned a copy, not a mutation.
+    expect(report.sources[0].inventory?.tools?.[0]._extra).toEqual({ still: 'here' });
+  });
+
+  it('leaves tools without _extra structurally unchanged', () => {
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'no-extra',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'verified',
+        diffs: [],
+        inventory: {
+          source: 'mcp-tools',
+          capturedAt: '2026-05-13T10:00:00.000Z',
+          tools: [
+            { name: 'echo', description: 'echo it back' },
+          ],
+        },
+      }],
+    };
+    const safe = toSafeJSON(report);
+    expect(safe.sources[0].inventory?.tools?.[0]).toEqual({
+      name: 'echo',
+      description: 'echo it back',
+    });
+  });
+});
+
 describe('McpToolsSource error messages — F-4 control-char hygiene', () => {
   it('strips control characters from hostile transport kind in error message', async () => {
     const source = new McpToolsSource();
