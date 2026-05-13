@@ -2,6 +2,11 @@ import type { AuditReport, QAPair, DataQuality, Risk, SystemAssessment, WriteOpe
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import { isBusinessSystem } from '../util/systems.js';
+import {
+  escapeText,
+  escapeInlineCode,
+  escapeTableCell as escapeCell,
+} from '../util/markdown-escape.js';
 import type {
   DiffEntry,
   SourceVerification,
@@ -990,33 +995,6 @@ function renderSourceLine(s: SourceVerification): string {
   return `- ${id} — read succeeded at ${escapeText(ts)}${detail}`;
 }
 
-// ─── Escape helpers — defence against hostile MCP server strings ──────────
-
-/**
- * Escape a chunk of body text. Replaces angle brackets (HTML escape, blocks
- * raw `<script>`), neutralises Markdown image syntax (`![alt](url)`), and
- * normalises pipes so untrusted text cannot break out of a table cell.
- *
- * We do NOT use a full Markdown sanitiser — the goal is to defang structural
- * injection, not to redact content. A reviewer still sees the literal text
- * the server tried to push.
- */
-function escapeText(value: string): string {
-  return value
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    // Defang Markdown image syntax: `![alt](url)` becomes `! [alt](url)` so
-    // the parser does not interpret it as an image.
-    .replace(/!\[/g, '! [')
-    .replace(/\|/g, '\\|');
-}
-
-/** For values that sit inside `\`backticks\`` we strip stray backticks. */
-function escapeInlineCode(value: string): string {
-  return value.replace(/`/g, '');
-}
-
-/** Cell content: text-escape + collapse newlines so the row stays on one line. */
-function escapeCell(value: string): string {
-  return escapeText(value).replace(/\r?\n/g, ' ');
-}
+// Escape helpers — see `src/util/markdown-escape.ts`. Re-imported above as
+// `escapeText`, `escapeInlineCode`, and (under the local alias `escapeCell`)
+// `escapeTableCell` to keep the call sites in this file stable.
