@@ -212,6 +212,217 @@ describe('toSafeJSON — N2 _extra never leaks', () => {
   });
 });
 
+describe('toSafeJSON — N5 _extra never leaks via diffs', () => {
+  /**
+   * N5 (PR #15 round 4): round 3 closed the inventory path
+   * (`sources[*].inventory.tools[*]._extra`), but `_extra` also rides
+   * through the diff path. `differ.cloneActualTool` defensively copies
+   * `_extra` into the cloned tool that lands on `DiffEntry.actual` (for
+   * both `kind: 'extra'` and `kind: 'mismatch'`). A hostile MCP server
+   * with a 50 KB `_extra` blob therefore still serialises through any
+   * JSON export of the report — same blob class, different route.
+   *
+   * Contract: `toSafeJSON` must strip `_extra` from every diff entry's
+   * `actual` field (when present — only `extra` and `mismatch` carry
+   * `actual`, never `missing`). Diff `declared` slots also pass through
+   * `toSafeJSON` but `DeclaredTool` does not have `_extra` at the type
+   * level, so no strip is required there.
+   */
+
+  it('strips _extra from each extra-diff entry actual', () => {
+    const huge = 'X'.repeat(50_000);
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'diff-extra-leak',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'discrepancy',
+        diffs: [{
+          kind: 'extra',
+          dimension: 'tool',
+          source: 'mcp-tools',
+          actual: {
+            name: 'leaky',
+            description: 'innocent description',
+            _extra: { secret: 'EXTRA_SENTINEL_NEVER_LEAK', huge },
+          },
+          severity: 'high',
+        }],
+      }],
+    };
+
+    const safe = toSafeJSON(report);
+    const serialised = JSON.stringify(safe);
+
+    expect(serialised).not.toContain('_extra');
+    expect(serialised).not.toContain('EXTRA_SENTINEL_NEVER_LEAK');
+    expect(serialised).not.toContain(huge);
+    // Sanity floor: visible fields are still serialised.
+    expect(serialised).toContain('"name":"leaky"');
+    expect(serialised).toContain('innocent description');
+    // Without the leak the serialised output is bounded by the visible
+    // fields; with `huge` at 50 KB the unsafe output would be ~50 KB+.
+    expect(serialised.length).toBeLessThan(2_000);
+  });
+
+  it('strips _extra from each mismatch-diff entry actual', () => {
+    const huge = 'Y'.repeat(50_000);
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'diff-mismatch-leak',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'discrepancy',
+        diffs: [{
+          kind: 'mismatch',
+          dimension: 'tool',
+          source: 'mcp-tools',
+          declared: { name: 'echo', description: 'A' },
+          actual: {
+            name: 'echo',
+            description: 'B',
+            _extra: { secret: 'MISMATCH_SENTINEL_NEVER_LEAK', huge },
+          },
+          severity: 'high',
+        }],
+      }],
+    };
+
+    const safe = toSafeJSON(report);
+    const serialised = JSON.stringify(safe);
+
+    expect(serialised).not.toContain('_extra');
+    expect(serialised).not.toContain('MISMATCH_SENTINEL_NEVER_LEAK');
+    expect(serialised).not.toContain(huge);
+    // Visible declared/actual fields still present.
+    expect(serialised).toContain('"name":"echo"');
+    expect(serialised).toContain('"description":"A"');
+    expect(serialised).toContain('"description":"B"');
+    expect(serialised.length).toBeLessThan(2_000);
+  });
+
+  it('strips _extra simultaneously across inventory and diffs in the same source', () => {
+    // Belt-and-braces: a report can carry the SAME hostile blob in BOTH
+    // `inventory.tools[*]._extra` and `diffs[*].actual._extra`. Round 3
+    // closed the inventory path; round 4 must close diffs without
+    // breaking the inventory path.
+    const huge = 'Z'.repeat(50_000);
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'both-paths-leak',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'discrepancy',
+        diffs: [{
+          kind: 'extra',
+          dimension: 'tool',
+          source: 'mcp-tools',
+          actual: {
+            name: 'rogue',
+            _extra: { secret: 'DIFF_PATH_SENTINEL', huge },
+          },
+          severity: 'high',
+        }],
+        inventory: {
+          source: 'mcp-tools',
+          capturedAt: '2026-05-13T10:00:00.000Z',
+          tools: [{
+            name: 'rogue',
+            _extra: { secret: 'INVENTORY_PATH_SENTINEL', huge },
+          }],
+        },
+      }],
+    };
+
+    const safe = toSafeJSON(report);
+    const serialised = JSON.stringify(safe);
+
+    expect(serialised).not.toContain('_extra');
+    expect(serialised).not.toContain('DIFF_PATH_SENTINEL');
+    expect(serialised).not.toContain('INVENTORY_PATH_SENTINEL');
+    expect(serialised).not.toContain(huge);
+  });
+
+  it('does not mutate the input report when stripping _extra from diffs', () => {
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'diff-mutation-test',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'discrepancy',
+        diffs: [{
+          kind: 'extra',
+          dimension: 'tool',
+          source: 'mcp-tools',
+          actual: { name: 'rogue', _extra: { still: 'here' } },
+          severity: 'high',
+        }],
+      }],
+    };
+
+    toSafeJSON(report);
+    // Original report keeps `_extra` — toSafeJSON returns a copy.
+    const orig = report.sources[0].diffs[0];
+    expect(orig.kind).toBe('extra');
+    if (orig.kind !== 'extra') return; // type narrow
+    expect((orig.actual as { _extra?: unknown })._extra).toEqual({ still: 'here' });
+  });
+
+  it('leaves missing-kind diffs structurally unchanged (no actual field to clean)', () => {
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'missing-diff',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'discrepancy',
+        diffs: [{
+          kind: 'missing',
+          dimension: 'tool',
+          source: 'mcp-tools',
+          declared: { name: 'echo' },
+          severity: 'medium',
+        }],
+      }],
+    };
+    const safe = toSafeJSON(report);
+    const diff = safe.sources[0].diffs[0];
+    expect(diff.kind).toBe('missing');
+    if (diff.kind !== 'missing') return;
+    expect(diff.declared).toEqual({ name: 'echo' });
+  });
+
+  it('leaves scope-extra diffs unchanged (ActualScope has no _extra)', () => {
+    // Scopes do not carry `_extra` at the type level. The stripper must
+    // not blow up when it encounters a scope-dimension diff.
+    const report: VerificationReport = {
+      capturedAt: '2026-05-13T10:00:00.000Z',
+      agentLabel: 'scope-diff',
+      declared: [],
+      sources: [{
+        sourceId: 'mcp-tools',
+        verdict: 'discrepancy',
+        diffs: [{
+          kind: 'extra',
+          dimension: 'scope',
+          source: 'mcp-tools',
+          actual: { service: 'gmail', scope: 'mail.read' },
+          severity: 'high',
+        }],
+      }],
+    };
+    const safe = toSafeJSON(report);
+    const diff = safe.sources[0].diffs[0];
+    expect(diff.kind).toBe('extra');
+    if (diff.kind !== 'extra') return;
+    expect(diff.actual).toEqual({ service: 'gmail', scope: 'mail.read' });
+  });
+});
+
 describe('McpToolsSource error messages — F-4 control-char hygiene', () => {
   it('strips control characters from hostile transport kind in error message', async () => {
     const source = new McpToolsSource();
