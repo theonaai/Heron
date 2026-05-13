@@ -646,13 +646,20 @@ function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush: () =>
             message,
           },
         });
-        // Yield one macrotask so the OS pipe / HTTP response stream
-        // actually drains this notification before the next write.
-        // Without it, the receiver's 'data' event coalesces with the
-        // next message and the SDK's synchronous response handler tears
-        // down the per-request progress handler before queued
-        // notification microtasks can dispatch.
-        await new Promise<void>((r) => setImmediate(r));
+        // Yield long enough for the OS pipe / HTTP response stream to
+        // actually drain this notification before the next write or the
+        // final response. Without a real timer break, the receiver's
+        // 'data' event can coalesce multiple JSON-RPC messages into one
+        // chunk; the SDK then processes them in a synchronous loop in
+        // which the response handler tears down the per-request progress
+        // handler before queued notification microtasks dispatch — and
+        // the trailing notifications go to nothing.
+        //
+        // 1ms is enough: empirically reliable across 50+ stdio rounds on
+        // CI-like load, while being invisible to a human-perceived
+        // progress update. We can't use setImmediate here — that only
+        // yields to Node's I/O phase, not to the kernel pipe flush.
+        await new Promise<void>((r) => setTimeout(r, 1));
       })
       .catch(() => undefined);
   };
