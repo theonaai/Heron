@@ -46,7 +46,11 @@ import { loadConfig } from '../config/loader.js';
 void SessionManager;
 
 export interface MCPServeOptions {
-  /** When set, switch from stdio to HTTP transport on this port. */
+  /**
+   * When set, switch from stdio to HTTP transport on this port.
+   * Pass `0` to let the OS pick a random free port — the actual
+   * bound port is returned in the handle.
+   */
   port?: number;
   /** Optional audit-config (YAML). Used to load LLM credentials etc. */
   auditConfigPath?: string;
@@ -55,10 +59,20 @@ export interface MCPServeOptions {
 }
 
 /**
+ * Handle returned by `runMcpServe`. `port` is populated for HTTP mode
+ * (including when `port: 0` is requested and the OS chose one); it is
+ * undefined for stdio mode.
+ */
+export interface MCPServeHandle {
+  close: () => Promise<void>;
+  port?: number;
+}
+
+/**
  * Entry point used by `bin/heron.ts`. Stdio by default; HTTP if `port`
  * is set.
  */
-export async function runMcpServe(opts: MCPServeOptions): Promise<{ close: () => Promise<void> }> {
+export async function runMcpServe(opts: MCPServeOptions): Promise<MCPServeHandle> {
   const reportDir = opts.reportDir ?? './reports';
   mkdirSync(reportDir, { recursive: true });
 
@@ -103,7 +117,7 @@ interface HttpServerArgs {
   deps: { auditPipeline: AuditPipeline; reportStore: ReportStore; differ: ReportDiffer };
 }
 
-async function startHttpServer(args: HttpServerArgs): Promise<{ close: () => Promise<void> }> {
+async function startHttpServer(args: HttpServerArgs): Promise<MCPServeHandle> {
   const transports: Record<string, StreamableHTTPServerTransport> = {};
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -144,8 +158,17 @@ async function startHttpServer(args: HttpServerArgs): Promise<{ close: () => Pro
 
   return new Promise((resolveStart) => {
     httpServer.listen(args.port, '127.0.0.1', () => {
-      process.stderr.write(`Heron MCP server listening on http://127.0.0.1:${args.port}/mcp\n`);
+      // `listen(0, ...)` makes the OS pick a free port — read it back
+      // from the address info so callers (tests, hosted entry points)
+      // can connect without parsing the log line.
+      const addr = httpServer.address();
+      const actualPort =
+        typeof addr === 'object' && addr !== null && 'port' in addr
+          ? (addr as { port: number }).port
+          : args.port;
+      process.stderr.write(`Heron MCP server listening on http://127.0.0.1:${actualPort}/mcp\n`);
       resolveStart({
+        port: actualPort,
         close: async () => {
           await new Promise<void>((r) => httpServer.close(() => r()));
         },
