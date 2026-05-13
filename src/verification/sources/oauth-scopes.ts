@@ -94,7 +94,15 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
       if (!result.ok) {
         return { ok: false, error: result.error };
       }
-      return { ok: true, inventory: result.inventory };
+      // F-1: propagate warnings up to the orchestrator. A partial read
+      // (some probes 5xx / timed out / blocked by redirect guard) must
+      // not render as a clean "Verified" verdict — the auditor needs to
+      // see which scopes were skipped. Option A from the audit: preserve
+      // partial data + transparent warning list (auditor benefits from
+      // partial scopes vs Option B "downgrade to unverified").
+      return result.warnings !== undefined && result.warnings.length > 0
+        ? { ok: true, inventory: result.inventory, warnings: result.warnings }
+        : { ok: true, inventory: result.inventory };
     }
 
     // Unreachable today — the type union has one member — but the
