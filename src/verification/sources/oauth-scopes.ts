@@ -37,6 +37,10 @@ import {
   readBambooHRScopes,
   type HttpClient as BambooHRHttpClient,
 } from './oauth-scopes/bamboohr.js';
+import {
+  readGoogleWorkspaceScopes,
+  type HttpClient as GoogleWorkspaceHttpClient,
+} from './oauth-scopes/google-workspace.js';
 import type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
 
 export type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
@@ -62,6 +66,7 @@ export type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
  */
 let testGreenhouseHttpClient: GreenhouseHttpClient | undefined;
 let testBambooHRHttpClient: BambooHRHttpClient | undefined;
+let testGoogleWorkspaceHttpClient: GoogleWorkspaceHttpClient | undefined;
 
 /** @internal test-only — DO NOT use in production code. */
 export function __setGreenhouseHttpClientForTesting(client: GreenhouseHttpClient | undefined): void {
@@ -71,6 +76,13 @@ export function __setGreenhouseHttpClientForTesting(client: GreenhouseHttpClient
 /** @internal test-only — DO NOT use in production code. */
 export function __setBambooHRHttpClientForTesting(client: BambooHRHttpClient | undefined): void {
   testBambooHRHttpClient = client;
+}
+
+/** @internal test-only — DO NOT use in production code. */
+export function __setGoogleWorkspaceHttpClientForTesting(
+  client: GoogleWorkspaceHttpClient | undefined,
+): void {
+  testGoogleWorkspaceHttpClient = client;
 }
 
 export interface OAuthScopesSourceOptions {
@@ -145,18 +157,17 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
     }
 
     if (validation.config.connector === 'google-workspace') {
-      // Implementation lands in commit 3. The type discriminator and
-      // validation already exist so call sites can be written against
-      // the final shape; this branch is RED until the implementation
-      // arrives. Mirrors the staged-rollout pattern used for the
-      // BambooHR variant landed in PR #17.
-      return {
-        ok: false,
-        error: {
-          kind: 'invalid_config',
-          message: 'google-workspace connector not implemented yet',
-        },
-      };
+      const httpClient = this.httpClient ?? testGoogleWorkspaceHttpClient;
+      const result = await readGoogleWorkspaceScopes({
+        credentials: validation.config.credentials,
+        ...(httpClient !== undefined ? { httpClient } : {}),
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error };
+      }
+      return result.warnings !== undefined && result.warnings.length > 0
+        ? { ok: true, inventory: result.inventory, warnings: result.warnings }
+        : { ok: true, inventory: result.inventory };
     }
 
     // Unreachable when every connector variant is handled above —
