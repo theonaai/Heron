@@ -117,19 +117,32 @@ export function scrubMessage(
  * too-short secret is left alone so the scrub cannot eat unrelated
  * substring matches in benign log text.
  *
- * Order-independent: redacting `secrets[0]` first and `secrets[1]`
- * second produces the same output as the reverse, because the
- * replacement marker `[REDACTED]` contains none of the secret bytes
- * (assuming the operator did not name a secret literally
- * `[REDACTED]`, which is a non-concern in practice).
+ * Order-independent (by construction): we sort the gated secrets
+ * by length descending before walking them. Longest-first matters
+ * when one secret is a prefix substring of another — e.g.
+ * secrets = ['abcdefgh', 'abcdefghij'] on input 'abcdefghij'.
+ * Without the sort, the shorter secret is redacted first and the
+ * suffix `ij` of the longer secret leaks. Sorting longest-first
+ * guarantees that any longer secret is fully consumed before its
+ * prefix-substring runs.
+ *
+ * Empty strings and below-gate secrets are filtered out up-front
+ * so the loop body never sees them.
+ *
+ * Replacement is a single `String.prototype.split(...).join(...)`
+ * which already replaces all occurrences. (An earlier draft wrapped
+ * it in a `while (out.includes(secret))` loop — that was redundant,
+ * and would infinite-loop in the theoretical case where a secret
+ * literal happens to equal `[REDACTED]`. Removed.)
  */
 export function scrubSecrets(value: string, secrets: ReadonlyArray<string>): string {
+  const sortedSecrets = secrets
+    .filter((s) => typeof s === 'string' && s.length >= SCRUB_MIN_KEY_LENGTH)
+    .slice()
+    .sort((a, b) => b.length - a.length);
   let out = value;
-  for (const secret of secrets) {
-    if (!secret || secret.length < SCRUB_MIN_KEY_LENGTH) continue;
-    while (out.includes(secret)) {
-      out = out.split(secret).join('[REDACTED]');
-    }
+  for (const secret of sortedSecrets) {
+    out = out.split(secret).join('[REDACTED]');
   }
   return out;
 }

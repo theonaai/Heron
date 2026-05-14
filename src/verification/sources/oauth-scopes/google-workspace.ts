@@ -258,8 +258,9 @@ export async function readGoogleWorkspaceScopes(
   // Collect every secret value in play so the scrub helper can redact
   // all of them in any echoed transport error. Mode A has one secret;
   // Mode B has three. The order does not matter — scrubSecrets is
-  // order-independent because the redaction marker contains none of
-  // the secret bytes.
+  // order-independent because it internally sorts the secrets longest-
+  // first before redacting, so a shorter prefix-substring of a longer
+  // secret cannot consume the longer secret's tail.
   const secrets: string[] = secretsFor(args.credentials);
 
   // Mode B: exchange refresh token for a fresh access token first.
