@@ -594,6 +594,23 @@ async function readCappedText(res: Response, maxBytes: number): Promise<string> 
       }
       chunks.push(value);
     }
+  } catch (err) {
+    // Cancel the reader on any read-loop failure (most importantly the
+    // over-cap throw above). Without this, only the application-side
+    // memory is freed — the underlying HTTP socket keeps receiving
+    // bytes from upstream until GC. On a hostile server emitting
+    // 10 MiB/s, the connection (and bandwidth) stays open well past
+    // the cap. `reader.cancel()` propagates a TypeScript-side cancel
+    // through the stream which the fetch transport translates into a
+    // socket close on Node 18+. Swallow secondary errors — cancel is
+    // best-effort defence-in-depth, not a correctness primitive.
+    try {
+      await reader.cancel();
+    } catch {
+      // Cancel failed (e.g. reader already released by the runtime).
+      // The original `err` is still what we want to surface.
+    }
+    throw err;
   } finally {
     try {
       reader.releaseLock();
