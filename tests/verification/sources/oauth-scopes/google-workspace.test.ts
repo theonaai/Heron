@@ -1165,5 +1165,141 @@ describe('Google Workspace connector — golden scope-set snapshots', () => {
   });
 });
 
+// ─── Round-2 audit fixes ──────────────────────────────────────────
+//
+// Fix 1 (MEDIUM): readCappedText must call reader.cancel() on the
+// over-cap throw so the HTTP socket closes immediately. Without it,
+// the underlying connection keeps draining bytes from a hostile
+// server until GC.
+//
+// Fix 2 (LOW): scrubSecrets must be order-independent — the longest
+// secret wins so a shorter prefix substring cannot leak the suffix
+// of a longer secret. Also: empty strings in the secrets array must
+// not crash; below-gate secrets must be ignored.
+//
+// Fix 4 (LOW): readCappedText must throw on `res.body === null`
+// instead of falling through to unbounded `res.text()`.
+
+describe('Google Workspace connector — round-2 audit fixes', () => {
+  it('Fix 1: readCappedText cancels the reader when the body exceeds the cap', async () => {
+    // Build a ReadableStream that emits >64 KiB in chunked form so the
+    // cap-exceed branch fires inside the streaming-read loop (NOT via
+    // Content-Length, which short-circuits earlier). Spy on cancel().
+    let cancelCalled = 0;
+    const chunkSize = 16 * 1024; // 16 KiB
+    const totalChunks = 8;        // 128 KiB total — comfortably over 64 KiB cap
+    let emitted = 0;
+
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (emitted >= totalChunks) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(chunkSize).fill(0x78)); // 'x'
+        emitted += 1;
+      },
+      cancel(_reason) {
+        cancelCalled += 1;
+      },
+    });
+
+    const res = new Response(stream, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    const responses = new Map<string, () => Promise<Response>>([
+      [tokenInfoUrl(FAKE_ACCESS_TOKEN), async () => res],
+    ]);
+
+    const out = await readGoogleWorkspaceScopes({
+      credentials: { kind: 'access_token', access_token: FAKE_ACCESS_TOKEN },
+      httpClient: makeFetchStub(responses),
+    });
+
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(['parse', 'unavailable']).toContain(out.error.kind);
+    // The cap-exceed branch must propagate cancellation to the network
+    // layer so the socket closes — otherwise a 10 MiB/s adversary keeps
+    // burning bandwidth past the cap.
+    expect(cancelCalled).toBeGreaterThan(0);
+  });
+
+  it('Fix 4: readCappedText throws when res.body is null (no unbounded buffer)', async () => {
+    // Forge a Response-shaped object with body=null but a successful
+    // status. The connector should refuse to call res.text() and
+    // surface a parse error instead of buffering an unbounded body.
+    const fakeRes = {
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: null,
+      // text() must NEVER be called in this path — if the fix is in
+      // place, the throw fires before we ever reach text(). Spy:
+      textCalls: 0,
+      text() {
+        (this as { textCalls: number }).textCalls += 1;
+        return Promise.resolve('x'.repeat(GOOGLE_MAX_RESPONSE_BYTES + 1024));
+      },
+    };
+
+    const responses = new Map<string, () => Promise<Response>>([
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      [tokenInfoUrl(FAKE_ACCESS_TOKEN), async () => fakeRes as unknown as Response],
+    ]);
+
+    const out = await readGoogleWorkspaceScopes({
+      credentials: { kind: 'access_token', access_token: FAKE_ACCESS_TOKEN },
+      httpClient: makeFetchStub(responses),
+    });
+
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.error.kind).toBe('parse');
+    // The fix must throw BEFORE attempting an unbounded read.
+    expect(fakeRes.textCalls).toBe(0);
+  });
+});
+
+// ─── Round-2: scrubSecrets order-independence ──────────────────────
+
+describe('scrubSecrets — order independence (Fix 2)', () => {
+  it('redacts both secrets fully when the longer is listed first', () => {
+    const long = 'abcdefghij-secret-12345678'; // 26 chars
+    const short = 'abcdefghij-secret-1234';     // 22 chars — prefix of `long`
+    const input = `req failed: ${long} | also: ${short}`;
+    const out = scrubForTesting(input, [long, short]);
+    expect(out).not.toContain(long);
+    expect(out).not.toContain(short);
+  });
+
+  it('redacts both secrets fully when the SHORTER is listed first (order-independent)', () => {
+    const long = 'abcdefghij-secret-12345678';
+    const short = 'abcdefghij-secret-1234';
+    const input = `req failed: ${long} | also: ${short}`;
+    // Reversed order — the docstring claims order-independence; this
+    // pin enforces it. Without the fix, the shorter secret is redacted
+    // first and the suffix `5678` of the longer secret leaks.
+    const out = scrubForTesting(input, [short, long]);
+    expect(out).not.toContain(long);
+    expect(out).not.toContain(short);
+    // Specifically verify the longer secret's suffix did not leak.
+    expect(out).not.toContain('5678');
+  });
+
+  it('skips empty strings in the secrets array (no crash, no spurious redaction)', () => {
+    const input = 'innocuous message with no secrets';
+    expect(() => scrubForTesting(input, ['', '   '])).not.toThrow();
+    const out = scrubForTesting(input, ['']);
+    expect(out).toBe(input);
+  });
+
+  it('leaves below-gate secrets alone (length < 8)', () => {
+    const out = scrubForTesting('the quick brown fox', ['fox', 'short7x']);
+    expect(out).toBe('the quick brown fox');
+  });
+});
+
 // Suppress unused import warning if `OAuthScopesSource` is the only consumer.
 void OAuthScopesSource;
