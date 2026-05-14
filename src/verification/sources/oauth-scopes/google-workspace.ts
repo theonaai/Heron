@@ -563,19 +563,15 @@ async function readCappedText(res: Response, maxBytes: number): Promise<string> 
     }
   }
 
-  // Body-bound stream read. If the runtime doesn't expose a reader
-  // (very unlikely on Node 18+), fall back to `.text()` and cap the
-  // returned string by length — UTF-8 chars are at least 1 byte each,
-  // so a length cap is conservative-strict.
+  // Body-bound stream read. Node 18+ always exposes a body reader on
+  // a successful Response, so `res.body === null` here is a runtime
+  // anomaly. The earlier draft fell back to `res.text()` and then
+  // length-checked the result, which means the runtime would have
+  // already buffered the entire body before we could enforce the cap.
+  // Throw instead — safer than buffering an unbounded body.
   const body = res.body;
   if (body === null) {
-    const fallback = await res.text();
-    if (fallback.length > maxBytes) {
-      throw new Error(
-        `response body too large: ${fallback.length} chars exceeds cap of ${maxBytes} bytes`,
-      );
-    }
-    return fallback;
+    throw new Error('response body unavailable; refusing unbounded buffer');
   }
 
   const reader = body.getReader();
