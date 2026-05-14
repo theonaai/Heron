@@ -14,16 +14,18 @@
  *     POST to /token to mint a fresh access_token, then one GET to
  *     tokeninfo.
  *
- * Why we use `google-auth-library` as a runtime dependency:
- *   Apache-2.0, maintained by Google, ships canonical types for the
- *   OAuth2 endpoints (`Credentials`, `RefreshAccessTokenResponse`).
- *   We pull in the type-only surface from the SDK; the wire calls
- *   themselves run through `globalThis.fetch` so the shared security
- *   discipline (SSRF guard, manual-redirect, AbortSignal.timeout,
- *   body-size cap) applies uniformly. The full `googleapis` package
- *   would have pulled hundreds of API-specific client sub-modules we
- *   do not use; `google-auth-library` is the lighter half of that
- *   stack and a sufficient direct dependency.
+ * Why no `google-auth-library` (or any Google SDK) dependency:
+ *   Both the Mode B token exchange and the tokeninfo introspection
+ *   are simple HTTPS calls. We issue them through `globalThis.fetch`
+ *   so the shared security discipline (SSRF guard via the env-var
+ *   override gate, manual-redirect, AbortSignal.timeout, body-size
+ *   cap with reader cancel) applies uniformly. Routing through the
+ *   SDK's `gaxios` transport would bypass those controls and pull
+ *   in a transitive dependency cone (`gaxios`, `gcp-metadata`, `jws`
+ *   …) we do not need. The wire payloads we care about (Bearer
+ *   access_token, refresh_token grant, tokeninfo response scope
+ *   field) are stable OAuth 2.0 / OIDC shapes — no SDK is required
+ *   to type them.
  *
  * Scope canonicalization:
  *   Google scope strings are full URIs like

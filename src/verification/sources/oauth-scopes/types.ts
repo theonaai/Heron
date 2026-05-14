@@ -78,10 +78,11 @@ export interface BambooHRCredentials {
  *  - `'refresh_token'` — the caller holds a long-lived refresh token
  *    plus the OAuth client credentials. We first exchange the refresh
  *    token for a fresh access token at `oauth2.googleapis.com/token`,
- *    then call tokeninfo. Uses `google-auth-library`'s
- *    `OAuth2Client.refreshAccessToken()` for the exchange step (lighter
- *    than the full `googleapis` SDK; same Apache-2.0 / Google
- *    maintainer).
+ *    then call tokeninfo. The exchange is a raw `fetch` POST with
+ *    `grant_type=refresh_token` — no SDK is required (and routing
+ *    through `google-auth-library`'s `gaxios` transport would bypass
+ *    Heron's SSRF guard, manual-redirect, AbortSignal.timeout, and
+ *    64 KiB body cap).
  *
  * All three secret forms (`access_token`, `refresh_token`,
  * `client_secret`) carry the same no-echo contract as
