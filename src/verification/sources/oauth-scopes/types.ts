@@ -61,15 +61,53 @@ export interface BambooHRCredentials {
 }
 
 /**
+ * Google Workspace OAuth 2.0 credential bag.
+ *
+ * Unlike Greenhouse/BambooHR (probe-based scope inference over Basic
+ * Auth), Google OAuth 2.0 exposes a real scope-introspection endpoint
+ * at `https://oauth2.googleapis.com/tokeninfo`, so the connector
+ * doesn't need to issue per-endpoint probes — one tokeninfo call
+ * returns the full granted scope list.
+ *
+ * Two auth modes, discriminated on `kind`:
+ *
+ *  - `'access_token'` — the caller already holds a fresh access token
+ *    (e.g. pasted by the operator, or minted by a separate service).
+ *    We call tokeninfo directly.
+ *
+ *  - `'refresh_token'` — the caller holds a long-lived refresh token
+ *    plus the OAuth client credentials. We first exchange the refresh
+ *    token for a fresh access token at `oauth2.googleapis.com/token`,
+ *    then call tokeninfo. Uses `google-auth-library`'s
+ *    `OAuth2Client.refreshAccessToken()` for the exchange step (lighter
+ *    than the full `googleapis` SDK; same Apache-2.0 / Google
+ *    maintainer).
+ *
+ * All three secret forms (`access_token`, `refresh_token`,
+ * `client_secret`) carry the same no-echo contract as
+ * `GreenhouseCredentials.apiKey`. The connector scrubs each from any
+ * error message or cause-chain that may have echoed them back.
+ *
+ * See `verification/sources/oauth-scopes/google-workspace.ts`.
+ */
+export type GoogleWorkspaceCredentials =
+  | {
+      kind: 'access_token';
+      access_token: string;
+    }
+  | {
+      kind: 'refresh_token';
+      refresh_token: string;
+      client_id: string;
+      client_secret: string;
+    };
+
+/**
  * Config blob accepted by `OAuthScopesSource.read`.
  *
  * Discriminated on `connector`. Each variant carries its own
  * credential bag — the dispatcher in `oauth-scopes.ts` narrows on
  * `connector` and forwards to the per-connector reader.
- *
- * Future connectors add new variants, e.g.:
- *
- *   | { connector: 'google-workspace'; credentials: GoogleWorkspaceOAuth };
  *
  * The discriminated union forces call sites to handle each connector
  * exhaustively — adding a new variant surfaces a TS error at every
@@ -77,4 +115,5 @@ export interface BambooHRCredentials {
  */
 export type OAuthScopesSourceConfig =
   | { connector: 'greenhouse'; credentials: GreenhouseCredentials }
-  | { connector: 'bamboohr'; credentials: BambooHRCredentials };
+  | { connector: 'bamboohr'; credentials: BambooHRCredentials }
+  | { connector: 'google-workspace'; credentials: GoogleWorkspaceCredentials };
