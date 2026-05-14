@@ -23,9 +23,9 @@ import type {
  *
  * Syntax:
  *  - `mcp-tools` — Role A MCP-server tool inventory (PR #15).
- *  - `oauth-scopes:<connector>` — OAuth-scope probe per connector.
- *    Today: `oauth-scopes:greenhouse`, `oauth-scopes:bamboohr`.
- *    Future PRs add `oauth-scopes:google-workspace`.
+ *  - `oauth-scopes:<connector>` — OAuth-scope inspection per connector.
+ *    Today: `oauth-scopes:greenhouse`, `oauth-scopes:bamboohr`,
+ *    `oauth-scopes:google-workspace`.
  *
  * The OAuth-scopes form uses a `:` discriminator so it's easy for
  * the CLI parser to extend without breaking back-compat. New
@@ -35,6 +35,7 @@ const KNOWN_VERIFY_SOURCES = [
   'mcp-tools',
   'oauth-scopes:greenhouse',
   'oauth-scopes:bamboohr',
+  'oauth-scopes:google-workspace',
 ] as const;
 type VerifySource = typeof KNOWN_VERIFY_SOURCES[number];
 
@@ -195,6 +196,80 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<s
         connector: 'greenhouse',
         credentials: { apiKey },
       };
+      return {
+        adapter: new OAuthScopesSource(),
+        config,
+      };
+    }
+    if (id === 'oauth-scopes:google-workspace') {
+      // Mode resolution:
+      //   - If HERON_GOOGLE_ACCESS_TOKEN is set, prefer Mode A.
+      //     Mode A is one HTTP call to tokeninfo; Mode B exchanges
+      //     the refresh token first. When both env sets are present
+      //     we pick the simpler path and ignore Mode B (warned in
+      //     the CLI output below).
+      //   - Otherwise, if HERON_GOOGLE_REFRESH_TOKEN +
+      //     HERON_GOOGLE_CLIENT_ID + HERON_GOOGLE_CLIENT_SECRET are
+      //     ALL set, use Mode B.
+      //   - Otherwise, surface a graceful error naming the required
+      //     env vars.
+      const accessToken = process.env.HERON_GOOGLE_ACCESS_TOKEN;
+      const refreshToken = process.env.HERON_GOOGLE_REFRESH_TOKEN;
+      const clientId = process.env.HERON_GOOGLE_CLIENT_ID;
+      const clientSecret = process.env.HERON_GOOGLE_CLIENT_SECRET;
+
+      const hasModeA = !!(accessToken && accessToken.length > 0);
+      const hasModeB =
+        !!(refreshToken && refreshToken.length > 0) &&
+        !!(clientId && clientId.length > 0) &&
+        !!(clientSecret && clientSecret.length > 0);
+
+      if (!hasModeA && !hasModeB) {
+        // Distinguish "no env vars set" from "partial env vars for
+        // Mode B" so the operator can fix the right one.
+        if (refreshToken && refreshToken.length > 0) {
+          if (!clientId || clientId.length === 0) {
+            throw new Error(
+              'Please set HERON_GOOGLE_CLIENT_ID env var to use Google Workspace verification (--verify oauth-scopes:google-workspace) in refresh-token mode. The client_id is the OAuth client identifier from your Google Cloud Console project (ends in ".apps.googleusercontent.com").',
+            );
+          }
+          if (!clientSecret || clientSecret.length === 0) {
+            throw new Error(
+              'Please set HERON_GOOGLE_CLIENT_SECRET env var to use Google Workspace verification (--verify oauth-scopes:google-workspace) in refresh-token mode. Do NOT pass the client_secret on the command line — argv is visible to other processes via `ps`.',
+            );
+          }
+        }
+        throw new Error(
+          'Please set either HERON_GOOGLE_ACCESS_TOKEN (Mode A) OR all three of HERON_GOOGLE_REFRESH_TOKEN, HERON_GOOGLE_CLIENT_ID, HERON_GOOGLE_CLIENT_SECRET (Mode B) to use Google Workspace verification (--verify oauth-scopes:google-workspace). Do NOT pass tokens on the command line — argv is visible to other processes via `ps`.',
+        );
+      }
+
+      let config: OAuthScopesSourceConfig;
+      if (hasModeA) {
+        if (hasModeB) {
+          // Note: prefer the simpler path. Use logger.raw so the
+          // notice surfaces alongside the scan output but does not
+          // raise as an error.
+          logger.raw(
+            '  Note: both HERON_GOOGLE_ACCESS_TOKEN and HERON_GOOGLE_REFRESH_TOKEN are set; Mode A (access_token) is preferred — refresh-token config ignored.',
+          );
+        }
+        config = {
+          connector: 'google-workspace',
+          credentials: { kind: 'access_token', access_token: accessToken! },
+        };
+      } else {
+        config = {
+          connector: 'google-workspace',
+          credentials: {
+            kind: 'refresh_token',
+            refresh_token: refreshToken!,
+            client_id: clientId!,
+            client_secret: clientSecret!,
+          },
+        };
+      }
+
       return {
         adapter: new OAuthScopesSource(),
         config,

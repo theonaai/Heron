@@ -494,6 +494,116 @@ describe('Google Workspace connector — Mode B (refresh_token) error paths', ()
     if (out.ok) return;
     expect(out.error.kind).toBe('unavailable');
   });
+
+  it('returns parse error when refresh exchange body is malformed JSON', async () => {
+    const stub = async (url: string, _init?: RequestInit) => {
+      if (url === GOOGLE_TOKEN_URL) {
+        return new Response('not json at all', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    };
+    const out = await readGoogleWorkspaceScopes({
+      credentials: {
+        kind: 'refresh_token',
+        refresh_token: FAKE_REFRESH_TOKEN,
+        client_id: FAKE_CLIENT_ID,
+        client_secret: FAKE_CLIENT_SECRET,
+      },
+      httpClient: stub,
+    });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.error.kind).toBe('parse');
+  });
+
+  it('returns parse error when refresh exchange body has no access_token', async () => {
+    const stub = async (url: string, _init?: RequestInit) => {
+      if (url === GOOGLE_TOKEN_URL) {
+        return new Response(
+          JSON.stringify({ scope: 'openid', expires_in: 3599 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    };
+    const out = await readGoogleWorkspaceScopes({
+      credentials: {
+        kind: 'refresh_token',
+        refresh_token: FAKE_REFRESH_TOKEN,
+        client_id: FAKE_CLIENT_ID,
+        client_secret: FAKE_CLIENT_SECRET,
+      },
+      httpClient: stub,
+    });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.error.kind).toBe('parse');
+  });
+
+  it('returns timeout when refresh exchange hangs', async () => {
+    const ORIG = process.env.HERON_GOOGLE_PROBE_TIMEOUT_MS;
+    process.env.HERON_GOOGLE_PROBE_TIMEOUT_MS = '100';
+    try {
+      const stub = (url: string, init?: RequestInit): Promise<Response> => {
+        if (url === GOOGLE_TOKEN_URL) {
+          return new Promise((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) return reject(new Error('no AbortSignal'));
+            if (signal.aborted) return reject(new DOMException('aborted', 'AbortError'));
+            signal.addEventListener('abort', () =>
+              reject(new DOMException('aborted', 'AbortError')),
+            );
+          });
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      };
+      const out = await readGoogleWorkspaceScopes({
+        credentials: {
+          kind: 'refresh_token',
+          refresh_token: FAKE_REFRESH_TOKEN,
+          client_id: FAKE_CLIENT_ID,
+          client_secret: FAKE_CLIENT_SECRET,
+        },
+        httpClient: stub,
+      });
+      expect(out.ok).toBe(false);
+      if (out.ok) return;
+      expect(out.error.kind).toBe('timeout');
+    } finally {
+      if (ORIG === undefined) delete process.env.HERON_GOOGLE_PROBE_TIMEOUT_MS;
+      else process.env.HERON_GOOGLE_PROBE_TIMEOUT_MS = ORIG;
+    }
+  }, 10_000);
+
+  it('rejects oversized refresh-exchange body (Content-Length over cap)', async () => {
+    const stub = async (url: string, _init?: RequestInit) => {
+      if (url === GOOGLE_TOKEN_URL) {
+        return new Response(JSON.stringify({ access_token: 'x' }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': String(GOOGLE_MAX_RESPONSE_BYTES + 1024),
+          },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    };
+    const out = await readGoogleWorkspaceScopes({
+      credentials: {
+        kind: 'refresh_token',
+        refresh_token: FAKE_REFRESH_TOKEN,
+        client_id: FAKE_CLIENT_ID,
+        client_secret: FAKE_CLIENT_SECRET,
+      },
+      httpClient: stub,
+    });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(['parse', 'unavailable']).toContain(out.error.kind);
+  });
 });
 
 // ─── Unit: input validation ────────────────────────────────────────
