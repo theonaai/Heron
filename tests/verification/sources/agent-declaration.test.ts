@@ -55,6 +55,62 @@ describe('AgentDeclarationSource — DeclaredSource interface contract', () => {
     if (r.ok) return;
     expect(r.error.kind).toBe('invalid_config');
   });
+
+  it('rejects a null config as invalid_config', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read(null as unknown as DeclaredSourceConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects a config without backend field', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({} as unknown as DeclaredSourceConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects file backend without a path field', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file' } as unknown as DeclaredSourceConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects theona-mcp backend without an agentId field', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'theona-mcp' } as unknown as DeclaredSourceConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects theona-mcp config where theonaApiBaseUrl is wrong type', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'agent-123',
+      theonaApiBaseUrl: 42,
+    } as unknown as DeclaredSourceConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects theona-mcp config where bearerToken is wrong type', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'agent-123',
+      bearerToken: 42,
+    } as unknown as DeclaredSourceConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
 });
 
 // ─── Cluster 2: File backend ────────────────────────────────────────────────
@@ -263,6 +319,301 @@ describe('AgentDeclarationSource — file backend', () => {
     if (r.ok) return;
     expect(r.error.kind).toBe('parse');
     expect(r.error.message.toLowerCase()).toContain('service');
+  });
+
+  it('rejects a scope entry missing scope', async () => {
+    const p = join(tmpDir, 'missing-scope.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { scopes: [{ service: 'gmail' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+    expect(r.error.message.toLowerCase()).toContain('scope');
+  });
+
+  it('rejects top-level value that is a JSON array', async () => {
+    const p = join(tmpDir, 'array.json');
+    writeFileSync(p, JSON.stringify([1, 2, 3]));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects when agent block is not an object', async () => {
+    const p = join(tmpDir, 'agent-not-obj.json');
+    writeFileSync(p, JSON.stringify({ agent: 'not-an-object', declared: {} }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects when declared block is not an object', async () => {
+    const p = join(tmpDir, 'declared-not-obj.json');
+    writeFileSync(p, JSON.stringify({ agent: { name: 'A' }, declared: 'oops' }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('warns on unknown agent.* key but still succeeds', async () => {
+    const p = join(tmpDir, 'extra-agent-key.json');
+    writeFileSync(p, JSON.stringify({ agent: { name: 'A', team: 'X' }, declared: {} }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings?.join('\n')).toMatch(/team/);
+  });
+
+  it('warns on unknown declared.* key but still succeeds', async () => {
+    const p = join(tmpDir, 'extra-decl-key.json');
+    writeFileSync(p, JSON.stringify({ agent: { name: 'A' }, declared: { future: 'x' } }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings?.join('\n')).toMatch(/future/);
+  });
+
+  it('rejects tools[0] that is a primitive (not an object)', async () => {
+    const p = join(tmpDir, 'primitive-tool.json');
+    writeFileSync(p, JSON.stringify({ agent: { name: 'A' }, declared: { tools: ['oops'] } }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects tools[0].name that is not a string', async () => {
+    const p = join(tmpDir, 'numeric-name.json');
+    writeFileSync(p, JSON.stringify({ agent: { name: 'A' }, declared: { tools: [{ name: 123 }] } }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects tools[0].description that is not a string', async () => {
+    const p = join(tmpDir, 'numeric-desc.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { tools: [{ name: 'x', description: 99 }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects when path resolves to a directory rather than a file', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: tmpDir });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+    expect(r.error.message.toLowerCase()).toContain('not a regular file');
+  });
+
+  it('rejects tools where the array entry is null', async () => {
+    const p = join(tmpDir, 'null-tool.json');
+    writeFileSync(p, JSON.stringify({ agent: { name: 'A' }, declared: { tools: [null] } }));
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects scopes that is not an array', async () => {
+    const p = join(tmpDir, 'scopes-not-array.json');
+    writeFileSync(
+      p,
+      JSON.stringify({ agent: { name: 'A' }, declared: { scopes: { not: 'array' } } }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects tools that is not an array', async () => {
+    const p = join(tmpDir, 'tools-not-array.json');
+    writeFileSync(
+      p,
+      JSON.stringify({ agent: { name: 'A' }, declared: { tools: 'string-not-array' } }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects a scope entry where service is not a string', async () => {
+    const p = join(tmpDir, 'numeric-service.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { scopes: [{ service: 42, scope: 'x' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects an empty-string path at validation', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: '' });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects a scope service that becomes empty after sanitisation', async () => {
+    const p = join(tmpDir, 'all-control-service.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { scopes: [{ service: '\x00\x01\x02', scope: 'x' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects a scope.scope that becomes empty after sanitisation', async () => {
+    const p = join(tmpDir, 'all-control-scope.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { scopes: [{ service: 'gmail', scope: '\x00\x01' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects scopes[entry] that is null', async () => {
+    const p = join(tmpDir, 'null-scope.json');
+    writeFileSync(
+      p,
+      JSON.stringify({ agent: { name: 'A' }, declared: { scopes: [null] } }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects a tool name that becomes empty after sanitisation', async () => {
+    const p = join(tmpDir, 'all-control-tool.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { tools: [{ name: '\x00\x01\x02' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+});
+
+// ─── Theona MCP backend: additional coverage ───────────────────────────────
+
+describe('AgentDeclarationSource — theona-mcp additional config validation', () => {
+  it('rejects a bearerToken shorter than the minimum length', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'agent-123',
+      bearerToken: 'short',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects an empty theonaApiBaseUrl', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'agent-123',
+      theonaApiBaseUrl: '',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects an over-long agentId', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'x'.repeat(257),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects an agentId with control characters', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'agent\x00bad',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+  });
+
+  it('rejects a bearerToken with control characters', async () => {
+    const source = new AgentDeclarationSource();
+    const r = await source.read({
+      backend: 'theona-mcp',
+      agentId: 'agent-123',
+      bearerToken: 'token-with-control\x00bytes-1234567890',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
   });
 });
 
