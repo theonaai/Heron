@@ -403,6 +403,13 @@ function validateTools(
     return parseFail(`declared.tools array length ${value.length} exceeds limit of ${MAX_TOOLS}`);
   }
   const out: DeclaredTool[] = [];
+  // Round-2 Fix 5: reject duplicate tool names as a parse error. Diff
+  // semantics on duplicates are undefined — does the second entry
+  // shadow the first, append, or fail? Reject up-front so the operator
+  // owns the resolution. Dedup key is the post-sanitisation name (so
+  // `send_email` and `send_email<ZWSP>` collide after Fix 3 strips the
+  // zero-width char).
+  const seenToolNames = new Set<string>();
   for (let i = 0; i < value.length; i++) {
     const entry = value[i];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -416,6 +423,20 @@ function validateTools(
     if (name.length === 0) {
       return parseFail(`declared.tools[${i}].name must be a non-empty string after sanitisation`);
     }
+    // Round-2 Fix 4: also reject whitespace-only names. The
+    // `agent.name` validation already does `.trim()` (line above the
+    // tools handler); apply the same rule to tool names for symmetry
+    // and so a `{"name": "   "}` entry cannot survive into the diff
+    // as a blank-rendered row.
+    if (name.trim().length === 0) {
+      return parseFail(`declared.tools[${i}].name must contain non-whitespace characters`);
+    }
+    // Round-2 Fix 5: duplicate detection. Names compared post-sanitise
+    // because that's the form that lands in the diff.
+    if (seenToolNames.has(name)) {
+      return parseFail(`declared.tools[${i}].name '${name}' is a duplicate — tool names must be unique`);
+    }
+    seenToolNames.add(name);
     const tool: DeclaredTool = { name };
     if (t.description !== undefined) {
       if (typeof t.description !== 'string') {
@@ -438,6 +459,13 @@ function validateScopes(
     return parseFail(`declared.scopes array length ${value.length} exceeds limit of ${MAX_SCOPES}`);
   }
   const out: DeclaredScope[] = [];
+  // Round-2 Fix 5: dedup key is `service:scope`. A scope value like
+  // `gmail.readonly` repeated on the SAME service is a real duplicate;
+  // repeated across different services is NOT (e.g. a custom
+  // `gmail.readonly` token on a non-Google service is a different
+  // grant). Use a separator byte (`\x00`) not present in either
+  // sanitised form so `a:b` + `c` cannot collide with `a` + `b:c`.
+  const seenScopeKeys = new Set<string>();
   for (let i = 0; i < value.length; i++) {
     const entry = value[i];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -451,6 +479,10 @@ function validateScopes(
     if (service.length === 0) {
       return parseFail(`declared.scopes[${i}].service must be a non-empty string after sanitisation`);
     }
+    // Round-2 Fix 4: reject whitespace-only service.
+    if (service.trim().length === 0) {
+      return parseFail(`declared.scopes[${i}].service must contain non-whitespace characters`);
+    }
     if (typeof s.scope !== 'string') {
       return parseFail(`declared.scopes[${i}].scope must be a string`);
     }
@@ -458,6 +490,18 @@ function validateScopes(
     if (scope.length === 0) {
       return parseFail(`declared.scopes[${i}].scope must be a non-empty string after sanitisation`);
     }
+    // Round-2 Fix 4: reject whitespace-only scope.
+    if (scope.trim().length === 0) {
+      return parseFail(`declared.scopes[${i}].scope must contain non-whitespace characters`);
+    }
+    // Round-2 Fix 5: duplicate (service, scope) pair → parse error.
+    // `\x00` is stripped by sanitiseString so it cannot appear inside
+    // either side; safe as a delimiter.
+    const dedupKey = `${service}\x00${scope}`;
+    if (seenScopeKeys.has(dedupKey)) {
+      return parseFail(`declared.scopes[${i}] '${service}:${scope}' is a duplicate — (service, scope) pairs must be unique`);
+    }
+    seenScopeKeys.add(dedupKey);
     out.push({ service, scope });
   }
   return { ok: true, value: out };
