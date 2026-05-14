@@ -29,37 +29,57 @@ import {
   readGreenhouseScopes,
   type HttpClient as GreenhouseHttpClient,
 } from './oauth-scopes/greenhouse.js';
+import {
+  readBambooHRScopes,
+  type HttpClient as BambooHRHttpClient,
+} from './oauth-scopes/bamboohr.js';
 import type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
 
 export type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
 
 /**
- * Test-only HTTP client override.
+ * Test-only HTTP client overrides.
  *
- * Set this from tests via `__setGreenhouseHttpClientForTesting(stub)`
- * to redirect the Greenhouse connector's fetch calls. Clearing it
- * (passing `undefined`) restores the default `globalThis.fetch`.
+ * Set these from tests to redirect a connector's fetch calls.
+ * Clearing them (passing `undefined`) restores the default
+ * `globalThis.fetch`.
  *
- * This is INTENTIONALLY a module-level variable rather than a config
- * field on `OAuthScopesSourceConfig`: the CLI path doesn't know
+ * These are INTENTIONALLY module-level variables rather than config
+ * fields on `OAuthScopesSourceConfig`: the CLI path doesn't know
  * about `httpClient`, so we cannot funnel it through the config
  * shape without growing a CLI-test footgun. Module-level testing
- * hook is honest about its purpose.
+ * hooks are honest about their purpose.
+ *
+ * `HttpClient` is structurally the same signature for every
+ * connector (`(url, init?) => Promise<Response>`), so a single
+ * "any HTTP client" type alias would technically suffice — we keep
+ * separate overrides per connector so a test for connector A cannot
+ * accidentally redirect a probe issued by connector B.
  */
-let testHttpClientOverride: GreenhouseHttpClient | undefined;
+let testGreenhouseHttpClient: GreenhouseHttpClient | undefined;
+let testBambooHRHttpClient: BambooHRHttpClient | undefined;
 
 /** @internal test-only — DO NOT use in production code. */
 export function __setGreenhouseHttpClientForTesting(client: GreenhouseHttpClient | undefined): void {
-  testHttpClientOverride = client;
+  testGreenhouseHttpClient = client;
+}
+
+/** @internal test-only — DO NOT use in production code. */
+export function __setBambooHRHttpClientForTesting(client: BambooHRHttpClient | undefined): void {
+  testBambooHRHttpClient = client;
 }
 
 export interface OAuthScopesSourceOptions {
   /**
-   * Optional injected HTTP client — bypasses `globalThis.fetch`.
-   * Primarily used by tests. CLI paths leave this undefined and let
-   * the test-only `__setGreenhouseHttpClientForTesting` setter
-   * override `globalThis.fetch` instead, because CLI flag parsing
-   * does not propagate object fields through Commander.
+   * Optional injected HTTP client — bypasses `globalThis.fetch` for
+   * every connector this adapter dispatches to. Primarily used by
+   * tests. CLI paths leave this undefined and let the per-connector
+   * `__set<Connector>HttpClientForTesting` setters override
+   * `globalThis.fetch` instead, because CLI flag parsing does not
+   * propagate object fields through Commander.
+   *
+   * Single signature works for every connector because the
+   * connector-side `HttpClient` types are structurally identical.
    */
   httpClient?: GreenhouseHttpClient;
 }
@@ -86,7 +106,7 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
     }
 
     if (validation.config.connector === 'greenhouse') {
-      const httpClient = this.httpClient ?? testHttpClientOverride;
+      const httpClient = this.httpClient ?? testGreenhouseHttpClient;
       const result = await readGreenhouseScopes({
         apiKey: validation.config.credentials.apiKey,
         ...(httpClient !== undefined ? { httpClient } : {}),
@@ -105,9 +125,24 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
         : { ok: true, inventory: result.inventory };
     }
 
-    // Unreachable today — the type union has one member — but the
-    // exhaustiveness check guards future widening.
-    const _exhaustive: never = validation.config.connector;
+    if (validation.config.connector === 'bamboohr') {
+      const httpClient = this.httpClient ?? testBambooHRHttpClient;
+      const result = await readBambooHRScopes({
+        apiKey: validation.config.credentials.apiKey,
+        subdomain: validation.config.credentials.subdomain,
+        ...(httpClient !== undefined ? { httpClient } : {}),
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error };
+      }
+      return result.warnings !== undefined && result.warnings.length > 0
+        ? { ok: true, inventory: result.inventory, warnings: result.warnings }
+        : { ok: true, inventory: result.inventory };
+    }
+
+    // Unreachable when every connector variant is handled above —
+    // the exhaustiveness check guards future widening.
+    const _exhaustive: never = validation.config;
     void _exhaustive;
     return {
       ok: false,
@@ -134,15 +169,17 @@ function validateConfig(
     return invalid('OAuthScopesSourceConfig must be an object');
   }
   const c = config as Record<string, unknown>;
-  if (c.connector !== 'greenhouse') {
-    return invalid(`unsupported connector — supported in this build: 'greenhouse'`);
+  if (c.connector !== 'greenhouse' && c.connector !== 'bamboohr') {
+    return invalid(
+      `unsupported connector — supported in this build: 'greenhouse', 'bamboohr'`,
+    );
   }
   if (!c.credentials || typeof c.credentials !== 'object') {
     return invalid('OAuthScopesSourceConfig.credentials is required');
   }
   const creds = c.credentials as Record<string, unknown>;
   if (typeof creds.apiKey !== 'string' || creds.apiKey.length === 0) {
-    return invalid('greenhouse credentials require a non-empty string apiKey');
+    return invalid(`${c.connector} credentials require a non-empty string apiKey`);
   }
   // F-5 (PR #16 round 2): tighten validation. A real Greenhouse Harvest
   // API key is 40-character hex; we accept anything >= 16 chars with
@@ -153,28 +190,61 @@ function validateConfig(
   //    (paste with newline, env var with trailing space).
   // The bound also keeps the audit story honest: a too-short "key"
   // never causes a real Authorization header to leave the process.
+  // The same rules apply to BambooHR — its keys are documented as
+  // long random hex/base32; the lower bound and whitespace check are
+  // identical to keep the secret-handling story uniform.
   const apiKey = creds.apiKey;
   if (apiKey.length < 16) {
-    return invalid('greenhouse apiKey must be at least 16 characters');
+    return invalid(`${c.connector} apiKey must be at least 16 characters`);
   }
   // F-6 (PR #16 round 2): upper bound. A multi-MB env-var value should
   // be rejected before we Base64-encode it into an Authorization header
   // on every probe. 256 chars is comfortably above real Greenhouse keys
   // (40 chars hex). The error message stays free of the key itself.
   if (apiKey.length > 256) {
-    return invalid('greenhouse apiKey suspiciously long; check env var configuration');
+    return invalid(`${c.connector} apiKey suspiciously long; check env var configuration`);
   }
   if (apiKey.trim() !== apiKey) {
-    return invalid('greenhouse apiKey must not have leading or trailing whitespace');
+    return invalid(`${c.connector} apiKey must not have leading or trailing whitespace`);
   }
   if (!/^\S+$/.test(apiKey)) {
-    return invalid('greenhouse apiKey must not contain whitespace');
+    return invalid(`${c.connector} apiKey must not contain whitespace`);
+  }
+
+  if (c.connector === 'greenhouse') {
+    return {
+      ok: true,
+      config: {
+        connector: 'greenhouse',
+        credentials: { apiKey },
+      },
+    };
+  }
+
+  // BambooHR requires a tenant subdomain in addition to the API key.
+  // The subdomain becomes part of the base URL path — it must not
+  // contain slashes, whitespace, or scheme separators. We accept the
+  // documented BambooHR shape: letters, digits, hyphens, and we
+  // bound the length so a hostile env var cannot smuggle a multi-KB
+  // path segment into every probe URL.
+  const subdomain = creds.subdomain;
+  if (typeof subdomain !== 'string' || subdomain.length === 0) {
+    return invalid('bamboohr credentials require a non-empty string subdomain');
+  }
+  if (subdomain.length > 63) {
+    // DNS label maximum is 63 octets; anything longer is malformed.
+    return invalid('bamboohr subdomain must be at most 63 characters');
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(subdomain)) {
+    return invalid(
+      'bamboohr subdomain must contain only letters, digits, and hyphens (no slashes, dots, or whitespace)',
+    );
   }
   return {
     ok: true,
     config: {
-      connector: 'greenhouse',
-      credentials: { apiKey },
+      connector: 'bamboohr',
+      credentials: { apiKey, subdomain },
     },
   };
 }

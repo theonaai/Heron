@@ -38,20 +38,43 @@ export interface GreenhouseCredentials {
 }
 
 /**
+ * BambooHR-specific credential bag.
+ *
+ * BambooHR's v1 API uses HTTP Basic Auth: the API key is the username
+ * and the literal string `"x"` is the password (the documented stand-in
+ * for "no password"). The base URL is multi-tenant — each customer
+ * has their own subdomain at
+ * `https://api.bamboohr.com/api/gateway.php/{subdomain}/v1/`. We
+ * accept both pieces here; the connector builds the URL + header.
+ *
+ * Same secret-handling contract as `GreenhouseCredentials`: the
+ * `apiKey` is never echoed back into error/log output. The
+ * `subdomain` is treated as low-sensitivity (it appears in customer
+ * URLs) but still validated for shape so a stray `/` cannot smuggle
+ * extra path segments into the base URL.
+ *
+ * See `verification/sources/oauth-scopes/bamboohr.ts`.
+ */
+export interface BambooHRCredentials {
+  apiKey: string;
+  subdomain: string;
+}
+
+/**
  * Config blob accepted by `OAuthScopesSource.read`.
  *
- * Discriminated on `connector`. Future connectors add new variants:
+ * Discriminated on `connector`. Each variant carries its own
+ * credential bag — the dispatcher in `oauth-scopes.ts` narrows on
+ * `connector` and forwards to the per-connector reader.
  *
- *   type OAuthScopesSourceConfig =
- *     | { connector: 'greenhouse'; credentials: GreenhouseCredentials }
- *     | { connector: 'bamboohr'; credentials: BambooHRCredentials }
- *     | { connector: 'google-workspace'; credentials: GoogleWorkspaceOAuth };
+ * Future connectors add new variants, e.g.:
  *
- * For v1 only Greenhouse is wired; the type is already a union to
- * keep call-site exhaustiveness checks honest the day the next
- * connector lands.
+ *   | { connector: 'google-workspace'; credentials: GoogleWorkspaceOAuth };
+ *
+ * The discriminated union forces call sites to handle each connector
+ * exhaustively — adding a new variant surfaces a TS error at every
+ * switch / if-chain that does not handle it.
  */
-export type OAuthScopesSourceConfig = {
-  connector: 'greenhouse';
-  credentials: GreenhouseCredentials;
-};
+export type OAuthScopesSourceConfig =
+  | { connector: 'greenhouse'; credentials: GreenhouseCredentials }
+  | { connector: 'bamboohr'; credentials: BambooHRCredentials };

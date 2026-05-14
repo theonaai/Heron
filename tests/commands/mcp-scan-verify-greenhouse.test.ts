@@ -70,9 +70,10 @@ describe('heron scan --verify=oauth-scopes:greenhouse', () => {
     expect(out).toEqual(['mcp-tools', 'oauth-scopes:greenhouse']);
   });
 
-  it('parseVerifyFlag rejects unknown variants like oauth-scopes:bamboohr', () => {
-    expect(() => parseVerifyFlag('oauth-scopes:bamboohr')).toThrow(
-      /unknown|bamboohr|oauth-scopes/i,
+  it('parseVerifyFlag rejects unknown variants like oauth-scopes:workday', () => {
+    // BambooHR landed in AAP-48; workday remains a future-PR placeholder.
+    expect(() => parseVerifyFlag('oauth-scopes:workday')).toThrow(
+      /unknown|workday|oauth-scopes/i,
     );
   });
 

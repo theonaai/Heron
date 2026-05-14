@@ -212,7 +212,55 @@ heron-ai scan \
 
 A probe that returns 5xx or times out leaves its scope absent and surfaces a warning so the auditor knows the read was partial — better than silently claiming a scope is missing.
 
-Out of scope for this PR (follow-ups): the `oauth-scopes:bamboohr` and `oauth-scopes:google-workspace` connectors, and the `agent-declaration` source (git + Theona MCP backends). Workday and Lever connectors are deferred to v1.1.
+Out of scope for this PR (follow-ups): the `oauth-scopes:google-workspace` connector and the `agent-declaration` source (git + Theona MCP backends). Workday and Lever connectors are deferred to v1.1.
+
+##### Verification: OAuth scopes (BambooHR)
+
+The `oauth-scopes:bamboohr` source mirrors the Greenhouse model for the HR vertical: it probes a small set of read-only BambooHR v1 API endpoints to discover which scopes a given API key actually has, then diffs the observed set against the scopes you declared. BambooHR has no scope-introspection endpoint, so grants are inferred by probe response: 2xx → granted, 401/403 → not granted, 5xx / timeout / 3xx → omitted with a partial-read warning.
+
+BambooHR is multi-tenant — every URL contains your customer subdomain, e.g. `https://api.bamboohr.com/api/gateway.php/<subdomain>/v1/...`. Both the API key and the subdomain are required.
+
+```bash
+# REQUIRED — pass credentials via env, never CLI args.
+export HERON_BAMBOOHR_API_KEY="<your-bamboohr-api-key>"
+export HERON_BAMBOOHR_SUBDOMAIN="<your-bamboohr-subdomain>"   # e.g. "acme" for acme.bamboohr.com
+
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify oauth-scopes:bamboohr \
+  --agent-label 'hr-agent-bamboohr-pilot' \
+  --report-dir ./reports
+```
+
+Combine with `mcp-tools` (and other OAuth connectors) in one pass:
+
+```bash
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify mcp-tools,oauth-scopes:bamboohr \
+  --declared-tools 'lookup_employee,send_reply' \
+  --agent-label 'hr-agent-bamboohr-pilot'
+```
+
+**Credentials handling — read this before you run it against production.**
+
+- Both `HERON_BAMBOOHR_API_KEY` and `HERON_BAMBOOHR_SUBDOMAIN` come from the environment only. There is intentionally no CLI flag for either — argv is visible to other processes via `ps`, and shell history persists.
+- The connector NEVER logs, echoes, or surfaces the API key. Error messages, partial-read warnings, and the rendered report are scrubbed for both the raw key and its base64-encoded Basic-Auth form (BambooHR uses `<apiKey>:x` — the literal `'x'` is the documented "no password" stand-in).
+- The subdomain is validated for DNS-label shape (letters / digits / hyphens, ≤63 chars) BEFORE any HTTP call — a stray `/` cannot smuggle extra path segments into the base URL.
+- Only READ probes are issued. The connector never writes to a BambooHR tenant.
+- Default base URL is hardcoded to `https://api.bamboohr.com/api/gateway.php`. The `HERON_BAMBOOHR_BASE_URL` env var lets you point the connector at a local proxy for testing — that path is gated by the same SSRF check (`validateTargetEndpoint`) that protects the audit-agent target endpoint, so it cannot be abused to hit cloud-metadata or RFC1918 hosts.
+
+**What the probes cover today.**
+
+| Scope emitted | Probe endpoint | Notes |
+| --- | --- | --- |
+| `directory:read` | `GET /v1/employees/directory` | Baseline auth check. 401/403 here → whole read is `unauthorized`. |
+| `employees:read` | `GET /v1/employees/1?fields=firstName,lastName` | Probes per-employee read scope; minimal field set keeps response tiny. |
+| `reports:read` | `GET /v1/reports?format=json` | |
+| `admin:users:read` | `GET /v1/meta/users` | Surfaces whether the key is an account-administrator key. |
+| `meta:fields:read` | `GET /v1/meta/fields` | Requires field-edit access. |
+
+A probe that returns 5xx, times out, or returns 3xx (the redirect-handling guard treats 3xx as a probe failure to prevent credential leakage via redirect chains) surfaces a warning, leaving its scope absent — better than silently claiming the scope is missing.
 
 #### Mode D: Heron AS an MCP server (`heron mcp-serve`)
 
@@ -283,6 +331,11 @@ The wrapper is transport-agnostic — the same code powers stdio for local use a
 | `HERON_ALLOWED_ORIGINS` | `http://127.0.0.1[:port],http://localhost[:port]` | Same, for the `Origin` header. |
 | `HERON_GREENHOUSE_API_KEY` | unset | Greenhouse Harvest API key for `--verify oauth-scopes:greenhouse`. Set via env (never via CLI flag — argv leaks to other processes via `ps`). Used only to build the HTTP Basic Auth header on probe requests; never logged or surfaced in the rendered report. |
 | `HERON_GREENHOUSE_BASE_URL` | unset (defaults to `https://harvest.greenhouse.io/v1/`) | Override the Greenhouse Harvest base URL for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`, so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
+| `HERON_GREENHOUSE_PROBE_TIMEOUT_MS` | `10000` | Per-probe wall-clock timeout for Greenhouse scope discovery. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
+| `HERON_BAMBOOHR_API_KEY` | unset | BambooHR API key for `--verify oauth-scopes:bamboohr`. Set via env (never via CLI flag — argv leaks to other processes via `ps`). Used only to build the HTTP Basic Auth header on probe requests (`<key>:x` — BambooHR's documented "no password" convention); never logged or surfaced in the rendered report. |
+| `HERON_BAMBOOHR_SUBDOMAIN` | unset | BambooHR tenant subdomain (the per-tenant prefix from your BambooHR account URL — e.g. `acme` for `acme.bamboohr.com`). Validated for DNS-label shape (letters/digits/hyphens, ≤63 chars) before any HTTP call. |
+| `HERON_BAMBOOHR_BASE_URL` | unset (defaults to `https://api.bamboohr.com/api/gateway.php`) | Override the BambooHR gateway prefix for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`. The subdomain is still appended after the override host, preserving per-tenant URL shape. |
+| `HERON_BAMBOOHR_PROBE_TIMEOUT_MS` | `10000` | Per-probe wall-clock timeout for BambooHR scope discovery. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
 
 The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
 

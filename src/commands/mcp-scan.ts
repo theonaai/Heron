@@ -24,14 +24,18 @@ import type {
  * Syntax:
  *  - `mcp-tools` — Role A MCP-server tool inventory (PR #15).
  *  - `oauth-scopes:<connector>` — OAuth-scope probe per connector.
- *    Today: `oauth-scopes:greenhouse`. Future PRs add
- *    `oauth-scopes:bamboohr`, `oauth-scopes:google-workspace`.
+ *    Today: `oauth-scopes:greenhouse`, `oauth-scopes:bamboohr`.
+ *    Future PRs add `oauth-scopes:google-workspace`.
  *
  * The OAuth-scopes form uses a `:` discriminator so it's easy for
  * the CLI parser to extend without breaking back-compat. New
  * connectors land by adding their identifier to this list.
  */
-const KNOWN_VERIFY_SOURCES = ['mcp-tools', 'oauth-scopes:greenhouse'] as const;
+const KNOWN_VERIFY_SOURCES = [
+  'mcp-tools',
+  'oauth-scopes:greenhouse',
+  'oauth-scopes:bamboohr',
+] as const;
 type VerifySource = typeof KNOWN_VERIFY_SOURCES[number];
 
 export interface RunMcpScanOptions {
@@ -190,6 +194,33 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<s
       const config: OAuthScopesSourceConfig = {
         connector: 'greenhouse',
         credentials: { apiKey },
+      };
+      return {
+        adapter: new OAuthScopesSource(),
+        config,
+      };
+    }
+    if (id === 'oauth-scopes:bamboohr') {
+      // Both required env vars validated up front so the error names
+      // the specific missing piece — `subdomain` is per-tenant and
+      // easy to forget; the error message points the operator at it
+      // directly. The apiKey check intentionally does NOT echo the
+      // value: argv-leak protection AND scrub gating both apply.
+      const apiKey = process.env.HERON_BAMBOOHR_API_KEY;
+      if (!apiKey || apiKey.length === 0) {
+        throw new Error(
+          'Please set HERON_BAMBOOHR_API_KEY env var to use BambooHR verification (--verify oauth-scopes:bamboohr). Do NOT pass the API key on the command line — argv is visible to other processes via `ps`.',
+        );
+      }
+      const subdomain = process.env.HERON_BAMBOOHR_SUBDOMAIN;
+      if (!subdomain || subdomain.length === 0) {
+        throw new Error(
+          'Please set HERON_BAMBOOHR_SUBDOMAIN env var to use BambooHR verification (--verify oauth-scopes:bamboohr). The subdomain is the per-tenant prefix from your BambooHR account URL (e.g. "acme" for acme.bamboohr.com).',
+        );
+      }
+      const config: OAuthScopesSourceConfig = {
+        connector: 'bamboohr',
+        credentials: { apiKey, subdomain },
       };
       return {
         adapter: new OAuthScopesSource(),
