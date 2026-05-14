@@ -236,3 +236,122 @@ describe('truncateControlChars', () => {
     expect(truncateControlChars('café 漢字 🐦')).toBe('café 漢字 🐦');
   });
 });
+
+// ─── Round 2 Fix 3: bidi / zero-width / BOM ──────────────────────────────────
+//
+// The round-1 audit flagged that the existing strip set covered ASCII C0,
+// DEL, C1, and U+2028/U+2029 but NOT the bidi / zero-width / BOM block.
+// Without those, a hostile tool name like `send_email‮kcatta` renders as
+// `send_emailattack` (the RLO override reverses everything that follows
+// until a PDF terminator). Declared baseline and actual side both flow
+// through `stripControlChars`, so the diff misses identity collisions —
+// the renderer shows two different visual strings and a reviewer cannot
+// tell that `send_email` on the actual side matches the declared name.
+//
+// Codepoints we add:
+//   U+200B – U+200D   zero-width space, ZWNJ, ZWJ
+//   U+200E, U+200F    LRM, RLM (left-to-right / right-to-left mark)
+//   U+202A – U+202E   LRE, RLE, PDF, LRO, RLO (explicit bidi)
+//   U+2060            word joiner
+//   U+FEFF            zero-width no-break space / BOM
+//
+// Apply to BOTH `CONTROL_CHAR_REGEX` (used by `stripControlChars`,
+// `truncateControlChars`) and `INLINE_CODE_STRIP_REGEX` (used by
+// `escapeInlineCode`). The two regexes must stay in lock-step — if either
+// is widened without the other, the same payload still injects on the
+// other path.
+
+describe('stripControlChars — round-2 Fix 3: bidi / zero-width / BOM', () => {
+  // Import lazily so we don't bloat the original import list — the test
+  // is the only consumer at this scope.
+  it('strips U+202E (RIGHT-TO-LEFT OVERRIDE) — the classic visual-spoof char', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    // `send_email` + RLO + `kcatta` renders visually as
+    // `send_emailattack` in any bidi-aware renderer. After strip, both
+    // sides see the literal codepoint-by-codepoint sequence with no RLO.
+    expect(stripControlChars('send_email‮kcatta')).toBe(
+      'send_emailkcatta',
+    );
+  });
+
+  it('strips U+200B (ZERO WIDTH SPACE) — invisible identity collision', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(stripControlChars('he​llo')).toBe('hello');
+  });
+
+  it('strips U+FEFF (ZERO WIDTH NO-BREAK SPACE / BOM)', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(stripControlChars('﻿bom')).toBe('bom');
+  });
+
+  it('strips U+200C (ZWNJ) and U+200D (ZWJ)', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(stripControlChars('a‌b‍c')).toBe('abc');
+  });
+
+  it('strips U+200E (LRM) and U+200F (RLM)', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(stripControlChars('a‎b‏c')).toBe('abc');
+  });
+
+  it('strips the explicit bidi-format block U+202A–U+202E', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(
+      stripControlChars('‪a‫b‬c‭d‮e'),
+    ).toBe('abcde');
+  });
+
+  it('strips U+2060 (WORD JOINER)', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(stripControlChars('foo⁠bar')).toBe('foobar');
+  });
+
+  it('preserves printable Unicode unaffected by the widened class', async () => {
+    const { stripControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(stripControlChars('café 漢字 🐦 — em dash')).toBe(
+      'café 漢字 🐦 — em dash',
+    );
+  });
+});
+
+describe('truncateControlChars — round-2 Fix 3 parity: bidi / zero-width / BOM', () => {
+  it('strips U+202E so a bidi spoof cannot survive into an error message', async () => {
+    const { truncateControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(truncateControlChars('send_email‮kcatta')).toBe(
+      'send_emailkcatta',
+    );
+  });
+
+  it('strips U+200B (ZWSP)', async () => {
+    const { truncateControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(truncateControlChars('a​b')).toBe('ab');
+  });
+
+  it('strips U+FEFF (BOM)', async () => {
+    const { truncateControlChars } = await import('../../src/util/markdown-escape.js');
+    expect(truncateControlChars('﻿hi')).toBe('hi');
+  });
+});
+
+describe('escapeInlineCode — round-2 Fix 3 parity: bidi / zero-width / BOM', () => {
+  // `escapeInlineCode` REPLACES stripped chars with a space (not removes)
+  // because it's intended for render contexts where preserving column
+  // alignment matters. The contract is "no bidi-aware codepoint survives",
+  // not "the output matches char-for-char".
+  it('replaces U+202E with a space so a bidi spoof cannot survive into rendered inline code', async () => {
+    const { escapeInlineCode } = await import('../../src/util/markdown-escape.js');
+    expect(escapeInlineCode('send_email‮kcatta')).toBe(
+      'send_email kcatta',
+    );
+  });
+
+  it('replaces U+200B (ZWSP)', async () => {
+    const { escapeInlineCode } = await import('../../src/util/markdown-escape.js');
+    expect(escapeInlineCode('a​b')).toBe('a b');
+  });
+
+  it('replaces U+FEFF (BOM)', async () => {
+    const { escapeInlineCode } = await import('../../src/util/markdown-escape.js');
+    expect(escapeInlineCode('﻿hi')).toBe(' hi');
+  });
+});

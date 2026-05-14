@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -552,6 +552,351 @@ describe('AgentDeclarationSource — file backend', () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.kind).toBe('parse');
+  });
+});
+
+// ─── Round 2 security fixes ────────────────────────────────────────────────
+//
+// Five fixes from the round-1 security audit:
+//   Fix 1 (HIGH):   symlink-traversal — CWD-only check must `fs.realpath`
+//                   before string-prefix comparison so a symlink under CWD
+//                   pointing OUT of CWD is rejected.
+//   Fix 2 (HIGH):   unknown-key warnings must NOT echo the literal key
+//                   name. A gcloud service-account JSON accidentally
+//                   targeted at the source would otherwise leak
+//                   `private_key_id`, `client_email`, etc. into the CLI
+//                   output and fingerprint the file type.
+//   Fix 4 (LOW):    whitespace-only tool / scope names must reject (the
+//                   sanitiseString path already drops control chars, but a
+//                   pure-space name was being accepted).
+//   Fix 5 (LOW):    duplicate tool names and duplicate (service, scope)
+//                   pairs must reject as parse errors — diff semantics on
+//                   duplicates are undefined.
+// (Fix 3 lives in `tests/util/markdown-escape.test.ts`.)
+
+describe('AgentDeclarationSource — round-2 Fix 1: realpath check for CWD-only', () => {
+  let tmpDir: string;
+  let outsideDir: string;
+
+  beforeEach(() => {
+    // CWD-rooted temp dir: this directory IS inside process.cwd(), so a
+    // file placed directly here passes the CWD-only check. We then plant
+    // a symlink in it that points OUT of CWD.
+    tmpDir = mkdtempSync(join(process.cwd(), 'heron-decl-realpath-'));
+    // The symlink target lives in os.tmpdir() — almost certainly outside
+    // process.cwd() in any CI / dev environment. Use realpathSync to get
+    // the canonical form (macOS tmpdir is itself a symlink, which makes
+    // string-prefix comparisons unreliable).
+    outsideDir = realpathSync(mkdtempSync(join(tmpdir(), 'heron-decl-realpath-out-')));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+    delete process.env.HERON_DECLARED_SOURCE_CWD_ONLY;
+  });
+
+  it('rejects a symlink under CWD whose target lives outside CWD', async () => {
+    process.env.HERON_DECLARED_SOURCE_CWD_ONLY = 'true';
+    // The sensitive file (stands in for a gcloud service-account JSON).
+    const secretPath = join(outsideDir, 'service-account.json');
+    writeFileSync(
+      secretPath,
+      JSON.stringify({
+        project_id: 'pwn-project',
+        private_key_id: 'leaked-key-id',
+        client_email: 'leak@pwn.iam.gserviceaccount.com',
+      }),
+    );
+    // Symlink lives INSIDE CWD — passes string-prefix check — but points
+    // OUT of CWD. Without realpath, the old code would happily read it.
+    const linkPath = join(tmpDir, 'decl.json');
+    symlinkSync(secretPath, linkPath);
+
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: linkPath });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('invalid_config');
+    expect(r.error.message.toLowerCase()).toContain('cwd');
+    // Defence in depth: must NOT disclose the symlink target. Operators
+    // troubleshooting should not learn that the link pointed at e.g.
+    // `/Users/foo/.config/gcloud/...`.
+    expect(r.error.message).not.toContain(secretPath);
+    expect(r.error.message).not.toContain('service-account');
+  });
+
+  it('accepts a symlink under CWD whose target ALSO lives under CWD', async () => {
+    process.env.HERON_DECLARED_SOURCE_CWD_ONLY = 'true';
+    // Real config file inside CWD.
+    const realPath = join(tmpDir, 'real-decl.json');
+    writeFileSync(
+      realPath,
+      JSON.stringify({ agent: { name: 'A' }, declared: { tools: [] } }),
+    );
+    // Symlink to it, also inside CWD.
+    const linkPath = join(tmpDir, 'link.json');
+    symlinkSync(realPath, linkPath);
+
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: linkPath });
+    expect(r.ok).toBe(true);
+  });
+
+  it('without CWD-only mode, a symlink pointing outside CWD is still readable', async () => {
+    // Sanity check: the realpath defence is OPT-IN via the env var. With
+    // the default (anywhere readable) behaviour, the symlink resolves and
+    // we read the target — that's the intended unsandboxed mode.
+    const realPath = join(outsideDir, 'outside-decl.json');
+    writeFileSync(
+      realPath,
+      JSON.stringify({ agent: { name: 'A' }, declared: { tools: [] } }),
+    );
+    const linkPath = join(tmpDir, 'link-to-outside.json');
+    symlinkSync(realPath, linkPath);
+
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: linkPath });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('AgentDeclarationSource — round-2 Fix 2: unknown-key warnings must not echo key names', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-decl-key-disclose-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does NOT echo unknown TOP-LEVEL key names in warnings (count only)', async () => {
+    // Stand-in for an accidentally-targeted gcloud service-account file.
+    // These exact key names fingerprint the file type to a CLI operator
+    // even though no values are echoed.
+    const sensitiveKeys = [
+      'project_id',
+      'private_key_id',
+      'private_key',
+      'client_email',
+      'client_id',
+      'auth_uri',
+    ];
+    const obj: Record<string, unknown> = { agent: { name: 'A' }, declared: {} };
+    for (const k of sensitiveKeys) obj[k] = 'redacted';
+    const p = join(tmpDir, 'gcloud-shaped.json');
+    writeFileSync(p, JSON.stringify(obj));
+
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings).toBeDefined();
+    const joined = (r.warnings ?? []).join('\n');
+    for (const k of sensitiveKeys) {
+      expect(joined).not.toContain(k);
+    }
+    // Must still surface the count so operators know SOMETHING was ignored.
+    expect(joined).toMatch(/\d/);
+    expect(joined.toLowerCase()).toContain('unknown');
+  });
+
+  it('does NOT echo unknown agent.* key names in warnings', async () => {
+    const obj = {
+      agent: {
+        name: 'A',
+        // These would be unexpected on an agent block but plausibly
+        // sensitive in a misrouted file.
+        private_key_id: 'leak',
+        client_email: 'leak@evil.com',
+      },
+      declared: {},
+    };
+    const p = join(tmpDir, 'agent-extras.json');
+    writeFileSync(p, JSON.stringify(obj));
+
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const joined = (r.warnings ?? []).join('\n');
+    expect(joined).not.toContain('private_key_id');
+    expect(joined).not.toContain('client_email');
+    expect(joined.toLowerCase()).toContain('unknown');
+  });
+
+  it('does NOT echo unknown declared.* key names in warnings', async () => {
+    const obj = {
+      agent: { name: 'A' },
+      declared: {
+        tools: [],
+        // sensitive-looking key under the declared block
+        secret_key_material: 'leak',
+        another_leak: 'leak',
+      },
+    };
+    const p = join(tmpDir, 'declared-extras.json');
+    writeFileSync(p, JSON.stringify(obj));
+
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const joined = (r.warnings ?? []).join('\n');
+    expect(joined).not.toContain('secret_key_material');
+    expect(joined).not.toContain('another_leak');
+    expect(joined.toLowerCase()).toContain('unknown');
+  });
+
+  it('still surfaces a count when only ONE unknown top-level key is present', async () => {
+    // Edge case: count-only wording should still be readable for n=1.
+    const p = join(tmpDir, 'one-extra.json');
+    writeFileSync(
+      p,
+      JSON.stringify({ agent: { name: 'A' }, declared: {}, single_leak: 'x' }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const joined = (r.warnings ?? []).join('\n');
+    expect(joined).not.toContain('single_leak');
+    expect(joined.toLowerCase()).toContain('unknown');
+    expect(joined).toMatch(/1/);
+  });
+});
+
+describe('AgentDeclarationSource — round-2 Fix 4: whitespace-only names rejected', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-decl-ws-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects a tool whose name is only spaces', async () => {
+    const p = join(tmpDir, 'ws-tool.json');
+    writeFileSync(
+      p,
+      JSON.stringify({ agent: { name: 'A' }, declared: { tools: [{ name: '   ' }] } }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects a scope whose service is only spaces', async () => {
+    const p = join(tmpDir, 'ws-service.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { scopes: [{ service: '   ', scope: 'gmail.send' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+
+  it('rejects a scope whose scope value is only spaces', async () => {
+    const p = join(tmpDir, 'ws-scope.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { scopes: [{ service: 'gmail', scope: '   ' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+  });
+});
+
+describe('AgentDeclarationSource — round-2 Fix 5: duplicate names/scopes rejected', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-decl-dup-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects duplicate tool names as a parse error', async () => {
+    const p = join(tmpDir, 'dup-tools.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: { tools: [{ name: 'send_email' }, { name: 'send_email' }] },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+    expect(r.error.message.toLowerCase()).toContain('duplicate');
+    expect(r.error.message).toContain('send_email');
+  });
+
+  it('rejects duplicate (service, scope) pairs as a parse error', async () => {
+    const p = join(tmpDir, 'dup-scopes.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: {
+          scopes: [
+            { service: 'gmail', scope: 'gmail.readonly' },
+            { service: 'gmail', scope: 'gmail.readonly' },
+          ],
+        },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('parse');
+    expect(r.error.message.toLowerCase()).toContain('duplicate');
+  });
+
+  it('accepts the same scope value on DIFFERENT services (not a duplicate)', async () => {
+    // `gmail.readonly` on `gmail` is not the same as `gmail.readonly` on
+    // `bambooHR-mirror`; the dedup key is `service:scope`, not `scope`
+    // alone. (Whether this real-world combination makes sense is the
+    // caller's problem; we only reject true duplicates.)
+    const p = join(tmpDir, 'cross-service-scope.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        agent: { name: 'A' },
+        declared: {
+          scopes: [
+            { service: 'gmail', scope: 'gmail.readonly' },
+            { service: 'bamboohr', scope: 'gmail.readonly' },
+          ],
+        },
+      }),
+    );
+    const source = new AgentDeclarationSource();
+    const r = await source.read({ backend: 'file', path: p });
+    expect(r.ok).toBe(true);
   });
 });
 
