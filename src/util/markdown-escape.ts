@@ -58,7 +58,15 @@
  * in JS source — esbuild/V8 fail to parse a regex literal that contains
  * a raw U+2028/U+2029 between the slashes.
  */
-const CONTROL_CHAR_REGEX = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+// Round-2 (PR #19): widened with the bidi / zero-width / BOM block.
+// Codepoints added: U+200B-U+200F (ZWSP, ZWNJ, ZWJ, LRM, RLM),
+// U+202A-U+202E (LRE, RLE, PDF, LRO, RLO), U+2060 (WORD JOINER),
+// U+FEFF (ZWNBSP / BOM). See header comment above for the rationale \u2014
+// declared and actual sides both flow through this regex, so the
+// widening closes identity-collision (ZW) and visual-spoof (RLO)
+// vectors on every connector simultaneously.
+const CONTROL_CHAR_REGEX =
+  /[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g;
 
 /**
  * Same character class as `CONTROL_CHAR_REGEX`, dedicated to
@@ -70,7 +78,12 @@ const CONTROL_CHAR_REGEX = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
  * escapes (not raw) because they are line terminators in JS source
  * and esbuild rejects them inside a regex literal.
  */
-const INLINE_CODE_STRIP_REGEX = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+// Round-2 (PR #19): kept in lock-step with CONTROL_CHAR_REGEX above.
+// Same bidi / zero-width / BOM additions \u2014 without parity, the same
+// hostile payload still injects on the inline-code render path even
+// though `stripControlChars` is clean.
+const INLINE_CODE_STRIP_REGEX =
+  /[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g;
 
 const DEFAULT_MAX_LEN = 256;
 
