@@ -330,20 +330,30 @@ function validateSchema(
   // unknown agent.* and declared.* sub-keys. Real customers will add
   // ad-hoc metadata fields ("team", "linear_ticket") and we don't
   // want to break their files.
-  for (const k of Object.keys(obj)) {
-    if (!KNOWN_TOP_LEVEL_KEYS.has(k)) {
-      warnings.push(`unknown top-level key '${truncateForWarning(k)}' — ignored`);
-    }
+  //
+  // Round-2 HIGH fix: emit a COUNT of unknown keys, never the literal
+  // key names. The previous behaviour echoed each name (e.g. "unknown
+  // top-level key 'private_key_id' — ignored"). When an operator
+  // accidentally pointed the source at a gcloud service-account JSON,
+  // the warning stream would list `project_id`, `private_key_id`,
+  // `client_email`, etc. — fingerprinting the file type even though no
+  // values were echoed. Count-only wording preserves operator
+  // feedback ("something was ignored, check your file") without
+  // disclosing the SHAPE of the file.
+  const unknownTopKeys = Object.keys(obj).filter((k) => !KNOWN_TOP_LEVEL_KEYS.has(k));
+  if (unknownTopKeys.length > 0) {
+    warnings.push(
+      `${unknownTopKeys.length} unknown top-level key(s) ignored`,
+    );
   }
 
   if (!obj.agent || typeof obj.agent !== 'object' || Array.isArray(obj.agent)) {
     return parseFail('agent block must be a JSON object');
   }
   const agent = obj.agent as Record<string, unknown>;
-  for (const k of Object.keys(agent)) {
-    if (!KNOWN_AGENT_KEYS.has(k)) {
-      warnings.push(`unknown agent.${truncateForWarning(k)} key — ignored`);
-    }
+  const unknownAgentKeys = Object.keys(agent).filter((k) => !KNOWN_AGENT_KEYS.has(k));
+  if (unknownAgentKeys.length > 0) {
+    warnings.push(`${unknownAgentKeys.length} unknown agent.* key(s) ignored`);
   }
   if (typeof agent.name !== 'string' || agent.name.trim().length === 0) {
     return parseFail('agent.name is required and must be a non-empty string');
@@ -357,10 +367,9 @@ function validateSchema(
       return parseFail('declared block must be a JSON object');
     }
     const decl = obj.declared as Record<string, unknown>;
-    for (const k of Object.keys(decl)) {
-      if (!KNOWN_DECLARED_KEYS.has(k)) {
-        warnings.push(`unknown declared.${truncateForWarning(k)} key — ignored`);
-      }
+    const unknownDeclaredKeys = Object.keys(decl).filter((k) => !KNOWN_DECLARED_KEYS.has(k));
+    if (unknownDeclaredKeys.length > 0) {
+      warnings.push(`${unknownDeclaredKeys.length} unknown declared.* key(s) ignored`);
     }
     if (decl.tools !== undefined) {
       const r = validateTools(decl.tools);
@@ -464,16 +473,6 @@ function validateScopes(
 function sanitiseString(value: string): string {
   const stripped = stripControlChars(value);
   return stripped.length <= MAX_STRING_LEN ? stripped : stripped.slice(0, MAX_STRING_LEN);
-}
-
-/**
- * Cap a warning-payload string so an unknown key with a multi-MB
- * name (extreme malformed JSON) cannot blow up the rendered warning
- * list.
- */
-function truncateForWarning(value: string): string {
-  const stripped = stripControlChars(value);
-  return stripped.length <= 64 ? stripped : stripped.slice(0, 64) + '...';
 }
 
 function invalid(message: string): { ok: false; error: DeclaredSourceError } {

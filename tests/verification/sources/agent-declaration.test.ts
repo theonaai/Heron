@@ -375,7 +375,12 @@ describe('AgentDeclarationSource — file backend', () => {
     const r = await source.read({ backend: 'file', path: p });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.warnings?.join('\n')).toMatch(/team/);
+    // Round-2 Fix 2: warning is count-only, never the literal key name.
+    // Operator still gets feedback that SOMETHING was ignored.
+    const joined = r.warnings?.join('\n') ?? '';
+    expect(joined).not.toContain('team');
+    expect(joined.toLowerCase()).toContain('agent');
+    expect(joined.toLowerCase()).toContain('unknown');
   });
 
   it('warns on unknown declared.* key but still succeeds', async () => {
@@ -385,7 +390,11 @@ describe('AgentDeclarationSource — file backend', () => {
     const r = await source.read({ backend: 'file', path: p });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.warnings?.join('\n')).toMatch(/future/);
+    // Round-2 Fix 2: warning is count-only, never the literal key name.
+    const joined = r.warnings?.join('\n') ?? '';
+    expect(joined).not.toContain('future');
+    expect(joined.toLowerCase()).toContain('declared');
+    expect(joined.toLowerCase()).toContain('unknown');
   });
 
   it('rejects tools[0] that is a primitive (not an object)', async () => {
