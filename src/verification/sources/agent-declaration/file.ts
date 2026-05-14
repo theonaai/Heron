@@ -35,6 +35,14 @@
  *    be silently rewritten to point at an unexpected location).
  *  - `HERON_DECLARED_SOURCE_CWD_ONLY=true` env opt-in restricts reads
  *    to subpaths of `process.cwd()`. Default: any readable path.
+ *  - Round-2 HIGH fix: under CWD-only, the absolute path passes a
+ *    cheap string-prefix check first, then `fs.realpath` resolves any
+ *    symlinks and the result is re-checked against `cwd + sep`. A
+ *    symlink whose path lives under CWD but whose target lives
+ *    outside is rejected. All downstream `stat` / `readFile` calls
+ *    use the realpath, not the original absolute path — otherwise a
+ *    TOCTOU window between the check and the read would let a
+ *    swapped symlink slip past.
  *
  * Errors: clean, structural messages. Never echoes file contents
  * (parse errors include the path but not the bytes that failed to
@@ -88,23 +96,30 @@ export async function readDeclaredFromFile(
   args: ReadFileBackendArgs,
 ): Promise<DeclaredSourceResult> {
   // ─── Path safety ────────────────────────────────────────────────
-  const pathCheck = validatePath(args.path);
+  const pathCheck = await validatePath(args.path);
   if (!pathCheck.ok) {
     return { ok: false, error: pathCheck.error };
   }
-  const absPath = pathCheck.absPath;
+  // `originalPath` is the path the operator supplied (post-resolve).
+  // `effectivePath` is what we ACTUALLY touch on disk: under CWD-only
+  // mode it is the realpath (TOCTOU-safe re-check against CWD); under
+  // the default mode it is the operator's resolved path.
+  // Error messages always reference `originalPath`, never the realpath,
+  // so we do not disclose what a symlink resolves to.
+  const originalPath = pathCheck.absPath;
+  const effectivePath = pathCheck.effectivePath;
 
   // ─── Size cap BEFORE read ───────────────────────────────────────
   let stat;
   try {
-    stat = await fs.stat(absPath);
+    stat = await fs.stat(effectivePath);
   } catch (err: unknown) {
     if (isNodeFsError(err) && err.code === 'ENOENT') {
       return {
         ok: false,
         error: {
           kind: 'not_found',
-          message: `declared-source file not found: ${absPath}`,
+          message: `declared-source file not found: ${originalPath}`,
         },
       };
     }
@@ -112,7 +127,7 @@ export async function readDeclaredFromFile(
       ok: false,
       error: {
         kind: 'parse',
-        message: `failed to stat declared-source file at ${absPath}`,
+        message: `failed to stat declared-source file at ${originalPath}`,
         cause: err,
       },
     };
@@ -122,7 +137,7 @@ export async function readDeclaredFromFile(
       ok: false,
       error: {
         kind: 'parse',
-        message: `declared-source path is not a regular file: ${absPath}`,
+        message: `declared-source path is not a regular file: ${originalPath}`,
       },
     };
   }
@@ -139,14 +154,14 @@ export async function readDeclaredFromFile(
   // ─── Read + parse ───────────────────────────────────────────────
   let raw: string;
   try {
-    raw = await fs.readFile(absPath, 'utf-8');
+    raw = await fs.readFile(effectivePath, 'utf-8');
   } catch (err: unknown) {
     return {
       ok: false,
       error: {
         kind: 'parse',
         // Never echo `raw` — file contents may be secret. Path only.
-        message: `failed to read declared-source file at ${absPath}`,
+        message: `failed to read declared-source file at ${originalPath}`,
         cause: err,
       },
     };
@@ -163,7 +178,7 @@ export async function readDeclaredFromFile(
       ok: false,
       error: {
         kind: 'parse',
-        message: `declared-source file is not valid JSON: ${absPath}`,
+        message: `declared-source file is not valid JSON: ${originalPath}`,
       },
     };
   }
@@ -183,9 +198,12 @@ export async function readDeclaredFromFile(
 
 // ─── Path validation ──────────────────────────────────────────────
 
-function validatePath(
+async function validatePath(
   input: string,
-): { ok: true; absPath: string } | { ok: false; error: DeclaredSourceError } {
+): Promise<
+  | { ok: true; absPath: string; effectivePath: string }
+  | { ok: false; error: DeclaredSourceError }
+> {
   if (typeof input !== 'string' || input.length === 0) {
     return invalid('declared-source file path must be a non-empty string');
   }
@@ -210,21 +228,88 @@ function validatePath(
   const normalised = normalize(input);
   const absPath = isAbsolute(normalised) ? normalised : resolve(normalised);
 
+  // Default: no realpath resolution — read at the operator's path. The
+  // realpath defence only fires under CWD-only mode because that mode is
+  // the one that ADVERTISES sandboxing, and an operator who flipped that
+  // switch reasonably believes a symlink inside the directory cannot
+  // smuggle a read past the sandbox boundary.
+  let effectivePath = absPath;
+
   // Opt-in CWD-only mode for hosted/sandboxed deployments.
   if (process.env.HERON_DECLARED_SOURCE_CWD_ONLY === 'true') {
     const cwd = process.cwd();
-    const rel = resolve(absPath);
-    // Pure prefix check is good enough — both sides are resolved to
-    // absolute form, and `sep` is the platform separator.
     const cwdWithSep = cwd.endsWith(sep) ? cwd : cwd + sep;
-    if (rel !== cwd && !rel.startsWith(cwdWithSep)) {
+
+    // ── First gate: cheap string-prefix check on the lexical path.
+    // Rejects `/etc/passwd` and friends without touching the FS, so a
+    // hostile path cannot trigger a useful timing oracle via the
+    // realpath syscall on a sensitive directory.
+    if (absPath !== cwd && !absPath.startsWith(cwdWithSep)) {
       return invalid(
         `declared-source file path must be inside the current working directory when HERON_DECLARED_SOURCE_CWD_ONLY=true (cwd=${cwd})`,
       );
     }
+
+    // ── Second gate: resolve symlinks and re-check. A symlink whose
+    // own path lives under CWD but whose target lives OUTSIDE CWD
+    // would slip through the prefix check but fail this one. macOS
+    // `os.tmpdir()` is itself behind a symlink (`/var/folders/...`
+    // resolves to `/private/var/folders/...`), so we ALSO realpath
+    // the CWD to compare canonical forms.
+    //
+    // We use the realpath result for all downstream stat / readFile
+    // calls (TOCTOU: between the check here and the stat below, the
+    // symlink could be swapped to point elsewhere; reading by realpath
+    // closes that window).
+    let realPath: string;
+    try {
+      realPath = await fs.realpath(absPath);
+    } catch (err: unknown) {
+      if (isNodeFsError(err) && err.code === 'ENOENT') {
+        // Surface as not-found at the operator's path. Do not disclose
+        // any partial resolution.
+        return {
+          ok: false,
+          error: {
+            kind: 'not_found',
+            message: `declared-source file not found: ${absPath}`,
+          },
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          kind: 'parse',
+          message: `failed to resolve declared-source file path: ${absPath}`,
+          cause: err,
+        },
+      };
+    }
+
+    let realCwd: string;
+    try {
+      realCwd = await fs.realpath(cwd);
+    } catch {
+      // If we cannot realpath the CWD itself, fall back to the lexical
+      // CWD — the prefix check above already ran against it.
+      realCwd = cwd;
+    }
+    const realCwdWithSep = realCwd.endsWith(sep) ? realCwd : realCwd + sep;
+
+    if (realPath !== realCwd && !realPath.startsWith(realCwdWithSep)) {
+      // INTENTIONAL: error message does NOT include `realPath`. Disclosing
+      // it would tell an operator (or anyone reading logs) where the
+      // symlink pointed — a step toward the very fingerprint we are
+      // trying to prevent. Quote only the operator's original path.
+      return invalid(
+        `declared-source file path resolves to a location outside the current working directory via symlink when HERON_DECLARED_SOURCE_CWD_ONLY=true (path=${absPath}, cwd=${cwd})`,
+      );
+    }
+
+    effectivePath = realPath;
   }
 
-  return { ok: true, absPath };
+  return { ok: true, absPath, effectivePath };
 }
 
 // ─── Schema validation ────────────────────────────────────────────
