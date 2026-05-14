@@ -3,8 +3,12 @@
  *
  * Dispatches by `connector`:
  *  - `'greenhouse'` → `readGreenhouseScopes` in
- *    `oauth-scopes/greenhouse.ts`.
- *  - future: `'bamboohr'`, `'google-workspace'`.
+ *    `oauth-scopes/greenhouse.ts` (probe-based).
+ *  - `'bamboohr'` → `readBambooHRScopes` in
+ *    `oauth-scopes/bamboohr.ts` (probe-based).
+ *  - `'google-workspace'` → `readGoogleWorkspaceScopes` in
+ *    `oauth-scopes/google-workspace.ts` (introspection-based via
+ *    Google's `tokeninfo` endpoint).
  *
  * Mirrors the pattern in `verification/sources/mcp-tools.ts`: a thin
  * adapter implementing `DeterministicSource` whose only job is to
@@ -33,6 +37,10 @@ import {
   readBambooHRScopes,
   type HttpClient as BambooHRHttpClient,
 } from './oauth-scopes/bamboohr.js';
+import {
+  readGoogleWorkspaceScopes,
+  type HttpClient as GoogleWorkspaceHttpClient,
+} from './oauth-scopes/google-workspace.js';
 import type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
 
 export type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
@@ -58,6 +66,7 @@ export type { OAuthScopesSourceConfig } from './oauth-scopes/types.js';
  */
 let testGreenhouseHttpClient: GreenhouseHttpClient | undefined;
 let testBambooHRHttpClient: BambooHRHttpClient | undefined;
+let testGoogleWorkspaceHttpClient: GoogleWorkspaceHttpClient | undefined;
 
 /** @internal test-only — DO NOT use in production code. */
 export function __setGreenhouseHttpClientForTesting(client: GreenhouseHttpClient | undefined): void {
@@ -67,6 +76,13 @@ export function __setGreenhouseHttpClientForTesting(client: GreenhouseHttpClient
 /** @internal test-only — DO NOT use in production code. */
 export function __setBambooHRHttpClientForTesting(client: BambooHRHttpClient | undefined): void {
   testBambooHRHttpClient = client;
+}
+
+/** @internal test-only — DO NOT use in production code. */
+export function __setGoogleWorkspaceHttpClientForTesting(
+  client: GoogleWorkspaceHttpClient | undefined,
+): void {
+  testGoogleWorkspaceHttpClient = client;
 }
 
 export interface OAuthScopesSourceOptions {
@@ -140,6 +156,20 @@ export class OAuthScopesSource implements DeterministicSource<OAuthScopesSourceC
         : { ok: true, inventory: result.inventory };
     }
 
+    if (validation.config.connector === 'google-workspace') {
+      const httpClient = this.httpClient ?? testGoogleWorkspaceHttpClient;
+      const result = await readGoogleWorkspaceScopes({
+        credentials: validation.config.credentials,
+        ...(httpClient !== undefined ? { httpClient } : {}),
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error };
+      }
+      return result.warnings !== undefined && result.warnings.length > 0
+        ? { ok: true, inventory: result.inventory, warnings: result.warnings }
+        : { ok: true, inventory: result.inventory };
+    }
+
     // Unreachable when every connector variant is handled above —
     // the exhaustiveness check guards future widening.
     const _exhaustive: never = validation.config;
@@ -169,15 +199,28 @@ function validateConfig(
     return invalid('OAuthScopesSourceConfig must be an object');
   }
   const c = config as Record<string, unknown>;
-  if (c.connector !== 'greenhouse' && c.connector !== 'bamboohr') {
+  if (
+    c.connector !== 'greenhouse' &&
+    c.connector !== 'bamboohr' &&
+    c.connector !== 'google-workspace'
+  ) {
     return invalid(
-      `unsupported connector — supported in this build: 'greenhouse', 'bamboohr'`,
+      `unsupported connector — supported in this build: 'greenhouse', 'bamboohr', 'google-workspace'`,
     );
   }
   if (!c.credentials || typeof c.credentials !== 'object') {
     return invalid('OAuthScopesSourceConfig.credentials is required');
   }
   const creds = c.credentials as Record<string, unknown>;
+
+  // Google Workspace uses an OAuth 2.0 credential shape that is
+  // discriminated on `kind`, not a flat apiKey field — split the
+  // validation off here so the apiKey rules below stay specific to
+  // the Basic-Auth connectors (Greenhouse, BambooHR).
+  if (c.connector === 'google-workspace') {
+    return validateGoogleWorkspaceCredentials(creds);
+  }
+
   if (typeof creds.apiKey !== 'string' || creds.apiKey.length === 0) {
     return invalid(`${c.connector} credentials require a non-empty string apiKey`);
   }
@@ -250,5 +293,160 @@ function validateConfig(
 }
 
 function invalid(message: string): { ok: false; error: DeterministicSourceError } {
+  return { ok: false, error: { kind: 'invalid_config', message } };
+}
+
+// ─── Google Workspace credential validation ────────────────────────────
+//
+// The Google Workspace connector uses OAuth 2.0 (not Basic Auth), so
+// its credential shape diverges from Greenhouse/BambooHR. Two modes:
+//
+//   - {kind: 'access_token', access_token}  — direct introspection.
+//   - {kind: 'refresh_token', refresh_token, client_id, client_secret}
+//       — exchange first, introspect second.
+//
+// Bounds:
+//   - access_token / refresh_token:  20–2048 chars, no whitespace,
+//                                    no control characters.
+//   - client_id:                     non-empty, ≤ 256 chars, no
+//                                    whitespace. Real Google client
+//                                    IDs end in `.apps.googleusercontent.com`
+//                                    but we accept any non-whitespace
+//                                    identifier so workforce-identity
+//                                    federations are not locked out.
+//   - client_secret:                 16–256 chars, no whitespace.
+//
+// All error messages stay free of the secret values themselves — same
+// no-echo contract as Greenhouse/BambooHR.
+function validateGoogleWorkspaceCredentials(
+  creds: Record<string, unknown>,
+):
+  | { ok: true; config: OAuthScopesSourceConfig }
+  | { ok: false; error: DeterministicSourceError } {
+  const kind = creds.kind;
+  if (kind !== 'access_token' && kind !== 'refresh_token') {
+    return invalid(
+      "google-workspace credentials require kind: 'access_token' | 'refresh_token'",
+    );
+  }
+
+  if (kind === 'access_token') {
+    const tokenCheck = validateSecretString(creds.access_token, 'access_token', 20, 2048);
+    if (!tokenCheck.ok) return tokenCheck;
+    return {
+      ok: true,
+      config: {
+        connector: 'google-workspace',
+        credentials: { kind: 'access_token', access_token: tokenCheck.value },
+      },
+    };
+  }
+
+  // kind === 'refresh_token'
+  const refreshCheck = validateSecretString(creds.refresh_token, 'refresh_token', 20, 2048);
+  if (!refreshCheck.ok) return refreshCheck;
+  const clientIdCheck = validateClientIdentifier(creds.client_id, 'client_id', 1, 256);
+  if (!clientIdCheck.ok) return clientIdCheck;
+  const clientSecretCheck = validateSecretString(creds.client_secret, 'client_secret', 16, 256);
+  if (!clientSecretCheck.ok) return clientSecretCheck;
+
+  return {
+    ok: true,
+    config: {
+      connector: 'google-workspace',
+      credentials: {
+        kind: 'refresh_token',
+        refresh_token: refreshCheck.value,
+        client_id: clientIdCheck.value,
+        client_secret: clientSecretCheck.value,
+      },
+    },
+  };
+}
+
+/**
+ * Validate a string-shaped secret (access_token, refresh_token,
+ * client_secret). All three share the same hygiene rules — bounded
+ * length, no whitespace, no control characters — so the field name is
+ * passed in only for the error message.
+ */
+function validateSecretString(
+  value: unknown,
+  fieldName: string,
+  minLen: number,
+  maxLen: number,
+):
+  | { ok: true; value: string }
+  | { ok: false; error: DeterministicSourceError } {
+  if (typeof value !== 'string' || value.length === 0) {
+    return invalidErr(`google-workspace credentials require a non-empty string ${fieldName}`);
+  }
+  if (value.length < minLen) {
+    return invalidErr(`google-workspace ${fieldName} must be at least ${minLen} characters`);
+  }
+  if (value.length > maxLen) {
+    return invalidErr(
+      `google-workspace ${fieldName} suspiciously long; check env var configuration`,
+    );
+  }
+  if (value.trim() !== value) {
+    return invalidErr(
+      `google-workspace ${fieldName} must not have leading or trailing whitespace`,
+    );
+  }
+  if (!/^\S+$/.test(value)) {
+    return invalidErr(`google-workspace ${fieldName} must not contain whitespace`);
+  }
+  // Reject ASCII C0, DEL, C1, and U+2028/U+2029 — these never appear
+  // in legitimate Google tokens and would corrupt downstream
+  // rendering / scrub matching.
+  if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) {
+    return invalidErr(`google-workspace ${fieldName} must not contain control characters`);
+  }
+  return { ok: true, value };
+}
+
+/**
+ * Validate the OAuth client identifier. Same shape rules as the
+ * secret validator except we use a separate minimum (an effective 1
+ * char is allowed; the bound exists so an empty-string slip is
+ * caught) and emit a different error message — the client_id is not
+ * strictly a secret (it appears in OAuth redirect URLs) so the error
+ * vocabulary calls it an "identifier" instead.
+ */
+function validateClientIdentifier(
+  value: unknown,
+  fieldName: string,
+  minLen: number,
+  maxLen: number,
+):
+  | { ok: true; value: string }
+  | { ok: false; error: DeterministicSourceError } {
+  if (typeof value !== 'string' || value.length === 0) {
+    return invalidErr(`google-workspace credentials require a non-empty string ${fieldName}`);
+  }
+  if (value.length < minLen) {
+    return invalidErr(`google-workspace ${fieldName} must be at least ${minLen} characters`);
+  }
+  if (value.length > maxLen) {
+    return invalidErr(
+      `google-workspace ${fieldName} suspiciously long; check env var configuration`,
+    );
+  }
+  if (value.trim() !== value) {
+    return invalidErr(
+      `google-workspace ${fieldName} must not have leading or trailing whitespace`,
+    );
+  }
+  if (!/^\S+$/.test(value)) {
+    return invalidErr(`google-workspace ${fieldName} must not contain whitespace`);
+  }
+  if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) {
+    return invalidErr(`google-workspace ${fieldName} must not contain control characters`);
+  }
+  return { ok: true, value };
+}
+
+function invalidErr(message: string): { ok: false; error: DeterministicSourceError } {
   return { ok: false, error: { kind: 'invalid_config', message } };
 }

@@ -212,7 +212,7 @@ heron-ai scan \
 
 A probe that returns 5xx or times out leaves its scope absent and surfaces a warning so the auditor knows the read was partial — better than silently claiming a scope is missing.
 
-Out of scope for this PR (follow-ups): the `oauth-scopes:google-workspace` connector and the `agent-declaration` source (git + Theona MCP backends). Workday and Lever connectors are deferred to v1.1.
+Out of scope for this PR (follow-ups): the `agent-declaration` source (git + Theona MCP backends). Workday and Lever connectors are deferred to v1.1.
 
 ##### Verification: OAuth scopes (BambooHR)
 
@@ -261,6 +261,72 @@ heron-ai scan \
 | `meta:fields:read` | `GET /v1/meta/fields` | Requires field-edit access. |
 
 A probe that returns 5xx, times out, or returns 3xx (the redirect-handling guard treats 3xx as a probe failure to prevent credential leakage via redirect chains) surfaces a warning, leaving its scope absent — better than silently claiming the scope is missing.
+
+##### Verification: OAuth scopes (Google Workspace)
+
+The `oauth-scopes:google-workspace` source differs from Greenhouse / BambooHR: Google OAuth 2.0 exposes a real scope-introspection endpoint at `https://oauth2.googleapis.com/tokeninfo`, so the connector calls it directly instead of probing per-service endpoints. One HTTP call returns the full granted scope list — no inference, no partial-read warnings.
+
+Two auth modes, selected automatically from environment:
+
+- **Mode A — access_token.** Set `HERON_GOOGLE_ACCESS_TOKEN` to a fresh OAuth 2.0 access token. The connector calls `tokeninfo` directly. Simpler, but requires you to mint a fresh token (Google access tokens expire in ~1 hour).
+- **Mode B — refresh_token + client credentials.** Set `HERON_GOOGLE_REFRESH_TOKEN`, `HERON_GOOGLE_CLIENT_ID`, and `HERON_GOOGLE_CLIENT_SECRET`. The connector exchanges the refresh token for a fresh access token at `oauth2.googleapis.com/token` first, then calls `tokeninfo`. Pairs well with long-lived audit cron jobs.
+
+If both env sets are present, Mode A is preferred (simpler path) and Mode B config is ignored — surfaced in the CLI output as a notice.
+
+```bash
+# Mode A: access_token
+export HERON_GOOGLE_ACCESS_TOKEN="<fresh-oauth-access-token>"
+
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify oauth-scopes:google-workspace \
+  --agent-label 'hr-agent-google-pilot' \
+  --report-dir ./reports
+
+# Mode B: refresh_token + client credentials
+export HERON_GOOGLE_REFRESH_TOKEN="<long-lived-refresh-token>"
+export HERON_GOOGLE_CLIENT_ID="<oauth-client-id>.apps.googleusercontent.com"
+export HERON_GOOGLE_CLIENT_SECRET="<oauth-client-secret>"
+
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify oauth-scopes:google-workspace \
+  --agent-label 'hr-agent-google-pilot' \
+  --report-dir ./reports
+```
+
+Combine with `mcp-tools` (and other OAuth connectors) in one pass:
+
+```bash
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify mcp-tools,oauth-scopes:google-workspace \
+  --declared-tools 'send_email,schedule_interview' \
+  --agent-label 'hr-agent-google-pilot'
+```
+
+**Credentials handling — read this before you run it against production.**
+
+- All three secret values (`access_token`, `refresh_token`, `client_secret`) come from the environment only. There is intentionally no CLI flag for any of them — argv is visible to other processes via `ps`, and shell history persists. `client_id` is also taken from env for consistency, though it is not a secret.
+- The connector NEVER logs, echoes, or surfaces any secret. Error messages, parse failures, and the rendered report are scrubbed for every secret value (raw forms). The freshly-minted access token from a Mode B exchange is also added to the scrub set before tokeninfo is called.
+- Default base URL is hardcoded to `https://oauth2.googleapis.com`. The `HERON_GOOGLE_OAUTH_BASE_URL` env var lets you point the connector at a local proxy for testing — that path is gated by the same SSRF check (`validateTargetEndpoint`) that protects the audit-agent target endpoint, so it cannot be abused to hit cloud-metadata or RFC1918 hosts.
+- Only READ calls are issued (`GET /tokeninfo`, `POST /token` for refresh exchange). The connector never makes user-facing API calls (Gmail / Calendar / Drive / Directory).
+- Response bodies are bounded at 64 KiB — sufficient for any well-formed tokeninfo response (typically ~500 B), tight enough that an adversarial response cannot stream arbitrarily.
+
+**Scope canonicalization.** Google scope strings are full URIs. The connector strips the canonical prefix and emits the short form so the scope vocabulary matches the other connectors:
+
+| Google URI | Emitted scope |
+| --- | --- |
+| `https://www.googleapis.com/auth/gmail.readonly` | `gmail.readonly` |
+| `https://www.googleapis.com/auth/calendar.events` | `calendar.events` |
+| `https://www.googleapis.com/auth/drive.readonly` | `drive.readonly` |
+| `https://www.googleapis.com/auth/admin.directory.user.readonly` | `admin.directory.user.readonly` |
+| `openid` / `email` / `profile` | preserved as-is (OIDC standard scopes, not URI-form) |
+| anything else | preserved as-is, warning surfaced (defence against future scope-URI scheme changes) |
+
+The `service` field is always `google-workspace`; the sub-service identity (`gmail`, `calendar`, `drive`, `admin.directory`) is carried in the scope string itself.
+
+**Runtime dependency.** Adds `google-auth-library` (Apache-2.0, official Google maintainer) for OAuth 2.0 type contracts. The full `googleapis` SDK is intentionally NOT used — it would pull hundreds of API-specific client sub-modules we do not need. The wire calls run through `globalThis.fetch` so the shared security discipline (SSRF guard, manual-redirect, AbortSignal.timeout, body-size cap) applies uniformly.
 
 #### Mode D: Heron AS an MCP server (`heron mcp-serve`)
 
@@ -336,6 +402,12 @@ The wrapper is transport-agnostic — the same code powers stdio for local use a
 | `HERON_BAMBOOHR_SUBDOMAIN` | unset | BambooHR tenant subdomain (the per-tenant prefix from your BambooHR account URL — e.g. `acme` for `acme.bamboohr.com`). Validated for DNS-label shape (letters/digits/hyphens, ≤63 chars) before any HTTP call. |
 | `HERON_BAMBOOHR_BASE_URL` | unset (defaults to `https://api.bamboohr.com/api/gateway.php`) | Override the BambooHR gateway prefix for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`. The subdomain is still appended after the override host, preserving per-tenant URL shape. |
 | `HERON_BAMBOOHR_PROBE_TIMEOUT_MS` | `10000` | Per-probe wall-clock timeout for BambooHR scope discovery. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
+| `HERON_GOOGLE_ACCESS_TOKEN` | unset | Google Workspace OAuth 2.0 access token for `--verify oauth-scopes:google-workspace` Mode A (direct tokeninfo introspection). Set via env (never via CLI flag — argv leaks to other processes via `ps`); never logged or surfaced in the rendered report. |
+| `HERON_GOOGLE_REFRESH_TOKEN` | unset | Google Workspace OAuth 2.0 refresh token for Mode B (refresh-then-introspect). Required together with `HERON_GOOGLE_CLIENT_ID` and `HERON_GOOGLE_CLIENT_SECRET`. Never logged or surfaced in the rendered report. |
+| `HERON_GOOGLE_CLIENT_ID` | unset | OAuth client identifier for Mode B token exchange. Real Google client IDs end in `.apps.googleusercontent.com`; the connector accepts any non-whitespace identifier so workforce-identity federations are not locked out. Not strictly a secret (appears in OAuth redirect URLs). |
+| `HERON_GOOGLE_CLIENT_SECRET` | unset | OAuth client secret for Mode B token exchange. Never logged or surfaced in the rendered report. |
+| `HERON_GOOGLE_OAUTH_BASE_URL` | unset (defaults to `https://oauth2.googleapis.com`) | Override the Google OAuth 2.0 base URL for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`, so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
+| `HERON_GOOGLE_PROBE_TIMEOUT_MS` | `10000` | Per-request wall-clock timeout for the Google Workspace tokeninfo / token-exchange calls. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
 
 The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
 

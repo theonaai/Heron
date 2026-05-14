@@ -45,11 +45,16 @@ export interface ScrubBasicAuthOptions {
  * Strip the API key (raw form AND base64-encoded Basic-Auth form)
  * out of any string that may have echoed it back.
  *
- * Split-based replacement, not regex — so an apiKey containing regex
- * metacharacters does not break the scrub.
- *
  * Returns the input unchanged when the key is too short to scrub
  * safely (`< SCRUB_MIN_KEY_LENGTH`) or empty.
+ *
+ * Implementation note: factored as a thin wrapper around the
+ * `scrubSecrets` primitive below — that primitive is the building
+ * block shared with the Google Workspace connector, which has no
+ * Basic-Auth form to redact (the wire credential is a query-string
+ * `access_token`). Calling the same primitive from both connectors
+ * keeps the safety gate (`SCRUB_MIN_KEY_LENGTH`) honoured in exactly
+ * one place.
  */
 export function scrubCredentials(
   value: string,
@@ -58,10 +63,7 @@ export function scrubCredentials(
 ): string {
   if (!apiKey || apiKey.length < SCRUB_MIN_KEY_LENGTH) return value;
   const b64 = Buffer.from(`${apiKey}:${options.basicAuthPassword}`, 'utf-8').toString('base64');
-  let out = value;
-  while (out.includes(apiKey)) out = out.split(apiKey).join('[REDACTED]');
-  while (out.includes(b64)) out = out.split(b64).join('[REDACTED]');
-  return out;
+  return scrubSecrets(value, [apiKey, b64]);
 }
 
 /**
@@ -94,4 +96,77 @@ export function scrubMessage(
 ): string {
   const raw = err instanceof Error ? err.message : String(err);
   return scrubCredentials(raw, apiKey, options);
+}
+
+// ─── Multi-secret variant (Google Workspace and future connectors) ─────
+//
+// Google Workspace carries up to three independent secret values per
+// run (`access_token`, `refresh_token`, `client_secret`) — none of
+// them in the Basic-Auth form that `scrubCredentials` was originally
+// shaped around. We generalise the pattern here: accept an array of
+// secrets, gate each one through the same `SCRUB_MIN_KEY_LENGTH`
+// safety check, then split-replace each occurrence with `[REDACTED]`.
+//
+// Why split-replace, not regex: same reason as `scrubCredentials` —
+// a secret that happens to contain regex metacharacters (`.`, `*`,
+// `(`, etc.) does not break the scrub.
+
+/**
+ * Strip every occurrence of every secret in `secrets` from `value`.
+ * Each secret is independently gated by `SCRUB_MIN_KEY_LENGTH`; a
+ * too-short secret is left alone so the scrub cannot eat unrelated
+ * substring matches in benign log text.
+ *
+ * Order-independent (by construction): we sort the gated secrets
+ * by length descending before walking them. Longest-first matters
+ * when one secret is a prefix substring of another — e.g.
+ * secrets = ['abcdefgh', 'abcdefghij'] on input 'abcdefghij'.
+ * Without the sort, the shorter secret is redacted first and the
+ * suffix `ij` of the longer secret leaks. Sorting longest-first
+ * guarantees that any longer secret is fully consumed before its
+ * prefix-substring runs.
+ *
+ * Empty strings and below-gate secrets are filtered out up-front
+ * so the loop body never sees them.
+ *
+ * Replacement is a single `String.prototype.split(...).join(...)`
+ * which already replaces all occurrences. (An earlier draft wrapped
+ * it in a `while (out.includes(secret))` loop — that was redundant,
+ * and would infinite-loop in the theoretical case where a secret
+ * literal happens to equal `[REDACTED]`. Removed.)
+ */
+export function scrubSecrets(value: string, secrets: ReadonlyArray<string>): string {
+  const sortedSecrets = secrets
+    .filter((s) => typeof s === 'string' && s.length >= SCRUB_MIN_KEY_LENGTH)
+    .slice()
+    .sort((a, b) => b.length - a.length);
+  let out = value;
+  for (const secret of sortedSecrets) {
+    out = out.split(secret).join('[REDACTED]');
+  }
+  return out;
+}
+
+/**
+ * Multi-secret variant of `scrubMessage`. Coerces a thrown value to a
+ * string and scrubs every entry of `secrets` from it.
+ */
+export function scrubMessageMulti(err: unknown, secrets: ReadonlyArray<string>): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return scrubSecrets(raw, secrets);
+}
+
+/**
+ * Multi-secret variant of `scrubCauseValue`. Wraps the cleaned
+ * message in a fresh `Error` so the cause chain does not retain a
+ * reference to the original (which may carry request bodies or
+ * headers in the stack).
+ */
+export function scrubCauseValueMulti(err: unknown, secrets: ReadonlyArray<string>): unknown {
+  if (err instanceof Error) {
+    const scrubbed = new Error(scrubSecrets(err.message, secrets));
+    scrubbed.name = err.name;
+    return scrubbed;
+  }
+  return scrubSecrets(String(err), secrets);
 }
