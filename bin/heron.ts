@@ -23,6 +23,7 @@ program
   .option('--mcp <config>', 'Connect to an MCP server (JSON config, http(s):// URL, or stdio:<command [args...]>) and emit a tool inventory report')
   .option('--verify <sources>', 'Comma-separated verification sources to run alongside --mcp (currently: mcp-tools)')
   .option('--declared-tools <names>', 'Comma-separated list of declared tool names (paired with --verify=mcp-tools)')
+  .option('--declared-source <spec>', 'Declared-scope source — file:<path> or theona-mcp:<agentId>. Wins over --declared-tools when both are set.')
   .option('--agent-label <label>', 'Label for the verification report header (defaults to the MCP server label)')
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
@@ -41,11 +42,14 @@ program
         // do not speak chat — instead we read tools/list and emit a
         // tool-inventory report. Role B (heron mcp-serve) is in a follow-up
         // PR; see src/connectors/mcp-types.ts and Linear AAP-46.
-        const { runMcpScan, parseVerifyFlag } = await import('../src/commands/mcp-scan.js');
+        const { runMcpScan, parseVerifyFlag, parseDeclaredSourceFlag } = await import('../src/commands/mcp-scan.js');
         const verifySources = typeof opts.verify === 'string' ? parseVerifyFlag(opts.verify) : [];
         const declaredTools = typeof opts.declaredTools === 'string' && opts.declaredTools.trim() !== ''
           ? opts.declaredTools.split(',').map((s: string) => ({ name: s.trim() })).filter((t: { name: string }) => t.name.length > 0)
           : [];
+        const declaredSource = typeof opts.declaredSource === 'string' && opts.declaredSource.trim() !== ''
+          ? parseDeclaredSourceFlag(opts.declaredSource)
+          : undefined;
         await runMcpScan({
           mcp: opts.mcp,
           outputPath: opts.output,
@@ -53,6 +57,7 @@ program
           format: (opts.format === 'json' ? 'json' : 'markdown'),
           verify: verifySources,
           declaredTools,
+          ...(declaredSource !== undefined ? { declaredSource } : {}),
           ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
         });
         return;

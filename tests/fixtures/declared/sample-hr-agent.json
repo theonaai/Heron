@@ -1,0 +1,21 @@
+{
+  "agent": {
+    "name": "Recruiter Outreach Agent",
+    "purpose": "Sources candidates from LinkedIn, schedules interviews via Google Calendar, sends offer letters via Gmail.",
+    "owner": "Talent Acquisition Team",
+    "version": "1.0.0"
+  },
+  "declared": {
+    "tools": [
+      { "name": "list_candidates", "description": "Read candidate pipeline from ATS" },
+      { "name": "send_email", "description": "Send outreach emails via Gmail" },
+      { "name": "schedule_meeting", "description": "Create calendar invites via Google Calendar" }
+    ],
+    "scopes": [
+      { "service": "google-workspace", "scope": "gmail.send" },
+      { "service": "google-workspace", "scope": "calendar.events" },
+      { "service": "greenhouse", "scope": "candidates:read" },
+      { "service": "bamboohr", "scope": "directory:read" }
+    ]
+  }
+}

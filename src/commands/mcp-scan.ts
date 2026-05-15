@@ -11,6 +11,8 @@ import { runVerification } from '../verification/orchestrator.js';
 import { McpToolsSource, normalizeRawTool } from '../verification/sources/mcp-tools.js';
 import { OAuthScopesSource } from '../verification/sources/oauth-scopes.js';
 import type { OAuthScopesSourceConfig } from '../verification/sources/oauth-scopes.js';
+import { AgentDeclarationSource } from '../verification/sources/agent-declaration.js';
+import type { DeclaredSourceConfig } from '../verification/sources/agent-declaration.js';
 import { renderVerificationSection } from '../report/templates.js';
 import type {
   DeclaredInventory,
@@ -54,6 +56,23 @@ export interface RunMcpScanOptions {
   declaredTools?: DeclaredTool[];
   /** Declared scopes (reserved for OAuth-source verification, not used yet). */
   declaredScopes?: DeclaredScope[];
+  /**
+   * Declared-source config — when present, the verifier reads the
+   * declared inventory from this source instead of `declaredTools` /
+   * `declaredScopes`. AAP-48 (subagent #6): file backend ships
+   * production-ready; theona-mcp backend is a v1 stub that returns
+   * `not_implemented` cleanly so callers see an honest error rather
+   * than a phantom-clean verdict.
+   *
+   * When BOTH `declaredSource` and `declaredTools` / `declaredScopes`
+   * are present, `declaredSource` wins and the legacy flags are
+   * dropped with a warning. Rationale: the legacy flags exist for
+   * back-compat with CLI invocations from before the structured
+   * declared-source landed; the structured form is richer (carries
+   * agent metadata, supports tools AND scopes in one config) and is
+   * the canonical way forward.
+   */
+  declaredSource?: DeclaredSourceConfig;
   /** Human-readable agent label for the verification report header. */
   agentLabel?: string;
 }
@@ -107,6 +126,7 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
       verifySources: opts.verify,
       declaredTools: opts.declaredTools ?? [],
       declaredScopes: opts.declaredScopes ?? [],
+      ...(opts.declaredSource !== undefined ? { declaredSource: opts.declaredSource } : {}),
       agentLabel: opts.agentLabel ?? label,
     });
   }
@@ -136,6 +156,51 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
 }
 
 /**
+ * Parse the `--declared-source` flag value into a `DeclaredSourceConfig`.
+ *
+ * Syntax:
+ *  - `file:<path>`            → file backend
+ *  - `theona-mcp:<agentId>`   → Theona MCP stub (will surface
+ *                                `not_implemented` at read time)
+ *
+ * Throws on unknown backends or malformed input — same fail-fast
+ * posture as `parseVerifyFlag`.
+ *
+ * The backend is split on the FIRST colon so file paths and agent
+ * IDs that legitimately contain a colon (`C:\Users\...`,
+ * `org:agent:123`) survive untouched.
+ */
+export function parseDeclaredSourceFlag(raw: string): DeclaredSourceConfig {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    throw new Error('--declared-source value must be a non-empty string');
+  }
+  const trimmed = raw.trim();
+  const colonAt = trimmed.indexOf(':');
+  if (colonAt <= 0) {
+    throw new Error(
+      `--declared-source must be 'file:<path>' or 'theona-mcp:<agentId>' — got: ${trimmed.slice(0, 64)}`,
+    );
+  }
+  const backend = trimmed.slice(0, colonAt);
+  const rest = trimmed.slice(colonAt + 1);
+  if (backend === 'file') {
+    if (rest.length === 0) {
+      throw new Error('--declared-source file: requires a path');
+    }
+    return { backend: 'file', path: rest };
+  }
+  if (backend === 'theona-mcp') {
+    if (rest.length === 0) {
+      throw new Error('--declared-source theona-mcp: requires an agentId');
+    }
+    return { backend: 'theona-mcp', agentId: rest };
+  }
+  throw new Error(
+    `Unknown --declared-source backend '${backend}'. Known: 'file', 'theona-mcp'.`,
+  );
+}
+
+/**
  * Parse a comma-separated `--verify` flag value into a list of known source
  * IDs. Throws on unknown values rather than silently ignoring them — better
  * to fail fast than skip verification a caller asked for.
@@ -161,12 +226,48 @@ interface RunVerificationForCliArgs {
   verifySources: VerifySource[];
   declaredTools: DeclaredTool[];
   declaredScopes: DeclaredScope[];
+  /**
+   * Optional declared-source config (AAP-48 subagent #6). When set,
+   * the verifier reads declared inventory from this source. Legacy
+   * `declaredTools` / `declaredScopes` are dropped with a warning if
+   * also present.
+   */
+  declaredSource?: DeclaredSourceConfig;
   agentLabel: string;
 }
 
 async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<string> {
   const declared: DeclaredInventory[] = [];
-  if (args.declaredTools.length > 0 || args.declaredScopes.length > 0) {
+
+  // AAP-48 subagent #6: prefer the structured `declaredSource` over
+  // legacy `--declared-tools` / `--declared-scopes`. When both are
+  // present, warn the operator and let the structured source win —
+  // surface the precedence rather than silently dropping one input.
+  if (args.declaredSource !== undefined) {
+    if (args.declaredTools.length > 0 || args.declaredScopes.length > 0) {
+      logger.raw(
+        '  Note: both --declared-source and --declared-tools/--declared-scopes are set; the structured --declared-source wins and the legacy flags are ignored.',
+      );
+    }
+    const source = new AgentDeclarationSource();
+    const result = await source.read(args.declaredSource);
+    if (!result.ok) {
+      // Surface the declared-source error directly to the CLI caller
+      // so they see WHY verification could not run (path not found,
+      // not_implemented, invalid_config, etc.). Suppressing this
+      // would silently fall back to an empty declared baseline and
+      // produce a misleading "Verified" report.
+      throw new Error(
+        `--declared-source read failed (${result.error.kind}): ${result.error.message}`,
+      );
+    }
+    declared.push(result.inventory);
+    if (result.warnings && result.warnings.length > 0) {
+      for (const w of result.warnings) {
+        logger.raw(`  Note (declared-source): ${w}`);
+      }
+    }
+  } else if (args.declaredTools.length > 0 || args.declaredScopes.length > 0) {
     const inv: DeclaredInventory = {
       source: 'interview',
       capturedAt: new Date().toISOString(),

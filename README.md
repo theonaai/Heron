@@ -169,6 +169,54 @@ The per-source verdict is one of three states — always be explicit which one f
 | **Discrepancy** | The source read succeeded but at least one diff surfaced (extra capability, missing capability, or mismatched details). |
 | **Unverified** | The source could not be read (auth failure, unreachable, timeout, malformed config). We cannot make a claim either way — the report says so. |
 
+##### Declared source: structured config (`--declared-source`)
+
+For pilots the declared baseline outgrows a comma-separated CLI flag pretty quickly — you want declared tools AND scopes in one place, plus agent metadata (name, purpose, owner). Use `--declared-source` to point at a JSON config file:
+
+```bash
+heron-ai scan \
+  --mcp '{"kind":"stdio","command":"node","args":["my-server.js"]}' \
+  --verify mcp-tools,oauth-scopes:greenhouse \
+  --declared-source file:./heron-declared.json \
+  --agent-label 'hr-agent-pilot' \
+  --report-dir ./reports
+```
+
+Expected file shape (JSON):
+
+```json
+{
+  "agent": {
+    "name": "Recruiter Outreach Agent",
+    "purpose": "Sources candidates, schedules interviews, sends offers.",
+    "owner": "Talent Acquisition Team",
+    "version": "1.0.0"
+  },
+  "declared": {
+    "tools": [
+      { "name": "list_candidates", "description": "Read candidate pipeline" },
+      { "name": "send_email" }
+    ],
+    "scopes": [
+      { "service": "google-workspace", "scope": "gmail.send" },
+      { "service": "greenhouse", "scope": "candidates:read" }
+    ]
+  }
+}
+```
+
+Notes:
+
+- v1 is **JSON-only**. YAML support is intentionally deferred — adding a YAML parser brings a parser surface with historical CVEs and we want to keep the dependency footprint flat.
+- File size capped at **1 MiB**; tools / scopes arrays capped at **256 each**.
+- Path is resolved to absolute form; raw input with `..` segments is rejected.
+- Set `HERON_DECLARED_SOURCE_CWD_ONLY=true` in hosted / sandbox deployments to restrict reads to subpaths of the current working directory.
+- All owner-supplied strings pass through the same control-char strip (`stripControlChars`) as the actual side — a hostile declaration file cannot break the rendered Markdown.
+
+A second backend, **`theona-mcp:<agentId>`**, is scaffolded to read declared scope from Theona's platform. v1 of this backend is an **honest stub**: it validates the config (agent ID shape, optional bearer-token length / hygiene, optional `theonaApiBaseUrl` via the same SSRF guard the rest of Heron uses) and returns `not_implemented` cleanly. It deliberately does NOT return an empty inventory — a phantom-clean "Verified" report against a missing declared baseline would be worse than no verification at all. When the Theona agent-metadata endpoint is published, the v2 fetch swap is local to `src/verification/sources/agent-declaration/theona-mcp.ts`; the config surface, the security defences, and the error vocabulary stay the same.
+
+When both `--declared-source` and `--declared-tools` are set, `--declared-source` wins and the legacy flag is dropped with a warning printed to the operator.
+
 ##### Verification: OAuth scopes (Greenhouse)
 
 The `oauth-scopes:greenhouse` source determines what an agent's Greenhouse Harvest API key can actually read by probing a small set of read-only endpoints (`users/me`, `jobs`, `candidates`, `applications`). Each probe that returns 2xx becomes one `{service: greenhouse, scope: <name>:read}` entry; 401/403 means the key does not have that scope. The Verification section then diffs the observed scope set against the scopes you declared.
@@ -408,6 +456,7 @@ The wrapper is transport-agnostic — the same code powers stdio for local use a
 | `HERON_GOOGLE_CLIENT_SECRET` | unset | OAuth client secret for Mode B token exchange. Never logged or surfaced in the rendered report. |
 | `HERON_GOOGLE_OAUTH_BASE_URL` | unset (defaults to `https://oauth2.googleapis.com`) | Override the Google OAuth 2.0 base URL for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`, so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
 | `HERON_GOOGLE_PROBE_TIMEOUT_MS` | `10000` | Per-request wall-clock timeout for the Google Workspace tokeninfo / token-exchange calls. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
+| `HERON_DECLARED_SOURCE_CWD_ONLY` | unset | When set to `true`, restrict `--declared-source file:<path>` reads to subpaths of `process.cwd()`. Default behaviour allows any readable path. Recommended for hosted / sandboxed deployments where the declared-source file should never resolve outside the workspace. |
 
 The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
 

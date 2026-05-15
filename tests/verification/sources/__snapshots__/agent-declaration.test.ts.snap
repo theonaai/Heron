@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AgentDeclarationSource — golden snapshot > canonical HR-agent fixture produces the expected DeclaredInventory shape 1`] = `
+{
+  "scopes": [
+    {
+      "scope": "gmail.send",
+      "service": "google-workspace",
+    },
+    {
+      "scope": "calendar.events",
+      "service": "google-workspace",
+    },
+    {
+      "scope": "candidates:read",
+      "service": "greenhouse",
+    },
+    {
+      "scope": "directory:read",
+      "service": "bamboohr",
+    },
+  ],
+  "source": "agent-declaration",
+  "tools": [
+    {
+      "description": "Read candidate pipeline from ATS",
+      "name": "list_candidates",
+    },
+    {
+      "description": "Send outreach emails via Gmail",
+      "name": "send_email",
+    },
+    {
+      "description": "Create calendar invites via Google Calendar",
+      "name": "schedule_meeting",
+    },
+  ],
+}
+`;
