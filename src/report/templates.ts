@@ -13,6 +13,7 @@ import type {
   VerificationReport,
   VerificationVerdict,
 } from '../verification/types.js';
+import { renderFrameworkMappingSection } from '../verification/frameworks/render.js';
 
 // ─── AAP-43 P1 #5: overall regulatory status ──────────────────────────────
 
@@ -913,6 +914,16 @@ export function renderVerificationSection(report: VerificationReport): string {
   lines.push('');
   for (const s of report.sources) {
     lines.push(renderSourceLine(s));
+  }
+
+  // AAP-49: framework mapping section appears AFTER the existing
+  // verification table and per-source provenance — it is the synthesis
+  // layer that explains what the diffs MEAN for compliance. Section
+  // is only rendered when the orchestrator attached a mapping (i.e.
+  // HERON_FRAMEWORK_MAPPING_DISABLED was not set).
+  if (report.frameworkMapping) {
+    lines.push('');
+    lines.push(renderFrameworkMappingSection(report.frameworkMapping));
   }
 
   return lines.join('\n');
