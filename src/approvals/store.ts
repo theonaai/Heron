@@ -302,6 +302,25 @@ export async function readChain(
  *  - `fs.rename(<file>.tmp, <file>)` — atomic on POSIX.
  *  - If the rename throws, attempt to unlink the .tmp file; ignore
  *    cleanup failures.
+ *
+ * Concurrency contract (Round-2 Fix 6):
+ *  - Two concurrent `appendEntry` calls for the SAME `agentId` are
+ *    NOT serialised by this function. Both callers read the same
+ *    prior chain state, both compute `prevHash` against the same
+ *    last entry, and both atomically rename onto the final path —
+ *    a classic lost-update race. The result is ONE of the two
+ *    appends wins; the other is silently overwritten. This is
+ *    NOT silent coalescing (no merge), it is a last-writer-wins
+ *    race.
+ *  - Callers that need at-most-once-per-action semantics SHOULD
+ *    treat an `io` error as a retryable condition and retry with
+ *    exponential backoff (e.g. 50ms, 100ms, 200ms with jitter).
+ *  - Single-writer call sites (the `heron approve` CLI, batch
+ *    importers running serially) do not need to retry — the file
+ *    backend is point-consistent under exclusive write access.
+ *  - A future revision may add an advisory file lock or move the
+ *    backend to a database; until then, the contract is "use a
+ *    serial caller, or accept that concurrent appends are racy".
  */
 export async function appendEntry(
   agentId: string,
