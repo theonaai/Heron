@@ -15,6 +15,39 @@
  * regexes) are exported as `readonly` so a future contributor can grep
  * for them when extending the heuristic.
  *
+ * ─── IMPORTANT — disclosure keywords are a TRUST SIGNAL ───────────────
+ *
+ * Disclosure-keyword matching (DISCLOSURE_KEYWORDS, DNC_KEYWORDS,
+ * SALARY_BAND_KEYWORDS, …) is a TRUST SIGNAL, not a behavioural
+ * assertion. The detectors search declared.agent.purpose for specific
+ * keywords (e.g. "salary band approval", "candidate notification").
+ * This approach has KNOWN LIMITATIONS the auditor must understand:
+ *
+ *   - Keyword stuffing disarms detectors. An operator can write
+ *     "salary band approval workflow N/A" and the detector treats the
+ *     presence of the keywords as positive evidence.
+ *   - Negation is not parsed. "no salary band check" includes the
+ *     keyword "salary band" and disarms detector 6. Likewise "no DNC
+ *     handling" disarms detector 5.
+ *   - Irrelevant context fires positively. "human review oversight by
+ *     sub-agent" disarms detector 1's human-review check because the
+ *     keyword regex matches anywhere in the purpose string regardless
+ *     of surrounding semantics.
+ *
+ * The declared purpose is operator-supplied trust assertion. Heron's
+ * role is to SURFACE configuration gaps that an operator MIGHT have
+ * missed, not to verify the truthfulness of their declaration.
+ * Behavioural verification (runtime instrumentation, semantic LLM
+ * analysis of purpose strings) is OUT OF SCOPE for the OSS
+ * verification engine.
+ *
+ * DPO-facing implication: a "not detected" verdict means "the operator
+ * provided disclosure language", NOT "the agent verifiably has human
+ * review / DNC handling / salary-band approval". The Approval Audit
+ * Trail (AAP-48) provides accountability for the assertion itself —
+ * if the operator stuffed keywords into purpose to bypass a detector,
+ * the approval chain still records who signed off on that text.
+ *
  * Tracking: https://linear.app/theona/issue/AAP-51
  */
 
