@@ -1,0 +1,108 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderApprovalChainSection > matches the golden snapshot for a 4-entry HR chain 1`] = `
+"## Approval Audit Trail
+
+**Agent**: Recruiter Agent v2 (\`recruiter-agent-v2\`)
+**Chain created**: 2026-05-15T12:30:00Z
+**Entries**: 4
+
+> Chain integrity: **OK** — every entry past the first carries a \`prevHash\` that matches the canonical SHA-256 of the prior entry.
+
+| # | Timestamp (UTC) | Action | Actor | Evidence | Integrity |
+|---|-----------------|--------|-------|----------|-----------|
+| 0 | 2026-05-15T12:30:00Z | declared | Jane Doe / Head of HR / &lt;jane@example.com&gt;<br>_Initial Q2 scope baseline._ | contracts/recruiter-v2.md | OK |
+| 1 | 2026-05-16T09:00:00Z | reviewed | Bob Mason / Security Reviewer<br>_Tools list matches declared baseline._ | reports/mcp-scan-q2.md | OK |
+| 2 | 2026-05-16T15:45:00Z | approved | Carla Reyes / Data Protection Officer / &lt;dpo@example.com&gt;<br>_Approved for HR pilot._ | reports/mcp-scan-q2.md, reports/verification-q2.md | OK |
+| 3 | 2026-05-17T08:00:00Z | declared | Jane Doe / Head of HR<br>_Updated scope after adding calendar.events.read._ | contracts/recruiter-v2.1.md | OK |
+
+_Compliance mapping: AIUC-1 E004 (Assigned Accountability) lives in the Actor column; AIUC-1 E015 (System Activity Logging) lives in the append-only chain + hash chain._"
+`;
+
+exports[`renderApprovalChainSection > outputs a JSON serialisation of the chain on demand 1`] = `
+"{
+  "chain": {
+    "agentId": "recruiter-agent-v2",
+    "agentLabel": "Recruiter Agent v2",
+    "createdAt": "2026-05-15T12:30:00Z",
+    "entries": [
+      {
+        "action": "declared",
+        "actor": {
+          "name": "Jane Doe",
+          "role": "Head of HR",
+          "email": "jane@example.com"
+        },
+        "timestamp": "2026-05-15T12:30:00Z",
+        "evidenceRefs": [
+          "contracts/recruiter-v2.md"
+        ],
+        "comment": "Initial Q2 scope baseline."
+      },
+      {
+        "action": "reviewed",
+        "actor": {
+          "name": "Bob Mason",
+          "role": "Security Reviewer"
+        },
+        "timestamp": "2026-05-16T09:00:00Z",
+        "evidenceRefs": [
+          "reports/mcp-scan-q2.md"
+        ],
+        "comment": "Tools list matches declared baseline.",
+        "prevHash": "f17881080785ae53b8c14d55f80497e94e44542f2c7e08e0716a20199f7f1f52"
+      },
+      {
+        "action": "approved",
+        "actor": {
+          "name": "Carla Reyes",
+          "role": "Data Protection Officer",
+          "email": "dpo@example.com"
+        },
+        "timestamp": "2026-05-16T15:45:00Z",
+        "evidenceRefs": [
+          "reports/mcp-scan-q2.md",
+          "reports/verification-q2.md"
+        ],
+        "comment": "Approved for HR pilot.",
+        "prevHash": "9a8258e33651041e108f7440588eed74df6f98210b11c6ad5dc007714a6027ad"
+      },
+      {
+        "action": "declared",
+        "actor": {
+          "name": "Jane Doe",
+          "role": "Head of HR"
+        },
+        "timestamp": "2026-05-17T08:00:00Z",
+        "evidenceRefs": [
+          "contracts/recruiter-v2.1.md"
+        ],
+        "comment": "Updated scope after adding calendar.events.read.",
+        "prevHash": "1ac8db919bcb0b236b2250c5d41016442d7b4abe7e315b1f7b52d9de8b00da81"
+      }
+    ]
+  },
+  "integrity": {
+    "ok": true
+  }
+}"
+`;
+
+exports[`renderApprovalChainSection > surfaces a broken-chain warning banner prominently 1`] = `
+"## Approval Audit Trail
+
+**Agent**: Recruiter Agent v2 (\`recruiter-agent-v2\`)
+**Chain created**: 2026-05-15T12:30:00Z
+**Entries**: 4
+
+> **WARNING — chain integrity broken**: entry 2 fails the hash check (prevHash mismatch at entry 2). The audit trail BELOW reflects what is on disk; treat it as evidence of tampering, not as a clean signoff.
+
+| # | Timestamp (UTC) | Action | Actor | Evidence | Integrity |
+|---|-----------------|--------|-------|----------|-----------|
+| 0 | 2026-05-15T12:30:00Z | declared | Jane Doe / Head of HR / &lt;jane@example.com&gt;<br>_Initial Q2 scope baseline._ | contracts/recruiter-v2.md | OK |
+| 1 | 2026-05-16T09:00:00Z | reviewed | Bob Mason / Security Reviewer<br>_Tools list matches declared baseline._ | reports/mcp-scan-q2.md | OK |
+| 2 | 2026-05-16T15:45:00Z | approved | Carla Reyes / Data Protection Officer / &lt;dpo@example.com&gt;<br>_Approved for HR pilot._ | reports/mcp-scan-q2.md, reports/verification-q2.md | **BROKEN** |
+| 3 | 2026-05-17T08:00:00Z | declared | Jane Doe / Head of HR<br>_Updated scope after adding calendar.events.read._ | contracts/recruiter-v2.1.md | downstream of break |
+
+_Compliance mapping: AIUC-1 E004 (Assigned Accountability) lives in the Actor column; AIUC-1 E015 (System Activity Logging) lives in the append-only chain + hash chain._"
+`;
