@@ -7,7 +7,8 @@ import { validateTargetEndpoint } from '../connectors/url-policy.js';
 import * as logger from '../util/logger.js';
 import { generateId } from '../util/id.js';
 import { escapeInlineCode, escapeText } from '../util/markdown-escape.js';
-import { runVerification } from '../verification/orchestrator.js';
+import { runVerification, isFrameworkMappingDisabled } from '../verification/orchestrator.js';
+import { runFrameworkMapping } from '../verification/frameworks/router.js';
 import { McpToolsSource, normalizeRawTool } from '../verification/sources/mcp-tools.js';
 import { OAuthScopesSource } from '../verification/sources/oauth-scopes.js';
 import type { OAuthScopesSourceConfig } from '../verification/sources/oauth-scopes.js';
@@ -15,6 +16,7 @@ import { AgentDeclarationSource } from '../verification/sources/agent-declaratio
 import type { DeclaredSourceConfig } from '../verification/sources/agent-declaration.js';
 import { renderVerificationSection } from '../report/templates.js';
 import { readChain, verifyChainIntegrity } from '../approvals/store.js';
+import type { ApprovalChainAttachment } from '../verification/types.js';
 import {
   renderApprovalChainSection,
   renderNoApprovalChainNotice,
@@ -130,27 +132,13 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     throw new Error(`MCP scan failed (${result.error.kind}): ${result.error.message}`);
   }
 
-  // ─── Verification (AAP-48, optional) ────────────────────────────────────
-  //
-  // When --verify is set we run the verification orchestrator AGAINST THE
-  // SAME server we just scanned. Doing a second `tools/list` would be
-  // wasteful, but the MCP-tools source is cheap enough (and keeps the
-  // adapter independently testable) that the duplication is acceptable
-  // for v1. If profiling later shows it matters, we can pass the already-
-  // captured ToolInventoryRecord into the orchestrator directly.
-  let verificationMarkdown = '';
-  if (opts.verify && opts.verify.length > 0 && opts.format === 'markdown') {
-    verificationMarkdown = await runVerificationForCli({
-      transportConfig: config,
-      verifySources: opts.verify,
-      declaredTools: opts.declaredTools ?? [],
-      declaredScopes: opts.declaredScopes ?? [],
-      ...(opts.declaredSource !== undefined ? { declaredSource: opts.declaredSource } : {}),
-      agentLabel: opts.agentLabel ?? label,
-    });
-  }
-
   // ─── Approval audit trail (AAP-48 deliverable #5, optional) ────────────
+  //
+  // Round-2 Fix HIGH-1 (AAP-49): the chain is resolved BEFORE the
+  // verification orchestrator runs, so the framework mapper sees it.
+  // Previously the chain was looked up after `runVerification` (and the
+  // mapper ran INSIDE `runVerification`), which meant E004 always
+  // evaluated to FAIL even when an approved chain existed on disk.
   //
   // When `approvalAgentId` is supplied, look up the chain on disk. If it
   // exists, splice the rendered section into the markdown report. If it
@@ -166,16 +154,18 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   // the banner is a one-liner pointer, not a duplicate.
   let approvalMarkdown = '';
   let approvalTopBanner = '';
+  let approvalAttachment: ApprovalChainAttachment | undefined;
   if (opts.approvalAgentId && opts.format === 'markdown') {
     const r = await readChain(opts.approvalAgentId, opts.approvalsDir);
     if (r.ok) {
       const integrity = verifyChainIntegrity(r.chain);
+      approvalAttachment = {
+        chain: r.chain,
+        integrity,
+        ...(r.warnings ? { warnings: r.warnings } : {}),
+      };
       approvalMarkdown = renderApprovalChainSection(
-        {
-          chain: r.chain,
-          integrity,
-          ...(r.warnings ? { warnings: r.warnings } : {}),
-        },
+        approvalAttachment,
         { format: 'markdown' },
       );
       if (!integrity.ok) {
@@ -194,6 +184,31 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
         `> **Error reading approval chain** (\`${r.error.kind}\`): ${r.error.message}`,
       ].join('\n');
     }
+  }
+
+  // ─── Verification (AAP-48, optional) ────────────────────────────────────
+  //
+  // When --verify is set we run the verification orchestrator AGAINST THE
+  // SAME server we just scanned. Doing a second `tools/list` would be
+  // wasteful, but the MCP-tools source is cheap enough (and keeps the
+  // adapter independently testable) that the duplication is acceptable
+  // for v1. If profiling later shows it matters, we can pass the already-
+  // captured ToolInventoryRecord into the orchestrator directly.
+  //
+  // HIGH-1 wiring: we pass the resolved `approvalAttachment` (if any)
+  // through so the framework mapper consumes it and produces a real
+  // E004 verdict instead of the previous always-FAIL.
+  let verificationMarkdown = '';
+  if (opts.verify && opts.verify.length > 0 && opts.format === 'markdown') {
+    verificationMarkdown = await runVerificationForCli({
+      transportConfig: config,
+      verifySources: opts.verify,
+      declaredTools: opts.declaredTools ?? [],
+      declaredScopes: opts.declaredScopes ?? [],
+      ...(opts.declaredSource !== undefined ? { declaredSource: opts.declaredSource } : {}),
+      agentLabel: opts.agentLabel ?? label,
+      ...(approvalAttachment !== undefined ? { approvalAttachment } : {}),
+    });
   }
 
   let rendered: string;
@@ -320,6 +335,14 @@ interface RunVerificationForCliArgs {
    */
   declaredSource?: DeclaredSourceConfig;
   agentLabel: string;
+  /**
+   * AAP-49 round 2 (HIGH-1): pre-resolved approval chain attachment
+   * from `readChain + verifyChainIntegrity`. When present, the chain
+   * is attached to the `VerificationReport` BEFORE running the
+   * framework mapper so E004 (Assigned Accountability) and Article 14
+   * detectors see real data.
+   */
+  approvalAttachment?: ApprovalChainAttachment;
 }
 
 async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<string> {
@@ -500,6 +523,18 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<s
     sources,
     agentLabel: args.agentLabel,
   });
+
+  // AAP-49 round 2 (HIGH-1): attach the pre-resolved approval chain
+  // and run the framework mapper here, at the CLI boundary. Doing this
+  // INSIDE `runVerification` produced an always-undefined chain (the
+  // CLI hadn't called `readChain` yet) which forced E004 to FAIL even
+  // for agents with a real approved audit trail on disk.
+  if (args.approvalAttachment !== undefined) {
+    report.approvalChain = args.approvalAttachment;
+  }
+  if (!isFrameworkMappingDisabled()) {
+    report.frameworkMapping = runFrameworkMapping(report);
+  }
 
   return renderVerificationSection(report);
 }
