@@ -620,6 +620,32 @@ export function detectEUAIAct_AnnexIII4(sig: VerificationSignals): FrameworkCont
 
 const ARTICLE_14_NAME = 'Human Oversight (Article 14)';
 
+/**
+ * Round-2 Fix 3 (MEDIUM-1): treat two `ApprovalActor` records as the
+ * same person if any of {name+role tuple, email} overlap. Email is the
+ * stronger signal (a single human controls one mailbox); the
+ * name+role tuple catches actors that share an email-less identity
+ * (e.g. a service account, or actor records that pre-date the
+ * `email` field).
+ *
+ * Comparison is case-insensitive on the name+role; email comparison
+ * normalises whitespace + case because the AAP-48 chain canonicaliser
+ * already does this server-side, but the wider mapper code does not
+ * depend on that pre-condition.
+ */
+function actorsOverlap(
+  a: { name: string; role: string; email?: string },
+  b: { name: string; role: string; email?: string },
+): boolean {
+  if (a.email && b.email && a.email.trim().toLowerCase() === b.email.trim().toLowerCase()) {
+    return true;
+  }
+  return (
+    a.name.trim().toLowerCase() === b.name.trim().toLowerCase() &&
+    a.role.trim().toLowerCase() === b.role.trim().toLowerCase()
+  );
+}
+
 export function detectEUAIAct_Article14(sig: VerificationSignals): FrameworkControl {
   if (!sig.approvalChain) {
     return {
@@ -632,17 +658,37 @@ export function detectEUAIAct_Article14(sig: VerificationSignals): FrameworkCont
       severity: 'high',
     };
   }
-  const hasReview = sig.approvalChain.entries.some((e) => e.action === 'reviewed');
-  const hasApproval = sig.approvalChain.entries.some((e) => e.action === 'approved');
+  const reviewed = sig.approvalChain.entries.filter((e) => e.action === 'reviewed');
+  const approved = sig.approvalChain.entries.filter((e) => e.action === 'approved');
+  const hasReview = reviewed.length > 0;
+  const hasApproval = approved.length > 0;
   if (hasReview && hasApproval) {
+    // Round-2 Fix 3 (MEDIUM-1): two-person oversight requires at
+    // least one reviewer who is DISTINCT from at least one approver.
+    // If every reviewer overlaps every approver, the chain has only
+    // recorded a single human and Article 14 is not satisfied.
+    const hasDistinctPair = reviewed.some((r) =>
+      approved.some((a) => !actorsOverlap(r.actor, a.actor)),
+    );
+    if (hasDistinctPair) {
+      return {
+        framework: 'eu-ai-act',
+        controlId: 'Article 14',
+        controlName: ARTICLE_14_NAME,
+        verdict: 'verified',
+        rationale: 'Approval chain contains separate reviewer and approver entries with at least one distinct actor pair; satisfies the two-person oversight pattern.',
+        evidenceRefs: [{ kind: 'approval', ref: 'separate reviewed + approved entries with distinct actors' }],
+        severity: 'info',
+      };
+    }
     return {
       framework: 'eu-ai-act',
       controlId: 'Article 14',
       controlName: ARTICLE_14_NAME,
-      verdict: 'verified',
-      rationale: 'Approval chain contains separate reviewer and approver entries; satisfies the two-person oversight pattern.',
-      evidenceRefs: [{ kind: 'approval', ref: 'separate reviewed + approved entries' }],
-      severity: 'info',
+      verdict: 'partial',
+      rationale: 'Reviewer and approver are the same actor; Article 14 requires two-person oversight by distinct individuals.',
+      evidenceRefs: [{ kind: 'approval', ref: 'reviewer and approver overlap on name+role or email' }],
+      severity: 'medium',
     };
   }
   if (hasApproval) {
