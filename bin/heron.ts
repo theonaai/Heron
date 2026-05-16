@@ -25,6 +25,8 @@ program
   .option('--declared-tools <names>', 'Comma-separated list of declared tool names (paired with --verify=mcp-tools)')
   .option('--declared-source <spec>', 'Declared-scope source — file:<path> or theona-mcp:<agentId>. Wins over --declared-tools when both are set.')
   .option('--agent-label <label>', 'Label for the verification report header (defaults to the MCP server label)')
+  .option('--approval-agent-id <id>', 'Agent identifier to look up the approval audit trail for (AAP-48 deliverable #5). The trail is spliced into the report; missing chain emits a recommendation, not a hard failure.')
+  .option('--approvals-dir <path>', 'Override approvals directory (default: ./.heron/approvals or HERON_APPROVALS_DIR)')
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
@@ -59,6 +61,8 @@ program
           declaredTools,
           ...(declaredSource !== undefined ? { declaredSource } : {}),
           ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
+          ...(typeof opts.approvalAgentId === 'string' ? { approvalAgentId: opts.approvalAgentId } : {}),
+          ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
         });
         return;
       }
@@ -168,6 +172,85 @@ program
         reportDir: opts.reportDir as string,
       });
       // Keep the process alive — stdio + HTTP transports own the event loop.
+    } catch (err) {
+      logger.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+// ─── approve / approvals: AAP-48 audit-trail commands ──────────────────────
+
+program
+  .command('approve')
+  .description('Append an entry to the approval audit trail for an agent')
+  .requiredOption('--agent <id>', 'Agent identifier (matches /^[A-Za-z0-9_.-]{1,128}$/)')
+  .requiredOption('--action <action>', 'Lifecycle action: declared | reviewed | approved | revoked')
+  .requiredOption('--actor-name <name>', 'Named approver (sanitised, ≤256 chars)')
+  .requiredOption('--actor-role <role>', "Approver's role (sanitised, ≤256 chars)")
+  .option('--actor-email <email>', 'Optional approver email (format-checked)')
+  .option('--evidence <ref>', 'Evidence reference (repeatable; ≤32 entries × ≤256 chars each)', (val: string, prev: string[] | undefined) => {
+    const arr = prev ?? [];
+    arr.push(val);
+    return arr;
+  })
+  .option('--comment <text>', 'Free-form comment (sanitised, ≤1024 chars)')
+  .option('--approvals-dir <path>', 'Override approvals directory (default: ./.heron/approvals or HERON_APPROVALS_DIR)')
+  .action(async (opts) => {
+    try {
+      const { runApprove } = await import('../src/commands/approve.js');
+      await runApprove({
+        agent: opts.agent,
+        action: opts.action,
+        actorName: opts.actorName,
+        actorRole: opts.actorRole,
+        ...(typeof opts.actorEmail === 'string' ? { actorEmail: opts.actorEmail } : {}),
+        ...(Array.isArray(opts.evidence) ? { evidence: opts.evidence } : {}),
+        ...(typeof opts.comment === 'string' ? { comment: opts.comment } : {}),
+        ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
+      });
+    } catch (err) {
+      logger.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+const approvals = program
+  .command('approvals')
+  .description('Inspect the approval audit trail for an agent (AAP-48 deliverable #5)');
+
+approvals
+  .command('show')
+  .description('Render the approval chain for an agent (markdown by default; --format json for JSON)')
+  .argument('<agent>', 'Agent identifier (matches the regex used by `heron approve --agent`)')
+  .option('-f, --format <format>', 'Output format: markdown | json', 'markdown')
+  .option('--approvals-dir <path>', 'Override approvals directory (default: ./.heron/approvals or HERON_APPROVALS_DIR)')
+  .action(async (agent: string, opts) => {
+    try {
+      const { runApprovalsShow } = await import('../src/commands/approve.js');
+      const format = opts.format === 'json' ? 'json' : 'markdown';
+      await runApprovalsShow({
+        agent,
+        format,
+        ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
+      });
+    } catch (err) {
+      logger.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+approvals
+  .command('verify')
+  .description('Verify chain integrity (exit 0 if intact, exit 1 if broken)')
+  .argument('<agent>', 'Agent identifier')
+  .option('--approvals-dir <path>', 'Override approvals directory')
+  .action(async (agent: string, opts) => {
+    try {
+      const { runApprovalsVerify } = await import('../src/commands/approve.js');
+      await runApprovalsVerify({
+        agent,
+        ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
+      });
     } catch (err) {
       logger.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -302,7 +385,7 @@ async function interactiveStart(): Promise<void> {
 }
 
 const args = process.argv.slice(2);
-const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'mcp-serve', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
+const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'mcp-serve', 'approve', 'approvals', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
 
 if (!hasSubcommand && args.length > 0) {
   // Legacy: flags without subcommand → scan
