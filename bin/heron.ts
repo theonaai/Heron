@@ -25,6 +25,8 @@ program
   .option('--declared-tools <names>', 'Comma-separated list of declared tool names (paired with --verify=mcp-tools)')
   .option('--declared-source <spec>', 'Declared-scope source — file:<path> or theona-mcp:<agentId>. Wins over --declared-tools when both are set.')
   .option('--agent-label <label>', 'Label for the verification report header (defaults to the MCP server label)')
+  .option('--approval-agent-id <id>', 'Agent identifier to look up the approval audit trail for (AAP-48 deliverable #5). The trail is spliced into the report; missing chain emits a recommendation, not a hard failure.')
+  .option('--approvals-dir <path>', 'Override approvals directory (default: ./.heron/approvals or HERON_APPROVALS_DIR)')
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
@@ -59,6 +61,8 @@ program
           declaredTools,
           ...(declaredSource !== undefined ? { declaredSource } : {}),
           ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
+          ...(typeof opts.approvalAgentId === 'string' ? { approvalAgentId: opts.approvalAgentId } : {}),
+          ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
         });
         return;
       }

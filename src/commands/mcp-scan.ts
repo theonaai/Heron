@@ -14,6 +14,11 @@ import type { OAuthScopesSourceConfig } from '../verification/sources/oauth-scop
 import { AgentDeclarationSource } from '../verification/sources/agent-declaration.js';
 import type { DeclaredSourceConfig } from '../verification/sources/agent-declaration.js';
 import { renderVerificationSection } from '../report/templates.js';
+import { readChain, verifyChainIntegrity } from '../approvals/store.js';
+import {
+  renderApprovalChainSection,
+  renderNoApprovalChainNotice,
+} from '../approvals/render.js';
 import type {
   DeclaredInventory,
   DeclaredScope,
@@ -75,6 +80,20 @@ export interface RunMcpScanOptions {
   declaredSource?: DeclaredSourceConfig;
   /** Human-readable agent label for the verification report header. */
   agentLabel?: string;
+  /**
+   * AAP-48 pilot deliverable #5: agentId to look up the approval
+   * audit trail for. When set, the scan report includes an
+   * "Approval Audit Trail" section pulled from `<approvalsDir>/
+   * <approvalAgentId>.json`. When the chain does not exist, the
+   * report carries a "no audit trail found" recommendation citing
+   * AIUC-1 E004 instead — a recommendation, not a hard failure.
+   */
+  approvalAgentId?: string;
+  /**
+   * Override for the approvals directory. Falls back to
+   * `HERON_APPROVALS_DIR` env, then `<cwd>/.heron/approvals`.
+   */
+  approvalsDir?: string;
 }
 
 /**
@@ -131,6 +150,39 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     });
   }
 
+  // ─── Approval audit trail (AAP-48 deliverable #5, optional) ────────────
+  //
+  // When `approvalAgentId` is supplied, look up the chain on disk. If it
+  // exists, splice the rendered section into the markdown report. If it
+  // does not exist, splice a "no audit trail found" recommendation
+  // (AIUC-1 E004 citation) so the auditor sees the gap explicitly.
+  // Hash-chain integrity warnings are rendered prominently above the
+  // table (see `src/approvals/render.ts`).
+  let approvalMarkdown = '';
+  if (opts.approvalAgentId && opts.format === 'markdown') {
+    const r = await readChain(opts.approvalAgentId, opts.approvalsDir);
+    if (r.ok) {
+      const integrity = verifyChainIntegrity(r.chain);
+      approvalMarkdown = renderApprovalChainSection(
+        {
+          chain: r.chain,
+          integrity,
+          ...(r.warnings ? { warnings: r.warnings } : {}),
+        },
+        { format: 'markdown' },
+      );
+    } else if (r.error.kind === 'not_found') {
+      approvalMarkdown = renderNoApprovalChainNotice(opts.approvalAgentId);
+    } else {
+      // Surface read errors as a banner — never silently swallow.
+      approvalMarkdown = [
+        '## Approval Audit Trail',
+        '',
+        `> **Error reading approval chain** (\`${r.error.kind}\`): ${r.error.message}`,
+      ].join('\n');
+    }
+  }
+
   let rendered: string;
   if (opts.format === 'json') {
     rendered = JSON.stringify(result.value, null, 2);
@@ -138,6 +190,9 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     rendered = renderToolInventoryMarkdown(result.value);
     if (verificationMarkdown) {
       rendered = `${rendered}\n\n---\n\n${verificationMarkdown}\n`;
+    }
+    if (approvalMarkdown) {
+      rendered = `${rendered}\n\n---\n\n${approvalMarkdown}\n`;
     }
   }
 
