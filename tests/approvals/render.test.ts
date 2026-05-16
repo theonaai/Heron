@@ -78,6 +78,26 @@ describe('renderApprovalChainSection', () => {
     expect(out).toMatchSnapshot();
   });
 
+  // ─── Round-2 Fix 5 — empty chain renders explicit notice, not OK banner ──
+  it('renders an explicit "chain empty" status (not "Integrity: OK") when entries is empty', () => {
+    const chain: ApprovalChain = {
+      agentId: 'never-declared-agent',
+      createdAt: '2026-05-15T12:30:00Z',
+      entries: [],
+    };
+    const out = renderApprovalChainSection({
+      chain,
+      integrity: { ok: true },
+    });
+    // Must NOT advertise the chain as "OK" — there's nothing to verify.
+    expect(out).not.toMatch(/Chain integrity:\s*\*\*OK\*\*/);
+    // Must carry an explicit empty-chain message naming the agent.
+    expect(out).toMatch(/Chain empty/i);
+    expect(out).toMatch(/never-declared-agent/);
+    // Must NOT render the entry table for an empty chain.
+    expect(out).not.toMatch(/\| Timestamp/);
+  });
+
   it('outputs a JSON serialisation of the chain on demand', () => {
     const chain = buildHrChain();
     const out = renderApprovalChainSection(
