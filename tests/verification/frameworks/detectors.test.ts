@@ -129,6 +129,11 @@ function chainReviewedAndApproved(): ApprovalChain {
         action: 'reviewed',
         actor: { name: 'Bob Mason', role: 'Security Engineer' },
         timestamp: '2026-05-11T11:00:00Z',
+        // Round-2 Fix 4 (MEDIUM-2): reviewers must leave evidence or
+        // a comment for Article 22 PARTIAL to fire. Add both here so
+        // the existing PARTIAL tests still trigger.
+        comment: 'reviewed scope per call; human-in-the-loop on every reject',
+        evidenceRefs: ['policy-doc-v1'],
       },
       {
         action: 'approved',

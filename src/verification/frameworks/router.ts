@@ -794,15 +794,29 @@ export function detectGDPR_Article22(sig: VerificationSignals): FrameworkControl
       severity: 'info',
     };
   }
-  const hasReview = sig.approvalChain?.entries.some((e) => e.action === 'reviewed') ?? false;
-  if (hasReview && sig.approvalIntegrity?.ok !== false) {
+  // Round-2 Fix 4 (MEDIUM-2): a bare `reviewed` row with no comment and
+  // no evidenceRefs is not sufficient grounds to downgrade the verdict
+  // from FAIL to PARTIAL. The reviewer must have left SOMETHING that
+  // the auditor can use to reconstruct the review — at minimum either
+  // a free-form comment or a pointer to the evidence (policy doc,
+  // ticket, screen-capture). Otherwise the chain row is a rubber-stamp
+  // signature with no audit value, and Article 22's human-review
+  // requirement is not even partially met.
+  const hasSubstantiveReview =
+    (sig.approvalChain?.entries ?? []).some(
+      (e) =>
+        e.action === 'reviewed' &&
+        ((e.evidenceRefs !== undefined && e.evidenceRefs.length > 0) ||
+          (e.comment !== undefined && e.comment.trim().length > 0)),
+    );
+  if (hasSubstantiveReview && sig.approvalIntegrity?.ok !== false) {
     return {
       framework: 'gdpr',
       controlId: 'Article 22',
       controlName: ARTICLE_22_NAME,
       verdict: 'partial',
-      rationale: 'Decision-making capability present and a human review step is documented in the approval chain, but a continuous human-in-the-loop is not yet evidenced per call.',
-      evidenceRefs: [{ kind: 'approval', ref: 'reviewed action present in chain' }],
+      rationale: 'Decision-making capability present and a substantive human review step (evidence or comment recorded) is documented in the approval chain, but a continuous human-in-the-loop is not yet evidenced per call.',
+      evidenceRefs: [{ kind: 'approval', ref: 'reviewed action with evidence or comment present in chain' }],
       severity: 'medium',
     };
   }
@@ -811,7 +825,7 @@ export function detectGDPR_Article22(sig: VerificationSignals): FrameworkControl
     controlId: 'Article 22',
     controlName: ARTICLE_22_NAME,
     verdict: 'fail',
-    rationale: 'Agent has automated decision-making capability without a disclosed human-review process; Article 22 prohibits decisions based solely on automated processing.',
+    rationale: 'Agent has automated decision-making capability without a substantive human-review process (no reviewed entry with comment or evidenceRefs); Article 22 prohibits decisions based solely on automated processing.',
     evidenceRefs: [{ kind: 'inventory', ref: 'decision-class scope present' }],
     severity: 'critical',
   };
