@@ -60,7 +60,11 @@ function makeReport(opts: {
         source: 'agent-declaration',
         capturedAt: '2026-05-01T00:00:00Z',
         agent: opts.agent ?? { name: 'Test Agent' },
-        scopes: opts.scopes ? [{ service: 'greenhouse', scope: 'candidates:read' }] : undefined,
+        // Use the same scopes the caller supplied for the actual side so
+        // the declared baseline is consistent with the agent type. An
+        // empty / undefined scopes array means the agent has no declared
+        // scopes — relied on by the non-HR test scenario.
+        scopes: opts.scopes !== undefined ? opts.scopes : undefined,
       },
     ],
     sources: [

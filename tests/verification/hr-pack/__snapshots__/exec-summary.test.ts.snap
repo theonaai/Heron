@@ -1,0 +1,127 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderExecutiveSummary — HR-clean scenario > matches golden snapshot for clean HR scenario 1`] = `
+"# Executive Summary
+
+**Agent:** Clean Recruiter Bot
+**Owner:** TA Team
+**Scan Date:** 2026-05-16T11:00:00Z
+**Vertical:** HR / Recruiting
+
+## Compliance Posture
+
+**Overall verdict:** ✓ Clean — no critical issues detected.
+
+## Headline Findings
+
+_No critical or high-severity issues detected._
+
+## Framework Coverage
+
+- **AIUC-1:** 5/5 controls verified
+- **EU AI Act:** 3/3 controls verified
+- **GDPR:** 1/2 controls verified
+- **NIST AI RMF:** 2/2 controls verified
+
+## Recommended Actions
+
+_No corrective actions required._
+
+## Approval Trail
+
+- **Declared:** Jane Doe (Head of HR), 2026-05-01T00:00:00Z
+- **Reviewed:** Bob Mason (Security Reviewer), 2026-05-08T00:00:00Z
+- **Approved:** Carla Reyes (DPO), 2026-05-15T00:00:00Z
+
+Chain integrity: ✓ Intact (3 entries, SHA-256 hash chain verified)
+
+---
+
+*Detailed findings below.*"
+`;
+
+exports[`renderExecutiveSummary — HR-fail scenario > matches golden snapshot for HR-fail scenario 1`] = `
+"# Executive Summary
+
+**Agent:** Recruiter Outreach Agent
+**Owner:** Talent Acquisition Team
+**Scan Date:** 2026-05-16T11:00:00Z
+**Vertical:** HR / Recruiting
+
+## Compliance Posture
+
+**Overall verdict:** ⚠ Partial compliance — 2 critical issues detected.
+
+## Headline Findings
+
+1. **CRITICAL:** Auto-Rejection Without Disclosure. (GDPR Article 22, NYC LL 144)
+2. **CRITICAL:** Offer-Letter Generation Without Salary-Band Approval. (Compensation policy)
+3. **HIGH:** Scoring Without Published Criteria. (EU AI Act Annex III §4)
+4. **HIGH:** Do-Not-Contact Bypass. (GDPR Article 21, CAN-SPAM)
+
+## Framework Coverage
+
+- **AIUC-1:** 5/5 controls verified
+- **EU AI Act:** 3/3 controls verified
+- **GDPR:** 1/2 controls verified, 1 partial
+- **NIST AI RMF:** 2/2 controls verified
+
+## Recommended Actions
+
+1. Document candidate notification process OR remove rejection capability.
+2. Publish scoring criteria in declared baseline OR remove scoring tools.
+3. Document DNC list integration OR scope outreach to candidates with explicit consent.
+4. Document salary band approval workflow OR remove offer generation capability.
+
+## Approval Trail
+
+- **Declared:** Jane Doe (Head of HR), 2026-05-01T00:00:00Z
+- **Reviewed:** Bob Mason (Security Reviewer), 2026-05-08T00:00:00Z
+- **Approved:** Carla Reyes (DPO), 2026-05-15T00:00:00Z
+
+Chain integrity: ✓ Intact (3 entries, SHA-256 hash chain verified)
+
+---
+
+*Detailed findings below.*"
+`;
+
+exports[`renderExecutiveSummary — non-HR agent > matches golden snapshot for non-HR scenario 1`] = `
+"# Executive Summary
+
+**Agent:** BillingBot
+**Owner:** Finance
+**Scan Date:** 2026-05-16T11:00:00Z
+**Vertical:** Generic agent
+
+## Compliance Posture
+
+**Overall verdict:** ✓ Clean — no critical issues detected.
+
+## Headline Findings
+
+_No critical or high-severity issues detected._
+
+## Framework Coverage
+
+- **AIUC-1:** 5/5 controls verified
+- **EU AI Act:** 2/3 controls verified
+- **GDPR:** 1/2 controls verified
+- **NIST AI RMF:** 2/2 controls verified
+
+## Recommended Actions
+
+_No corrective actions required._
+
+## Approval Trail
+
+- **Declared:** Jane Doe (Head of HR), 2026-05-01T00:00:00Z
+- **Reviewed:** Bob Mason (Security Reviewer), 2026-05-08T00:00:00Z
+- **Approved:** Carla Reyes (DPO), 2026-05-15T00:00:00Z
+
+Chain integrity: ✓ Intact (3 entries, SHA-256 hash chain verified)
+
+---
+
+*Detailed findings below.*"
+`;

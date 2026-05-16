@@ -125,6 +125,7 @@ describe('runHRPack — HR agent gate', () => {
           source: 'agent-declaration',
           capturedAt: '2026-05-01T00:00:00Z',
           agent: { name: 'R', purpose: 'Sourcing candidates.' },
+          scopes: [{ service: 'greenhouse', scope: 'candidates:read' }],
         },
       ],
     });
@@ -164,6 +165,7 @@ describe('runHRPack — env toggle', () => {
           source: 'agent-declaration',
           capturedAt: '2026-05-01T00:00:00Z',
           agent: { name: 'R', purpose: 'Sourcing candidates.' },
+          scopes: [{ service: 'greenhouse', scope: 'candidates:read' }],
         },
       ],
     });
