@@ -216,7 +216,12 @@ function matchesAnyRegex(value: string, patterns: readonly RegExp[]): boolean {
 }
 
 function hasScopeInventory(sig: VerificationSignals): boolean {
-  return sig.actualInventories.some((i) => i.source === 'oauth-scopes' || (i.scopes !== undefined && i.scopes.length >= 0));
+  // Round-2 Fix 6 (LOW-2): the old form `i.scopes.length >= 0` was a
+  // tautology — every array has length >= 0. The intent is "an
+  // inventory produced a scopes field, even an empty one" because
+  // that signals the source ran successfully and reported no scopes.
+  // Use `scopes !== undefined` to encode that intent honestly.
+  return sig.actualInventories.some((i) => i.source === 'oauth-scopes' || i.scopes !== undefined);
 }
 
 function hasAnyInventory(sig: VerificationSignals): boolean {
