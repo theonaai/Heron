@@ -158,7 +158,14 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   // (AIUC-1 E004 citation) so the auditor sees the gap explicitly.
   // Hash-chain integrity warnings are rendered prominently above the
   // table (see `src/approvals/render.ts`).
+  //
+  // Round-2 Fix 2 (M3): when the chain is BROKEN we also hoist a
+  // short critical-banner to the very TOP of the report header so an
+  // auditor cannot miss it. The full Approval Audit Trail section
+  // still appears at the end with the full integrity-warning context;
+  // the banner is a one-liner pointer, not a duplicate.
   let approvalMarkdown = '';
+  let approvalTopBanner = '';
   if (opts.approvalAgentId && opts.format === 'markdown') {
     const r = await readChain(opts.approvalAgentId, opts.approvalsDir);
     if (r.ok) {
@@ -171,6 +178,12 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
         },
         { format: 'markdown' },
       );
+      if (!integrity.ok) {
+        approvalTopBanner = [
+          `> **⚠ Critical: Approval Chain Integrity Broken** — agent \`${escapeInlineCode(opts.approvalAgentId)}\`, entry ${integrity.brokenAt} fails the hash check. See "Approval Audit Trail" section below for the full chain and per-entry status.`,
+          '',
+        ].join('\n');
+      }
     } else if (r.error.kind === 'not_found') {
       approvalMarkdown = renderNoApprovalChainNotice(opts.approvalAgentId);
     } else {
@@ -188,6 +201,24 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     rendered = JSON.stringify(result.value, null, 2);
   } else {
     rendered = renderToolInventoryMarkdown(result.value);
+    if (approvalTopBanner) {
+      // Hoist the broken-chain banner ABOVE the tool inventory table.
+      // Find the first blank line after the report's H1 header and
+      // splice the banner there; this puts it before "Tool count" /
+      // "Tools" but after the title so the report still reads as a
+      // single coherent document.
+      const headerBreakIdx = rendered.indexOf('\n\n');
+      if (headerBreakIdx >= 0) {
+        rendered =
+          rendered.slice(0, headerBreakIdx + 2) +
+          approvalTopBanner +
+          '\n' +
+          rendered.slice(headerBreakIdx + 2);
+      } else {
+        // Fallback: prepend if the header shape ever changes.
+        rendered = `${approvalTopBanner}\n${rendered}`;
+      }
+    }
     if (verificationMarkdown) {
       rendered = `${rendered}\n\n---\n\n${verificationMarkdown}\n`;
     }

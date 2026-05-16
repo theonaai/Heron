@@ -104,18 +104,23 @@ describe('heron scan --mcp ... --approval-agent-id', () => {
     const md = readFileSync(join(reportDir, files[0]!), 'utf-8');
 
     // A short critical-banner must appear at the very TOP of the
-    // report — before the tool inventory table — so an auditor cannot
-    // miss it.
+    // report — in the header block, before the '## Tools' section
+    // and the per-tool entries — so an auditor cannot miss it.
     const bannerIdx = md.search(/Critical:?\s*Approval Chain Integrity Broken/i);
-    const inventoryIdx = md.indexOf('MCP Tool Inventory');
-    const auditTrailIdx = md.indexOf('Approval Audit Trail');
+    const titleIdx = md.indexOf('# MCP Tool Inventory');
+    const toolsHeaderIdx = md.indexOf('## Tools');
+    const auditTrailIdx = md.indexOf('## Approval Audit Trail');
     expect(bannerIdx).toBeGreaterThan(-1);
-    expect(inventoryIdx).toBeGreaterThan(-1);
+    expect(titleIdx).toBeGreaterThan(-1);
+    expect(toolsHeaderIdx).toBeGreaterThan(-1);
     expect(auditTrailIdx).toBeGreaterThan(-1);
-    // Banner appears BEFORE the tool inventory table…
-    expect(bannerIdx).toBeLessThan(inventoryIdx);
+    // Banner appears in the report header — AFTER the H1 title but
+    // BEFORE the '## Tools' subheading and BEFORE the full audit-trail
+    // section at the end.
+    expect(bannerIdx).toBeGreaterThan(titleIdx);
+    expect(bannerIdx).toBeLessThan(toolsHeaderIdx);
     // …and the full Approval Audit Trail section still appears at the end.
-    expect(auditTrailIdx).toBeGreaterThan(inventoryIdx);
+    expect(auditTrailIdx).toBeGreaterThan(toolsHeaderIdx);
   });
 
   it('does NOT emit a top-banner when the chain is intact', async () => {
