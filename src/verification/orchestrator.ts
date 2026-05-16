@@ -16,7 +16,6 @@
  */
 
 import { diff } from './differ.js';
-import { runFrameworkMapping } from './frameworks/router.js';
 import type {
   ActualInventory,
   ActualScope,
@@ -95,17 +94,42 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
     sources: sourceResults,
   };
 
-  // AAP-49: framework mapping. Runs AFTER differ + approval-chain
-  // attachment (caller can attach approvalChain to the report
-  // post-return; the mapper consumes whatever is present). Default
-  // enabled. Toggleable via env so an operator who only wants the raw
-  // structural report can opt out — useful for tests and for the
-  // existing AAP-48 callers that have their own compliance pipeline.
-  if (process.env.HERON_FRAMEWORK_MAPPING_DISABLED !== 'true') {
-    report.frameworkMapping = runFrameworkMapping(report, { now });
-  }
-
+  // AAP-49 round 2 (HIGH-1): framework mapping is NO LONGER attached
+  // here. The mapper consumes the approval chain, but the chain is
+  // resolved at the CLI boundary (`src/commands/mcp-scan.ts`) — running
+  // the mapper inside `runVerification` meant the chain was always
+  // `undefined` and E004 always evaluated to FAIL even when a real
+  // approved chain existed on disk. The CLI now attaches the chain
+  // post-return and runs the mapper itself; this function returns the
+  // raw structural report. Callers that want the mapping should:
+  //
+  //   const report = await runVerification(args);
+  //   if (opts.approvalAgentId) {
+  //     const r = await readChain(opts.approvalAgentId, opts.approvalsDir);
+  //     if (r.ok) {
+  //       report.approvalChain = {
+  //         chain: r.chain,
+  //         integrity: verifyChainIntegrity(r.chain),
+  //         ...(r.warnings ? { warnings: r.warnings } : {}),
+  //       };
+  //     }
+  //   }
+  //   if (!isFrameworkMappingDisabled()) {
+  //     report.frameworkMapping = runFrameworkMapping(report);
+  //   }
   return report;
+}
+
+/**
+ * Single source of truth for the AAP-49 env-disable flag.
+ *
+ * Used by both the CLI in `src/commands/mcp-scan.ts` and the
+ * orchestrator-integration tests. Keeping the env-name check in one
+ * place means a future rename (e.g. to `HERON_FRAMEWORKS_DISABLED`)
+ * touches one file, not two.
+ */
+export function isFrameworkMappingDisabled(): boolean {
+  return process.env.HERON_FRAMEWORK_MAPPING_DISABLED === 'true';
 }
 
 /**
