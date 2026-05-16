@@ -54,12 +54,31 @@ function severityLabel(s: ControlSeverity): string {
   return s.toUpperCase();
 }
 
+/**
+ * Round-2 Fix 5 (LOW-1): hard cap on rationale length to keep table
+ * cells readable. The detector code is free to compose long
+ * rationales (joined evidence lists, multi-clause sentences); the
+ * renderer truncates anything past 512 chars with a `…` suffix. The
+ * full rationale survives in `FrameworkControl.rationale` for JSON
+ * consumers — only the rendered Markdown table is capped.
+ *
+ * The cap is applied BEFORE `escapeCell`. Doing it the other way would
+ * mean cell-escape sequences could be cut in the middle, producing
+ * invalid Markdown.
+ */
+const MAX_RATIONALE_CHARS = 512;
+
+function truncateRationale(rationale: string): string {
+  if (rationale.length <= MAX_RATIONALE_CHARS) return rationale;
+  return rationale.slice(0, MAX_RATIONALE_CHARS) + '…';
+}
+
 function rowFor(c: FrameworkControl): string {
   const fw = escapeCell(FRAMEWORK_DISPLAY[c.framework]);
   const ctrl = `\`${escapeInlineCode(c.controlId)}\` ${escapeCell(c.controlName)}`;
   const verdict = escapeCell(verdictMarker(c.verdict));
   const severity = escapeCell(severityLabel(c.severity));
-  const rationale = escapeCell(c.rationale);
+  const rationale = escapeCell(truncateRationale(c.rationale));
   return `| ${fw} | ${ctrl} | ${verdict} | ${severity} | ${rationale} |`;
 }
 
