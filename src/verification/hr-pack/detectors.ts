@@ -172,6 +172,27 @@ const SUBAGENT_ARCH_KEYWORDS: readonly RegExp[] = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * Detector-level truncation cap for user-controlled string fields
+ * (tool names, scope strings, service names) that flow into
+ * `rationale` and `evidenceRefs[].ref`. The Markdown / CLI renderers
+ * already cap their own widths, but downstream JSON consumers see
+ * unbounded blow-up when an adversary-controlled MCP server returns a
+ * 10K-char tool name. Capping at the detector level keeps every
+ * downstream representation bounded.
+ *
+ * PR #22 round-2 LOW fix. Not applied to `declared.agent.purpose`
+ * because the agent-declaration source already caps purpose length
+ * upstream.
+ */
+const MAX_DETECTOR_FIELD_LEN = 128;
+
+function truncateForRationale(s: string): string {
+  return s.length > MAX_DETECTOR_FIELD_LEN
+    ? s.slice(0, MAX_DETECTOR_FIELD_LEN - 1) + '…'
+    : s;
+}
+
 function matchesAnyString(value: string, patterns: readonly string[]): boolean {
   const lower = value.toLowerCase();
   return patterns.some((p) => lower.includes(p.toLowerCase()));
@@ -264,8 +285,15 @@ export function detectAutoRejectionWithoutDisclosure(sig: VerificationSignals): 
     };
   }
   const refs: HRSignalEvidenceRef[] = [];
-  if (scopeMatches[0]) refs.push({ kind: 'inventory', ref: `scope ${scopeMatches[0].service}:${scopeMatches[0].scope}` });
-  if (toolMatches[0]) refs.push({ kind: 'inventory', ref: `tool ${toolMatches[0].name}` });
+  if (scopeMatches[0]) {
+    refs.push({
+      kind: 'inventory',
+      ref: `scope ${truncateForRationale(scopeMatches[0].service)}:${truncateForRationale(scopeMatches[0].scope)}`,
+    });
+  }
+  if (toolMatches[0]) {
+    refs.push({ kind: 'inventory', ref: `tool ${truncateForRationale(toolMatches[0].name)}` });
+  }
   refs.push({ kind: 'absence', ref: 'purpose does not document notification / human review' });
   return {
     signalId: D1_ID,
@@ -326,14 +354,16 @@ export function detectATSWriteScopeSprawl(sig: VerificationSignals): HRSignal {
   }
   if (narrowPurpose) {
     const example = writes[0]!;
+    const safeService = truncateForRationale(example.service);
+    const safeScope = truncateForRationale(example.scope);
     return {
       signalId: D2_ID,
       name: D2_NAME,
       verdict: 'detected',
       severity: 'high',
-      rationale: `ATS write scope '${example.service}:${example.scope}' present but declared purpose describes only narrow read-side activity (outreach / sourcing / scheduling).`,
+      rationale: `ATS write scope '${safeService}:${safeScope}' present but declared purpose describes only narrow read-side activity (outreach / sourcing / scheduling).`,
       evidenceRefs: [
-        { kind: 'inventory', ref: `scope ${example.service}:${example.scope}` },
+        { kind: 'inventory', ref: `scope ${safeService}:${safeScope}` },
         { kind: 'absence', ref: 'purpose does not declare write actions' },
       ],
       recommendation: D2_REC,
@@ -343,14 +373,16 @@ export function detectATSWriteScopeSprawl(sig: VerificationSignals): HRSignal {
   // write actions — surface as detected so the operator either narrows
   // the scope or documents the write intent.
   const example = writes[0]!;
+  const safeService = truncateForRationale(example.service);
+  const safeScope = truncateForRationale(example.scope);
   return {
     signalId: D2_ID,
     name: D2_NAME,
     verdict: 'detected',
     severity: 'high',
-    rationale: `ATS write scope '${example.service}:${example.scope}' present; declared purpose does not explicitly authorise write actions.`,
+    rationale: `ATS write scope '${safeService}:${safeScope}' present; declared purpose does not explicitly authorise write actions.`,
     evidenceRefs: [
-      { kind: 'inventory', ref: `scope ${example.service}:${example.scope}` },
+      { kind: 'inventory', ref: `scope ${safeService}:${safeScope}` },
       { kind: 'absence', ref: 'purpose does not declare write actions' },
     ],
     recommendation: D2_REC,
@@ -400,14 +432,16 @@ export function detectCandidatePIIInLogs(sig: VerificationSignals): HRSignal {
     };
   }
   const example = piiScopes[0]!;
+  const safeService = truncateForRationale(example.service);
+  const safeScope = truncateForRationale(example.scope);
   return {
     signalId: D3_ID,
     name: D3_NAME,
     verdict: 'detected',
     severity: 'medium',
-    rationale: `PII-exposing scope '${example.service}:${example.scope}' present without a declared logging or retention policy. Flags the risk surface; actual log content is not inspected.`,
+    rationale: `PII-exposing scope '${safeService}:${safeScope}' present without a declared logging or retention policy. Flags the risk surface; actual log content is not inspected.`,
     evidenceRefs: [
-      { kind: 'inventory', ref: `scope ${example.service}:${example.scope}` },
+      { kind: 'inventory', ref: `scope ${safeService}:${safeScope}` },
       { kind: 'absence', ref: 'purpose does not document logging policy' },
     ],
     recommendation: D3_REC,
@@ -457,14 +491,15 @@ export function detectScoringWithoutCriteria(sig: VerificationSignals): HRSignal
     };
   }
   const example = scoringTools[0]!;
+  const safeName = truncateForRationale(example.name);
   return {
     signalId: D4_ID,
     name: D4_NAME,
     verdict: 'detected',
     severity: 'high',
-    rationale: `Scoring/ranking tool '${example.name}' present but declared purpose does not publish scoring criteria. Triggers EU AI Act Annex III §4 transparency obligation.`,
+    rationale: `Scoring/ranking tool '${safeName}' present but declared purpose does not publish scoring criteria. Triggers EU AI Act Annex III §4 transparency obligation.`,
     evidenceRefs: [
-      { kind: 'inventory', ref: `tool ${example.name}` },
+      { kind: 'inventory', ref: `tool ${safeName}` },
       { kind: 'absence', ref: 'purpose does not declare scoring criteria' },
     ],
     recommendation: D4_REC,
@@ -516,8 +551,15 @@ export function detectDoNotContactBypass(sig: VerificationSignals): HRSignal {
     };
   }
   const refs: HRSignalEvidenceRef[] = [];
-  if (outreachScopes[0]) refs.push({ kind: 'inventory', ref: `scope ${outreachScopes[0].service}:${outreachScopes[0].scope}` });
-  if (outreachTools[0]) refs.push({ kind: 'inventory', ref: `tool ${outreachTools[0].name}` });
+  if (outreachScopes[0]) {
+    refs.push({
+      kind: 'inventory',
+      ref: `scope ${truncateForRationale(outreachScopes[0].service)}:${truncateForRationale(outreachScopes[0].scope)}`,
+    });
+  }
+  if (outreachTools[0]) {
+    refs.push({ kind: 'inventory', ref: `tool ${truncateForRationale(outreachTools[0].name)}` });
+  }
   refs.push({ kind: 'absence', ref: 'purpose does not document DNC handling' });
   return {
     signalId: D5_ID,
@@ -573,14 +615,15 @@ export function detectOfferLetterOutOfRange(sig: VerificationSignals): HRSignal 
     };
   }
   const example = offerTools[0]!;
+  const safeName = truncateForRationale(example.name);
   return {
     signalId: D6_ID,
     name: D6_NAME,
     verdict: 'detected',
     severity: 'critical',
-    rationale: `Offer-generation tool '${example.name}' present but declared purpose does not document a salary band or approval workflow. Heron cannot read offer values; this flags the capability, not specific dollar amounts.`,
+    rationale: `Offer-generation tool '${safeName}' present but declared purpose does not document a salary band or approval workflow. Heron cannot read offer values; this flags the capability, not specific dollar amounts.`,
     evidenceRefs: [
-      { kind: 'inventory', ref: `tool ${example.name}` },
+      { kind: 'inventory', ref: `tool ${safeName}` },
       { kind: 'absence', ref: 'purpose does not document salary-band approval' },
     ],
     recommendation: D6_REC,
@@ -630,14 +673,15 @@ export function detectSubAgentScopeExpansion(sig: VerificationSignals): HRSignal
     };
   }
   const example = subagentTools[0]!;
+  const safeName = truncateForRationale(example.name);
   return {
     signalId: D7_ID,
     name: D7_NAME,
     verdict: 'detected',
     severity: 'high',
-    rationale: `Orchestration tool '${example.name}' present but declared purpose does not document a sub-agent architecture. Sub-agents may inherit parent OAuth scopes without explicit narrowing.`,
+    rationale: `Orchestration tool '${safeName}' present but declared purpose does not document a sub-agent architecture. Sub-agents may inherit parent OAuth scopes without explicit narrowing.`,
     evidenceRefs: [
-      { kind: 'inventory', ref: `tool ${example.name}` },
+      { kind: 'inventory', ref: `tool ${safeName}` },
       { kind: 'absence', ref: 'purpose does not document sub-agent architecture' },
     ],
     recommendation: D7_REC,

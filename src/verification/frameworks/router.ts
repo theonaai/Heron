@@ -190,16 +190,19 @@ const HR_CONNECTORS: ReadonlySet<string> = new Set([
 ]);
 
 const HR_SCOPE_PATTERNS: readonly RegExp[] = [
+  // Google Workspace admin directory — the canonical "I can read your
+  // employee roster" scope. Highly HR-class.
   /admin\.directory/i,
+  // ATS-native HR namespaces. Kept narrow on purpose: scopes like
+  // `jobs:` or `directory:` are ambiguous (jobs could be cron jobs,
+  // directory could be filesystem) and are intentionally NOT in this
+  // list — they wouldn't count as a stand-alone HR signal even when
+  // paired with an HR connector.
   /\bcandidates?:/i,
   /\bapplicants?:/i,
   /\bapplications?:/i,
-  /\bemployees?:/i,
   /\binterviews?:/i,
-  /\boffers?:/i,
-  /\bjobs?:/i,
   /\brecruiting:/i,
-  /\bdirectory:/i,
 ];
 
 const HR_KEYWORDS: readonly RegExp[] = [

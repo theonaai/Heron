@@ -543,14 +543,19 @@ describe('isHRAgent — heuristic', () => {
     ).toBe(true);
   });
 
-  it('true for an inventory mentioning bamboohr', () => {
+  it('true for an inventory mentioning bamboohr + HR scope (two signals)', () => {
+    // PR #22 round-2: two-signal requirement. Pair bamboohr connector
+    // with an HR-class scope to clear the gate.
     expect(
       isHRAgent({
         ...emptySignals(),
         declaredInventory: {
           source: 'interview',
           capturedAt: 't',
-          scopes: [{ service: 'bamboohr', scope: 'directory:read' }],
+          scopes: [
+            { service: 'bamboohr', scope: 'directory:read' },
+            { service: 'bamboohr', scope: 'applicants:read' },
+          ],
         },
       }),
     ).toBe(true);
