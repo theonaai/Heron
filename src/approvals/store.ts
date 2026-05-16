@@ -375,9 +375,6 @@ export async function appendEntry(
       }
     : {
         agentId,
-        ...(cleanEntry.actor && cleanEntry.actor.name && cleanEntry.actor.role
-          ? {}
-          : {}),
         createdAt: cleanEntry.timestamp,
         entries: [cleanEntry],
       };
