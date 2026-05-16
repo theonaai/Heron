@@ -47,6 +47,38 @@ export interface DeclaredInventory {
   tools?: DeclaredTool[];
   /** OAuth-style scopes the owner says the agent uses. */
   scopes?: DeclaredScope[];
+  /**
+   * Optional agent metadata block (AAP-51).
+   *
+   * The file backend (`src/verification/sources/agent-declaration/file.ts`)
+   * already parses and validates `agent.{name, purpose, owner, version}`.
+   * Prior to AAP-51 these fields were validated but discarded. The HR
+   * pack detectors (`hr-pack/detectors.ts`) read `purpose` to check
+   * for documented human-review / DNC / salary-band / scoring-criteria
+   * disclosures, and `owner` flows into the DPO-readable executive
+   * summary. Optional so existing callers that don't populate it
+   * (interview source, legacy CLI flags) continue to work.
+   *
+   * Strings here have already passed through the file-backend's
+   * `sanitiseString` chokepoint (control-char strip + 512-char cap).
+   * Renderers still escape via `escapeText` as defence in depth.
+   */
+  agent?: DeclaredAgentInfo;
+}
+
+/**
+ * Agent-metadata sub-block of `DeclaredInventory` (AAP-51).
+ *
+ * All fields optional — the file backend requires `name` at validation
+ * time but the runtime type stays loose so a future declared source
+ * that does not provide `name` (e.g. interview transcript that did
+ * not ask for it) does not error out the HR pack.
+ */
+export interface DeclaredAgentInfo {
+  name?: string;
+  purpose?: string;
+  owner?: string;
+  version?: string;
 }
 
 export interface DeclaredTool {

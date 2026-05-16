@@ -61,6 +61,7 @@ import { isAbsolute, normalize, resolve, sep } from 'node:path';
 
 import { stripControlChars } from '../../../util/markdown-escape.js';
 import type {
+  DeclaredAgentInfo,
   DeclaredInventory,
   DeclaredScope,
   DeclaredTool,
@@ -359,6 +360,30 @@ function validateSchema(
     return parseFail('agent.name is required and must be a non-empty string');
   }
 
+  // AAP-51: capture the agent metadata block onto the returned
+  // inventory so the HR-pack detectors can read `purpose`,`owner`, and
+  // the DPO exec summary can render `name` + `owner`. The file
+  // backend was already validating this block (KNOWN_AGENT_KEYS) but
+  // discarding the parsed values prior to AAP-51.
+  //
+  // Sanitise each field through the same chokepoint as tools/scopes
+  // (`sanitiseString`: strip control chars + cap at 512). `name` is
+  // already validated as non-empty above; sanitise idempotently here
+  // so the inventory carries the clean form.
+  const agentInfo: DeclaredAgentInfo = { name: sanitiseString(agent.name) };
+  if (typeof agent.purpose === 'string') {
+    const p = sanitiseString(agent.purpose);
+    if (p.length > 0) agentInfo.purpose = p;
+  }
+  if (typeof agent.owner === 'string') {
+    const o = sanitiseString(agent.owner);
+    if (o.length > 0) agentInfo.owner = o;
+  }
+  if (typeof agent.version === 'string') {
+    const v = sanitiseString(agent.version);
+    if (v.length > 0) agentInfo.version = v;
+  }
+
   let tools: DeclaredTool[] | undefined;
   let scopes: DeclaredScope[] | undefined;
 
@@ -386,6 +411,7 @@ function validateSchema(
   const inventory: DeclaredInventory = {
     source: 'agent-declaration',
     capturedAt: new Date().toISOString(),
+    agent: agentInfo,
   };
   if (tools !== undefined) inventory.tools = tools;
   if (scopes !== undefined) inventory.scopes = scopes;
