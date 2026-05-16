@@ -2,6 +2,12 @@
 
 exports[`AgentDeclarationSource — golden snapshot > canonical HR-agent fixture produces the expected DeclaredInventory shape 1`] = `
 {
+  "agent": {
+    "name": "Recruiter Outreach Agent",
+    "owner": "Talent Acquisition Team",
+    "purpose": "Sources candidates from LinkedIn, schedules interviews via Google Calendar, sends offer letters via Gmail.",
+    "version": "1.0.0",
+  },
   "scopes": [
     {
       "scope": "gmail.send",
