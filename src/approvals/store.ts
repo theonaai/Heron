@@ -105,12 +105,31 @@ const VALID_ACTIONS: ReadonlySet<ApprovalAction> = new Set([
 ]);
 
 /**
- * Lightweight email validator: non-empty before/after the `@`, no
- * whitespace, has a `.` somewhere on the domain side. Same posture as
- * RFC 5322-lite checks elsewhere — we are not trying to validate
- * deliverability, only to reject obvious typos.
+ * Strict email validator applied to the RAW input BEFORE
+ * `stripControlChars` runs. Limits to the safe ASCII subset
+ * commonly accepted by transport agents: alnum + `._%+-` in the
+ * local-part, alnum + `.-` in the domain, and a TLD of two or
+ * more letters.
+ *
+ * Round-2 (M1): the prior `[^\s@]+@[^\s@]+\.[^\s@]+` ran AFTER
+ * sanitisation, so the operator could smuggle a tag through:
+ * `a@b.c\n<script>` survived `stripControlChars` as `a@b.c<script>`,
+ * which passed the lax regex because `<>` are non-whitespace
+ * non-`@`. The strict class below explicitly excludes `<>[]\"'`
+ * and anything outside the safe set; together with a control-char
+ * pre-check (`stripControlChars(raw) !== raw`) it rejects the
+ * smuggle on the raw form, so the sanitiser never converts a
+ * hostile payload into a passing one.
  */
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_REGEX = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+
+/**
+ * Bracket / quote / backslash characters explicitly excluded from
+ * the email validator. Listed separately from the regex so the
+ * rejection path can give an operator a pointed error and so the
+ * test suite has a fixed reference of disallowed characters.
+ */
+const EMAIL_DISALLOWED_CHARS = /[<>\[\]\\"'`]/;
 
 /**
  * ISO-8601 timestamp must include an explicit timezone designator
@@ -595,16 +614,40 @@ function validateAndSanitiseActor(
     if (typeof actor.email !== 'string') {
       return invalid('entry.actor.email must be a string when present');
     }
-    const email = sanitiseShortString(actor.email);
-    if (email.length > MAX_ACTOR_STRING_LEN) {
+    // ── Round-2 (M1): validate the RAW form FIRST.
+    //
+    // Reject if the raw input contains any control char or Unicode
+    // line separator from the `stripControlChars` strip set — a
+    // newline could otherwise carry an injected `<script>` past the
+    // lax regex once stripped. Then reject any of the explicitly
+    // disallowed punctuation (`<>[]\\"'`) on the raw form too,
+    // since `stripControlChars` does NOT touch those and they have
+    // no business being inside an email address.
+    const raw = actor.email;
+    if (raw.length === 0) {
+      return invalid('entry.actor.email must be non-empty when present');
+    }
+    if (raw.length > MAX_ACTOR_STRING_LEN) {
       return invalid(
-        `entry.actor.email has ${email.length} chars; cap is ${MAX_ACTOR_STRING_LEN}`,
+        `entry.actor.email has ${raw.length} chars; cap is ${MAX_ACTOR_STRING_LEN}`,
       );
     }
-    if (!EMAIL_REGEX.test(email)) {
-      return invalid(`entry.actor.email does not look like an email address (got '${email}')`);
+    if (stripControlChars(raw) !== raw) {
+      return invalid(
+        "entry.actor.email contains a control character or line separator; refusing to sanitise",
+      );
     }
-    out.email = email;
+    if (EMAIL_DISALLOWED_CHARS.test(raw)) {
+      return invalid(
+        "entry.actor.email contains a disallowed character (one of <>[]\\\\\"'`); refusing",
+      );
+    }
+    if (!EMAIL_REGEX.test(raw)) {
+      return invalid(`entry.actor.email does not look like an email address (got '${raw}')`);
+    }
+    // Strict regex above already excludes whitespace and the disallowed
+    // class, so sanitisation is a no-op safety net.
+    out.email = sanitiseShortString(raw);
   }
   return { ok: true, actor: out };
 }
