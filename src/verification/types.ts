@@ -307,6 +307,20 @@ export interface VerificationReport {
    * from `src/approvals/types.ts`; consumers cast on use.
    */
   approvalChain?: ApprovalChainAttachment;
+  /**
+   * Compliance framework mapping (AAP-49 pilot deliverable #4).
+   *
+   * Populated by the framework-mapping step in
+   * `runVerification` AFTER all source adapters have run AND the
+   * approval chain has been attached. Absent when the mapper is
+   * explicitly disabled (env `HERON_FRAMEWORK_MAPPING_DISABLED=true`)
+   * — in that case the renderer simply omits the section.
+   *
+   * Each entry in `controls` is the verdict for one framework control
+   * (AIUC-1 A003, EU AI Act Annex III §4, GDPR Article 22, …). See
+   * `src/verification/frameworks/types.ts` for the per-control shape.
+   */
+  frameworkMapping?: import('./frameworks/types.js').FrameworkMapping;
 }
 
 /**
