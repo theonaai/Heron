@@ -169,6 +169,8 @@ The per-source verdict is one of three states — always be explicit which one f
 | **Discrepancy** | The source read succeeded but at least one diff surfaced (extra capability, missing capability, or mismatched details). |
 | **Unverified** | The source could not be read (auth failure, unreachable, timeout, malformed config). We cannot make a claim either way — the report says so. |
 
+Each verification report also grows a **Compliance Framework Mapping** section that translates the diff + approval-chain signals into per-control verdicts against AIUC-1 (A003, B006, D003, E004, E015), EU AI Act (Annex III §4, Article 14, Article 12), GDPR (Article 22, Article 5(1)(c)), and NIST AI RMF (MEASURE, MANAGE). Detectors are pure functions over the verification signals — no live regulatory data ingest, no LLM. Set `HERON_FRAMEWORK_MAPPING_DISABLED=true` to opt out.
+
 ##### Declared source: structured config (`--declared-source`)
 
 For pilots the declared baseline outgrows a comma-separated CLI flag pretty quickly — you want declared tools AND scopes in one place, plus agent metadata (name, purpose, owner). Use `--declared-source` to point at a JSON config file:
