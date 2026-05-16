@@ -87,6 +87,32 @@ function renderMarkdown(args: RenderApprovalChainArgs): string {
   lines.push(`**Entries**: ${args.chain.entries.length}`);
   lines.push('');
 
+  // Round-2 Fix 5 (LOW): empty chains take a dedicated branch. The
+  // previous behaviour rendered an "Integrity: OK" banner above an
+  // empty table — misleading, because there is literally nothing
+  // for the hash chain to verify. An auditor reading the report
+  // could rubber-stamp it as "approved chain present". Surface the
+  // gap explicitly instead, name the agent so a reviewer can chase
+  // the missing lifecycle, and skip the table entirely.
+  if (args.chain.entries.length === 0) {
+    lines.push(
+      `**Status:** Chain empty — no approval lifecycle recorded for agent \`${escapeText(args.chain.agentId)}\`.`,
+    );
+    lines.push('');
+    lines.push(
+      'This agent has not yet had any declared / reviewed / approved actions recorded.',
+    );
+    if (args.warnings && args.warnings.length > 0) {
+      lines.push('');
+      for (const w of args.warnings) {
+        lines.push(`> Note: ${escapeText(w)}`);
+      }
+    }
+    lines.push('');
+    lines.push('_Compliance mapping: AIUC-1 E004 (Assigned Accountability) lives in the Actor column; AIUC-1 E015 (System Activity Logging) lives in the append-only chain + hash chain._');
+    return lines.join('\n');
+  }
+
   // Integrity banner — always before the table so a reviewer cannot
   // miss it. AIUC-1 E015 expects tamper-evidence to be on the
   // first page of the report.
