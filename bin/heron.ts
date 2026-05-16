@@ -257,6 +257,25 @@ approvals
     }
   });
 
+// ─── interview: AAP-51 HR vertical interview questions ─────────────────────
+
+const interview = program
+  .command('interview')
+  .description('Pre-flight interview questions for vertical packs');
+
+interview
+  .command('hr')
+  .description('Print the 7 HR vertical interview questions')
+  .action(async () => {
+    try {
+      const { runInterview } = await import('../src/commands/interview.js');
+      runInterview({ vertical: 'hr' });
+    } catch (err) {
+      logger.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
 // ─── install-skill: install Claude Code skill ───────────────────────────────
 
 program
@@ -385,7 +404,7 @@ async function interactiveStart(): Promise<void> {
 }
 
 const args = process.argv.slice(2);
-const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'mcp-serve', 'approve', 'approvals', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
+const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'mcp-serve', 'approve', 'approvals', 'interview', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
 
 if (!hasSubcommand && args.length > 0) {
   // Legacy: flags without subcommand → scan

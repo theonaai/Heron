@@ -9,6 +9,9 @@ import { generateId } from '../util/id.js';
 import { escapeInlineCode, escapeText } from '../util/markdown-escape.js';
 import { runVerification, isFrameworkMappingDisabled } from '../verification/orchestrator.js';
 import { runFrameworkMapping } from '../verification/frameworks/router.js';
+import { runHRPack } from '../verification/hr-pack/router.js';
+import { renderExecutiveSummary } from '../verification/hr-pack/exec-summary.js';
+import { renderHRSignalsSection } from '../verification/hr-pack/render.js';
 import { McpToolsSource, normalizeRawTool } from '../verification/sources/mcp-tools.js';
 import { OAuthScopesSource } from '../verification/sources/oauth-scopes.js';
 import type { OAuthScopesSourceConfig } from '../verification/sources/oauth-scopes.js';
@@ -199,8 +202,10 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   // through so the framework mapper consumes it and produces a real
   // E004 verdict instead of the previous always-FAIL.
   let verificationMarkdown = '';
+  let execSummaryMarkdown = '';
+  let hrSectionMarkdown = '';
   if (opts.verify && opts.verify.length > 0 && opts.format === 'markdown') {
-    verificationMarkdown = await runVerificationForCli({
+    const result = await runVerificationForCli({
       transportConfig: config,
       verifySources: opts.verify,
       declaredTools: opts.declaredTools ?? [],
@@ -209,6 +214,9 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
       agentLabel: opts.agentLabel ?? label,
       ...(approvalAttachment !== undefined ? { approvalAttachment } : {}),
     });
+    verificationMarkdown = result.verificationSection;
+    execSummaryMarkdown = result.execSummary;
+    hrSectionMarkdown = result.hrSection;
   }
 
   let rendered: string;
@@ -234,8 +242,19 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
         rendered = `${approvalTopBanner}\n${rendered}`;
       }
     }
+    // AAP-51: prepend the DPO-grade Executive Summary at the very TOP
+    // of the report so a reviewer who never scrolls past the first
+    // page still sees the headline findings, framework coverage, and
+    // approval trail. Only rendered when verification ran (otherwise
+    // we have no signals to summarise).
+    if (execSummaryMarkdown) {
+      rendered = `${execSummaryMarkdown}\n\n---\n\n${rendered}`;
+    }
     if (verificationMarkdown) {
       rendered = `${rendered}\n\n---\n\n${verificationMarkdown}\n`;
+    }
+    if (hrSectionMarkdown) {
+      rendered = `${rendered}\n\n---\n\n${hrSectionMarkdown}\n`;
     }
     if (approvalMarkdown) {
       rendered = `${rendered}\n\n---\n\n${approvalMarkdown}\n`;
@@ -345,7 +364,33 @@ interface RunVerificationForCliArgs {
   approvalAttachment?: ApprovalChainAttachment;
 }
 
-async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<string> {
+/**
+ * Return shape for `runVerificationForCli` (AAP-51).
+ *
+ * Prior to AAP-51 this function returned the verification Markdown
+ * only. The HR pack adds two more sections — an executive summary
+ * placed at the TOP of the report (above the tool inventory) and an
+ * in-body HR Vertical Signals table — so the function now returns a
+ * structured envelope. Callers compose the final report from these
+ * pieces.
+ *
+ * `execSummary` is always populated when verification ran (even for
+ * non-HR agents — the summary still includes framework coverage +
+ * approval trail and labels the vertical as "Generic agent").
+ *
+ * `hrSection` is populated only when `isHRAgent === true` and the
+ * HR-pack env toggle is not set; otherwise it is the empty string.
+ */
+interface VerificationForCliResult {
+  /** Executive Summary (rendered at the TOP of the report). */
+  execSummary: string;
+  /** Verification + framework mapping Markdown (in-body). */
+  verificationSection: string;
+  /** HR Vertical Signals Markdown — empty when not an HR agent. */
+  hrSection: string;
+}
+
+async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<VerificationForCliResult> {
   const declared: DeclaredInventory[] = [];
 
   // AAP-48 subagent #6: prefer the structured `declaredSource` over
@@ -536,7 +581,16 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<s
     report.frameworkMapping = runFrameworkMapping(report);
   }
 
-  return renderVerificationSection(report);
+  // AAP-51: run the HR vertical pack AFTER the framework mapper.
+  // Detectors are PURE and self-gated by `isHRAgent`; the env toggle
+  // `HERON_HR_PACK_DISABLED=true` is checked inside `runHRPack`.
+  const hr = runHRPack(report);
+
+  return {
+    execSummary: renderExecutiveSummary(report, hr),
+    verificationSection: renderVerificationSection(report),
+    hrSection: renderHRSignalsSection(hr),
+  };
 }
 
 /**
