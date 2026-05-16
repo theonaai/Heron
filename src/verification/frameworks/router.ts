@@ -106,20 +106,47 @@ const ACTION_SCOPE_PATTERNS: readonly string[] = [
 ];
 
 /**
- * Tool names whose name or description signals an irreversible operation.
- * AIUC-1 D003 fires when one of these tools is present in the actual
- * MCP inventory AND the tool does not carry an acknowledgement
- * annotation (`destructiveHint`, `idempotency:false`, or a custom
- * `unsafeAcknowledged`).
+ * Tool names whose NAME signals an irreversible / destructive / unsafe
+ * operation. AIUC-1 D003 fires when a tool matches one of these patterns
+ * (or one of `RISKY_TOOL_DESCRIPTION_PATTERNS` below) AND the tool does
+ * not carry an acknowledgement annotation (`destructiveHint`,
+ * `idempotency:false`, or a custom `unsafeAcknowledged`).
+ *
+ * Round-2 Fix 2 (HIGH-2): the round-1 set was a small handful of verbs
+ * with a `^` anchor that missed short forms (`del_`, `rm_`),
+ * destructive table verbs (`drop_`, `truncate_`, `purge_`, `wipe_`,
+ * `expunge_`), and lifecycle-management verbs that effectively destroy
+ * state (`terminate_`, `revoke_`, `reject_`, `cancel_`, `suspend_`).
+ * Naming-side patterns are anchored to the start-of-name so they
+ * survive tools with legitimate prefixes (`list_users`) without
+ * over-matching (`delete_log_handler` is still risky, `predeletes` is
+ * not — short verbs require an explicit `_` or `-` boundary).
  */
-const RISKY_TOOL_PATTERNS: readonly RegExp[] = [
-  /^delete[_-]/i,
-  /destroy/i,
-  /remove[_-]/i,
-  /^send[_-]?email/i,
-  /^send[_-]?message/i,
-  /terminate/i,
-  /revoke/i,
+const RISKY_TOOL_NAME_PATTERNS: readonly RegExp[] = [
+  /^(delete|del|destroy|remove|rm|drop|purge|wipe|truncate|expunge)[_-]/i,
+  /^send[_-]?(email|message|sms|notification|mail)/i,
+  /^(terminate|revoke|reject|cancel|suspend)[_-]/i,
+];
+
+/**
+ * Description-side signals: a tool whose name is innocuous but whose
+ * description self-identifies as destructive or irreversible. Catches
+ * tools that wrap a destructive backend call behind a benign verb like
+ * `process_record`, `update_status`, `archive_user`.
+ *
+ * Words are matched on word boundaries so common substrings ("re move")
+ * do not over-fire.
+ */
+const RISKY_TOOL_DESCRIPTION_PATTERNS: readonly RegExp[] = [
+  /\bdeletes?\b/i,
+  /\bremoves?\b/i,
+  // Allow up to 3 intervening words ("sends an email", "sends marketing
+  // emails", "sends outbound bulk messages") between the verb and the
+  // channel noun. Wider matching keeps the auditor signal sensitive
+  // without sliding into general English.
+  /\bsends?(?:\s+\w+){0,3}\s+(email|message|sms|notification|mail)s?\b/i,
+  /\bpermanently\b/i,
+  /\birreversibl[ye]\b/i,
 ];
 
 /**
@@ -365,6 +392,26 @@ export function detectAIUC1_B006(sig: VerificationSignals): FrameworkControl {
 
 const D003_NAME = 'Unsafe Tool Calls';
 
+/**
+ * Internal: classify a single tool's risk signal.
+ *
+ * Returns the matched side (`name` / `description` / `both`) so the
+ * D003 rationale can disambiguate WHICH side fired, or `null` when no
+ * risky pattern matched. Routing both signals through this single
+ * classifier keeps the detector body short and makes adding a third
+ * signal class (e.g. annotations.dangerousAction) a one-line change.
+ */
+function classifyToolRisk(t: ActualTool): { matchedOn: 'name' | 'description' | 'both' } | null {
+  const nameMatch = matchesAnyRegex(t.name, RISKY_TOOL_NAME_PATTERNS);
+  const descMatch =
+    t.description !== undefined &&
+    matchesAnyRegex(t.description, RISKY_TOOL_DESCRIPTION_PATTERNS);
+  if (nameMatch && descMatch) return { matchedOn: 'both' };
+  if (nameMatch) return { matchedOn: 'name' };
+  if (descMatch) return { matchedOn: 'description' };
+  return null;
+}
+
 export function detectAIUC1_D003(sig: VerificationSignals): FrameworkControl {
   if (!hasMCPInventory(sig)) {
     return {
@@ -377,21 +424,37 @@ export function detectAIUC1_D003(sig: VerificationSignals): FrameworkControl {
       severity: 'medium',
     };
   }
-  const risky = findToolAcrossInventories(sig, (t) => {
-    const text = `${t.name} ${t.description ?? ''}`;
-    return matchesAnyRegex(text, RISKY_TOOL_PATTERNS);
-  });
-  const unacknowledged = risky.filter((t) => !toolAcknowledgesRisk(t));
+  // Collect risky tools alongside which side (name / description / both)
+  // triggered the match so the rationale can name it.
+  interface RiskyTool {
+    tool: ActualTool;
+    matchedOn: 'name' | 'description' | 'both';
+  }
+  const risky: RiskyTool[] = [];
+  for (const inv of sig.actualInventories) {
+    for (const t of inv.tools ?? []) {
+      const cls = classifyToolRisk(t);
+      if (cls) risky.push({ tool: t, matchedOn: cls.matchedOn });
+    }
+  }
+  const unacknowledged = risky.filter((r) => !toolAcknowledgesRisk(r.tool));
   if (unacknowledged.length > 0) {
+    const first = unacknowledged[0]!;
+    const side =
+      first.matchedOn === 'both'
+        ? 'name and description'
+        : first.matchedOn === 'name'
+          ? 'name'
+          : 'description';
     return {
       framework: 'aiuc-1',
       controlId: 'D003',
       controlName: D003_NAME,
       verdict: 'fail',
-      rationale: `Risky tool '${unacknowledged[0]!.name}' is present in the MCP inventory without an idempotency or destructiveHint annotation; D003 requires per-call validation.`,
-      evidenceRefs: unacknowledged.map<ControlEvidenceRef>((t) => ({
+      rationale: `Risky tool '${first.tool.name}' (matched on ${side}) is present in the MCP inventory without an idempotency or destructiveHint annotation; D003 requires per-call validation.`,
+      evidenceRefs: unacknowledged.map<ControlEvidenceRef>((r) => ({
         kind: 'inventory',
-        ref: `tool ${t.name}: no risk acknowledgement annotation`,
+        ref: `tool ${r.tool.name}: no risk acknowledgement annotation (match on ${r.matchedOn === 'both' ? 'name and description' : r.matchedOn})`,
       })),
       severity: 'high',
     };
@@ -403,8 +466,8 @@ export function detectAIUC1_D003(sig: VerificationSignals): FrameworkControl {
     verdict: 'verified',
     rationale: risky.length === 0
       ? 'No risky tools detected in the MCP inventory.'
-      : `Risky tools present but acknowledged via annotations (${risky.map((t) => t.name).join(', ')}).`,
-    evidenceRefs: [{ kind: 'inventory', ref: risky.length === 0 ? 'no risky tools' : `acknowledged: ${risky.map((t) => t.name).join(', ')}` }],
+      : `Risky tools present but acknowledged via annotations (${risky.map((r) => r.tool.name).join(', ')}).`,
+    evidenceRefs: [{ kind: 'inventory', ref: risky.length === 0 ? 'no risky tools' : `acknowledged: ${risky.map((r) => r.tool.name).join(', ')}` }],
     severity: 'info',
   };
 }
