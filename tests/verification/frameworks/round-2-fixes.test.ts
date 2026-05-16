@@ -351,11 +351,13 @@ describe('LOW-1: rationale truncation cap at 512 chars', () => {
 // ─── LOW-4 — HR negative test ─────────────────────────────────────────────
 
 describe('LOW-4: HR heuristic negative case — outbound marketing', () => {
-  it('isHRAgent is true for description mentioning "candidate" even in marketing context (current heuristic; documented limitation)', () => {
-    // The current HR_KEYWORDS list includes /candidate/i. Even outbound
-    // B2B email tools that mention candidate accounts WILL classify
-    // as HR under the current heuristic. This test locks in current
-    // behaviour so a future tightening of the heuristic is explicit.
+  it('isHRAgent is FALSE for marketing description mentioning "candidate accounts" (PR#22 round-2 tightened gate)', () => {
+    // PR #22 round-2 MEDIUM fix: the HR-agent gate was tightened to
+    // require (a) phrase-level keyword context AND (b) at least TWO
+    // independent signals (connector / scope / keyword). The bare word
+    // "candidate" in a marketing context no longer fires; "marketing
+    // emails to candidate accounts" yields zero matched keywords and
+    // is correctly classified as non-HR.
     const out = isHRAgent({
       ...emptySignals(),
       declaredInventory: {
@@ -364,8 +366,7 @@ describe('LOW-4: HR heuristic negative case — outbound marketing', () => {
         tools: [{ name: 'send_email', description: 'Send marketing emails to potential candidate accounts for B2B sales' }],
       },
     });
-    // Document that the heuristic over-classifies in this case.
-    expect(out).toBe(true);
+    expect(out).toBe(false);
   });
 
   it('isHRAgent is false for pure marketing language ("prospect", no HR keywords)', () => {

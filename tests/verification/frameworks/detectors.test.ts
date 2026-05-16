@@ -556,14 +556,18 @@ describe('isHRAgent — heuristic', () => {
     ).toBe(true);
   });
 
-  it('true for a tool description mentioning recruitment', () => {
+  it('true for a tool description mentioning recruitment + HR connector (two signals)', () => {
+    // PR #22 round-2 MEDIUM fix: two-signal requirement. Keyword alone
+    // is not enough; pair the recruitment description with an HR
+    // connector to clear the gate.
     expect(
       isHRAgent({
         ...emptySignals(),
         declaredInventory: {
           source: 'interview',
           capturedAt: 't',
-          tools: [{ name: 't', description: 'Assist with employee onboarding and hiring' }],
+          scopes: [{ service: 'greenhouse', scope: 'jobs:list' }],
+          tools: [{ name: 't', description: 'Assist with employee onboarding and hiring process workflow' }],
         },
       }),
     ).toBe(true);
