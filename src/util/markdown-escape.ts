@@ -185,6 +185,41 @@ export function stripControlChars(value: string): string {
 }
 
 /**
+ * Strip the control-character / line-separator set the same way as
+ * `stripControlChars`, but REPLACE each stripped char with a single
+ * space and collapse runs of spaces back down to one. Use for
+ * long-form, multi-token fields where joining tokens would corrupt
+ * audit-log fidelity (e.g. `entry.comment: "Hello\nworld"` must
+ * surface as `"Hello world"`, not `"Helloworld"`).
+ *
+ * Round-2 Fix 3 (LOW): added as a sibling to `stripControlChars` so
+ * the two semantics are explicitly chosen per field. Identifier-like
+ * fields (`actor.name`, `actor.role`, `actor.email`, tool/scope
+ * names) still use `stripControlChars` so a name like `Jane Doe` —
+ * with a stray control char from a clipboard paste — collapses to
+ * `JaneDoe` (caller-visible signal that the value was hostile) rather
+ * than silently expanding to multiple tokens.
+ *
+ * Behavioural contract:
+ *  - Strip set is identical to `stripControlChars`.
+ *  - Each match is replaced with U+0020 (regular space).
+ *  - Runs of two or more spaces collapse to a single space.
+ *  - Leading and trailing whitespace is trimmed.
+ *
+ * Trade-off: a payload like `Hello\nworld` becomes `Hello world`,
+ * indistinguishable on the wire from a legitimately-typed
+ * `"Hello world"`. That ambiguity is acceptable in long-form
+ * comments — the goal is preserving the reviewer's ability to read
+ * the comment, not forensic reconstruction of the keystrokes.
+ */
+export function stripControlCharsKeepWordBoundary(value: string): string {
+  return value
+    .replace(CONTROL_CHAR_REGEX, ' ')
+    .replace(/ {2,}/g, ' ')
+    .trim();
+}
+
+/**
  * Hygiene wrapper for operator- or server-supplied strings echoed into
  * error messages. Strips ASCII C0 controls (`\x00-\x1f`), DEL (`\x7f`),
  * C1 controls (`\x80-\x9f`), and the Unicode line separators U+2028 /

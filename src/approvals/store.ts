@@ -49,7 +49,7 @@
 import { promises as fs } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 
-import { stripControlChars } from '../util/markdown-escape.js';
+import { stripControlChars, stripControlCharsKeepWordBoundary } from '../util/markdown-escape.js';
 
 import { canonicalize, hashEntry } from './canonical.js';
 import type {
@@ -547,7 +547,10 @@ function validateAndSanitiseEntry(
       if (typeof r !== 'string') {
         return invalid(`entry.evidenceRefs[${i}] must be a string`);
       }
-      const sanitised = stripControlChars(r);
+      // Round-2 Fix 3: evidence refs are long-form, multi-token
+      // fields — preserve word boundaries so `report\nlink` becomes
+      // `report link`, not `reportlink`.
+      const sanitised = stripControlCharsKeepWordBoundary(r);
       if (sanitised.length === 0) {
         return invalid(`entry.evidenceRefs[${i}] is empty after sanitisation`);
       }
@@ -567,7 +570,10 @@ function validateAndSanitiseEntry(
     if (typeof raw.comment !== 'string') {
       return invalid('entry.comment must be a string when present');
     }
-    const sanitised = stripControlChars(raw.comment);
+    // Round-2 Fix 3: comments are long-form prose — preserve word
+    // boundaries so a `Hello\nworld` paste stays readable as
+    // `Hello world` rather than silently joining to `Helloworld`.
+    const sanitised = stripControlCharsKeepWordBoundary(raw.comment);
     if (sanitised.length > MAX_COMMENT_LEN) {
       return invalid(
         `entry.comment has ${sanitised.length} chars; cap is ${MAX_COMMENT_LEN}`,
