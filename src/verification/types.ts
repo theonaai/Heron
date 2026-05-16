@@ -286,4 +286,41 @@ export interface VerificationReport {
   declared: DeclaredInventory[];
   /** One entry per source the caller asked to verify. */
   sources: SourceVerification[];
+  /**
+   * Optional approval audit trail (AAP-48 pilot deliverable #5).
+   *
+   * When the orchestrator was asked to look up an `agentId` AND a
+   * chain exists on disk, this carries the parsed chain plus an
+   * integrity verdict. When the caller did not request an approval
+   * agentId, the field is absent (the renderer emits a "no trail
+   * found" recommendation in that case).
+   *
+   * AIUC-1 mapping: E004 (Assigned Accountability) lives in
+   * `chain.entries[*].actor`; E015 (System Activity Logging) lives
+   * in the append-only chain itself + the hash chain that detects
+   * point tampering.
+   *
+   * Typed loosely (`unknown` for the chain in this comment) only
+   * because we keep the `src/approvals/*` types out of the
+   * `verification/*` import graph to avoid a circular dependency on
+   * the renderer. The concrete shape is `ApprovalChainAttachment`
+   * from `src/approvals/types.ts`; consumers cast on use.
+   */
+  approvalChain?: ApprovalChainAttachment;
+}
+
+/**
+ * Approval chain attached to a `VerificationReport`. Decoupled from
+ * the raw `ApprovalChain` so the renderer can carry the integrity
+ * verdict (and warnings) alongside the chain itself without forcing
+ * every caller to recompute integrity. See `src/approvals/types.ts`
+ * for the underlying types.
+ */
+export interface ApprovalChainAttachment {
+  /** The parsed chain, after sanitisation. */
+  chain: import('../approvals/types.js').ApprovalChain;
+  /** Result of running `verifyChainIntegrity` on the chain. */
+  integrity: import('../approvals/types.js').ChainIntegrityResult;
+  /** Optional warnings from the store layer (e.g. broken-chain notes). */
+  warnings?: string[];
 }
