@@ -1,0 +1,887 @@
+/**
+ * Deterministic framework-control router (AAP-49).
+ *
+ * Translates the signal triple — diffs + inventories + approval chain —
+ * into per-control verdicts against AIUC-1, EU AI Act, GDPR, and NIST AI
+ * RMF. Detectors are PURE functions, run synchronously, no I/O.
+ *
+ * Detector lookup uses a `Map<string, ControlDetector>` rather than a
+ * `Record<string, ControlDetector>` to short-circuit any prototype-
+ * pollution path through a hostile control id. The map is built once,
+ * frozen by closure scope, and never accepts new entries at runtime.
+ *
+ * Control coverage (12 controls in scope for AAP-49 HR pilot):
+ *   AIUC-1: A003, B006, D003, E004, E015
+ *   EU AI Act: Annex III §4, Article 14, Article 12
+ *   GDPR: Article 22, Article 5
+ *   NIST AI RMF: MEASURE, MANAGE
+ *
+ * Each detector is small enough to keep its logic readable in-file; we
+ * deliberately do NOT share helper closures across detectors because
+ * coupling two rules through a shared helper makes the next reviewer's
+ * job harder. Per-detector verbosity is a feature here.
+ */
+
+import type {
+  ActualInventory,
+  ActualScope,
+  ActualTool,
+  DeclaredInventory,
+  DiffEntry,
+  VerificationReport,
+} from '../types.js';
+import type { ApprovalChain, ChainIntegrityResult } from '../../approvals/types.js';
+import type {
+  ControlEvidenceRef,
+  ControlSeverity,
+  ControlVerdict,
+  FrameworkControl,
+  FrameworkId,
+  FrameworkMapping,
+  FrameworkMappingSummary,
+} from './types.js';
+
+/**
+ * Pre-aggregated signal envelope. Detectors only see what they need.
+ *
+ *  - `diffs` is flattened across every source so a detector does not need
+ *    to walk `report.sources` itself.
+ *  - `declaredInventory` is the FIRST declared inventory in the report
+ *    (most agents only have one). Subsequent declared inventories are
+ *    accessible via the report directly if a future detector needs them;
+ *    the HR-subset rules in scope here only consult the primary.
+ *  - `actualInventories` is the raw array from the report. The D003 rule
+ *    needs to walk MCP tools specifically and the A003/B006 rules need
+ *    to know whether any scope inventory was produced at all.
+ *  - `approvalChain` + `approvalIntegrity` are split so detectors can
+ *    branch on integrity without re-running it.
+ */
+export interface VerificationSignals {
+  diffs: DiffEntry[];
+  declaredInventory?: DeclaredInventory;
+  actualInventories: ActualInventory[];
+  approvalChain?: ApprovalChain;
+  approvalIntegrity?: ChainIntegrityResult;
+}
+
+type ControlDetector = (sig: VerificationSignals) => FrameworkControl;
+
+// ─── Signal helpers ────────────────────────────────────────────────────────
+
+/**
+ * Broad-read scope patterns that AIUC-1 A003 (and GDPR Art. 5) flag as
+ * over-broad. The list is intentionally short and HR-vertical-focused —
+ * full vertical-pack expansion lands in Subagent #9. Keep these lowercase
+ * substring matches so they survive vendor-specific naming variants
+ * (e.g. `https://www.googleapis.com/auth/drive.readonly` and bare
+ * `drive.readonly` both match).
+ */
+const BROAD_READ_SCOPE_PATTERNS: readonly string[] = [
+  'drive.readonly',
+  'drive',
+  'admin.directory.user.readonly',
+  'admin.directory.user',
+  'admin.directory',
+  'directory:read',
+  'mail.readonly',
+  'mailboxsettings.read',
+  'gmail.readonly',
+  'gmail.metadata',
+];
+
+/**
+ * Action-class scope patterns: anything that writes, sends, deletes, or
+ * modifies state on the connected service. AIUC-1 B006 fails if an
+ * extra scope matching this list appears.
+ */
+const ACTION_SCOPE_PATTERNS: readonly string[] = [
+  'gmail.send',
+  ':write',
+  ':create',
+  ':delete',
+  ':modify',
+  ':reject',
+  '.write',
+  '.send',
+];
+
+/**
+ * Tool names whose name or description signals an irreversible operation.
+ * AIUC-1 D003 fires when one of these tools is present in the actual
+ * MCP inventory AND the tool does not carry an acknowledgement
+ * annotation (`destructiveHint`, `idempotency:false`, or a custom
+ * `unsafeAcknowledged`).
+ */
+const RISKY_TOOL_PATTERNS: readonly RegExp[] = [
+  /^delete[_-]/i,
+  /destroy/i,
+  /remove[_-]/i,
+  /^send[_-]?email/i,
+  /^send[_-]?message/i,
+  /terminate/i,
+  /revoke/i,
+];
+
+/**
+ * HR-vertical keywords. If declared scopes target an HR connector
+ * (Greenhouse, BambooHR, Workday, Lever, Google Workspace admin
+ * directory) OR declared purpose / tool description mentions an HR
+ * concept, the agent is classified as HR.
+ *
+ * Documented explicitly so future contributors can grep the keyword
+ * list when extending the heuristic.
+ */
+const HR_CONNECTOR_PATTERNS: readonly string[] = [
+  'greenhouse',
+  'bamboohr',
+  'bamboo',
+  'workday',
+  'lever',
+  'gusto',
+  'rippling',
+  'sapsuccessfactors',
+];
+
+const HR_KEYWORDS: readonly RegExp[] = [
+  /candidate/i,
+  /recruit/i,
+  /hiring/i,
+  /\bhire/i,
+  /\bhr\b/i,
+  /\bemployee/i,
+  /onboard/i,
+  /applicant/i,
+  /\bcv\b/i,
+  /resume/i,
+  /interview/i,
+];
+
+/**
+ * Find every `extra`-kind, scope-dimension diff whose actual scope
+ * matches the predicate. Returns the narrowed scope payload + a
+ * descriptor string so callers do not need to re-narrow the diff
+ * union at every call site.
+ */
+interface ExtraScopeMatch {
+  scope: ActualScope;
+}
+
+function diffsHasExtraScopeMatching(
+  diffs: readonly DiffEntry[],
+  match: (s: ActualScope) => boolean,
+): ExtraScopeMatch[] {
+  const out: ExtraScopeMatch[] = [];
+  for (const d of diffs) {
+    if (d.kind !== 'extra' || d.dimension !== 'scope') continue;
+    const a = d.actual as ActualScope;
+    if (match(a)) out.push({ scope: a });
+  }
+  return out;
+}
+
+function matchesAny(value: string, patterns: readonly string[]): boolean {
+  const lower = value.toLowerCase();
+  return patterns.some((p) => lower.includes(p.toLowerCase()));
+}
+
+function matchesAnyRegex(value: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((p) => p.test(value));
+}
+
+function hasScopeInventory(sig: VerificationSignals): boolean {
+  return sig.actualInventories.some((i) => i.source === 'oauth-scopes' || (i.scopes !== undefined && i.scopes.length >= 0));
+}
+
+function hasAnyInventory(sig: VerificationSignals): boolean {
+  return sig.actualInventories.length > 0;
+}
+
+function hasMCPInventory(sig: VerificationSignals): boolean {
+  return sig.actualInventories.some((i) => i.source === 'mcp-tools' || i.tools !== undefined);
+}
+
+function declaredScopesAny(sig: VerificationSignals): boolean {
+  return (sig.declaredInventory?.scopes?.length ?? 0) > 0;
+}
+
+function declaredToolsAny(sig: VerificationSignals): boolean {
+  return (sig.declaredInventory?.tools?.length ?? 0) > 0;
+}
+
+function declaredAny(sig: VerificationSignals): boolean {
+  return declaredScopesAny(sig) || declaredToolsAny(sig);
+}
+
+function findToolAcrossInventories(sig: VerificationSignals, predicate: (t: ActualTool) => boolean): ActualTool[] {
+  const out: ActualTool[] = [];
+  for (const inv of sig.actualInventories) {
+    for (const t of inv.tools ?? []) {
+      if (predicate(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+function toolAcknowledgesRisk(t: ActualTool): boolean {
+  // Acknowledgement signals: any of these annotations indicate the
+  // owner has deliberately marked the tool as risky and accepted the
+  // outcome. AIUC-1 D003 treats annotated risk as documented;
+  // unannotated risk is the failure case.
+  const a = t.annotations ?? {};
+  if (a.destructiveHint === true) return true;
+  if (a.idempotency === false) return true;
+  if (a.unsafeAcknowledged === true) return true;
+  return false;
+}
+
+/**
+ * Exported for unit tests and downstream consumers that need to gate a
+ * UI hint on whether the agent is HR-class. Pure boolean; no side
+ * effects.
+ */
+export function isHRAgent(sig: VerificationSignals): boolean {
+  const d = sig.declaredInventory;
+  if (!d) return false;
+
+  // Connector check on declared scopes.
+  for (const s of d.scopes ?? []) {
+    if (matchesAny(s.service, HR_CONNECTOR_PATTERNS)) return true;
+  }
+  // Google Workspace admin directory scope on its own counts as HR.
+  for (const s of d.scopes ?? []) {
+    if (/admin\.directory/i.test(s.scope) || /admin\.directory/i.test(s.service)) return true;
+  }
+  // Keyword check on declared tool names + descriptions.
+  for (const t of d.tools ?? []) {
+    const text = `${t.name} ${t.description ?? ''}`;
+    if (matchesAnyRegex(text, HR_KEYWORDS)) return true;
+  }
+  return false;
+}
+
+// ─── Detector: AIUC-1 A003 — Limit Data Access ────────────────────────────
+
+const A003_NAME = 'Limit Data Access';
+
+export function detectAIUC1_A003(sig: VerificationSignals): FrameworkControl {
+  // FAIL: any extra scope on the actual side matching a broad-read
+  // pattern. The diff already filtered to "in actual, not declared", so
+  // matching here is the over-grant signal.
+  const broadExtras = diffsHasExtraScopeMatching(sig.diffs, (s) => matchesAny(s.scope, BROAD_READ_SCOPE_PATTERNS));
+  if (broadExtras.length > 0) {
+    const example = broadExtras[0]!.scope;
+    return {
+      framework: 'aiuc-1',
+      controlId: 'A003',
+      controlName: A003_NAME,
+      verdict: 'fail',
+      rationale: `Extra broad-read scope '${example.service}:${example.scope}' present in actual but not in declared baseline; least-privilege exceeded.`,
+      evidenceRefs: broadExtras.map<ControlEvidenceRef>((m) => ({
+        kind: 'diff',
+        ref: `extra scope ${m.scope.service}:${m.scope.scope}`,
+      })),
+      severity: 'high',
+    };
+  }
+  // UNVERIFIED: no scope inventory at all.
+  if (!hasScopeInventory(sig)) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'A003',
+      controlName: A003_NAME,
+      verdict: 'unverified',
+      rationale: 'No actual scope inventory available; A003 cannot be evaluated without a least-privilege comparison.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no oauth-scopes inventory' }],
+      severity: 'medium',
+    };
+  }
+  // VERIFIED: declared scopes present + no extra broad-reads.
+  if (declaredScopesAny(sig)) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'A003',
+      controlName: A003_NAME,
+      verdict: 'verified',
+      rationale: 'No extra broad-read scopes detected against the declared baseline.',
+      evidenceRefs: [{ kind: 'declared', ref: 'declared scopes match actual within broad-read class' }],
+      severity: 'info',
+    };
+  }
+  return {
+    framework: 'aiuc-1',
+    controlId: 'A003',
+    controlName: A003_NAME,
+    verdict: 'unverified',
+    rationale: 'No declared baseline; cannot evaluate least-privilege without a stated intent.',
+    evidenceRefs: [{ kind: 'absence', ref: 'no declared baseline' }],
+    severity: 'medium',
+  };
+}
+
+// ─── Detector: AIUC-1 B006 — Unauthorized Actions ─────────────────────────
+
+const B006_NAME = 'Unauthorized Actions';
+
+export function detectAIUC1_B006(sig: VerificationSignals): FrameworkControl {
+  const writeExtras = diffsHasExtraScopeMatching(sig.diffs, (s) => matchesAny(s.scope, ACTION_SCOPE_PATTERNS));
+  if (writeExtras.length > 0) {
+    const example = writeExtras[0]!.scope;
+    return {
+      framework: 'aiuc-1',
+      controlId: 'B006',
+      controlName: B006_NAME,
+      verdict: 'fail',
+      rationale: `Extra action-class scope '${example.service}:${example.scope}' present in actual but not in declared baseline; agent can perform writes beyond its mandate.`,
+      evidenceRefs: writeExtras.map<ControlEvidenceRef>((m) => ({
+        kind: 'diff',
+        ref: `extra action scope ${m.scope.service}:${m.scope.scope}`,
+      })),
+      severity: 'high',
+    };
+  }
+  if (!hasAnyInventory(sig)) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'B006',
+      controlName: B006_NAME,
+      verdict: 'unverified',
+      rationale: 'No actual inventory available; cannot evaluate whether unauthorized actions are possible.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no inventory' }],
+      severity: 'medium',
+    };
+  }
+  return {
+    framework: 'aiuc-1',
+    controlId: 'B006',
+    controlName: B006_NAME,
+    verdict: 'verified',
+    rationale: 'No extra write/send/delete-class scopes detected beyond the declared baseline.',
+    evidenceRefs: [{ kind: 'declared', ref: 'no extra action scopes' }],
+    severity: 'info',
+  };
+}
+
+// ─── Detector: AIUC-1 D003 — Unsafe Tool Calls ────────────────────────────
+
+const D003_NAME = 'Unsafe Tool Calls';
+
+export function detectAIUC1_D003(sig: VerificationSignals): FrameworkControl {
+  if (!hasMCPInventory(sig)) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'D003',
+      controlName: D003_NAME,
+      verdict: 'unverified',
+      rationale: 'No MCP tool inventory available; cannot evaluate dynamic tool-call safety.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no mcp-tools inventory' }],
+      severity: 'medium',
+    };
+  }
+  const risky = findToolAcrossInventories(sig, (t) => {
+    const text = `${t.name} ${t.description ?? ''}`;
+    return matchesAnyRegex(text, RISKY_TOOL_PATTERNS);
+  });
+  const unacknowledged = risky.filter((t) => !toolAcknowledgesRisk(t));
+  if (unacknowledged.length > 0) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'D003',
+      controlName: D003_NAME,
+      verdict: 'fail',
+      rationale: `Risky tool '${unacknowledged[0]!.name}' is present in the MCP inventory without an idempotency or destructiveHint annotation; D003 requires per-call validation.`,
+      evidenceRefs: unacknowledged.map<ControlEvidenceRef>((t) => ({
+        kind: 'inventory',
+        ref: `tool ${t.name}: no risk acknowledgement annotation`,
+      })),
+      severity: 'high',
+    };
+  }
+  return {
+    framework: 'aiuc-1',
+    controlId: 'D003',
+    controlName: D003_NAME,
+    verdict: 'verified',
+    rationale: risky.length === 0
+      ? 'No risky tools detected in the MCP inventory.'
+      : `Risky tools present but acknowledged via annotations (${risky.map((t) => t.name).join(', ')}).`,
+    evidenceRefs: [{ kind: 'inventory', ref: risky.length === 0 ? 'no risky tools' : `acknowledged: ${risky.map((t) => t.name).join(', ')}` }],
+    severity: 'info',
+  };
+}
+
+// ─── Detector: AIUC-1 E004 — Assigned Accountability ──────────────────────
+
+const E004_NAME = 'Assigned Accountability';
+
+export function detectAIUC1_E004(sig: VerificationSignals): FrameworkControl {
+  if (!sig.approvalChain) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'E004',
+      controlName: E004_NAME,
+      verdict: 'fail',
+      rationale: 'No approval audit trail found. AIUC-1 E004 requires a named owner with documented approval evidence.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no approval chain' }],
+      severity: 'high',
+    };
+  }
+  if (sig.approvalIntegrity && !sig.approvalIntegrity.ok) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'E004',
+      controlName: E004_NAME,
+      verdict: 'fail',
+      rationale: `Approval chain integrity is broken at entry ${sig.approvalIntegrity.brokenAt}; accountability evidence cannot be trusted.`,
+      evidenceRefs: [{ kind: 'approval', ref: `broken hash chain at entry ${sig.approvalIntegrity.brokenAt}` }],
+      severity: 'critical',
+    };
+  }
+  const approved = sig.approvalChain.entries.find((e) => e.action === 'approved' && e.actor.name.length > 0 && e.actor.role.length > 0);
+  if (approved) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'E004',
+      controlName: E004_NAME,
+      verdict: 'verified',
+      rationale: `Approval chain contains an 'approved' action by ${approved.actor.name} (${approved.actor.role}).`,
+      evidenceRefs: [{ kind: 'approval', ref: `approved by ${approved.actor.name} (${approved.actor.role}) at ${approved.timestamp}` }],
+      severity: 'info',
+    };
+  }
+  return {
+    framework: 'aiuc-1',
+    controlId: 'E004',
+    controlName: E004_NAME,
+    verdict: 'partial',
+    rationale: 'Approval chain present but does not yet contain an `approved` action; accountability is declared but not signed off.',
+    evidenceRefs: [{ kind: 'approval', ref: 'chain has no approved action yet' }],
+    severity: 'medium',
+  };
+}
+
+// ─── Detector: AIUC-1 E015 — System Activity Logging ──────────────────────
+
+const E015_NAME = 'System Activity Logging';
+
+export function detectAIUC1_E015(sig: VerificationSignals): FrameworkControl {
+  if (!sig.approvalChain) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'E015',
+      controlName: E015_NAME,
+      verdict: 'partial',
+      rationale: 'No structured approval chain present; the verification report itself provides some activity logging but the chain is the load-bearing record for E015.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no approval chain' }],
+      severity: 'medium',
+    };
+  }
+  if (sig.approvalIntegrity && !sig.approvalIntegrity.ok) {
+    return {
+      framework: 'aiuc-1',
+      controlId: 'E015',
+      controlName: E015_NAME,
+      verdict: 'fail',
+      rationale: `Approval chain hash chain is broken at entry ${sig.approvalIntegrity.brokenAt}; the audit trail cannot be relied upon.`,
+      evidenceRefs: [{ kind: 'approval', ref: `hash chain broken at entry ${sig.approvalIntegrity.brokenAt}` }],
+      severity: 'critical',
+    };
+  }
+  return {
+    framework: 'aiuc-1',
+    controlId: 'E015',
+    controlName: E015_NAME,
+    verdict: 'verified',
+    rationale: `Approval chain intact with ${sig.approvalChain.entries.length} entries; tamper-evident logging satisfies E015.`,
+    evidenceRefs: [{ kind: 'approval', ref: `${sig.approvalChain.entries.length} intact entries` }],
+    severity: 'info',
+  };
+}
+
+// ─── Detector: EU AI Act Annex III §4 — Employment ────────────────────────
+
+const ANNEX_III_4_NAME = 'Employment (Annex III §4)';
+
+export function detectEUAIAct_AnnexIII4(sig: VerificationSignals): FrameworkControl {
+  if (!isHRAgent(sig)) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Annex III §4',
+      controlName: ANNEX_III_4_NAME,
+      verdict: 'not-applicable',
+      rationale: 'Agent does not target HR systems or employment-related operations; Annex III §4 does not bind.',
+      evidenceRefs: [{ kind: 'declared', ref: 'no HR connector or keyword in declared inventory' }],
+      severity: 'info',
+    };
+  }
+  // HR agent — verdict depends on companion control verdicts.
+  const a003 = detectAIUC1_A003(sig);
+  const b006 = detectAIUC1_B006(sig);
+  const d003 = detectAIUC1_D003(sig);
+  const e004 = detectAIUC1_E004(sig);
+  const allVerified = [a003, b006, d003, e004].every((c) => c.verdict === 'verified');
+  if (allVerified) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Annex III §4',
+      controlName: ANNEX_III_4_NAME,
+      verdict: 'verified',
+      rationale: 'HR agent detected; A003 + B006 + D003 + E004 all verified — Annex III §4 obligations carried by underlying controls.',
+      evidenceRefs: [{ kind: 'declared', ref: 'HR agent, dependent controls verified' }],
+      severity: 'info',
+    };
+  }
+  const anyFail = [a003, b006, d003, e004].some((c) => c.verdict === 'fail');
+  if (anyFail) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Annex III §4',
+      controlName: ANNEX_III_4_NAME,
+      verdict: 'fail',
+      rationale: 'HR agent detected; one or more underlying controls (A003 / B006 / D003 / E004) failed — Annex III §4 high-risk obligations not satisfied.',
+      evidenceRefs: [{ kind: 'declared', ref: 'HR agent, underlying control failure' }],
+      severity: 'high',
+    };
+  }
+  return {
+    framework: 'eu-ai-act',
+    controlId: 'Annex III §4',
+    controlName: ANNEX_III_4_NAME,
+    verdict: 'partial',
+    rationale: 'HR agent detected; underlying controls partially evaluated. Annex III §4 routing requires completing A003 + B006 + D003 + E004.',
+    evidenceRefs: [{ kind: 'declared', ref: 'HR agent, underlying controls partial / unverified' }],
+    severity: 'high',
+  };
+}
+
+// ─── Detector: EU AI Act Article 14 — Human Oversight ─────────────────────
+
+const ARTICLE_14_NAME = 'Human Oversight (Article 14)';
+
+export function detectEUAIAct_Article14(sig: VerificationSignals): FrameworkControl {
+  if (!sig.approvalChain) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Article 14',
+      controlName: ARTICLE_14_NAME,
+      verdict: 'fail',
+      rationale: 'No approval chain present; Article 14 requires demonstrable human oversight.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no approval chain' }],
+      severity: 'high',
+    };
+  }
+  const hasReview = sig.approvalChain.entries.some((e) => e.action === 'reviewed');
+  const hasApproval = sig.approvalChain.entries.some((e) => e.action === 'approved');
+  if (hasReview && hasApproval) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Article 14',
+      controlName: ARTICLE_14_NAME,
+      verdict: 'verified',
+      rationale: 'Approval chain contains separate reviewer and approver entries; satisfies the two-person oversight pattern.',
+      evidenceRefs: [{ kind: 'approval', ref: 'separate reviewed + approved entries' }],
+      severity: 'info',
+    };
+  }
+  if (hasApproval) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Article 14',
+      controlName: ARTICLE_14_NAME,
+      verdict: 'partial',
+      rationale: 'Approval present but no separate review step; single-person sign-off only partially satisfies Article 14.',
+      evidenceRefs: [{ kind: 'approval', ref: 'approved without separate reviewer' }],
+      severity: 'medium',
+    };
+  }
+  return {
+    framework: 'eu-ai-act',
+    controlId: 'Article 14',
+    controlName: ARTICLE_14_NAME,
+    verdict: 'partial',
+    rationale: 'Approval chain present but no approved action recorded yet.',
+    evidenceRefs: [{ kind: 'approval', ref: 'no approved action' }],
+    severity: 'medium',
+  };
+}
+
+// ─── Detector: EU AI Act Article 12 — Record Keeping ──────────────────────
+
+const ARTICLE_12_NAME = 'Record-Keeping (Article 12)';
+
+export function detectEUAIAct_Article12(sig: VerificationSignals): FrameworkControl {
+  if (!sig.approvalChain) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Article 12',
+      controlName: ARTICLE_12_NAME,
+      verdict: 'fail',
+      rationale: 'No approval chain present; Article 12 requires structured record-keeping for high-risk systems.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no approval chain' }],
+      severity: 'high',
+    };
+  }
+  const entries = sig.approvalChain.entries.length;
+  if (entries >= 2) {
+    return {
+      framework: 'eu-ai-act',
+      controlId: 'Article 12',
+      controlName: ARTICLE_12_NAME,
+      verdict: 'verified',
+      rationale: `Approval chain has ${entries} entries spanning at least one lifecycle step; record-keeping requirement met.`,
+      evidenceRefs: [{ kind: 'approval', ref: `${entries} chain entries` }],
+      severity: 'info',
+    };
+  }
+  return {
+    framework: 'eu-ai-act',
+    controlId: 'Article 12',
+    controlName: ARTICLE_12_NAME,
+    verdict: 'partial',
+    rationale: 'Approval chain has only one entry; record-keeping is started but incomplete.',
+    evidenceRefs: [{ kind: 'approval', ref: '1 chain entry' }],
+    severity: 'medium',
+  };
+}
+
+// ─── Detector: GDPR Article 22 — Automated Decision-Making ────────────────
+
+const ARTICLE_22_NAME = 'Automated Decision-Making (Article 22)';
+
+const DECISION_SCOPE_PATTERNS: readonly string[] = [
+  ':reject',
+  ':approve',
+  ':hire',
+  ':terminate',
+  'applications:reject',
+  'applications:write',
+  'candidates:write',
+  'candidates:reject',
+];
+
+function hasDecisionScope(sig: VerificationSignals): boolean {
+  // Check the actual inventories first (live capability), then the
+  // declared (intent). If either side shows a decision-class scope,
+  // Article 22 fires.
+  for (const inv of sig.actualInventories) {
+    for (const s of inv.scopes ?? []) {
+      if (matchesAny(s.scope, DECISION_SCOPE_PATTERNS)) return true;
+    }
+  }
+  for (const s of sig.declaredInventory?.scopes ?? []) {
+    if (matchesAny(s.scope, DECISION_SCOPE_PATTERNS)) return true;
+  }
+  return false;
+}
+
+export function detectGDPR_Article22(sig: VerificationSignals): FrameworkControl {
+  if (!hasDecisionScope(sig)) {
+    return {
+      framework: 'gdpr',
+      controlId: 'Article 22',
+      controlName: ARTICLE_22_NAME,
+      verdict: 'not-applicable',
+      rationale: 'No automated decision-making scopes detected; Article 22 does not bind.',
+      evidenceRefs: [{ kind: 'declared', ref: 'no decision-class scopes' }],
+      severity: 'info',
+    };
+  }
+  const hasReview = sig.approvalChain?.entries.some((e) => e.action === 'reviewed') ?? false;
+  if (hasReview && sig.approvalIntegrity?.ok !== false) {
+    return {
+      framework: 'gdpr',
+      controlId: 'Article 22',
+      controlName: ARTICLE_22_NAME,
+      verdict: 'partial',
+      rationale: 'Decision-making capability present and a human review step is documented in the approval chain, but a continuous human-in-the-loop is not yet evidenced per call.',
+      evidenceRefs: [{ kind: 'approval', ref: 'reviewed action present in chain' }],
+      severity: 'medium',
+    };
+  }
+  return {
+    framework: 'gdpr',
+    controlId: 'Article 22',
+    controlName: ARTICLE_22_NAME,
+    verdict: 'fail',
+    rationale: 'Agent has automated decision-making capability without a disclosed human-review process; Article 22 prohibits decisions based solely on automated processing.',
+    evidenceRefs: [{ kind: 'inventory', ref: 'decision-class scope present' }],
+    severity: 'critical',
+  };
+}
+
+// ─── Detector: GDPR Article 5 — Data Minimisation ─────────────────────────
+
+const ARTICLE_5_NAME = 'Data Minimisation (Article 5(1)(c))';
+
+export function detectGDPR_Article5(sig: VerificationSignals): FrameworkControl {
+  // Same surface as A003 but re-framed for GDPR.
+  const a003 = detectAIUC1_A003(sig);
+  return {
+    framework: 'gdpr',
+    controlId: 'Article 5',
+    controlName: ARTICLE_5_NAME,
+    verdict: a003.verdict,
+    rationale: a003.verdict === 'fail'
+      ? `Extra broad-read scopes violate GDPR Article 5(1)(c) data minimisation: ${a003.rationale}`
+      : a003.verdict === 'verified'
+        ? 'No extra broad-read scopes detected; data minimisation satisfied at the scope level.'
+        : a003.rationale,
+    evidenceRefs: a003.evidenceRefs,
+    severity: a003.severity,
+  };
+}
+
+// ─── Detector: NIST AI RMF MEASURE / MANAGE ───────────────────────────────
+
+const NIST_MEASURE_NAME = 'MEASURE (2.1, 2.2, 2.3)';
+const NIST_MANAGE_NAME = 'MANAGE (2.1, 4.1)';
+
+export function detectNIST_Measure(sig: VerificationSignals): FrameworkControl {
+  if (sig.actualInventories.length === 0 && sig.diffs.length === 0) {
+    return {
+      framework: 'nist-ai-rmf',
+      controlId: 'MEASURE',
+      controlName: NIST_MEASURE_NAME,
+      verdict: 'unverified',
+      rationale: 'No verification sources produced an inventory; MEASURE cannot be evidenced.',
+      evidenceRefs: [{ kind: 'absence', ref: 'no inventory or diff signal' }],
+      severity: 'medium',
+    };
+  }
+  return {
+    framework: 'nist-ai-rmf',
+    controlId: 'MEASURE',
+    controlName: NIST_MEASURE_NAME,
+    verdict: 'verified',
+    rationale: 'Heron ran verification sources and produced an inventory + diff signal; trustworthy-AI characteristics measured.',
+    evidenceRefs: [{ kind: 'inventory', ref: `${sig.actualInventories.length} source(s) ran` }],
+    severity: 'info',
+  };
+}
+
+export function detectNIST_Manage(sig: VerificationSignals): FrameworkControl {
+  if (sig.approvalChain) {
+    return {
+      framework: 'nist-ai-rmf',
+      controlId: 'MANAGE',
+      controlName: NIST_MANAGE_NAME,
+      verdict: 'verified',
+      rationale: 'Approval chain present; risk management process (allocation, communication) is structured.',
+      evidenceRefs: [{ kind: 'approval', ref: `${sig.approvalChain.entries.length} approval entries` }],
+      severity: 'info',
+    };
+  }
+  return {
+    framework: 'nist-ai-rmf',
+    controlId: 'MANAGE',
+    controlName: NIST_MANAGE_NAME,
+    verdict: 'partial',
+    rationale: 'No approval chain; MANAGE process is undocumented.',
+    evidenceRefs: [{ kind: 'absence', ref: 'no approval chain' }],
+    severity: 'medium',
+  };
+}
+
+// ─── Detector registry ─────────────────────────────────────────────────────
+
+/**
+ * Ordered list of detector entries. Order matters for the rendered
+ * table — AIUC-1 family first (most actionable for procurement), then
+ * EU AI Act, then GDPR, then NIST AI RMF.
+ *
+ * Map (not Record) defends against prototype-pollution via a hostile
+ * control identifier in a future caller.
+ */
+const DETECTOR_ENTRIES: ReadonlyArray<[string, ControlDetector]> = [
+  ['aiuc-1:A003', detectAIUC1_A003],
+  ['aiuc-1:B006', detectAIUC1_B006],
+  ['aiuc-1:D003', detectAIUC1_D003],
+  ['aiuc-1:E004', detectAIUC1_E004],
+  ['aiuc-1:E015', detectAIUC1_E015],
+  ['eu-ai-act:Annex-III-4', detectEUAIAct_AnnexIII4],
+  ['eu-ai-act:Article-14', detectEUAIAct_Article14],
+  ['eu-ai-act:Article-12', detectEUAIAct_Article12],
+  ['gdpr:Article-22', detectGDPR_Article22],
+  ['gdpr:Article-5', detectGDPR_Article5],
+  ['nist-ai-rmf:MEASURE', detectNIST_Measure],
+  ['nist-ai-rmf:MANAGE', detectNIST_Manage],
+];
+
+const DETECTORS: ReadonlyMap<string, ControlDetector> = new Map(DETECTOR_ENTRIES);
+
+export function getDetector(id: string): ControlDetector | undefined {
+  return DETECTORS.get(id);
+}
+
+export function listDetectorIds(): string[] {
+  return DETECTOR_ENTRIES.map(([id]) => id);
+}
+
+// ─── Top-level mapper ──────────────────────────────────────────────────────
+
+export interface RunFrameworkMappingOpts {
+  now?: () => Date;
+}
+
+/**
+ * Run all 12 detectors against the given verification report and return
+ * a `FrameworkMapping`. Pure with respect to `report` — does not mutate.
+ */
+export function runFrameworkMapping(
+  report: VerificationReport,
+  opts: RunFrameworkMappingOpts = {},
+): FrameworkMapping {
+  const now = opts.now ?? (() => new Date());
+  const generatedAt = now().toISOString();
+
+  const signals: VerificationSignals = {
+    diffs: report.sources.flatMap((s) => s.diffs),
+    declaredInventory: report.declared[0],
+    actualInventories: report.sources
+      .map((s) => s.inventory)
+      .filter((i): i is NonNullable<typeof i> => i !== undefined),
+    ...(report.approvalChain
+      ? {
+          approvalChain: report.approvalChain.chain,
+          approvalIntegrity: report.approvalChain.integrity,
+        }
+      : {}),
+  };
+
+  const controls: FrameworkControl[] = [];
+  for (const [, detector] of DETECTOR_ENTRIES) {
+    controls.push(detector(signals));
+  }
+
+  return {
+    generatedAt,
+    controls,
+    summary: summarise(controls),
+  };
+}
+
+function summarise(controls: readonly FrameworkControl[]): FrameworkMappingSummary {
+  const summary: FrameworkMappingSummary = {
+    verifiedCount: 0,
+    partialCount: 0,
+    unverifiedCount: 0,
+    failCount: 0,
+    notApplicableCount: 0,
+  };
+  for (const c of controls) {
+    switch (c.verdict) {
+      case 'verified': summary.verifiedCount++; break;
+      case 'partial': summary.partialCount++; break;
+      case 'unverified': summary.unverifiedCount++; break;
+      case 'fail': summary.failCount++; break;
+      case 'not-applicable': summary.notApplicableCount++; break;
+      default: {
+        const _exhaustive: never = c.verdict;
+        void _exhaustive;
+      }
+    }
+  }
+  return summary;
+}
+
+// Re-export so consumers can import everything from one module.
+export type { ControlVerdict, FrameworkId, ControlSeverity };

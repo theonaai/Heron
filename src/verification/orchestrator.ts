@@ -16,6 +16,7 @@
  */
 
 import { diff } from './differ.js';
+import { runFrameworkMapping } from './frameworks/router.js';
 import type {
   ActualInventory,
   ActualScope,
@@ -87,12 +88,24 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
     sourceResults.push(entry);
   }
 
-  return {
+  const report: VerificationReport = {
     capturedAt,
     agentLabel: args.agentLabel,
     declared: args.declared,
     sources: sourceResults,
   };
+
+  // AAP-49: framework mapping. Runs AFTER differ + approval-chain
+  // attachment (caller can attach approvalChain to the report
+  // post-return; the mapper consumes whatever is present). Default
+  // enabled. Toggleable via env so an operator who only wants the raw
+  // structural report can opt out — useful for tests and for the
+  // existing AAP-48 callers that have their own compliance pipeline.
+  if (process.env.HERON_FRAMEWORK_MAPPING_DISABLED !== 'true') {
+    report.frameworkMapping = runFrameworkMapping(report, { now });
+  }
+
+  return report;
 }
 
 /**
