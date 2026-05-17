@@ -216,11 +216,17 @@ function frameworkLabel(f: FrameworkId): string {
 
 // ─── Section primitives ───────────────────────────────────────────
 
-function sectionHeader(num: string, label: string, title: string, meta?: string, anchor?: string): string {
+/**
+ * Section header: number + title only. We dropped the original
+ * `<span class="label">Section</span>` after Ilya's PR #25 review —
+ * the word "Section" next to every numbered header was template noise
+ * that added no information. The `.label` CSS rule still exists for
+ * future use but is not emitted by the default header anymore.
+ */
+function sectionHeader(num: string, title: string, meta?: string, anchor?: string): string {
   const id = anchor ? ` id="${escapeHtml(anchor)}"` : '';
   return `<div class="h-section"${id}>
   <span class="num">${escapeHtml(num)}</span>
-  <span class="label">${escapeHtml(label)}</span>
   <span class="title">${escapeHtml(title)}</span>
   ${meta ? `<span class="meta">${escapeHtml(meta)}</span>` : ''}
 </div>`;
@@ -251,7 +257,41 @@ function verdictBadgeClass(v: ComplianceScoreResult['verdict']): string {
   }
 }
 
-function renderCoverPage(report: VerificationReport, opts: HtmlRenderOptions, score: ComplianceScoreResult): string {
+/**
+ * Format an ISO-8601 timestamp as "YYYY-MM-DD HH:MM UTC". Readers don't
+ * care about milliseconds; the full ISO form on the cover was telemetry
+ * noise. We strip control chars defensively, then parse.
+ */
+function formatGeneratedTimestamp(iso: string): string {
+  // Defensive: a corrupted opts.generatedAt should not crash the cover.
+  if (typeof iso !== 'string' || iso.length === 0) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    // Fall back to the raw string (escaped) rather than fabricate a date.
+    return iso;
+  }
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+}
+
+function renderCoverPage(_report: VerificationReport, opts: HtmlRenderOptions, score: ComplianceScoreResult): string {
+  // PR #26: editorial polish after Ilya's PR #25 review.
+  // - Brand strip is Heron mark only — the "Open-Source Agent
+  //   Verification" tag underneath was redundant: the h1 + subtitle
+  //   below already explain what the report is.
+  // - h1 changes from "AI Agent Scope Verification & Compliance
+  //   Assessment" (AI-stuffed compound noun phrase) to the cleaner
+  //   "Compliance Evidence Pack" with a "Scope verification report"
+  //   subtitle.
+  // - Verdict badge inner content is a single word now. The previous
+  //   structure had <span class="verdict-label">Overall verdict</span>
+  //   inside the badge, which diluted the visual punch — Vijil's badge
+  //   is just "PASSED" / "FAILED" / "PARTIAL".
+  // - Cover meta is a <dl class="cover-meta"> with 3 items: Agent,
+  //   Evaluation ID, Generated. Captured was a near-duplicate of
+  //   Generated and confused readers about which is which.
+  // - Generated timestamp is formatted YYYY-MM-DD HH:MM UTC rather
+  //   than the raw ISO with milliseconds.
   // PR #25 round 2 (LOW): the original cover code wrote
   // `${scoreClass ? 'mono' : 'mono'}` — a dead ternary whose two
   // branches were identical. The design intent here is to tag the
@@ -260,29 +300,28 @@ function renderCoverPage(report: VerificationReport, opts: HtmlRenderOptions, sc
   // PASSED stays plain `mono` (no extra tone). Combining both classes
   // restores the original intent without leaving the dead branch.
   const scoreToneClass = score.verdict === 'PASSED' ? 'mono' : score.verdict === 'PARTIAL' ? 'mono warn' : 'mono crit';
+  const generatedFormatted = formatGeneratedTimestamp(opts.generatedAt);
   return `<section class="cover">
   <div class="cover-brand">
     <span class="cover-mark">Heron</span>
-    <span class="cover-tag">Open-Source Agent Verification</span>
   </div>
-  <h1 class="cover-title">AI Agent Scope Verification &amp; Compliance Assessment</h1>
+  <div class="cover-titles">
+    <h1 class="cover-title">Compliance Evidence Pack</h1>
+    <p class="cover-subtitle">Scope verification report</p>
+  </div>
   <div class="cover-summary-row">
-    <div class="${verdictBadgeClass(score.verdict)}">
-      <span class="verdict-label">Overall verdict</span>
-      <span class="verdict-value">${escapeHtml(score.verdict)}</span>
-    </div>
+    <div class="${verdictBadgeClass(score.verdict)}">${escapeHtml(score.verdict)}</div>
     <div class="score-block">
       <span class="score-label">Compliance Score</span>
       <span class="score-value">${score.score.toFixed(2)}</span>
       <span class="score-threshold">Threshold: ${score.threshold.toFixed(2)} <span class="muted">(<span class="${scoreToneClass}">${score.verdict}</span>)</span></span>
     </div>
   </div>
-  <div class="cover-meta">
-    <span class="meta-item"><strong>Agent:</strong> ${escapeHtml(opts.agentLabel)}</span>
-    <span class="meta-item"><strong>Evaluation ID:</strong> ${escapeHtml(opts.evaluationId)}</span>
-    <span class="meta-item"><strong>Generated:</strong> ${escapeHtml(opts.generatedAt)} (UTC)</span>
-    <span class="meta-item"><strong>Captured:</strong> ${escapeHtml(report.capturedAt)}</span>
-  </div>
+  <dl class="cover-meta">
+    <dt>Agent</dt><dd>${escapeHtml(opts.agentLabel)}</dd>
+    <dt>Evaluation ID</dt><dd><code class="mono">${escapeHtml(opts.evaluationId)}</code></dd>
+    <dt>Generated</dt><dd>${escapeHtml(generatedFormatted)}</dd>
+  </dl>
 </section>`;
 }
 
@@ -319,24 +358,273 @@ function renderTOC(opts: { isHR: boolean; hasChain: boolean }): string {
 
 // ─── Section 1 — Executive summary ────────────────────────────────
 
+/**
+ * Pluralise a noun by count. Avoids the robot "(s)" suffix that reads
+ * like template output rather than human writing.
+ */
+function pluralise(n: number, singular: string, plural?: string): string {
+  return n === 1 ? singular : (plural ?? `${singular}s`);
+}
+
+/**
+ * Static framework-label table — mirrored from exec-summary.ts so the
+ * HTML renderer can build citations without round-tripping through the
+ * markdown layer.
+ */
+const FRAMEWORK_CITATION_LABEL: Record<FrameworkId, string> = {
+  'aiuc-1': 'AIUC-1',
+  'eu-ai-act': 'EU AI Act',
+  'gdpr': 'GDPR',
+  'nist-ai-rmf': 'NIST AI RMF',
+};
+
+const SEVERITY_RANK_EXEC: Record<string, number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+  info: 0,
+};
+
+/**
+ * Headline finding item — unified view across HR signals and framework
+ * controls so the headline list can be sorted by severity once.
+ */
+interface HeadlineRow {
+  severity: ControlSeverity | HRSignalSeverity;
+  title: string;
+  citation: string;
+}
+
+/**
+ * Citation table for HR signals — duplicated from exec-summary.ts so
+ * the HTML renderer can build citations directly. The pair stays in
+ * sync: changing one without the other is a review-time defect to call
+ * out.
+ */
+const HR_SIGNAL_CITATIONS: Record<string, string> = {
+  'auto-rejection-without-disclosure': 'GDPR Article 22, NYC LL 144',
+  'ats-write-scope-sprawl': 'AIUC-1 B006 (least-privilege)',
+  'candidate-pii-in-logs': 'GDPR Article 5',
+  'scoring-without-criteria': 'EU AI Act Annex III §4',
+  'do-not-contact-bypass': 'GDPR Article 21, CAN-SPAM',
+  'offer-letter-out-of-range': 'Compensation policy',
+  'sub-agent-scope-expansion': 'AIUC-1 D003',
+};
+
+function collectHeadlineRows(report: VerificationReport, hr?: HRPackResult): HeadlineRow[] {
+  const rows: HeadlineRow[] = [];
+  if (hr) {
+    for (const sig of hr.signals) {
+      if (sig.verdict !== 'detected') continue;
+      rows.push({
+        severity: sig.severity,
+        title: sig.name,
+        citation: HR_SIGNAL_CITATIONS[sig.signalId] ?? 'HR vertical pack',
+      });
+    }
+  }
+  if (report.frameworkMapping) {
+    for (const c of report.frameworkMapping.controls) {
+      if (c.verdict !== 'fail') continue;
+      rows.push({
+        severity: c.severity,
+        title: c.controlName,
+        citation: `${FRAMEWORK_CITATION_LABEL[c.framework]} ${c.controlId}`,
+      });
+    }
+  }
+  rows.sort((a, b) => (SEVERITY_RANK_EXEC[b.severity] ?? 0) - (SEVERITY_RANK_EXEC[a.severity] ?? 0));
+  return rows;
+}
+
+function renderCompliancePostureLine(score: ComplianceScoreResult, report: VerificationReport, hr?: HRPackResult): string {
+  const fmFails = report.frameworkMapping?.controls.filter((c) => c.verdict === 'fail') ?? [];
+  const criticalCount =
+    (hr?.summary.criticalDetected ?? 0) +
+    fmFails.filter((c) => c.severity === 'critical').length;
+  const highCount =
+    (hr?.summary.highDetected ?? 0) +
+    fmFails.filter((c) => c.severity === 'high').length;
+  const totalFails = (hr?.summary.detectedCount ?? 0) + fmFails.length;
+
+  if (!report.frameworkMapping) {
+    return `<strong>Overall verdict:</strong> ${escapeHtml(score.verdict)} — framework mapping was not evaluated, so a compliance verdict cannot be issued.`;
+  }
+  if (criticalCount > 0) {
+    return `<strong>Overall verdict:</strong> ${escapeHtml(score.verdict)} — ${criticalCount} critical ${pluralise(criticalCount, 'issue')} detected.`;
+  }
+  if (highCount > 0) {
+    return `<strong>Overall verdict:</strong> ${escapeHtml(score.verdict)} — ${highCount} high-severity ${pluralise(highCount, 'issue')} detected.`;
+  }
+  if (totalFails > 0) {
+    return `<strong>Overall verdict:</strong> ${escapeHtml(score.verdict)} — ${totalFails} ${pluralise(totalFails, 'issue')} detected.`;
+  }
+  return `<strong>Overall verdict:</strong> ${escapeHtml(score.verdict)} — no critical or high-severity issues detected.`;
+}
+
+function renderHeadlineFindingsBlock(rows: HeadlineRow[]): string {
+  if (rows.length === 0) {
+    return `<div class="exec-sub">
+  <h3>Headline Findings</h3>
+  <p class="muted">No critical or high-severity issues detected.</p>
+</div>`;
+  }
+  const top = rows.slice(0, 5);
+  const items = top
+    .map((r) => {
+      const sevClass = severityPillClass(String(r.severity));
+      const sevLabel = String(r.severity).toUpperCase();
+      return `    <li><span class="${sevClass}">${escapeHtml(sevLabel)}</span> ${escapeHtml(r.title)}. <span class="muted">(${escapeHtml(r.citation)})</span></li>`;
+    })
+    .join('\n');
+  return `<div class="exec-sub">
+  <h3>Headline Findings</h3>
+  <ol class="findings-list">
+${items}
+  </ol>
+</div>`;
+}
+
+function renderFrameworkCoverageBlock(report: VerificationReport): string {
+  if (!report.frameworkMapping) {
+    return `<div class="exec-sub">
+  <h3>Framework Coverage</h3>
+  <p class="muted">Framework mapping disabled — no per-framework coverage to report.</p>
+</div>`;
+  }
+  const byFramework = new Map<FrameworkId, FrameworkControl[]>();
+  for (const c of report.frameworkMapping.controls) {
+    if (!byFramework.has(c.framework)) byFramework.set(c.framework, []);
+    byFramework.get(c.framework)!.push(c);
+  }
+  const items: string[] = [];
+  for (const [fw, controls] of byFramework) {
+    const total = controls.length;
+    const verified = controls.filter((c) => c.verdict === 'verified').length;
+    const fails = controls.filter((c) => c.verdict === 'fail').length;
+    const partials = controls.filter((c) => c.verdict === 'partial').length;
+    const failPart = fails > 0 ? `, ${fails} ${pluralise(fails, 'fail', 'fails')}` : '';
+    const partialPart = partials > 0 ? `, ${partials} partial` : '';
+    items.push(`    <li><strong>${escapeHtml(FRAMEWORK_CITATION_LABEL[fw])}:</strong> ${verified}/${total} verified${failPart}${partialPart}</li>`);
+  }
+  return `<div class="exec-sub">
+  <h3>Framework Coverage</h3>
+  <ul class="framework-coverage">
+${items.join('\n')}
+  </ul>
+</div>`;
+}
+
+function renderRecommendedActionsBlock(report: VerificationReport, hr?: HRPackResult): string {
+  const recs: string[] = [];
+  const seen = new Set<string>();
+  if (hr) {
+    for (const sig of hr.signals) {
+      if (sig.verdict !== 'detected') continue;
+      const r = sig.recommendation;
+      if (!seen.has(r)) {
+        seen.add(r);
+        recs.push(r);
+      }
+    }
+  }
+  if (report.frameworkMapping) {
+    for (const c of report.frameworkMapping.controls) {
+      if (c.verdict !== 'fail') continue;
+      const r = `Address ${FRAMEWORK_CITATION_LABEL[c.framework]} ${c.controlId} (${c.controlName}): ${c.rationale}`;
+      if (!seen.has(r)) {
+        seen.add(r);
+        recs.push(r);
+      }
+    }
+  }
+  if (recs.length === 0) {
+    return `<div class="exec-sub">
+  <h3>Recommended Actions</h3>
+  <p class="muted">No corrective actions required.</p>
+</div>`;
+  }
+  const items = recs.slice(0, 5).map((r) => `    <li>${escapeHtml(r)}</li>`).join('\n');
+  return `<div class="exec-sub">
+  <h3>Recommended Actions</h3>
+  <ol class="recommended-actions">
+${items}
+  </ol>
+</div>`;
+}
+
+function renderApprovalTrailBlock(report: VerificationReport): string {
+  if (!report.approvalChain) return '';
+  const chain = report.approvalChain.chain;
+  const integrity = report.approvalChain.integrity;
+  const declared = chain.entries.find((e) => e.action === 'declared');
+  const reviewed = chain.entries.find((e) => e.action === 'reviewed');
+  const approved = chain.entries.find((e) => e.action === 'approved');
+
+  const fmtDate = (iso: string): string => {
+    // Trim ISO timestamp to YYYY-MM-DD so the trail reads like a memo not a log line.
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(iso);
+    return m ? m[1]! : iso;
+  };
+
+  const lines: string[] = [];
+  if (declared) {
+    lines.push(`    <li><strong>Declared:</strong> ${escapeHtml(declared.actor.name)} (${escapeHtml(declared.actor.role)}), ${escapeHtml(fmtDate(declared.timestamp))}</li>`);
+  }
+  if (reviewed) {
+    lines.push(`    <li><strong>Reviewed:</strong> ${escapeHtml(reviewed.actor.name)} (${escapeHtml(reviewed.actor.role)}), ${escapeHtml(fmtDate(reviewed.timestamp))}</li>`);
+  }
+  if (approved) {
+    lines.push(`    <li><strong>Approved:</strong> ${escapeHtml(approved.actor.name)} (${escapeHtml(approved.actor.role)}), ${escapeHtml(fmtDate(approved.timestamp))}</li>`);
+  }
+  const integrityLine = integrity.ok
+    ? '<p class="chain-status">Chain integrity: <strong>Intact</strong></p>'
+    : `<p class="chain-status">Chain integrity: <strong>BROKEN at entry ${integrity.brokenAt}</strong> — ${escapeHtml(integrity.reason)}</p>`;
+  return `<div class="exec-sub">
+  <h3>Approval Trail</h3>
+  <ul class="approval-summary">
+${lines.join('\n')}
+  </ul>
+  ${integrityLine}
+</div>`;
+}
+
 function renderExecutiveSummary(report: VerificationReport, opts: HtmlRenderOptions, score: ComplianceScoreResult): string {
-  const verdictPhrase =
-    score.verdict === 'PASSED' ? 'passed' :
-      score.verdict === 'PARTIAL' ? 'partially passed' :
-        'failed';
   // PR #25 round 2 (LOW): `?? []` is belt-and-braces — the type
   // contract guarantees `sources`, but a partial mock or future caller
   // could pass `undefined`. The renderer must not crash on missing
   // optional collections.
   const sourceCount = (report.sources ?? []).length;
-  let body: string;
+  const sourceWord = pluralise(sourceCount, 'verification source', 'verification sources');
+  const verdictPhrase =
+    score.verdict === 'PASSED' ? 'passed' :
+      score.verdict === 'PARTIAL' ? 'partially passed' :
+        'failed';
+  let calloutBody: string;
   if (!report.frameworkMapping) {
-    body = `This evaluation assessed <strong>${escapeHtml(opts.agentLabel)}</strong> against ${sourceCount} verification source(s) covering scope and approval lifecycle. Framework mapping was not evaluated, so a compliance verdict cannot be issued; the agent is reported as <strong>${escapeHtml(score.verdict)}</strong> until framework analysis is enabled.`;
+    calloutBody = `This evaluation assessed <strong>${escapeHtml(opts.agentLabel)}</strong> against ${sourceCount} ${sourceWord} covering scope and approval lifecycle. Framework mapping was not evaluated, so a compliance verdict cannot be issued; the agent is reported as <strong>${escapeHtml(score.verdict)}</strong> until framework analysis is enabled.`;
   } else {
-    body = `This evaluation assessed <strong>${escapeHtml(opts.agentLabel)}</strong> against ${sourceCount} verification source(s) covering scope, framework compliance, and approval lifecycle. The agent <strong>${verdictPhrase}</strong> with overall compliance score of <strong>${score.score.toFixed(2)}</strong> (threshold: ${score.threshold.toFixed(2)}).`;
+    calloutBody = `This evaluation assessed <strong>${escapeHtml(opts.agentLabel)}</strong> against ${sourceCount} ${sourceWord} covering scope, framework compliance, and approval lifecycle. The agent <strong>${verdictPhrase}</strong> with overall compliance score of <strong>${score.score.toFixed(2)}</strong> (threshold: ${score.threshold.toFixed(2)}).`;
   }
-  return `${sectionHeader('01', 'Section', 'Executive Summary', undefined, 'sec-exec-summary')}
-${callout(body, score.verdict === 'PASSED' ? 'ok' : score.verdict === 'PARTIAL' ? 'warn' : 'fail')}`;
+
+  const headline = collectHeadlineRows(report, opts.hrPack);
+
+  const tone = score.verdict === 'PASSED' ? 'ok' : score.verdict === 'PARTIAL' ? 'warn' : 'fail';
+
+  const parts: string[] = [
+    sectionHeader('01', 'Executive Summary', undefined, 'sec-exec-summary'),
+    callout(calloutBody, tone),
+    `<div class="exec-sub">
+  <h3>Compliance Posture</h3>
+  <p>${renderCompliancePostureLine(score, report, opts.hrPack)}</p>
+</div>`,
+    renderHeadlineFindingsBlock(headline),
+    renderFrameworkCoverageBlock(report),
+    renderRecommendedActionsBlock(report, opts.hrPack),
+    renderApprovalTrailBlock(report),
+  ].filter((s) => s !== '');
+  return parts.join('\n');
 }
 
 // ─── Section 2 — Agent specification ──────────────────────────────
@@ -379,7 +667,7 @@ function renderAgentSpec(report: VerificationReport, opts: HtmlRenderOptions): s
     ['Approval Agent ID', approvalAgentId ? `<code class="mono">${escapeHtml(approvalAgentId)}</code>` : null],
   ];
 
-  return `${sectionHeader('02', 'Section', 'Agent Specification', undefined, 'sec-agent-spec')}
+  return `${sectionHeader('02', 'Agent Specification', undefined, 'sec-agent-spec')}
 ${kv(rows)}`;
 }
 
@@ -470,7 +758,7 @@ function renderFindingsTable(report: VerificationReport): string {
 }
 
 function renderVerificationResults(report: VerificationReport, score: ComplianceScoreResult): string {
-  return `${sectionHeader('03', 'Section', 'Verification Results', undefined, 'sec-verification')}
+  return `${sectionHeader('03', 'Verification Results', undefined, 'sec-verification')}
 <div class="h-sub">3.1 &middot; Overall Score</div>
 ${renderScoreBar(score)}
 <div class="h-sub">3.2 &middot; Per-Source Breakdown</div>
@@ -482,7 +770,7 @@ ${renderFindingsTable(report)}`;
 // ─── Section 4 — Framework mapping ────────────────────────────────
 
 function renderFrameworkMapping(mapping: FrameworkMapping | undefined): string {
-  const header = sectionHeader('04', 'Section', 'Compliance Framework Mapping', undefined, 'sec-frameworks');
+  const header = sectionHeader('04', 'Compliance Framework Mapping', undefined, 'sec-frameworks');
   if (!mapping) {
     return `${header}
 ${callout('Framework mapping was not run for this agent (HERON_FRAMEWORK_MAPPING_DISABLED or no mapper available).', 'warn')}`;
@@ -497,7 +785,7 @@ ${callout('Framework mapping was not run for this agent (HERON_FRAMEWORK_MAPPING
   const tone: 'warn' | 'fail' | 'ok' = failed.length === 0 ? 'ok' : (counts.critical > 0 || counts.high > 0) ? 'fail' : 'warn';
   const summary = failed.length === 0
     ? 'All evaluable controls verified or partially verified — no framework-level failures detected.'
-    : `${failed.length} failure(s) detected (${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
+    : `${failed.length} ${pluralise(failed.length, 'failure')} detected (${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
 
   // Group by framework, preserve order of first appearance.
   const groups = new Map<FrameworkId, FrameworkControl[]>();
@@ -542,7 +830,7 @@ function renderHRSignals(hr: HRPackResult, num: string): string {
   const tone: 'warn' | 'fail' | 'ok' = detected.length === 0 ? 'ok' : hr.summary.criticalDetected > 0 ? 'fail' : 'warn';
   const callBody = detected.length === 0
     ? 'No HR-specific risk signals detected.'
-    : `${detected.length} HR-specific signal(s) detected (${hr.summary.criticalDetected} critical, ${hr.summary.highDetected} high).`;
+    : `${detected.length} HR-specific ${pluralise(detected.length, 'signal')} detected (${hr.summary.criticalDetected} critical, ${hr.summary.highDetected} high).`;
   const rows = hr.signals
     .map((s: HRSignal) => `<tr>
   <td><code class="mono">${escapeHtml(s.signalId)}</code></td>
@@ -552,7 +840,7 @@ function renderHRSignals(hr: HRPackResult, num: string): string {
   <td>${escapeHtml(s.rationale)}</td>
 </tr>`)
     .join('\n');
-  return `${sectionHeader(num, 'Section', 'HR Vertical Signals', undefined, 'sec-hr')}
+  return `${sectionHeader(num, 'HR Vertical Signals', undefined, 'sec-hr')}
 ${callout(callBody, tone)}
 <div class="tbl-wrap"><table class="tbl tbl-findings">
   <thead><tr><th>Signal ID</th><th>Name</th><th>Verdict</th><th>Severity</th><th>Rationale</th></tr></thead>
@@ -581,7 +869,7 @@ function renderApprovalTrail(chain: ApprovalChain, integrity: { ok: true } | { o
     ? callout('Chain integrity verified — every entry hash matches.', 'ok')
     : callout(`Chain integrity BROKEN at entry ${integrity.brokenAt}: ${escapeHtml(integrity.reason)}`, 'fail');
   const rows = chain.entries.map((e, i) => renderApprovalEntry(e, i)).join('\n');
-  return `${sectionHeader(num, 'Section', 'Approval Audit Trail', undefined, 'sec-approval')}
+  return `${sectionHeader(num, 'Approval Audit Trail', undefined, 'sec-approval')}
 ${banner}
 <div class="tbl-wrap"><table class="tbl timeline">
   <thead><tr><th>Timestamp (UTC)</th><th>Actor</th><th>Action</th><th>Evidence &middot; Comment</th></tr></thead>
@@ -624,7 +912,7 @@ function renderConclusion(report: VerificationReport, opts: HtmlRenderOptions, n
   const body = actions.length === 0
     ? callout('No remediation actions required — verification clean across all surfaces.', 'ok')
     : `<ol class="numlist">${actions.map((a) => `<li><div>${a}</div></li>`).join('\n')}</ol>`;
-  return `${sectionHeader(num, 'Section', 'Conclusion', undefined, 'sec-conclusion')}
+  return `${sectionHeader(num, 'Conclusion', undefined, 'sec-conclusion')}
 <div class="h-sub">Recommended Actions</div>
 ${body}`;
 }
@@ -675,7 +963,7 @@ function renderAppendix(report: VerificationReport, num: string): string {
   <td><code class="mono">${escapeHtml(s.scope)}</code></td>
 </tr>`).join('\n');
 
-  return `${sectionHeader(num, 'Section', 'Appendix', undefined, 'sec-appendix')}
+  return `${sectionHeader(num, 'Appendix', undefined, 'sec-appendix')}
 <details ${allTools.length > 0 ? 'open' : ''}>
   <summary>Tool inventory (${allTools.length})</summary>
   <div class="tbl-wrap"><table class="tbl">
