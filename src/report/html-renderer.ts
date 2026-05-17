@@ -237,7 +237,14 @@ function verdictBadgeClass(v: ComplianceScoreResult['verdict']): string {
 }
 
 function renderCoverPage(report: VerificationReport, opts: HtmlRenderOptions, score: ComplianceScoreResult): string {
-  const scoreClass = score.verdict === 'PASSED' ? '' : score.verdict === 'PARTIAL' ? 'warn' : 'crit';
+  // PR #25 round 2 (LOW): the original cover code wrote
+  // `${scoreClass ? 'mono' : 'mono'}` — a dead ternary whose two
+  // branches were identical. The design intent here is to tag the
+  // verdict label with both the typographic class (`mono`) and the
+  // verdict-tone class (`warn` / `crit`) so the cover can colour it.
+  // PASSED stays plain `mono` (no extra tone). Combining both classes
+  // restores the original intent without leaving the dead branch.
+  const scoreToneClass = score.verdict === 'PASSED' ? 'mono' : score.verdict === 'PARTIAL' ? 'mono warn' : 'mono crit';
   return `<section class="cover">
   <div class="cover-brand">
     <span class="cover-mark">Heron</span>
@@ -252,7 +259,7 @@ function renderCoverPage(report: VerificationReport, opts: HtmlRenderOptions, sc
     <div class="score-block">
       <span class="score-label">Compliance Score</span>
       <span class="score-value">${score.score.toFixed(2)}</span>
-      <span class="score-threshold">Threshold: ${score.threshold.toFixed(2)} <span class="muted">(<span class="${scoreClass ? `mono` : 'mono'}">${score.verdict}</span>)</span></span>
+      <span class="score-threshold">Threshold: ${score.threshold.toFixed(2)} <span class="muted">(<span class="${scoreToneClass}">${score.verdict}</span>)</span></span>
     </div>
   </div>
   <div class="cover-meta">
@@ -302,7 +309,11 @@ function renderExecutiveSummary(report: VerificationReport, opts: HtmlRenderOpti
     score.verdict === 'PASSED' ? 'passed' :
       score.verdict === 'PARTIAL' ? 'partially passed' :
         'failed';
-  const sourceCount = report.sources.length;
+  // PR #25 round 2 (LOW): `?? []` is belt-and-braces — the type
+  // contract guarantees `sources`, but a partial mock or future caller
+  // could pass `undefined`. The renderer must not crash on missing
+  // optional collections.
+  const sourceCount = (report.sources ?? []).length;
   let body: string;
   if (!report.frameworkMapping) {
     body = `This evaluation assessed <strong>${escapeHtml(opts.agentLabel)}</strong> against ${sourceCount} verification source(s) covering scope and approval lifecycle. Framework mapping was not evaluated, so a compliance verdict cannot be issued; the agent is reported as <strong>${escapeHtml(score.verdict)}</strong> until framework analysis is enabled.`;
@@ -332,9 +343,12 @@ function extractAgentInfo(declared: DeclaredInventory[]): { name?: string; purpo
 }
 
 function renderAgentSpec(report: VerificationReport, opts: HtmlRenderOptions): string {
-  const info = extractAgentInfo(report.declared);
+  // PR #25 round 2 (LOW): `?? []` guards against partial-mock reports
+  // that omit declared / sources. Type contract requires both, but the
+  // renderer would crash on the missing field rather than degrade.
+  const info = extractAgentInfo(report.declared ?? []);
   const isHR = !!opts.hrPack?.isHRAgent;
-  const verifySources = report.sources.map((s) => `<code class="mono">${escapeHtml(s.sourceId)}</code>`).join(', ') || '<span class="muted">—</span>';
+  const verifySources = (report.sources ?? []).map((s) => `<code class="mono">${escapeHtml(s.sourceId)}</code>`).join(', ') || '<span class="muted">—</span>';
   const declaredSources = info.declaredSources.map((s) => `<code class="mono">${escapeHtml(s)}</code>`).join(', ') || '<span class="muted">—</span>';
   const approvalAgentId = report.approvalChain?.chain.agentId;
 
@@ -666,9 +680,19 @@ function renderAppendix(report: VerificationReport, num: string): string {
 // ─── Top-level renderer ───────────────────────────────────────────
 
 export function renderVerificationReportHtml(
-  report: VerificationReport,
+  reportInput: VerificationReport,
   opts: HtmlRenderOptions,
 ): string {
+  // PR #25 round 2 (LOW): belt-and-braces normalisation. The type
+  // contract guarantees `sources` and `declared`, but partial mocks
+  // and future callers should not crash if either is undefined. We
+  // coerce once at the entry point so downstream sections can keep
+  // assuming arrays.
+  const report: VerificationReport = {
+    ...reportInput,
+    declared: reportInput.declared ?? [],
+    sources: reportInput.sources ?? [],
+  };
   const score = computeComplianceScore(report);
   const isHR = !!opts.hrPack?.isHRAgent;
   const hasChain = !!report.approvalChain;
