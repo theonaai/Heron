@@ -388,44 +388,50 @@ export const REPORT_CSS = `
 .heron-report .findings-list,
 .heron-report .recommended-actions {
   counter-reset: ef;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 4px 0 0;
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
 }
-/* PR #27 / AAP-56 — the previous grid rule (display: grid;
-   grid-template-columns: 28px 1fr) was auto-distributing the LI's
-   three inline children (severity pill, title text node, citation
-   muted-span) across a 2x2 grid: the pill stretched to fill the
-   content column, the title text wrapped to the counter column one
-   word per line, and the citation overlapped the title column. Flex
-   with baseline alignment lets the counter sit as a fixed-width
-   leading column while the pill keeps its inline-flex natural width
-   and the title + citation flow inline. */
+/* PR #28 / AAP-57 — replace the PR #27 flex layout with an
+   absolute-positioned counter. PR #27 used display:flex with
+   flex-wrap:wrap on the LI, which worked for short Headline
+   Findings rows but broke long Recommended Actions sentences:
+   when the text did not fit on the first flex row, flex-wrap
+   pushed the entire text node to the next row, leaving the
+   counter "01" alone on row 1.
+   With absolute positioning, the counter floats at left:0
+   outside the content flow while the LI reserves 36px
+   padding-left. The pill + title + citation (or a long
+   sentence) live in normal block flow and wrap naturally —
+   every wrapped line aligns to the 36px indent. */
 .heron-report .findings-list > li,
 .heron-report .recommended-actions > li {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 8px;
+  position: relative;
+  padding: 0 0 0 36px;
+  margin: 0 0 10px 0;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--r-ink-2);
-  padding-left: 0;
+}
+.heron-report .findings-list > li:last-child,
+.heron-report .recommended-actions > li:last-child {
+  margin-bottom: 0;
 }
 .heron-report .findings-list > li > .sev {
-  flex: 0 0 auto;
+  margin-right: 4px;
 }
 .heron-report .findings-list > li::before,
 .heron-report .recommended-actions > li::before {
   content: counter(ef, decimal-leading-zero);
   counter-increment: ef;
-  flex: 0 0 28px;
+  position: absolute;
+  left: 0;
+  top: 0.2em;
+  width: 28px;
   font-family: var(--r-font-mono);
   font-size: 11px;
   color: var(--r-ink-4);
   letter-spacing: 0.05em;
-  align-self: baseline;
 }
 .heron-report .framework-coverage {
   display: flex;
@@ -734,8 +740,13 @@ export const REPORT_CSS = `
 }
 
 /* ─── Numbered list (recommendations) ───────────────────────── */
+/* PR #28 / AAP-57 — same absolute-counter pattern as findings-list /
+   recommended-actions. Replaces the previous display:grid rule
+   which relied on an inner DIV per LI to handle wrap; now wrap
+   happens naturally inside the content box. */
 .heron-report .numlist {
   counter-reset: nl;
+  list-style: none;
   border: 1px solid var(--r-border);
   border-radius: var(--r-radius);
   background: var(--r-bg);
@@ -743,10 +754,8 @@ export const REPORT_CSS = `
   margin: 0 0 16px;
 }
 .heron-report .numlist > li {
-  display: grid;
-  grid-template-columns: 36px 1fr;
-  gap: 12px;
-  padding: 12px 0;
+  position: relative;
+  padding: 12px 0 12px 36px;
   border-bottom: 1px solid var(--r-border);
   font-size: 14px;
   line-height: 1.55;
@@ -756,11 +765,14 @@ export const REPORT_CSS = `
 .heron-report .numlist > li::before {
   content: counter(nl, decimal-leading-zero);
   counter-increment: nl;
+  position: absolute;
+  left: 0;
+  top: 14px;
+  width: 28px;
   font-family: var(--r-font-mono);
   font-size: 11px;
   color: var(--r-ink-4);
   letter-spacing: 0.05em;
-  padding-top: 2px;
 }
 
 /* ─── Timeline (approval chain) ─────────────────────────────── */
