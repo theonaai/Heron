@@ -137,8 +137,9 @@ describe('scan + approval routes', () => {
   it('GET /approvals/:agentId renders the chain', async () => {
     const agentId = 'agent-routes-1';
     await appendEntry(
+      agentId,
       {
-        agentId,
+        timestamp: new Date().toISOString(),
         action: 'declared',
         actor: { name: 'Test Actor', role: 'DPO' },
       },

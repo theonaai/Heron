@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { SessionManager } from './sessions.js';
+import { ScanManager, isValidScanId, renderScanBody } from './scans.js';
+import type { ScanRecord } from './scans.js';
 import { createLLMClient } from '../llm/client.js';
 import type { LLMConfig } from '../config/schema.js';
 import * as logger from '../util/logger.js';
@@ -10,7 +12,10 @@ import {
   SHARED_CSS,
   markdownToHtml,
   escapeHtml,
+  renderHtmlShell,
 } from './render.js';
+import { readChain, verifyChainIntegrity } from '../approvals/store.js';
+import { renderApprovalChainSection } from '../approvals/render.js';
 
 export interface ServerConfig {
   port: number;
@@ -18,6 +23,17 @@ export interface ServerConfig {
   llm: LLMConfig;
   maxFollowUps: number;
   reportDir: string;
+  /**
+   * Directory for verification scan records (AAP-52). Defaults to
+   * `<cwd>/.heron/scans` when omitted. `loadFromDisk` runs on startup
+   * so CLI-run scans from prior sessions appear in the dashboard.
+   */
+  scansDir?: string;
+  /**
+   * Directory for approval chains. Defaults to `<cwd>/.heron/approvals`.
+   * Used by the new GET /approvals/:agentId page (AAP-52).
+   */
+  approvalsDir?: string;
 }
 
 /**
@@ -33,6 +49,26 @@ export async function startServer(config: ServerConfig): Promise<import('node:ht
     maxFollowUps: config.maxFollowUps,
     reportDir: config.reportDir,
   });
+  // AAP-52: scans + approval-chain registries. ScanManager rehydrates
+  // from disk so CLI-run scans appear automatically in the dashboard.
+  const resolvedScansDir = config.scansDir ?? './.heron/scans';
+  const resolvedApprovalsDir = config.approvalsDir;
+  const scans = new ScanManager(resolvedScansDir);
+  try {
+    await scans.loadFromDisk();
+  } catch (err) {
+    logger.error(
+      `ScanManager.loadFromDisk failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // 0.0.0.0 + no auth — print a one-line warning. Heron OSS is intended
+  // for local-dev / private-network use; Heron_v1 hosted handles auth.
+  if (config.host === '0.0.0.0') {
+    logger.raw(
+      '  \x1b[33mNote:\x1b[0m bound on 0.0.0.0 with no auth — intended for local-dev / private network only. Do NOT expose this port to the public internet.',
+    );
+  }
 
   const server = createServer(async (req, res) => {
     // CORS
@@ -108,9 +144,44 @@ export async function startServer(config: ServerConfig): Promise<import('node:ht
         return;
       }
 
+      // ─── AAP-52: scan + approval-chain routes ─────────────────
+
+      // Scan list page (HTML)
+      if (url.pathname === '/scans' && req.method === 'GET') {
+        await handleScansListPage(res, scans);
+        return;
+      }
+
+      // Scan detail page (HTML)
+      const scanPageMatch = url.pathname.match(/^\/scans\/([^/]+)$/);
+      if (scanPageMatch && req.method === 'GET') {
+        await handleScanPage(res, scans, scanPageMatch[1]);
+        return;
+      }
+
+      // Approval chain detail page (HTML)
+      const approvalChainMatch = url.pathname.match(/^\/approvals\/([^/]+)$/);
+      if (approvalChainMatch && req.method === 'GET') {
+        await handleApprovalChainPage(res, approvalChainMatch[1], resolvedApprovalsDir);
+        return;
+      }
+
+      // REST: scan list
+      if (url.pathname === '/api/scans' && req.method === 'GET') {
+        await handleApiScansList(res, scans);
+        return;
+      }
+
+      // REST: scan detail
+      const apiScanMatch = url.pathname.match(/^\/api\/scans\/([^/]+)$/);
+      if (apiScanMatch && req.method === 'GET') {
+        await handleApiScanDetail(res, scans, apiScanMatch[1]);
+        return;
+      }
+
       // Landing page
       if (url.pathname === '/') {
-        await handleLanding(res, sessions, req.headers.host ?? 'localhost:3700');
+        await handleLanding(res, sessions, scans, req.headers.host ?? 'localhost:3700');
         return;
       }
 
@@ -507,11 +578,33 @@ async function handleSessionPage(
   res.end(html);
 }
 
-async function handleLanding(res: ServerResponse, sessions: SessionManager, host: string): Promise<void> {
+async function handleLanding(
+  res: ServerResponse,
+  sessions: SessionManager,
+  scans: ScanManager,
+  host: string,
+): Promise<void> {
   const activeSessions = sessions.listSessions();
+  const recentScans = (await scans.list()).slice(0, 3);
+  const totalScans = (await scans.list()).length;
   const baseUrl = host.includes('localhost') || host.includes('0.0.0.0')
     ? `http://localhost:${3700}`
     : `https://${host}`;
+
+  const scansSection = `<h2>Verification Scans (<span id="scan-count">${totalScans}</span>) — <a href="/scans" style="font-size: 0.7em;">view all</a></h2>
+  <div id="scans-table">${totalScans === 0
+    ? '<div class="empty"><p>No scans yet. Run <code>heron scan --mcp ... --verify ...</code> to create one.</p></div>'
+    : `<table>
+    <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    ${recentScans.map((s) => `<tr>
+      <td>${escapeHtml(s.createdAt.slice(0, 19).replace('T', ' '))}</td>
+      <td>${escapeHtml(s.agentLabel || '—')}</td>
+      <td><span class="badge badge-${s.status}">${s.status}</span></td>
+      <td><a href="/scans/${escapeHtml(s.id)}">open</a></td>
+    </tr>`).join('')}
+    </tbody>
+  </table>`}</div>`;
 
   const html = `<!DOCTYPE html>
 <html>
@@ -539,6 +632,8 @@ async function handleLanding(res: ServerResponse, sessions: SessionManager, host
     </tr>`).join('')}
     </tbody>
   </table>`}</div>
+
+  ${scansSection}
 
   <h2>Quick start</h2>
   <p style="margin-bottom: 12px;">Paste this into your AI agent's chat to start an audit interview:</p>
@@ -576,6 +671,11 @@ Important: answer about THIS specific project — what you actually do, what sys
     <tr><td><code>GET /api/sessions/:id/report</code></td><td>Download audit report (markdown)</td></tr>
     <tr><td><code>POST /api/sessions/:id/compare</code></td><td>Upload previous report, generate diff</td></tr>
     <tr><td><code>GET /sessions/:id/compare</code></td><td>View diff (HTML)</td></tr>
+    <tr><td><code>GET /scans</code></td><td>Browse verification scans (HTML)</td></tr>
+    <tr><td><code>GET /scans/:id</code></td><td>Single scan with exec summary + frameworks + HR (HTML)</td></tr>
+    <tr><td><code>GET /api/scans</code></td><td>List verification scans (JSON)</td></tr>
+    <tr><td><code>GET /api/scans/:id</code></td><td>Single scan record (JSON)</td></tr>
+    <tr><td><code>GET /approvals/:agentId</code></td><td>Approval chain for an agent (HTML)</td></tr>
     </tbody>
   </table>
 
@@ -723,6 +823,155 @@ async function handleComparePage(
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(html);
+}
+
+// ─── AAP-52: scan + approval-chain handlers ──────────────────────────────
+
+/** Validates the regex /^[A-Za-z0-9_.-]{1,128}$/. Same shape as the
+ * approvals store. Used to reject hostile URL params before any disk
+ * read. */
+const APPROVAL_AGENT_ID_REGEX = /^[A-Za-z0-9_.-]{1,128}$/;
+
+function summariseVerdict(rec: ScanRecord): string {
+  if (rec.status === 'failed') return 'failed';
+  if (rec.status === 'pending') return 'running';
+  const fm = rec.report?.frameworkMapping?.summary;
+  if (!fm) return 'no frameworks';
+  const bits: string[] = [];
+  if (fm.failCount) bits.push(`${fm.failCount} fail`);
+  if (fm.unverifiedCount) bits.push(`${fm.unverifiedCount} unverified`);
+  if (fm.partialCount) bits.push(`${fm.partialCount} partial`);
+  if (fm.verifiedCount) bits.push(`${fm.verifiedCount} verified`);
+  return bits.length ? bits.join(', ') : 'no controls';
+}
+
+async function handleScansListPage(res: ServerResponse, scans: ScanManager): Promise<void> {
+  // Reload from disk on every list — CLI-run scans that landed AFTER
+  // `heron serve` started must appear without a restart. Cheap: file
+  // count stays small (one record per agent scan).
+  await scans.loadFromDisk();
+  const records = await scans.list();
+  const body = records.length === 0
+    ? `<div class="empty"><p>No scans yet. Run <code>heron scan --mcp ... --verify ...</code> to create one.</p></div>`
+    : `<table>
+      <thead><tr><th>Time</th><th>Agent</th><th>Sources</th><th>Verdict</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      ${records.map((s) => `<tr>
+        <td>${escapeHtml(s.createdAt.slice(0, 19).replace('T', ' '))}</td>
+        <td>${escapeHtml(s.agentLabel || '—')}</td>
+        <td>${s.verifySources.length === 0 ? '—' : s.verifySources.map(src => `<code>${escapeHtml(src)}</code>`).join(', ')}</td>
+        <td>${escapeHtml(summariseVerdict(s))}</td>
+        <td><span class="badge badge-${s.status}">${s.status}</span></td>
+        <td><a href="/scans/${escapeHtml(s.id)}">open</a></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>`;
+
+  const html = renderHtmlShell(
+    'Heron — Verification Scans',
+    `<p class="breadcrumb"><a href="/">&larr; Dashboard</a></p>
+     <h2>Verification Scans (${records.length})</h2>
+     ${body}`,
+  );
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(html);
+}
+
+async function handleScanPage(res: ServerResponse, scans: ScanManager, id: string): Promise<void> {
+  if (!isValidScanId(id)) {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end(renderHtmlShell('Not found', '<p>Scan not found.</p>'));
+    return;
+  }
+  await scans.loadFromDisk();
+  const rec = await scans.get(id);
+  if (!rec) {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end(renderHtmlShell('Not found', `<p>Scan <code>${escapeHtml(id)}</code> not found.</p>`));
+    return;
+  }
+  const breadcrumb = `<p class="breadcrumb"><a href="/scans">&larr; Back to scans</a></p>`;
+  const heading = `<h2>${escapeHtml(rec.agentLabel || rec.id)} <span class="badge badge-${rec.status}">${rec.status}</span></h2>`;
+  const body = `${breadcrumb}${heading}${renderScanBody(rec)}`;
+  // Pending scans auto-refresh every 5s via meta refresh — no JS.
+  const opts = rec.status === 'pending' ? { metaRefreshSeconds: 5 } : {};
+  const html = renderHtmlShell(
+    `Heron Scan — ${rec.agentLabel || rec.id}`,
+    body,
+    opts,
+  );
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(html);
+}
+
+async function handleApprovalChainPage(
+  res: ServerResponse,
+  agentId: string,
+  approvalsDir: string | undefined,
+): Promise<void> {
+  if (!APPROVAL_AGENT_ID_REGEX.test(agentId)) {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end(renderHtmlShell('Not found', '<p>Invalid agent identifier.</p>'));
+    return;
+  }
+  const r = await readChain(agentId, approvalsDir);
+  const breadcrumb = `<p class="breadcrumb"><a href="/">&larr; Dashboard</a></p>`;
+  if (!r.ok) {
+    const not404 = r.error.kind === 'not_found' ? 404 : 500;
+    const body = r.error.kind === 'not_found'
+      ? `${breadcrumb}<h2>Approval Chain — ${escapeHtml(agentId)}</h2>
+         <div class="error-msg">No approval chain found for <code>${escapeHtml(agentId)}</code>.</div>
+         <p>Run <code>heron approve --agent ${escapeHtml(agentId)} --action declared --actor-name &lt;name&gt; --actor-role &lt;role&gt;</code> to create one.</p>`
+      : `${breadcrumb}<h2>Approval Chain — ${escapeHtml(agentId)}</h2>
+         <div class="error-msg">Error reading approval chain (${escapeHtml(r.error.kind)}): ${escapeHtml(r.error.message)}</div>`;
+    res.writeHead(not404, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end(renderHtmlShell(`Approval Chain — ${agentId}`, body));
+    return;
+  }
+  const integrity = verifyChainIntegrity(r.chain);
+  const md = renderApprovalChainSection({
+    chain: r.chain,
+    integrity,
+    ...(r.warnings ? { warnings: r.warnings } : {}),
+  }, { format: 'markdown' });
+  const integrityBanner = integrity.ok
+    ? `<div class="integrity-ok">Integrity: OK — every entry hash matches.</div>`
+    : `<div class="integrity-broken">Integrity: BROKEN at entry ${integrity.brokenAt} — ${escapeHtml(integrity.reason)}</div>`;
+  const body = `${breadcrumb}
+    <h2>Approval Chain — ${escapeHtml(agentId)}</h2>
+    ${integrityBanner}
+    <div class="report-rendered">${markdownToHtml(md)}</div>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(renderHtmlShell(`Approval Chain — ${agentId}`, body));
+}
+
+async function handleApiScansList(res: ServerResponse, scans: ScanManager): Promise<void> {
+  await scans.loadFromDisk();
+  const list = (await scans.list()).map((s) => ({
+    id: s.id,
+    createdAt: s.createdAt,
+    agentLabel: s.agentLabel,
+    mcpConfig: s.mcpConfig,
+    verifySources: s.verifySources,
+    status: s.status,
+    verdict: summariseVerdict(s),
+    ...(s.error ? { error: s.error } : {}),
+  }));
+  json(res, 200, { scans: list });
+}
+
+async function handleApiScanDetail(res: ServerResponse, scans: ScanManager, id: string): Promise<void> {
+  if (!isValidScanId(id)) {
+    json(res, 404, { error: 'Scan not found' });
+    return;
+  }
+  await scans.loadFromDisk();
+  const rec = await scans.get(id);
+  if (!rec) {
+    json(res, 404, { error: 'Scan not found' });
+    return;
+  }
+  json(res, 200, rec);
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────

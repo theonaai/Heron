@@ -106,6 +106,8 @@ program
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
   .option('--max-followups <n>', 'Max follow-up questions per category', '3')
   .option('--report-dir <dir>', 'Directory to save reports', './reports')
+  .option('--scans-dir <dir>', 'Directory for verification scan records (AAP-52)', './.heron/scans')
+  .option('--approvals-dir <dir>', 'Directory for approval chains (AAP-52 browser view)')
   .action(async (opts) => {
     try {
       await startServer({
@@ -118,6 +120,8 @@ program
         },
         maxFollowUps: parseInt(opts.maxFollowups ?? '3', 10),
         reportDir: opts.reportDir,
+        scansDir: opts.scansDir,
+        ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
       });
     } catch (err) {
       logger.error(err instanceof Error ? err.message : String(err));
