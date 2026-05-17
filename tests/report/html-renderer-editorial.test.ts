@@ -165,12 +165,19 @@ describe('renderVerificationReportHtml — editorial polish: cover', () => {
       evaluationId: 'eval-1',
       generatedAt: '2026-05-17T09:22:55.856Z',
     });
+    // Scope the assertion to the cover <section>, not the whole body —
+    // the Compliance Posture subsection further down legitimately uses
+    // the phrase "Overall verdict:" as prose. The cover badge should
+    // be a single big word.
+    const coverMatch = html.match(/<section class="cover">([\s\S]*?)<\/section>/);
+    expect(coverMatch).toBeTruthy();
+    const cover = coverMatch![1]!;
     // The old structure had <span class="verdict-label">Overall verdict</span>.
     // Drop the inner label entirely.
-    expect(html).not.toContain('verdict-label');
-    expect(html).not.toContain('Overall verdict');
+    expect(cover).not.toContain('verdict-label');
+    expect(cover).not.toContain('Overall verdict');
     // The badge still renders the verdict word — FAILED here (no framework mapping)
-    expect(html).toMatch(/<div class="verdict-badge verdict-failed">\s*FAILED\s*<\/div>/);
+    expect(cover).toMatch(/<div class="verdict-badge verdict-failed">\s*FAILED\s*<\/div>/);
   });
 });
 

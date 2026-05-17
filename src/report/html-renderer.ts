@@ -257,7 +257,41 @@ function verdictBadgeClass(v: ComplianceScoreResult['verdict']): string {
   }
 }
 
-function renderCoverPage(report: VerificationReport, opts: HtmlRenderOptions, score: ComplianceScoreResult): string {
+/**
+ * Format an ISO-8601 timestamp as "YYYY-MM-DD HH:MM UTC". Readers don't
+ * care about milliseconds; the full ISO form on the cover was telemetry
+ * noise. We strip control chars defensively, then parse.
+ */
+function formatGeneratedTimestamp(iso: string): string {
+  // Defensive: a corrupted opts.generatedAt should not crash the cover.
+  if (typeof iso !== 'string' || iso.length === 0) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    // Fall back to the raw string (escaped) rather than fabricate a date.
+    return iso;
+  }
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+}
+
+function renderCoverPage(_report: VerificationReport, opts: HtmlRenderOptions, score: ComplianceScoreResult): string {
+  // PR #26: editorial polish after Ilya's PR #25 review.
+  // - Brand strip is Heron mark only — the "Open-Source Agent
+  //   Verification" tag underneath was redundant: the h1 + subtitle
+  //   below already explain what the report is.
+  // - h1 changes from "AI Agent Scope Verification & Compliance
+  //   Assessment" (AI-stuffed compound noun phrase) to the cleaner
+  //   "Compliance Evidence Pack" with a "Scope verification report"
+  //   subtitle.
+  // - Verdict badge inner content is a single word now. The previous
+  //   structure had <span class="verdict-label">Overall verdict</span>
+  //   inside the badge, which diluted the visual punch — Vijil's badge
+  //   is just "PASSED" / "FAILED" / "PARTIAL".
+  // - Cover meta is a <dl class="cover-meta"> with 3 items: Agent,
+  //   Evaluation ID, Generated. Captured was a near-duplicate of
+  //   Generated and confused readers about which is which.
+  // - Generated timestamp is formatted YYYY-MM-DD HH:MM UTC rather
+  //   than the raw ISO with milliseconds.
   // PR #25 round 2 (LOW): the original cover code wrote
   // `${scoreClass ? 'mono' : 'mono'}` — a dead ternary whose two
   // branches were identical. The design intent here is to tag the
@@ -266,29 +300,28 @@ function renderCoverPage(report: VerificationReport, opts: HtmlRenderOptions, sc
   // PASSED stays plain `mono` (no extra tone). Combining both classes
   // restores the original intent without leaving the dead branch.
   const scoreToneClass = score.verdict === 'PASSED' ? 'mono' : score.verdict === 'PARTIAL' ? 'mono warn' : 'mono crit';
+  const generatedFormatted = formatGeneratedTimestamp(opts.generatedAt);
   return `<section class="cover">
   <div class="cover-brand">
     <span class="cover-mark">Heron</span>
-    <span class="cover-tag">Open-Source Agent Verification</span>
   </div>
-  <h1 class="cover-title">AI Agent Scope Verification &amp; Compliance Assessment</h1>
+  <div class="cover-titles">
+    <h1 class="cover-title">Compliance Evidence Pack</h1>
+    <p class="cover-subtitle">Scope verification report</p>
+  </div>
   <div class="cover-summary-row">
-    <div class="${verdictBadgeClass(score.verdict)}">
-      <span class="verdict-label">Overall verdict</span>
-      <span class="verdict-value">${escapeHtml(score.verdict)}</span>
-    </div>
+    <div class="${verdictBadgeClass(score.verdict)}">${escapeHtml(score.verdict)}</div>
     <div class="score-block">
       <span class="score-label">Compliance Score</span>
       <span class="score-value">${score.score.toFixed(2)}</span>
       <span class="score-threshold">Threshold: ${score.threshold.toFixed(2)} <span class="muted">(<span class="${scoreToneClass}">${score.verdict}</span>)</span></span>
     </div>
   </div>
-  <div class="cover-meta">
-    <span class="meta-item"><strong>Agent:</strong> ${escapeHtml(opts.agentLabel)}</span>
-    <span class="meta-item"><strong>Evaluation ID:</strong> ${escapeHtml(opts.evaluationId)}</span>
-    <span class="meta-item"><strong>Generated:</strong> ${escapeHtml(opts.generatedAt)} (UTC)</span>
-    <span class="meta-item"><strong>Captured:</strong> ${escapeHtml(report.capturedAt)}</span>
-  </div>
+  <dl class="cover-meta">
+    <dt>Agent</dt><dd>${escapeHtml(opts.agentLabel)}</dd>
+    <dt>Evaluation ID</dt><dd><code class="mono">${escapeHtml(opts.evaluationId)}</code></dd>
+    <dt>Generated</dt><dd>${escapeHtml(generatedFormatted)}</dd>
+  </dl>
 </section>`;
 }
 

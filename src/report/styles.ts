@@ -115,6 +115,8 @@ export const REPORT_CSS = `
   color: var(--r-ink);
   line-height: 1;
 }
+/* PR #26 editorial polish: .cover-tag rule preserved for backwards
+   compatibility but no longer emitted from the default cover. */
 .heron-report .cover-tag {
   font-family: var(--r-font-mono);
   font-size: 11px;
@@ -122,13 +124,25 @@ export const REPORT_CSS = `
   text-transform: uppercase;
   color: var(--r-ink-3);
 }
+.heron-report .cover-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .heron-report .cover-title {
   font-family: var(--r-font-serif);
-  font-size: 30px;
+  font-size: 36px;
   font-weight: 500;
-  line-height: 1.15;
+  line-height: 1.1;
   letter-spacing: -0.02em;
   color: var(--r-ink);
+}
+.heron-report .cover-subtitle {
+  font-family: var(--r-font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--r-ink-3);
+  letter-spacing: 0.01em;
 }
 .heron-report .cover-summary-row {
   display: grid;
@@ -142,30 +156,24 @@ export const REPORT_CSS = `
   }
 }
 
-/* Verdict badge — large, rounded, single colour ramp */
+/* Verdict badge — large, rounded, single colour ramp.
+   PR #26: simplified to a single-content box (just the word) to match
+   Vijil's badge punch. The .verdict-label / .verdict-value child rules
+   are gone — the badge IS the verdict word. */
 .heron-report .verdict-badge {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 18px 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 22px 28px;
   border: 1px solid;
   border-radius: 10px;
   font-family: var(--r-font-mono);
-  min-width: 220px;
-}
-.heron-report .verdict-badge .verdict-label {
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  opacity: 0.85;
-}
-.heron-report .verdict-badge .verdict-value {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   line-height: 1;
+  min-width: 220px;
 }
 .heron-report .verdict-passed {
   color: var(--r-low);
@@ -211,19 +219,35 @@ export const REPORT_CSS = `
   color: var(--r-ink-3);
   letter-spacing: 0.04em;
 }
+/* PR #26: cover meta is a definition list (dl/dt/dd) — looks like a
+   document header, not a row of debug-strip spans. The old span-soup
+   layout shipped 4 inline labels that read like telemetry; this two-
+   column grid renders dt as a small mono caption + dd as readable value. */
 .heron-report .cover-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
-  font-family: var(--r-font-mono);
-  font-size: 11.5px;
-  color: var(--r-ink-3);
-  letter-spacing: 0.04em;
-}
-.heron-report .cover-meta .meta-item strong {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 18px;
+  align-items: baseline;
+  font-size: 13px;
   color: var(--r-ink-2);
-  font-weight: 500;
-  margin-right: 4px;
+  margin: 0;
+}
+.heron-report .cover-meta > dt {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+}
+.heron-report .cover-meta > dd {
+  font-family: var(--r-font-sans);
+  color: var(--r-ink-2);
+  margin: 0;
+}
+.heron-report .cover-meta > dd code.mono {
+  /* Inherit the dl row baseline rather than the default code styling. */
+  font-size: 12px;
 }
 
 /* ─── Table of contents ────────────────────────────────────────── */
@@ -315,6 +339,81 @@ export const REPORT_CSS = `
   text-transform: uppercase;
   color: var(--r-ink-3);
   margin: 20px 0 10px;
+}
+
+/* ─── Executive summary subsections (PR #26) ──────────────────────
+   The exec summary is the DPO-readable evidence pack. Each subsection
+   (Compliance Posture, Headline Findings, Framework Coverage,
+   Recommended Actions, Approval Trail) renders as a labelled block
+   with an h3 caption and a body. The h3 here uses the serif stack so
+   the section reads like a memo, not a console dump. */
+.heron-report .exec-sub {
+  margin: 18px 0 8px;
+}
+.heron-report .exec-sub h3 {
+  font-family: var(--r-font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--r-ink);
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+.heron-report .exec-sub p {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--r-ink-2);
+}
+.heron-report .findings-list,
+.heron-report .recommended-actions {
+  counter-reset: ef;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 0;
+}
+.heron-report .findings-list > li,
+.heron-report .recommended-actions > li {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 8px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--r-ink-2);
+  padding-left: 0;
+}
+.heron-report .findings-list > li::before,
+.heron-report .recommended-actions > li::before {
+  content: counter(ef, decimal-leading-zero);
+  counter-increment: ef;
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  color: var(--r-ink-4);
+  letter-spacing: 0.05em;
+  padding-top: 3px;
+}
+.heron-report .framework-coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13.5px;
+  color: var(--r-ink-2);
+}
+.heron-report .framework-coverage > li {
+  padding-left: 0;
+}
+.heron-report .approval-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13.5px;
+  color: var(--r-ink-2);
+}
+.heron-report .chain-status {
+  font-family: var(--r-font-mono);
+  font-size: 11.5px;
+  color: var(--r-ink-3);
+  letter-spacing: 0.02em;
+  margin-top: 6px;
 }
 
 /* ─── Severity pill ─────────────────────────────────────────────── */
