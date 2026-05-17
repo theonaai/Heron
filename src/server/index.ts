@@ -4,7 +4,7 @@ import { resolve as resolvePath, join as joinPath, sep } from 'node:path';
 import { parse as parseQuery } from 'node:querystring';
 
 import { SessionManager } from './sessions.js';
-import { ScanManager, isValidScanId, renderScanBody } from './scans.js';
+import { ScanManager, isValidScanId, renderScanBody, renderStaticScanHtml } from './scans.js';
 import type { ScanRecord } from './scans.js';
 import { createLLMClient } from '../llm/client.js';
 import type { LLMConfig } from '../config/schema.js';
@@ -1090,6 +1090,16 @@ async function handleScanPage(res: ServerResponse, scans: ScanManager, id: strin
   if (!rec) {
     res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
     res.end(renderHtmlShell('Not found', `<p>Scan <code>${escapeHtml(id)}</code> not found.</p>`));
+    return;
+  }
+  // AAP-54: completed scans with a structured VerificationReport render
+  // through the new SOC-style renderer (cover + numbered sections +
+  // score bar + framework tables + approval timeline). Pending / failed
+  // / legacy markdown-only records keep the prior shell so the loading
+  // and error states still surface cleanly.
+  if (rec.status === 'completed' && rec.report) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end(renderStaticScanHtml(rec));
     return;
   }
   const breadcrumb = `<p class="breadcrumb"><a href="/scans">&larr; Back to scans</a></p>`;

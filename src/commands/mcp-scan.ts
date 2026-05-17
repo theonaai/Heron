@@ -34,6 +34,7 @@ import type {
 } from '../verification/types.js';
 import { ScanManager } from '../server/scans.js';
 import { markdownToHtml, renderHtmlShell } from '../server/render.js';
+import { renderVerificationReportHtml } from '../report/html-renderer.js';
 
 /**
  * Identifier set for sources the CLI can currently verify.
@@ -249,6 +250,8 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<RunMcpScanRes
   let execSummaryMarkdown = '';
   let hrSectionMarkdown = '';
   let verificationReport: VerificationReport | undefined;
+  // AAP-54: captured for the new structured HTML renderer.
+  let hrPack: import('../verification/hr-pack/types.js').HRPackResult | undefined;
   if (opts.verify && opts.verify.length > 0 && wantsRender) {
     const result = await runVerificationForCli({
       transportConfig: config,
@@ -263,6 +266,7 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<RunMcpScanRes
     execSummaryMarkdown = result.execSummary;
     hrSectionMarkdown = result.hrSection;
     verificationReport = result.report;
+    hrPack = result.hrPack;
   }
 
   let rendered: string;
@@ -308,13 +312,26 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<RunMcpScanRes
     }
 
     if (opts.format === 'html') {
-      // AAP-52: wrap the same markdown in a self-contained HTML
-      // shell so the file works in a browser without the server.
-      const title = `Heron Scan — ${opts.agentLabel ?? label}`;
-      rendered = renderHtmlShell(
-        title,
-        `<div class="report-rendered">${markdownToHtml(markdown)}</div>`,
-      );
+      // AAP-54: route structured VerificationReport through the new
+      // SOC-style html-renderer (cover + numbered sections + score bar
+      // + framework tables + approval timeline). When no verification
+      // ran (verify-less tool-inventory dump), fall back to the
+      // legacy markdown→HTML shell so the tool inventory still renders.
+      if (verificationReport) {
+        rendered = renderVerificationReportHtml(verificationReport, {
+          agentLabel: opts.agentLabel ?? label,
+          evaluationId: scanId,
+          generatedAt: new Date().toISOString(),
+          mcpConfig: describeConfig(config),
+          ...(hrPack ? { hrPack } : {}),
+        });
+      } else {
+        const title = `Heron Scan — ${opts.agentLabel ?? label}`;
+        rendered = renderHtmlShell(
+          title,
+          `<div class="report-rendered">${markdownToHtml(markdown)}</div>`,
+        );
+      }
     } else {
       rendered = markdown;
     }
@@ -504,6 +521,12 @@ interface VerificationForCliResult {
    * register the scan in ScanManager (for the browser dashboard).
    */
   report: VerificationReport;
+  /**
+   * AAP-54: the HR-pack result, surfaced so the HTML renderer can
+   * decide whether to render the HR section. Always returned (with
+   * `isHRAgent: false`) for non-HR agents.
+   */
+  hrPack: import('../verification/hr-pack/types.js').HRPackResult;
 }
 
 async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<VerificationForCliResult> {
@@ -707,6 +730,7 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<V
     verificationSection: renderVerificationSection(report),
     hrSection: renderHRSignalsSection(hr),
     report,
+    hrPack: hr,
   };
 }
 
