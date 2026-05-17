@@ -138,7 +138,20 @@ export interface RunMcpScanOptions {
  * directly so security reviewers can read the declared tool surface without
  * waiting for that work.
  */
-export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventoryRecord> {
+/**
+ * Round-2 race fix: `runMcpScan` returns the inventory record AND the
+ * locally-generated `scanId`. Server callers (defaultScanRunner) now
+ * use this id directly instead of guessing `scanManager.list()[0]`,
+ * which two concurrent triggers could swap.
+ *
+ * The CLI ignores the extra field; existing tests that destructure
+ * the inventory shape (`rec.tools`, `rec.serverInfo`) keep working
+ * because we extend the return type with `scanId` rather than
+ * replacing it.
+ */
+export type RunMcpScanResult = ToolInventoryRecord & { scanId: string };
+
+export async function runMcpScan(opts: RunMcpScanOptions): Promise<RunMcpScanResult> {
   const config = await parseMcpFlag(opts.mcp);
   const scanId = generateId('mcp-scan');
   const label = describeConfig(config);
@@ -318,6 +331,10 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   // a transient manager that just writes the disk mirror — the
   // server's ScanManager picks it up via loadFromDisk on next page
   // load.
+  // Round-2 race fix: capture the ScanManager-issued id so we can return
+  // it verbatim. Previously the server-side caller picked `list[0]` after
+  // the call and two concurrent triggers could swap ids.
+  let managerScanId: string | undefined;
   if (opts.format !== 'json' && markdown) {
     const reportForRegister: VerificationReport = verificationReport ?? {
       capturedAt: new Date().toISOString(),
@@ -337,10 +354,12 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
       if (opts.scanManager) {
         const rec = await opts.scanManager.create(registerInput);
         await opts.scanManager.complete(rec.id, reportForRegister, markdown);
+        managerScanId = rec.id;
       } else if (opts.scansDir) {
         const transient = new ScanManager(opts.scansDir);
         const rec = await transient.create(registerInput);
         await transient.complete(rec.id, reportForRegister, markdown);
+        managerScanId = rec.id;
       }
     } catch (err) {
       // ScanManager errors must not break the primary CLI output —
@@ -357,7 +376,7 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   logger.raw(`  Report:  ${savePath}`);
   logger.raw('');
 
-  return result.value;
+  return { ...result.value, scanId: managerScanId ?? scanId };
 }
 
 /** Sanitised one-line summary of a declared-source config (no raw paths/credentials in user-facing log). */

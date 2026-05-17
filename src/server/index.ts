@@ -115,36 +115,24 @@ export const defaultScanRunner: ScanRunner = async (args) => {
   // and the handler converts them to a 400.
   await parseMcpFlag(args.mcp);
 
-  // Pre-create the scan record so the runner returns the id even if
-  // the underlying scan fails (in which case `runMcpScan` would throw
-  // and we'd mark it failed below).
-  // NOTE: `runMcpScan` itself creates+completes when `scanManager` is
-  // passed. We rely on that.
-  let scanId: string | undefined;
-  try {
-    await runMcpScan({
-      mcp: args.mcp,
-      reportDir: args.reportDir,
-      format: 'markdown',
-      verify: verifySources as Parameters<typeof runMcpScan>[0]['verify'],
-      ...(declaredSource ? { declaredSource } : {}),
-      agentLabel: args.agentLabel,
-      ...(args.approvalAgentId ? { approvalAgentId: args.approvalAgentId } : {}),
-      ...(args.approvalsDir ? { approvalsDir: args.approvalsDir } : {}),
-      scanManager: args.scanManager,
-    });
-  } catch (err) {
-    // Failure — surface so handler returns 400/500.
-    throw err;
+  // Round-2 race fix: `runMcpScan` now returns the ScanManager-issued
+  // id directly. The previous code picked `list[0]` after the call,
+  // which two concurrent triggers could swap.
+  const result = await runMcpScan({
+    mcp: args.mcp,
+    reportDir: args.reportDir,
+    format: 'markdown',
+    verify: verifySources as Parameters<typeof runMcpScan>[0]['verify'],
+    ...(declaredSource ? { declaredSource } : {}),
+    agentLabel: args.agentLabel,
+    ...(args.approvalAgentId ? { approvalAgentId: args.approvalAgentId } : {}),
+    ...(args.approvalsDir ? { approvalsDir: args.approvalsDir } : {}),
+    scanManager: args.scanManager,
+  });
+  if (!result.scanId) {
+    throw new Error('scan completed but ScanManager did not return an id');
   }
-  // Find the id of the just-created scan: it is the newest pending
-  // / completed record matching this label.
-  const list = await args.scanManager.list();
-  scanId = list[0]?.id;
-  if (!scanId) {
-    throw new Error('scan completed but no record was registered');
-  }
-  return scanId;
+  return result.scanId;
 };
 
 /**
