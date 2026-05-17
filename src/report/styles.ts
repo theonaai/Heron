@@ -63,7 +63,10 @@ export const REPORT_CSS = `
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 
-  max-width: 1400px;
+  /* PR #27 / AAP-56 — 1400px column was too wide for prose. Narrow to
+     980px (Vijil reference) for a measure of ~75-90 characters per line
+     in the sans body and the serif headings. */
+  max-width: 980px;
   margin: 0 auto;
   padding: 32px 40px 80px;
 }
