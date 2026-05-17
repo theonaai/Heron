@@ -141,9 +141,15 @@ export function parseMultipart(body: Buffer, boundary: string): MultipartPart[] 
     const headerText = headerBytes.toString('latin1'); // headers are ASCII per RFC
     cursor = headerEnd + DOUBLE_CRLF.length;
 
-    // Find the next boundary marker — the part body ends at the CRLF
-    // immediately before it.
-    const nextBoundary = body.indexOf(delim, cursor);
+    // Round-2 M1: find the next REAL boundary marker. RFC 7578 says a
+    // boundary line is preceded by CRLF and followed by `--` (final) or
+    // `\r\n` (continuation). The naive `indexOf(delim)` will hit any
+    // substring that happens to equal `--<boundary>` inside a part body
+    // (e.g. a binary upload whose bytes incidentally contain the
+    // sequence) and truncate the part body there. Walk forward,
+    // skipping false matches, until we find one that is properly
+    // bracketed.
+    const nextBoundary = findRealBoundary(body, delim, cursor);
     if (nextBoundary < 0) {
       throw new Error('multipart part missing closing boundary');
     }
@@ -183,6 +189,41 @@ export function parseMultipart(body: Buffer, boundary: string): MultipartPart[] 
   }
 
   return parts;
+}
+
+/**
+ * Round-2 M1: locate the next REAL boundary at or after `from`.
+ *
+ * A real boundary is a `--<boundary>` byte sequence that:
+ *   - is at offset 0 OR is preceded by a CRLF; AND
+ *   - is followed by either `--` (final boundary) or `\r\n`
+ *     (continuation boundary).
+ *
+ * Substring matches that fail either bracket condition are false
+ * matches (e.g. a binary upload whose bytes incidentally contain
+ * `--<boundary>` mid-payload) and the scan continues past them.
+ *
+ * Returns the start offset of the matched boundary, or `-1` when the
+ * body ends without a real boundary.
+ */
+function findRealBoundary(body: Buffer, delim: Buffer, from: number): number {
+  let pos = from;
+  while (pos <= body.length - delim.length) {
+    const found = body.indexOf(delim, pos);
+    if (found < 0) return -1;
+    const priorOk =
+      found === 0 || (found >= 2 && body[found - 2] === 0x0d && body[found - 1] === 0x0a);
+    const after = found + delim.length;
+    const followOk =
+      after + 2 <= body.length &&
+      ((body[after] === 0x2d && body[after + 1] === 0x2d) || // `--`
+        (body[after] === 0x0d && body[after + 1] === 0x0a)); // CRLF
+    if (priorOk && followOk) return found;
+    // False match (e.g. inside a part body). Advance one byte and keep
+    // scanning — `indexOf` will find the next occurrence.
+    pos = found + 1;
+  }
+  return -1;
 }
 
 /** Lowercase-key map of part headers. */

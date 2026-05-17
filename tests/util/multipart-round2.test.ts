@@ -16,7 +16,7 @@ describe('round-2 H1: reject CRLF inside quoted Content-Disposition values', () 
   it('parseContentDisposition throws when filename quoted value contains CRLF', () => {
     const hostile =
       'form-data; name="file"; filename="x\r\nContent-Disposition: form-data; name=\\"file\\"; filename=\\"pwned.json\\""';
-    expect(() => parseContentDisposition(hostile)).toThrow(/CRLF|line/i);
+    expect(() => parseContentDisposition(hostile)).toThrow(/CR\/?LF|line/i);
   });
 
   it('parseContentDisposition throws on lone LF in quoted value', () => {
