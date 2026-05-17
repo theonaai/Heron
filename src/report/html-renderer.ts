@@ -88,7 +88,22 @@ export interface ComplianceScoreResult {
 
 // ─── Escape helpers ────────────────────────────────────────────────
 
-/** Escape the four HTML metacharacters. Defensive against null/undefined. */
+/**
+ * Escape the four HTML metacharacters needed for safe rendering in this
+ * file: `&`, `<`, `>`, `"`. Defensive against `null` / `undefined`
+ * (those coerce to the empty string rather than the literal "null").
+ *
+ * Single-quote (`'`) is intentionally NOT escaped. Safe ONLY because
+ * every attribute value emitted by this renderer is wrapped in double
+ * quotes. If a future contributor adds a single-quoted attribute they
+ * MUST escape `'` here too — or, better, keep using double quotes and
+ * preserve the renderer-wide invariant.
+ *
+ * The four-character set is also what every browser HTML serialiser
+ * emits for `textContent` and attribute interpolation; staying inside
+ * this set keeps the output byte-identical to what the DOM would
+ * produce for the same logical string.
+ */
 export function escapeHtml(s: unknown): string {
   if (s === null || s === undefined) return '';
   return String(s)

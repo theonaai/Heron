@@ -27,7 +27,10 @@ describe('ScanManager — round 2 write-side size cap', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'heron-scans-write-cap-'));
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // logger.warn (src/util/logger.ts) routes through console.error,
+    // so we spy on console.error rather than console.warn to capture
+    // the size-cap warning surfaced by ScanManager.
+    warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -44,15 +47,35 @@ describe('ScanManager — round 2 write-side size cap', () => {
     });
 
     // Build a VerificationReport that, after escapeHtml, produces a
-    // rendered HTML body larger than 1 MiB. The simplest reliable way
-    // is to set agentLabel to a 2 MiB benign string — it flows into
-    // the cover, exec summary, and agent-spec sections.
-    const huge = 'A'.repeat(2 * 1024 * 1024);
+    // rendered HTML body larger than 1 MiB. Big payload flows in via a
+    // declared inventory tool description — those are rendered into
+    // the appendix section and are not truncated by sanitiseLabel
+    // (which only bounds the top-level mcpConfig / labels). 2 MiB is
+    // enough to put us comfortably over the 1 MiB read-side cap that
+    // the write path must mirror.
+    const hugeDescription = 'A'.repeat(2 * 1024 * 1024);
     const report: VerificationReport = {
       capturedAt: '2026-05-17T12:00:00Z',
-      agentLabel: huge,
-      declared: [],
-      sources: [],
+      agentLabel: 'agent-big',
+      declared: [
+        {
+          source: 'interview',
+          capturedAt: '2026-05-17T12:00:00Z',
+          tools: [{ name: 'oversize_tool', description: hugeDescription }],
+        },
+      ],
+      sources: [
+        {
+          sourceId: 'mcp-tools',
+          verdict: 'verified',
+          diffs: [],
+          inventory: {
+            source: 'mcp-tools',
+            capturedAt: '2026-05-17T12:00:00Z',
+            tools: [{ name: 'oversize_tool', description: hugeDescription }],
+          },
+        },
+      ],
     };
 
     // Markdown stays small so we can verify it still writes.
