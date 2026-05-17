@@ -94,13 +94,16 @@ export const REPORT_CSS = `
 .heron-report .muted-2 { color: var(--r-ink-4); }
 
 /* ─── Cover ─────────────────────────────────────────────────────── */
+/* PR #26: more generous breathing room between cover / TOC / first
+   section. The PR #25 spacing was print-dense; Vijil's reference has
+   ~80px gaps between major blocks. */
 .heron-report .cover {
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  padding: 0 0 32px;
+  gap: 28px;
+  padding: 0 0 56px;
   border-bottom: 1px solid var(--r-border);
-  margin-bottom: 32px;
+  margin-bottom: 64px;
 }
 .heron-report .cover-brand {
   display: flex;
@@ -251,12 +254,16 @@ export const REPORT_CSS = `
 }
 
 /* ─── Table of contents ────────────────────────────────────────── */
+/* PR #26: bigger margins around the TOC so it reads as a discrete
+   block sandwiched between cover and first section, not a strip glued
+   to either. */
 .heron-report .toc {
   border: 1px solid var(--r-border);
   border-radius: var(--r-radius);
   background: var(--r-bg-muted);
-  padding: 18px 22px;
-  margin-bottom: 36px;
+  padding: 20px 24px;
+  margin-top: 8px;
+  margin-bottom: 64px;
 }
 .heron-report .toc-title {
   font-family: var(--r-font-mono);
@@ -295,15 +302,25 @@ export const REPORT_CSS = `
 .heron-report .toc-list a:hover { color: var(--r-ink); text-decoration: underline; }
 
 /* ─── Section header ────────────────────────────────────────────── */
+/* PR #26: more vertical breathing room between sections so the report
+   reads as a memo, not a console dump. ~56px above each h-section. */
 .heron-report .h-section {
   display: flex;
   align-items: baseline;
   gap: 12px;
   border-top: 1px solid var(--r-border);
-  padding-top: 24px;
-  margin-top: 32px;
-  margin-bottom: 16px;
-  scroll-margin-top: 16px;
+  padding-top: 32px;
+  margin-top: 56px;
+  margin-bottom: 20px;
+  scroll-margin-top: 20px;
+}
+/* First h-section after the TOC needs extra top breathing room — the
+   TOC already added its own 64px bottom margin, but the section
+   header's own border-top reads tight without this nudge. */
+.heron-report .toc + .h-section {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
 }
 .heron-report .h-section .num {
   font-family: var(--r-font-mono);
@@ -841,6 +858,43 @@ export const REPORT_CSS = `
 }
 .heron-report .report-footer a { color: var(--r-ink-3); }
 .heron-report .report-footer a:hover { color: var(--r-ink); }
+
+/* ─── Print (PR #26) ───────────────────────────────────────────
+   When a DPO does Cmd+P → Save as PDF, the report should look like a
+   proper document: narrower outer padding, no light-on-light tints
+   that vanish on grayscale printers, page-breaks that respect section
+   boundaries, and link text that prints in the body colour rather
+   than blue. */
+@media print {
+  .heron-report {
+    max-width: none;
+    padding: 0 24px 32px;
+    font-size: 11.5pt;
+    color: #000;
+  }
+  .heron-report .cover { margin-bottom: 36px; padding-bottom: 32px; }
+  .heron-report .toc { margin-bottom: 36px; page-break-after: avoid; }
+  .heron-report .h-section {
+    margin-top: 28px;
+    padding-top: 18px;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .heron-report .exec-sub { page-break-inside: avoid; break-inside: avoid; }
+  .heron-report .tbl-wrap { page-break-inside: avoid; break-inside: avoid; }
+  .heron-report .group { page-break-inside: avoid; break-inside: avoid; }
+  .heron-report .source-row { page-break-inside: avoid; break-inside: avoid; }
+  .heron-report a { color: inherit; text-decoration: none; }
+  .heron-report details { page-break-inside: avoid; break-inside: avoid; }
+  .heron-report details > summary { cursor: default; }
+  /* Force-open all collapsible details for printing — the DPO needs the
+     full inventory in the saved PDF, not the appendix half-folded. */
+  .heron-report details:not([open]) > div,
+  .heron-report details:not([open]) > p,
+  .heron-report details:not([open]) > ul,
+  .heron-report details:not([open]) > .tbl-wrap { display: block; }
+  .heron-report .report-footer { margin-top: 32px; }
+}
 `;
 
 /**
