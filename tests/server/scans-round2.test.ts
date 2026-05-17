@@ -115,30 +115,36 @@ describe('ScanManager.loadFromDisk — round 2 hardening', () => {
   });
 
   it('skips symbolic links in the scans dir', async () => {
-    // Create a real, valid scan file, then a symlink pointing at it
-    // under a different valid scan-id name. The real file should
-    // load; the symlink must NOT.
-    const realId = 'scan-20260101-120000-aaaaa0';
-    writeFileSync(
-      join(dir, `${realId}.json`),
-      JSON.stringify(validRecord(realId)),
-      'utf-8',
-    );
+    // Drop a real file outside the scans dir so it cannot be loaded
+    // as a regular file by loadFromDisk. Then make a symlink inside
+    // the scans dir pointing at it under a valid scan-id name with
+    // a *matching* internal id — without symlink-skip, the file would
+    // load via the symlink and pass the id-match check. With
+    // symlink-skip in place, the load must refuse.
     const symlinkId = 'scan-20260101-120000-aaaaa1';
+    const externalPath = join(dir, '..', `external-${Date.now()}.json`);
+    writeFileSync(externalPath, JSON.stringify(validRecord(symlinkId)), 'utf-8');
+
     try {
-      symlinkSync(join(dir, `${realId}.json`), join(dir, `${symlinkId}.json`));
+      symlinkSync(externalPath, join(dir, `${symlinkId}.json`));
     } catch (err) {
       // Some platforms / CI envs disallow symlink creation. Skip in
       // that case rather than hard-failing.
-      if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        rmSync(externalPath, { force: true });
+        return;
+      }
+      rmSync(externalPath, { force: true });
       throw err;
     }
 
-    const mgr = new ScanManager(dir);
-    await mgr.loadFromDisk();
-    const list = await mgr.list();
-    const ids = list.map(r => r.id);
-    expect(ids).toContain(realId);
-    expect(ids).not.toContain(symlinkId);
+    try {
+      const mgr = new ScanManager(dir);
+      await mgr.loadFromDisk();
+      const list = await mgr.list();
+      expect(list.map(r => r.id)).not.toContain(symlinkId);
+    } finally {
+      rmSync(externalPath, { force: true });
+    }
   });
 });
