@@ -388,25 +388,39 @@ export const REPORT_CSS = `
   gap: 6px;
   margin: 4px 0 0;
 }
+/* PR #27 / AAP-56 — the previous grid rule (display: grid;
+   grid-template-columns: 28px 1fr) was auto-distributing the LI's
+   three inline children (severity pill, title text node, citation
+   muted-span) across a 2x2 grid: the pill stretched to fill the
+   content column, the title text wrapped to the counter column one
+   word per line, and the citation overlapped the title column. Flex
+   with baseline alignment lets the counter sit as a fixed-width
+   leading column while the pill keeps its inline-flex natural width
+   and the title + citation flow inline. */
 .heron-report .findings-list > li,
 .heron-report .recommended-actions > li {
-  display: grid;
-  grid-template-columns: 28px 1fr;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--r-ink-2);
   padding-left: 0;
 }
+.heron-report .findings-list > li > .sev {
+  flex: 0 0 auto;
+}
 .heron-report .findings-list > li::before,
 .heron-report .recommended-actions > li::before {
   content: counter(ef, decimal-leading-zero);
   counter-increment: ef;
+  flex: 0 0 28px;
   font-family: var(--r-font-mono);
   font-size: 11px;
   color: var(--r-ink-4);
   letter-spacing: 0.05em;
-  padding-top: 3px;
+  align-self: baseline;
 }
 .heron-report .framework-coverage {
   display: flex;
