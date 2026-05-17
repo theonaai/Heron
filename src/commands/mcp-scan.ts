@@ -19,7 +19,10 @@ import { AgentDeclarationSource } from '../verification/sources/agent-declaratio
 import type { DeclaredSourceConfig } from '../verification/sources/agent-declaration.js';
 import { renderVerificationSection } from '../report/templates.js';
 import { readChain, verifyChainIntegrity } from '../approvals/store.js';
-import type { ApprovalChainAttachment } from '../verification/types.js';
+import type {
+  ApprovalChainAttachment,
+  VerificationReport,
+} from '../verification/types.js';
 import {
   renderApprovalChainSection,
   renderNoApprovalChainNotice,
@@ -29,6 +32,8 @@ import type {
   DeclaredScope,
   DeclaredTool,
 } from '../verification/types.js';
+import { ScanManager } from '../server/scans.js';
+import { markdownToHtml, renderHtmlShell } from '../server/render.js';
 
 /**
  * Identifier set for sources the CLI can currently verify.
@@ -55,7 +60,13 @@ export interface RunMcpScanOptions {
   mcp: string;
   outputPath?: string;
   reportDir: string;
-  format: 'markdown' | 'json';
+  /**
+   * Output format. AAP-52 adds 'html': renders the same markdown
+   * report wrapped in a self-contained HTML shell (CSS + favicon
+   * inlined) so a DPO can open the file in a browser without
+   * running the Heron server.
+   */
+  format: 'markdown' | 'json' | 'html';
   /**
    * Sources to run verification against. Currently the only supported value
    * is 'mcp-tools'. When undefined/empty, verification is skipped entirely
@@ -99,6 +110,22 @@ export interface RunMcpScanOptions {
    * `HERON_APPROVALS_DIR` env, then `<cwd>/.heron/approvals`.
    */
   approvalsDir?: string;
+  /**
+   * AAP-52: directory for scan record mirrors (`<scansDir>/<id>.{json,md,html}`).
+   * Defaults to `<cwd>/.heron/scans`. When the directory exists (and no
+   * scanManager is wired in), the CLI writes a sanitised ScanRecord
+   * mirror so `heron serve` picks it up via loadFromDisk on next page
+   * load.
+   */
+  scansDir?: string;
+  /**
+   * AAP-52: in-process ScanManager. When provided, the scan is
+   * registered via `mgr.create(...)` + `mgr.complete(...)` instead of
+   * using a transient ScanManager. Used when the CLI runs inside the
+   * same process as `heron serve` (rare today; reserved for future
+   * subagent #11 trigger-via-browser flow).
+   */
+  scanManager?: ScanManager;
 }
 
 /**
@@ -201,10 +228,15 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   // HIGH-1 wiring: we pass the resolved `approvalAttachment` (if any)
   // through so the framework mapper consumes it and produces a real
   // E004 verdict instead of the previous always-FAIL.
+  //
+  // AAP-52: 'html' and 'markdown' both run the verification pipeline
+  // — only 'json' shortcuts straight to the raw tool inventory.
+  const wantsRender = opts.format === 'markdown' || opts.format === 'html';
   let verificationMarkdown = '';
   let execSummaryMarkdown = '';
   let hrSectionMarkdown = '';
-  if (opts.verify && opts.verify.length > 0 && opts.format === 'markdown') {
+  let verificationReport: VerificationReport | undefined;
+  if (opts.verify && opts.verify.length > 0 && wantsRender) {
     const result = await runVerificationForCli({
       transportConfig: config,
       verifySources: opts.verify,
@@ -217,29 +249,31 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     verificationMarkdown = result.verificationSection;
     execSummaryMarkdown = result.execSummary;
     hrSectionMarkdown = result.hrSection;
+    verificationReport = result.report;
   }
 
   let rendered: string;
+  let markdown = '';
   if (opts.format === 'json') {
     rendered = JSON.stringify(result.value, null, 2);
   } else {
-    rendered = renderToolInventoryMarkdown(result.value);
+    markdown = renderToolInventoryMarkdown(result.value);
     if (approvalTopBanner) {
       // Hoist the broken-chain banner ABOVE the tool inventory table.
       // Find the first blank line after the report's H1 header and
       // splice the banner there; this puts it before "Tool count" /
       // "Tools" but after the title so the report still reads as a
       // single coherent document.
-      const headerBreakIdx = rendered.indexOf('\n\n');
+      const headerBreakIdx = markdown.indexOf('\n\n');
       if (headerBreakIdx >= 0) {
-        rendered =
-          rendered.slice(0, headerBreakIdx + 2) +
+        markdown =
+          markdown.slice(0, headerBreakIdx + 2) +
           approvalTopBanner +
           '\n' +
-          rendered.slice(headerBreakIdx + 2);
+          markdown.slice(headerBreakIdx + 2);
       } else {
         // Fallback: prepend if the header shape ever changes.
-        rendered = `${approvalTopBanner}\n${rendered}`;
+        markdown = `${approvalTopBanner}\n${markdown}`;
       }
     }
     // AAP-51: prepend the DPO-grade Executive Summary at the very TOP
@@ -248,23 +282,74 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
     // approval trail. Only rendered when verification ran (otherwise
     // we have no signals to summarise).
     if (execSummaryMarkdown) {
-      rendered = `${execSummaryMarkdown}\n\n---\n\n${rendered}`;
+      markdown = `${execSummaryMarkdown}\n\n---\n\n${markdown}`;
     }
     if (verificationMarkdown) {
-      rendered = `${rendered}\n\n---\n\n${verificationMarkdown}\n`;
+      markdown = `${markdown}\n\n---\n\n${verificationMarkdown}\n`;
     }
     if (hrSectionMarkdown) {
-      rendered = `${rendered}\n\n---\n\n${hrSectionMarkdown}\n`;
+      markdown = `${markdown}\n\n---\n\n${hrSectionMarkdown}\n`;
     }
     if (approvalMarkdown) {
-      rendered = `${rendered}\n\n---\n\n${approvalMarkdown}\n`;
+      markdown = `${markdown}\n\n---\n\n${approvalMarkdown}\n`;
+    }
+
+    if (opts.format === 'html') {
+      // AAP-52: wrap the same markdown in a self-contained HTML
+      // shell so the file works in a browser without the server.
+      const title = `Heron Scan — ${opts.agentLabel ?? label}`;
+      rendered = renderHtmlShell(
+        title,
+        `<div class="report-rendered">${markdownToHtml(markdown)}</div>`,
+      );
+    } else {
+      rendered = markdown;
     }
   }
 
   mkdirSync(opts.reportDir, { recursive: true });
-  const ext = opts.format === 'json' ? 'json' : 'md';
+  const ext = opts.format === 'json' ? 'json' : opts.format === 'html' ? 'html' : 'md';
   const savePath = opts.outputPath ?? resolve(opts.reportDir, `${scanId}.${ext}`);
   writeFileSync(savePath, rendered, 'utf-8');
+
+  // AAP-52: register the scan with ScanManager so `heron serve`
+  // surfaces it in the dashboard. When a ScanManager is wired in,
+  // call it directly. Otherwise, when scansDir is set, instantiate
+  // a transient manager that just writes the disk mirror — the
+  // server's ScanManager picks it up via loadFromDisk on next page
+  // load.
+  if (opts.format !== 'json' && markdown) {
+    const reportForRegister: VerificationReport = verificationReport ?? {
+      capturedAt: new Date().toISOString(),
+      agentLabel: opts.agentLabel ?? label,
+      declared: [],
+      sources: [],
+    };
+    const sanitisedMcp = describeConfig(config); // no raw config / no envs
+    const registerInput = {
+      agentLabel: opts.agentLabel ?? label,
+      mcpConfig: sanitisedMcp,
+      verifySources: opts.verify ?? [],
+      ...(opts.declaredSource ? { declaredSourceSpec: declaredSourceSummary(opts.declaredSource) } : {}),
+      ...(opts.approvalAgentId ? { approvalAgentId: opts.approvalAgentId } : {}),
+    };
+    try {
+      if (opts.scanManager) {
+        const rec = await opts.scanManager.create(registerInput);
+        await opts.scanManager.complete(rec.id, reportForRegister, markdown);
+      } else if (opts.scansDir) {
+        const transient = new ScanManager(opts.scansDir);
+        const rec = await transient.create(registerInput);
+        await transient.complete(rec.id, reportForRegister, markdown);
+      }
+    } catch (err) {
+      // ScanManager errors must not break the primary CLI output —
+      // log + continue.
+      logger.error(
+        `ScanManager mirror write failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   logger.raw('');
   logger.raw(`  \x1b[1mMCP scan complete: ${scanId}\x1b[0m`);
@@ -273,6 +358,13 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<ToolInventory
   logger.raw('');
 
   return result.value;
+}
+
+/** Sanitised one-line summary of a declared-source config (no raw paths/credentials in user-facing log). */
+function declaredSourceSummary(cfg: DeclaredSourceConfig): string {
+  if (cfg.backend === 'file') return `file:${cfg.path}`;
+  if (cfg.backend === 'theona-mcp') return `theona-mcp:${cfg.agentId}`;
+  return String((cfg as { backend: string }).backend ?? 'unknown');
 }
 
 /**
@@ -388,6 +480,11 @@ interface VerificationForCliResult {
   verificationSection: string;
   /** HR Vertical Signals Markdown — empty when not an HR agent. */
   hrSection: string;
+  /**
+   * AAP-52: the full structured report, surfaced so the CLI can
+   * register the scan in ScanManager (for the browser dashboard).
+   */
+  report: VerificationReport;
 }
 
 async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<VerificationForCliResult> {
@@ -590,6 +687,7 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<V
     execSummary: renderExecutiveSummary(report, hr),
     verificationSection: renderVerificationSection(report),
     hrSection: renderHRSignalsSection(hr),
+    report,
   };
 }
 
@@ -707,10 +805,55 @@ function splitArgs(input: string): string[] {
   return out;
 }
 
-function describeConfig(cfg: MCPTransportConfig): string {
-  return cfg.kind === 'stdio'
-    ? `stdio:${[cfg.command, ...cfg.args].join(' ')}`
-    : `http:${cfg.url}`;
+/**
+ * Redact `KEY=VALUE` env-var assignments inside an arbitrary string.
+ * Matches uppercase + digits + underscore keys (>= 3 chars total). The
+ * value side is replaced with `***`; the `KEY=` prefix is preserved so
+ * a debugger can still tell which variables were carried through.
+ *
+ * Intentional limitation: lowercase / mixed-case keys (`api_key=...`)
+ * are NOT matched. The env-var convention is uppercase; broadening the
+ * match would over-redact ordinary command tokens. Operators must use
+ * `--mcp` JSON config + `env: {...}` for non-env-shaped secrets, or
+ * avoid passing them on the CLI at all.
+ */
+function redactEnvAssignments(s: string): string {
+  return s.replace(/\b([A-Z][A-Z0-9_]{2,})=([^\s'"`]+)/g, '$1=***');
+}
+
+/**
+ * Redact URL userinfo in any `http|https|ws|wss://user:pass@host` URL
+ * embedded in a string. Replaces the entire userinfo segment with
+ * `***`, preserving the rest of the URL for debuggability.
+ */
+function redactUrlUserInfo(s: string): string {
+  return s.replace(/(\b(?:https?|ws|wss):\/\/)[^@/\s]+@/gi, '$1***@');
+}
+
+/**
+ * Render an MCPTransportConfig as the human-readable summary persisted
+ * in `ScanRecord.mcpConfig`. NEVER returns the raw config — applies
+ * two redaction passes (env-var assignments + URL userinfo) so accidental
+ * `API_KEY=...` or `http://user:pass@host` arguments do not leak to
+ * disk.
+ *
+ * Exported so tests can pin the contract directly. See
+ * `tests/commands/mcp-scan-credential-redaction.test.ts`.
+ */
+export function describeConfig(cfg: MCPTransportConfig): string {
+  let summary: string;
+  if (cfg.kind === 'stdio') {
+    const joined = [cfg.command, ...cfg.args].join(' ');
+    summary = `stdio:${joined}`;
+  } else {
+    summary = `http:${cfg.url}`;
+  }
+  // Apply env-var redaction first (operates on KEY=VALUE tokens),
+  // then URL userinfo redaction (operates on scheme://user:pass@host).
+  // Order matters only at the margins; both are idempotent.
+  summary = redactEnvAssignments(summary);
+  summary = redactUrlUserInfo(summary);
+  return summary;
 }
 
 /**
