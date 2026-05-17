@@ -196,6 +196,15 @@ function parsePartHeaders(text: string): Map<string, string> {
     if (colon <= 0) continue;
     const key = line.slice(0, colon).trim().toLowerCase();
     const value = line.slice(colon + 1).trim();
+    // Round-2 H1 (header smuggling): reject any part that sets the same
+    // header twice. A hostile body can include a duplicate
+    // `Content-Disposition` to overwrite the legitimate one; the safe
+    // default is to refuse the whole part rather than guess which one
+    // the caller meant. RFC 7578 does not authorise duplicated part
+    // headers.
+    if (out.has(key)) {
+      throw new Error(`duplicate part header '${key}' — rejected`);
+    }
     out.set(key, value);
   }
   return out;
@@ -248,6 +257,18 @@ export function parseContentDisposition(header: string): ContentDisposition {
       const valStart = i;
       while (i < header.length && header[i] !== ';') i++;
       value = header.slice(valStart, i).trim();
+    }
+    // Round-2 H1 (header smuggling): RFC 7578 forbids CR/LF inside
+    // quoted Content-Disposition values. A hostile filename like
+    // `"x\r\nContent-Disposition: form-data; filename=\"pwned\""` would
+    // otherwise let the attacker split the header line and inject a
+    // fake replacement. Reject any value containing CR or LF — never
+    // silently sanitise (we cannot tell which side the attacker
+    // intended to win).
+    if (value.includes('\r') || value.includes('\n')) {
+      throw new Error(
+        `multipart Content-Disposition value contains CR/LF — rejected (key='${key}')`,
+      );
     }
     if (key === 'name') out.name = value;
     else if (key === 'filename') out.filename = value;
