@@ -805,10 +805,55 @@ function splitArgs(input: string): string[] {
   return out;
 }
 
-function describeConfig(cfg: MCPTransportConfig): string {
-  return cfg.kind === 'stdio'
-    ? `stdio:${[cfg.command, ...cfg.args].join(' ')}`
-    : `http:${cfg.url}`;
+/**
+ * Redact `KEY=VALUE` env-var assignments inside an arbitrary string.
+ * Matches uppercase + digits + underscore keys (>= 3 chars total). The
+ * value side is replaced with `***`; the `KEY=` prefix is preserved so
+ * a debugger can still tell which variables were carried through.
+ *
+ * Intentional limitation: lowercase / mixed-case keys (`api_key=...`)
+ * are NOT matched. The env-var convention is uppercase; broadening the
+ * match would over-redact ordinary command tokens. Operators must use
+ * `--mcp` JSON config + `env: {...}` for non-env-shaped secrets, or
+ * avoid passing them on the CLI at all.
+ */
+function redactEnvAssignments(s: string): string {
+  return s.replace(/\b([A-Z][A-Z0-9_]{2,})=([^\s'"`]+)/g, '$1=***');
+}
+
+/**
+ * Redact URL userinfo in any `http|https|ws|wss://user:pass@host` URL
+ * embedded in a string. Replaces the entire userinfo segment with
+ * `***`, preserving the rest of the URL for debuggability.
+ */
+function redactUrlUserInfo(s: string): string {
+  return s.replace(/(\b(?:https?|ws|wss):\/\/)[^@/\s]+@/gi, '$1***@');
+}
+
+/**
+ * Render an MCPTransportConfig as the human-readable summary persisted
+ * in `ScanRecord.mcpConfig`. NEVER returns the raw config — applies
+ * two redaction passes (env-var assignments + URL userinfo) so accidental
+ * `API_KEY=...` or `http://user:pass@host` arguments do not leak to
+ * disk.
+ *
+ * Exported so tests can pin the contract directly. See
+ * `tests/commands/mcp-scan-credential-redaction.test.ts`.
+ */
+export function describeConfig(cfg: MCPTransportConfig): string {
+  let summary: string;
+  if (cfg.kind === 'stdio') {
+    const joined = [cfg.command, ...cfg.args].join(' ');
+    summary = `stdio:${joined}`;
+  } else {
+    summary = `http:${cfg.url}`;
+  }
+  // Apply env-var redaction first (operates on KEY=VALUE tokens),
+  // then URL userinfo redaction (operates on scheme://user:pass@host).
+  // Order matters only at the margins; both are idempotent.
+  summary = redactEnvAssignments(summary);
+  summary = redactUrlUserInfo(summary);
+  return summary;
 }
 
 /**
