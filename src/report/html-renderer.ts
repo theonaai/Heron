@@ -911,7 +911,7 @@ function renderConclusion(report: VerificationReport, opts: HtmlRenderOptions, n
   }
   const body = actions.length === 0
     ? callout('No remediation actions required — verification clean across all surfaces.', 'ok')
-    : `<ol class="numlist">${actions.map((a) => `<li><div>${a}</div></li>`).join('\n')}</ol>`;
+    : `<ol class="numlist">${actions.map((a) => `<li>${a}</li>`).join('\n')}</ol>`;
   return `${sectionHeader(num, 'Conclusion', undefined, 'sec-conclusion')}
 <div class="h-sub">Recommended Actions</div>
 ${body}`;
