@@ -144,7 +144,9 @@ heron-ai scan --mcp '{"kind":"stdio","command":"node","args":["server.js"]}'
 heron-ai scan --mcp '{"kind":"http","url":"https://example.com/mcp","bearerToken":"sk-..."}'
 ```
 
-The report is written to `./reports/mcp-scan_<id>.md` (or `.json` with `-f json`).
+The report is written to `./reports/mcp-scan_<id>.md` (Markdown, default), or `.json` with `-f json`, or `.html` with `-f html`.
+
+The `-f html` output is a self-contained, SOC-style HTML document — cover with PASSED/PARTIAL/FAILED verdict + compliance score, numbered table of contents, executive summary, agent specification, verification results with score bar, framework mapping grouped by AIUC-1 / EU AI Act / GDPR / NIST AI RMF, optional HR vertical signals section, optional approval audit trail, conclusion, and appendix tool/scope inventory. CSS and favicon are inlined so the file works opened directly from disk (e.g. as a DPO email attachment); the only external resource is the Google Fonts stylesheet for the typography stack, which degrades gracefully to a system stack when unreachable. The same renderer powers `/scans/:id` when you run `heron-ai serve`.
 
 The MCP transport config shape (`MCPTransportConfig`) is locked in `src/connectors/mcp-types.ts` — both this client and the `heron mcp-serve` mode (below) consume the same types so the verification engine downstream sees one shape.
 
