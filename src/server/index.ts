@@ -1,4 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { promises as fsp, mkdirSync, statSync } from 'node:fs';
+import { resolve as resolvePath, join as joinPath, sep } from 'node:path';
+import { parse as parseQuery } from 'node:querystring';
+
 import { SessionManager } from './sessions.js';
 import { ScanManager, isValidScanId, renderScanBody } from './scans.js';
 import type { ScanRecord } from './scans.js';
@@ -14,8 +18,17 @@ import {
   escapeHtml,
   renderHtmlShell,
 } from './render.js';
-import { readChain, verifyChainIntegrity } from '../approvals/store.js';
+import { readChain, verifyChainIntegrity, appendEntry } from '../approvals/store.js';
+import type { ApprovalAction, ApprovalEntry } from '../approvals/types.js';
 import { renderApprovalChainSection } from '../approvals/render.js';
+import {
+  parseMcpFlag,
+  parseVerifyFlag,
+  parseDeclaredSourceFlag,
+  describeConfig,
+  runMcpScan,
+} from '../commands/mcp-scan.js';
+import { parseMultipart, parseMultipartBoundary } from '../util/multipart.js';
 
 export interface ServerConfig {
   port: number;
@@ -34,7 +47,97 @@ export interface ServerConfig {
    * Used by the new GET /approvals/:agentId page (AAP-52).
    */
   approvalsDir?: string;
+  /**
+   * AAP-53: directory for user-uploaded declared baselines. Files are
+   * saved as `<declaredDir>/decl-<sanitised-display-name>.json`. The
+   * upload form writes here; the trigger form's `declared-source`
+   * field references them as `file:<path>`.
+   *
+   * Defaults to `<cwd>/.heron/declared`.
+   */
+  declaredDir?: string;
+  /**
+   * AAP-53: scan execution hook. The browser scan trigger form calls
+   * this to run the scan in-process and register it with the
+   * ScanManager. Production wiring uses `defaultScanRunner` which
+   * calls `runMcpScan` directly; tests inject a fast stub so they do
+   * not need a real MCP server.
+   */
+  scanRunner?: ScanRunner;
 }
+
+/**
+ * Arguments handed to a `ScanRunner` by the trigger handler. The
+ * runner is responsible for parsing/validation of the MCP transport
+ * (it calls `parseMcpFlag` internally), running the scan, and
+ * registering the result with the ScanManager. It returns the scan
+ * id so the handler can issue a 303 redirect.
+ *
+ * `verify` / `declaredSourceSpec` / `approvalAgentId` are passed
+ * through unchanged — the runner parses them via the same flag
+ * parsers the CLI uses, so a malformed value surfaces as a thrown
+ * error and the handler converts it to a 400.
+ */
+export interface ScanRunnerArgs {
+  scanManager: ScanManager;
+  reportDir: string;
+  approvalsDir?: string;
+  agentLabel: string;
+  mcp: string;
+  mcpSummary: string;
+  verifySources: string[];
+  verify?: string;
+  declaredSourceSpec?: string;
+  approvalAgentId?: string;
+}
+
+export type ScanRunner = (args: ScanRunnerArgs) => Promise<string>;
+
+/**
+ * Default production scan runner — calls `runMcpScan` in-process so
+ * the scan registers with the live ScanManager. Used when the caller
+ * does not inject a stub.
+ */
+export const defaultScanRunner: ScanRunner = async (args) => {
+  const verifySources = args.verify ? parseVerifyFlag(args.verify) : [];
+  const declaredSource = args.declaredSourceSpec
+    ? parseDeclaredSourceFlag(args.declaredSourceSpec)
+    : undefined;
+  // `parseMcpFlag` runs the SSRF gate; failures propagate as Error
+  // and the handler converts them to a 400.
+  await parseMcpFlag(args.mcp);
+
+  // Pre-create the scan record so the runner returns the id even if
+  // the underlying scan fails (in which case `runMcpScan` would throw
+  // and we'd mark it failed below).
+  // NOTE: `runMcpScan` itself creates+completes when `scanManager` is
+  // passed. We rely on that.
+  let scanId: string | undefined;
+  try {
+    await runMcpScan({
+      mcp: args.mcp,
+      reportDir: args.reportDir,
+      format: 'markdown',
+      verify: verifySources as Parameters<typeof runMcpScan>[0]['verify'],
+      ...(declaredSource ? { declaredSource } : {}),
+      agentLabel: args.agentLabel,
+      ...(args.approvalAgentId ? { approvalAgentId: args.approvalAgentId } : {}),
+      ...(args.approvalsDir ? { approvalsDir: args.approvalsDir } : {}),
+      scanManager: args.scanManager,
+    });
+  } catch (err) {
+    // Failure — surface so handler returns 400/500.
+    throw err;
+  }
+  // Find the id of the just-created scan: it is the newest pending
+  // / completed record matching this label.
+  const list = await args.scanManager.list();
+  scanId = list[0]?.id;
+  if (!scanId) {
+    throw new Error('scan completed but no record was registered');
+  }
+  return scanId;
+};
 
 /**
  * Starts the Heron server.
@@ -53,6 +156,16 @@ export async function startServer(config: ServerConfig): Promise<import('node:ht
   // from disk so CLI-run scans appear automatically in the dashboard.
   const resolvedScansDir = config.scansDir ?? './.heron/scans';
   const resolvedApprovalsDir = config.approvalsDir;
+  // AAP-53: declared baselines dir for browser uploads.
+  const resolvedDeclaredDir = resolvePath(config.declaredDir ?? './.heron/declared');
+  try {
+    mkdirSync(resolvedDeclaredDir, { recursive: true });
+  } catch (err) {
+    logger.error(
+      `Failed to create declared dir ${resolvedDeclaredDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const scanRunner: ScanRunner = config.scanRunner ?? defaultScanRunner;
   const scans = new ScanManager(resolvedScansDir);
   try {
     await scans.loadFromDisk();
@@ -152,6 +265,16 @@ export async function startServer(config: ServerConfig): Promise<import('node:ht
         return;
       }
 
+      // AAP-53: scan trigger form (HTML). MUST come before the
+      // generic `/scans/:id` page route so `/scans/new` is not
+      // mis-routed into the detail handler (where `new` would fail
+      // the isValidScanId check anyway, but the form would be
+      // unreachable).
+      if (url.pathname === '/scans/new' && req.method === 'GET') {
+        await handleScanNewPage(res);
+        return;
+      }
+
       // Scan detail page (HTML)
       const scanPageMatch = url.pathname.match(/^\/scans\/([^/]+)$/);
       if (scanPageMatch && req.method === 'GET') {
@@ -159,10 +282,54 @@ export async function startServer(config: ServerConfig): Promise<import('node:ht
         return;
       }
 
+      // AAP-53: approval-add form (HTML). Must come BEFORE the generic
+      // `/approvals/:agentId` chain page so `/approvals/foo/new` is
+      // not mis-routed.
+      const approvalNewMatch = url.pathname.match(/^\/approvals\/([^/]+)\/new$/);
+      if (approvalNewMatch && req.method === 'GET') {
+        await handleApprovalNewPage(res, approvalNewMatch[1]);
+        return;
+      }
+
       // Approval chain detail page (HTML)
       const approvalChainMatch = url.pathname.match(/^\/approvals\/([^/]+)$/);
       if (approvalChainMatch && req.method === 'GET') {
         await handleApprovalChainPage(res, approvalChainMatch[1], resolvedApprovalsDir);
+        return;
+      }
+
+      // AAP-53: declared upload form (HTML). The `/declared/upload`
+      // path is matched literally; the generic `/declared` list page
+      // sits below.
+      if (url.pathname === '/declared/upload' && req.method === 'GET') {
+        await handleDeclaredUploadPage(res);
+        return;
+      }
+      if (url.pathname === '/declared' && req.method === 'GET') {
+        await handleDeclaredListPage(res, resolvedDeclaredDir);
+        return;
+      }
+
+      // ─── AAP-53: write-flow POST handlers ──────────────────────
+
+      if (url.pathname === '/api/scans' && req.method === 'POST') {
+        await handleApiScanTrigger(req, res, {
+          scans,
+          reportDir: config.reportDir,
+          ...(resolvedApprovalsDir ? { approvalsDir: resolvedApprovalsDir } : {}),
+          runner: scanRunner,
+        });
+        return;
+      }
+
+      const apiApprovalMatch = url.pathname.match(/^\/api\/approvals\/([^/]+)$/);
+      if (apiApprovalMatch && req.method === 'POST') {
+        await handleApiApprovalAdd(req, res, apiApprovalMatch[1], resolvedApprovalsDir);
+        return;
+      }
+
+      if (url.pathname === '/api/declared' && req.method === 'POST') {
+        await handleApiDeclaredUpload(req, res, resolvedDeclaredDir);
         return;
       }
 
@@ -616,6 +783,12 @@ async function handleLanding(
   <div class="header">${HERON_LOGO}<h1>Heron</h1></div>
   <p class="header-sub">Vet AI agents before they get production access</p>
 
+  <div class="report-actions" style="margin-bottom: 24px; flex-wrap: wrap;">
+    <a href="/scans/new" class="btn">Run new scan</a>
+    <a href="/declared/upload" class="btn btn-outline">Upload baseline</a>
+    <a href="/declared" class="btn btn-outline">Declared baselines</a>
+  </div>
+
   <h2>Sessions (<span id="session-count">${activeSessions.length}</span>)</h2>
   <div id="sessions-table">${activeSessions.length === 0
     ? '<div class="empty"><p>No sessions yet.</p><p>Connect an agent to <code>/v1/chat/completions</code> to start an interview.</p></div>'
@@ -676,6 +849,13 @@ Important: answer about THIS specific project — what you actually do, what sys
     <tr><td><code>GET /api/scans</code></td><td>List verification scans (JSON)</td></tr>
     <tr><td><code>GET /api/scans/:id</code></td><td>Single scan record (JSON)</td></tr>
     <tr><td><code>GET /approvals/:agentId</code></td><td>Approval chain for an agent (HTML)</td></tr>
+    <tr><td><code>GET /scans/new</code></td><td>Trigger a new scan from the browser (HTML form)</td></tr>
+    <tr><td><code>POST /api/scans</code></td><td>Submit scan trigger form (303 redirect to scan detail)</td></tr>
+    <tr><td><code>GET /approvals/:agentId/new</code></td><td>Append approval entry (HTML form)</td></tr>
+    <tr><td><code>POST /api/approvals/:agentId</code></td><td>Append approval entry (303 redirect to chain)</td></tr>
+    <tr><td><code>GET /declared/upload</code></td><td>Upload declared baseline (HTML form)</td></tr>
+    <tr><td><code>POST /api/declared</code></td><td>Submit declared baseline upload (multipart, 303 redirect)</td></tr>
+    <tr><td><code>GET /declared</code></td><td>List uploaded declared baselines</td></tr>
     </tbody>
   </table>
 
@@ -973,6 +1153,617 @@ async function handleApiScanDetail(res: ServerResponse, scans: ScanManager, id: 
   }
   json(res, 200, rec);
 }
+
+// ─── AAP-53: write-workflow handlers ──────────────────────────────────
+
+/** Per-POST body cap (1 MiB) — applies to every write handler. */
+const MAX_WRITE_BODY_BYTES = 1024 * 1024;
+
+/** Cap on the sanitised display-name slug. */
+const MAX_DECLARED_DISPLAY_NAME_LEN = 64;
+
+/** Strict regex for a sanitised declared filename. */
+const DECLARED_FILENAME_REGEX = /^decl-[a-z0-9-]{1,64}\.json$/;
+
+class BodyTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BodyTooLargeError';
+  }
+}
+
+/**
+ * Read up to `limit` bytes from the request body. Throws
+ * `BodyTooLargeError` if exceeded so the caller can respond 413
+ * specifically.
+ */
+async function readRawBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let oversized = false;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (total > limit) {
+      oversized = true;
+      req.resume(); // drain so socket can be reused
+      break;
+    }
+    chunks.push(buf);
+  }
+  if (oversized) {
+    throw new BodyTooLargeError(`Request body exceeds ${limit} byte limit`);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * CSRF mitigation: require Origin or Referer header to match the
+ * server's host. OSS Heron has no session/auth; this baseline blocks
+ * a hostile cross-origin page from triggering writes via the user's
+ * browser session.
+ */
+function isSameOriginPost(req: IncomingMessage): boolean {
+  const host = req.headers.host;
+  if (!host) return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      return new URL(origin).host === host;
+    } catch {
+      return false;
+    }
+  }
+  const referer = req.headers.referer;
+  if (referer) {
+    try {
+      return new URL(referer).host === host;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function htmlError(res: ServerResponse, status: number, title: string, message: string): void {
+  const body = `<p class="breadcrumb"><a href="/">&larr; Dashboard</a></p>
+    <h2>${escapeHtml(title)}</h2>
+    <div class="error-msg">${escapeHtml(message)}</div>`;
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(renderHtmlShell(title, body));
+}
+
+function redirect303(res: ServerResponse, location: string): void {
+  res.writeHead(303, { Location: location });
+  res.end();
+}
+
+/** Same regex used by approval store + scan page route. */
+const APPROVAL_AGENT_ID_REGEX_W = /^[A-Za-z0-9_.-]{1,128}$/;
+
+function handleScanNewPage(res: ServerResponse): void {
+  const verifyOptions = [
+    'mcp-tools',
+    'oauth-scopes:greenhouse',
+    'oauth-scopes:bamboohr',
+    'oauth-scopes:google-workspace',
+  ];
+  const body = `
+    <p class="breadcrumb"><a href="/scans">&larr; All scans</a></p>
+    <h2>Run a new verification scan</h2>
+    <p>The scan runs synchronously — the page will redirect to the scan detail page when it completes. Large scans (multiple verify sources, slow MCP servers) may take 30+ seconds.</p>
+    <form method="POST" action="/api/scans" class="card" style="display:flex;flex-direction:column;gap:14px;">
+      <label>
+        <strong>Agent label</strong> (required)
+        <input type="text" name="agent-label" required maxlength="256" style="width:100%;padding:8px;" placeholder="e.g. greenhouse-recruiter-bot">
+      </label>
+      <label>
+        <strong>MCP transport</strong> (required)
+        <input type="text" name="mcp" required maxlength="1024" style="width:100%;padding:8px;font-family:monospace;" placeholder="stdio:node srv.mjs   or   http://localhost:3000/mcp">
+        <small style="color:#6b7280;">Do <strong>not</strong> include secrets in this field — pass via env vars or a JSON config that reads them.</small>
+      </label>
+      <fieldset style="border:1px solid #e5e7eb;border-radius:6px;padding:12px;">
+        <legend><strong>Verify sources</strong></legend>
+        ${verifyOptions.map((o) => `<label style="display:block;padding:2px 0;"><input type="checkbox" name="verify" value="${escapeHtml(o)}"> <code>${escapeHtml(o)}</code></label>`).join('')}
+        <small style="color:#6b7280;">Leave all unchecked to skip verification and produce a tool-inventory-only report.</small>
+      </fieldset>
+      <label>
+        <strong>Declared source</strong> (optional)
+        <input type="text" name="declared-source" maxlength="512" style="width:100%;padding:8px;font-family:monospace;" placeholder="file:.heron/declared/decl-my-agent.json   or   theona-mcp:agent-id">
+      </label>
+      <label>
+        <strong>Approval agent id</strong> (optional)
+        <input type="text" name="approval-agent-id" maxlength="128" style="width:100%;padding:8px;" placeholder="agent identifier in the approval chain store">
+      </label>
+      <div>
+        <button type="submit" class="btn">Run scan</button>
+        <a href="/scans" class="btn btn-outline" style="margin-left:8px;">Cancel</a>
+      </div>
+    </form>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(renderHtmlShell('Run a new scan — Heron', body));
+}
+
+function handleApprovalNewPage(res: ServerResponse, agentId: string): void {
+  if (!APPROVAL_AGENT_ID_REGEX_W.test(agentId)) {
+    htmlError(res, 404, 'Invalid agent', 'agentId must match [A-Za-z0-9_.-]{1,128}.');
+    return;
+  }
+  const actions: ApprovalAction[] = ['declared', 'reviewed', 'approved', 'revoked'];
+  const body = `
+    <p class="breadcrumb"><a href="/approvals/${escapeHtml(agentId)}">&larr; Chain for ${escapeHtml(agentId)}</a></p>
+    <h2>Add approval entry — <code>${escapeHtml(agentId)}</code></h2>
+    <form method="POST" action="/api/approvals/${escapeHtml(agentId)}" class="card" style="display:flex;flex-direction:column;gap:14px;">
+      <fieldset style="border:1px solid #e5e7eb;border-radius:6px;padding:12px;">
+        <legend><strong>Action</strong> (required)</legend>
+        ${actions.map((a, i) => `<label style="display:block;padding:2px 0;"><input type="radio" name="action" value="${a}" ${i === 0 ? 'required' : ''}> ${a}</label>`).join('')}
+      </fieldset>
+      <label>
+        <strong>Actor name</strong> (required)
+        <input type="text" name="actor-name" required maxlength="256" style="width:100%;padding:8px;">
+      </label>
+      <label>
+        <strong>Actor role</strong> (required)
+        <input type="text" name="actor-role" required maxlength="256" style="width:100%;padding:8px;" placeholder="e.g. DPO, CISO, Engineering Manager">
+      </label>
+      <label>
+        <strong>Actor email</strong> (optional)
+        <input type="email" name="actor-email" maxlength="256" style="width:100%;padding:8px;">
+      </label>
+      <label>
+        <strong>Evidence references</strong> (optional, one per line)
+        <textarea name="evidence-refs" rows="3" style="width:100%;padding:8px;font-family:monospace;"></textarea>
+      </label>
+      <label>
+        <strong>Comment</strong> (optional)
+        <textarea name="comment" rows="4" maxlength="1024" style="width:100%;padding:8px;"></textarea>
+      </label>
+      <div>
+        <button type="submit" class="btn">Append entry</button>
+        <a href="/approvals/${escapeHtml(agentId)}" class="btn btn-outline" style="margin-left:8px;">Cancel</a>
+      </div>
+    </form>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(renderHtmlShell(`Add approval — ${agentId}`, body));
+}
+
+function handleDeclaredUploadPage(res: ServerResponse): void {
+  const body = `
+    <p class="breadcrumb"><a href="/declared">&larr; Declared baselines</a></p>
+    <h2>Upload a declared baseline</h2>
+    <p>Saves a JSON file under <code>.heron/declared/</code>. Reference it on a scan run as <code>file:.heron/declared/decl-&lt;name&gt;.json</code>.</p>
+    <form method="POST" action="/api/declared" enctype="multipart/form-data" class="card" style="display:flex;flex-direction:column;gap:14px;">
+      <label>
+        <strong>Display name</strong> (required)
+        <input type="text" name="display-name" required maxlength="64" style="width:100%;padding:8px;" placeholder="e.g. greenhouse-recruiter-bot">
+        <small style="color:#6b7280;">Used to derive the filename. Lowercased; non-alphanumerics become <code>-</code>; saved as <code>decl-&lt;name&gt;.json</code>.</small>
+      </label>
+      <label>
+        <strong>JSON file</strong> (required, &le; 1 MiB)
+        <input type="file" name="file" accept="application/json,.json" required style="width:100%;padding:8px;">
+      </label>
+      <div>
+        <button type="submit" class="btn">Upload</button>
+        <a href="/declared" class="btn btn-outline" style="margin-left:8px;">Cancel</a>
+      </div>
+    </form>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(renderHtmlShell('Upload declared baseline — Heron', body));
+}
+
+async function handleDeclaredListPage(res: ServerResponse, declaredDir: string): Promise<void> {
+  const files: Array<{ name: string; size: number; mtime: Date }> = [];
+  try {
+    const entries = await fsp.readdir(declaredDir);
+    for (const name of entries) {
+      if (!DECLARED_FILENAME_REGEX.test(name)) continue;
+      try {
+        const st = await fsp.stat(joinPath(declaredDir, name));
+        if (st.isFile()) {
+          files.push({ name, size: st.size, mtime: st.mtime });
+        }
+      } catch {
+        // Skip unreadable entries.
+      }
+    }
+  } catch {
+    // Directory missing — treat as empty.
+  }
+  files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+  const tableRows = files.map((f) => `
+    <tr>
+      <td><code>${escapeHtml(f.name)}</code></td>
+      <td>${f.size} bytes</td>
+      <td>${escapeHtml(f.mtime.toISOString().slice(0, 19).replace('T', ' '))} UTC</td>
+    </tr>`).join('');
+
+  const body = `
+    <p class="breadcrumb"><a href="/">&larr; Dashboard</a></p>
+    <h2>Declared baselines (${files.length})</h2>
+    <p><a href="/declared/upload" class="btn">Upload baseline</a></p>
+    ${files.length === 0
+      ? '<div class="empty"><p>No declared baselines uploaded yet.</p></div>'
+      : `<table>
+        <thead><tr><th>Filename</th><th>Size</th><th>Uploaded</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>`}`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(renderHtmlShell('Declared baselines — Heron', body));
+}
+
+interface ScanTriggerCtx {
+  scans: ScanManager;
+  reportDir: string;
+  approvalsDir?: string;
+  runner: ScanRunner;
+}
+
+async function handleApiScanTrigger(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: ScanTriggerCtx,
+): Promise<void> {
+  if (!isSameOriginPost(req)) {
+    json(res, 403, { error: 'cross-origin POSTs are not allowed' });
+    return;
+  }
+  let raw: Buffer;
+  try {
+    raw = await readRawBody(req, MAX_WRITE_BODY_BYTES);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      json(res, 413, { error: err.message });
+      return;
+    }
+    json(res, 400, { error: 'failed to read request body' });
+    return;
+  }
+
+  let fields: Record<string, string | string[]>;
+  try {
+    fields = parseFormBody(raw, req.headers['content-type']);
+  } catch (err) {
+    htmlError(res, 400, 'Bad request', err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  const agentLabel = firstField(fields, 'agent-label');
+  const mcp = firstField(fields, 'mcp');
+  const verifyArray = arrayField(fields, 'verify');
+  const declaredSourceRaw = firstField(fields, 'declared-source');
+  const approvalAgentId = firstField(fields, 'approval-agent-id');
+
+  if (!agentLabel || agentLabel.trim().length === 0) {
+    htmlError(res, 400, 'Missing field', 'agent-label is required');
+    return;
+  }
+  if (agentLabel.length > 256) {
+    htmlError(res, 400, 'Invalid field', 'agent-label exceeds 256 chars');
+    return;
+  }
+  if (!mcp || mcp.trim().length === 0) {
+    htmlError(res, 400, 'Missing field', 'mcp is required');
+    return;
+  }
+
+  let verifyJoined = '';
+  if (verifyArray.length > 0) {
+    verifyJoined = verifyArray.join(',');
+    try {
+      parseVerifyFlag(verifyJoined);
+    } catch (err) {
+      htmlError(res, 400, 'Invalid verify source', err instanceof Error ? err.message : String(err));
+      return;
+    }
+  }
+
+  if (declaredSourceRaw) {
+    try {
+      parseDeclaredSourceFlag(declaredSourceRaw);
+    } catch (err) {
+      htmlError(res, 400, 'Invalid declared-source', err instanceof Error ? err.message : String(err));
+      return;
+    }
+  }
+
+  if (approvalAgentId && !APPROVAL_AGENT_ID_REGEX_W.test(approvalAgentId)) {
+    htmlError(res, 400, 'Invalid approval-agent-id', 'must match [A-Za-z0-9_.-]{1,128}');
+    return;
+  }
+
+  // Compute a sanitised mcpConfig summary up-front so the runner can
+  // record it even if the runner stub skips parseMcpFlag.
+  let mcpSummary = mcp;
+  try {
+    const cfg = await parseMcpFlag(mcp);
+    mcpSummary = describeConfig(cfg);
+  } catch (err) {
+    htmlError(res, 400, 'Invalid mcp', err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  let scanId: string;
+  try {
+    scanId = await ctx.runner({
+      scanManager: ctx.scans,
+      reportDir: ctx.reportDir,
+      ...(ctx.approvalsDir ? { approvalsDir: ctx.approvalsDir } : {}),
+      agentLabel: agentLabel.trim(),
+      mcp,
+      mcpSummary,
+      verifySources: verifyArray,
+      ...(verifyJoined ? { verify: verifyJoined } : {}),
+      ...(declaredSourceRaw ? { declaredSourceSpec: declaredSourceRaw } : {}),
+      ...(approvalAgentId ? { approvalAgentId } : {}),
+    });
+  } catch (err) {
+    logger.error(`Scan trigger failed: ${err instanceof Error ? err.message : String(err)}`);
+    htmlError(res, 500, 'Scan failed', err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  redirect303(res, `/scans/${scanId}`);
+}
+
+async function handleApiApprovalAdd(
+  req: IncomingMessage,
+  res: ServerResponse,
+  agentId: string,
+  approvalsDir: string | undefined,
+): Promise<void> {
+  if (!isSameOriginPost(req)) {
+    json(res, 403, { error: 'cross-origin POSTs are not allowed' });
+    return;
+  }
+  if (!APPROVAL_AGENT_ID_REGEX_W.test(agentId)) {
+    htmlError(res, 400, 'Invalid agent', 'agentId must match [A-Za-z0-9_.-]{1,128}');
+    return;
+  }
+
+  let raw: Buffer;
+  try {
+    raw = await readRawBody(req, MAX_WRITE_BODY_BYTES);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      json(res, 413, { error: err.message });
+      return;
+    }
+    json(res, 400, { error: 'failed to read request body' });
+    return;
+  }
+
+  let fields: Record<string, string | string[]>;
+  try {
+    fields = parseFormBody(raw, req.headers['content-type']);
+  } catch (err) {
+    htmlError(res, 400, 'Bad request', err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  const action = firstField(fields, 'action');
+  const actorName = firstField(fields, 'actor-name');
+  const actorRole = firstField(fields, 'actor-role');
+  const actorEmail = firstField(fields, 'actor-email');
+  const evidenceRaw = firstField(fields, 'evidence-refs') ?? '';
+  const comment = firstField(fields, 'comment');
+
+  if (!action) {
+    htmlError(res, 400, 'Missing field', 'action is required');
+    return;
+  }
+  if (!actorName || actorName.trim().length === 0) {
+    htmlError(res, 400, 'Missing field', 'actor-name is required');
+    return;
+  }
+  if (!actorRole || actorRole.trim().length === 0) {
+    htmlError(res, 400, 'Missing field', 'actor-role is required');
+    return;
+  }
+
+  const evidenceRefs = evidenceRaw
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const entry: Omit<ApprovalEntry, 'prevHash'> = {
+    action: action as ApprovalAction,
+    actor: {
+      name: actorName,
+      role: actorRole,
+      ...(actorEmail ? { email: actorEmail } : {}),
+    },
+    timestamp: new Date().toISOString(),
+    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
+    ...(comment ? { comment } : {}),
+  };
+
+  const result = await appendEntry(agentId, entry, approvalsDir);
+  if (!result.ok) {
+    htmlError(res, 400, 'Could not append entry', result.error.message);
+    return;
+  }
+  redirect303(res, `/approvals/${agentId}`);
+}
+
+async function handleApiDeclaredUpload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  declaredDir: string,
+): Promise<void> {
+  if (!isSameOriginPost(req)) {
+    json(res, 403, { error: 'cross-origin POSTs are not allowed' });
+    return;
+  }
+
+  const contentType = req.headers['content-type'];
+  if (!contentType || !contentType.toLowerCase().includes('multipart/form-data')) {
+    htmlError(res, 400, 'Bad content-type', 'POST /api/declared expects multipart/form-data');
+    return;
+  }
+  const boundary = parseMultipartBoundary(contentType);
+  if (!boundary) {
+    htmlError(res, 400, 'Bad content-type', 'multipart boundary missing or malformed');
+    return;
+  }
+
+  let raw: Buffer;
+  try {
+    raw = await readRawBody(req, MAX_WRITE_BODY_BYTES);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      json(res, 413, { error: err.message });
+      return;
+    }
+    json(res, 400, { error: 'failed to read request body' });
+    return;
+  }
+
+  let parts;
+  try {
+    parts = parseMultipart(raw, boundary);
+  } catch (err) {
+    htmlError(res, 400, 'Malformed upload', err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  const displayPart = parts.find((p) => p.name === 'display-name');
+  const filePart = parts.find((p) => p.name === 'file');
+  if (!displayPart) {
+    htmlError(res, 400, 'Missing field', 'display-name is required');
+    return;
+  }
+  if (!filePart) {
+    htmlError(res, 400, 'Missing field', 'file is required');
+    return;
+  }
+
+  const displayName = displayPart.body.toString('utf-8');
+  const slug = sanitiseDeclaredSlug(displayName);
+  if (!slug) {
+    htmlError(res, 400, 'Invalid display-name', 'display-name must contain at least one alphanumeric character');
+    return;
+  }
+
+  const filename = `decl-${slug}.json`;
+  if (!DECLARED_FILENAME_REGEX.test(filename)) {
+    htmlError(res, 400, 'Invalid display-name', 'sanitised filename failed validation');
+    return;
+  }
+
+  // Validate JSON parseability + schema shape BEFORE writing. NEVER echo
+  // file bytes in error messages — uploaded content may carry secrets.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(filePart.body.toString('utf-8'));
+  } catch {
+    htmlError(res, 400, 'Invalid JSON', 'uploaded file is not valid JSON');
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    htmlError(res, 400, 'Invalid JSON', 'uploaded file must be a JSON object');
+    return;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!obj.agent || typeof obj.agent !== 'object' || Array.isArray(obj.agent)) {
+    htmlError(res, 400, 'Invalid schema', 'declared baseline must include an `agent` object');
+    return;
+  }
+  const agent = obj.agent as Record<string, unknown>;
+  if (typeof agent.name !== 'string' || agent.name.trim().length === 0) {
+    htmlError(res, 400, 'Invalid schema', 'agent.name must be a non-empty string');
+    return;
+  }
+
+  // Path-escape defence: resolved path must stay inside declaredDir.
+  const target = resolvePath(declaredDir, filename);
+  const dirWithSep = declaredDir.endsWith(sep) ? declaredDir : declaredDir + sep;
+  if (!target.startsWith(dirWithSep)) {
+    htmlError(res, 400, 'Invalid path', 'resolved path escapes the declared directory');
+    return;
+  }
+
+  try {
+    await fsp.mkdir(declaredDir, { recursive: true });
+    await fsp.writeFile(target, filePart.body, { mode: 0o600 });
+  } catch (err) {
+    logger.error(`Failed to write declared baseline ${filename}: ${err instanceof Error ? err.message : String(err)}`);
+    htmlError(res, 500, 'Write failed', 'could not save the uploaded baseline');
+    return;
+  }
+
+  redirect303(res, '/declared');
+}
+
+function parseFormBody(raw: Buffer, contentType: string | undefined): Record<string, string | string[]> {
+  if (!contentType) {
+    throw new Error('content-type header is required');
+  }
+  const ct = contentType.toLowerCase();
+  if (ct.includes('application/x-www-form-urlencoded')) {
+    return parseQuery(raw.toString('utf-8')) as Record<string, string | string[]>;
+  }
+  if (ct.includes('application/json')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw.toString('utf-8'));
+    } catch {
+      throw new Error('JSON body could not be parsed');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('JSON body must be an object');
+    }
+    const out: Record<string, string | string[]> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+      else if (Array.isArray(v)) out[k] = v.map(String);
+      else out[k] = String(v);
+    }
+    return out;
+  }
+  throw new Error(`unsupported content-type: ${ct}`);
+}
+
+function firstField(fields: Record<string, string | string[]>, name: string): string | undefined {
+  const v = fields[name];
+  if (v === undefined) return undefined;
+  if (Array.isArray(v)) return v[0];
+  return v;
+}
+
+function arrayField(fields: Record<string, string | string[]>, name: string): string[] {
+  const v = fields[name];
+  if (v === undefined) return [];
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x.length > 0);
+  return v.length > 0 ? [v] : [];
+}
+
+/**
+ * Sanitise a user-supplied display name into `[a-z0-9-]{1,64}`.
+ * Returns the empty string when the input has no alphanumerics.
+ *
+ *  - Strip control chars.
+ *  - Lowercase + non-alnum → `-`.
+ *  - Collapse `-` runs + trim leading/trailing `-`.
+ *  - Cap at 64 chars.
+ *  - The `decl-` prefix added by the caller defangs reserved DOS
+ *    device names (`con`, `aux`, `nul`).
+ */
+export function sanitiseDeclaredSlug(input: string): string {
+  if (typeof input !== 'string') return '';
+  // eslint-disable-next-line no-control-regex
+  const stripped = input.replace(/[\x00-\x1f\x7f]/g, '');
+  let slug = stripped.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  slug = slug.replace(/^-+|-+$/g, '');
+  if (slug.length === 0) return '';
+  if (slug.length > MAX_DECLARED_DISPLAY_NAME_LEN) {
+    slug = slug.slice(0, MAX_DECLARED_DISPLAY_NAME_LEN).replace(/-+$/g, '');
+  }
+  return slug;
+}
+
+// Suppress unused-symbol warnings when noUnusedLocals is on.
+void statSync;
 
 // ─── Utilities ────────────────────────────────────────────────────────────
 
