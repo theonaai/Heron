@@ -92,41 +92,11 @@ function makeReport(over: Partial<VerificationReport> = {}): VerificationReport 
 }
 
 describe('PR #27 — findings-list + recommended-actions CSS layout', () => {
-  it('CSS uses flex layout (not grid) for findings-list > li', () => {
-    // Pull the rule body for the LI selector. We need a single,
-    // resolvable match — the selector groups both findings-list and
-    // recommended-actions, so the regex captures the shared body.
-    const liRuleMatch = REPORT_CSS.match(
-      /\.heron-report \.findings-list > li,\s*\.heron-report \.recommended-actions > li\s*\{([^}]+)\}/,
-    );
-    expect(liRuleMatch).toBeTruthy();
-    const body = liRuleMatch![1];
-    // Flex, not grid.
-    expect(body).toMatch(/display:\s*flex/);
-    expect(body).not.toMatch(/display:\s*grid/);
-    // No left-rail / content grid template — that was the bug.
-    expect(body).not.toMatch(/grid-template-columns:\s*28px\s+1fr/);
-  });
-
-  it('CSS keeps a fixed-width counter via ::before flex basis', () => {
-    // The ::before counter is the rendered "01"/"02"/... badge.
-    // It must keep a deterministic width so multi-digit counters
-    // align across rows. After the fix, the width is set via
-    // `flex: 0 0 28px` (or shorthand) on ::before — NOT via grid
-    // column.
-    const beforeRuleMatch = REPORT_CSS.match(
-      /\.heron-report \.findings-list > li::before,\s*\.heron-report \.recommended-actions > li::before\s*\{([^}]+)\}/,
-    );
-    expect(beforeRuleMatch).toBeTruthy();
-    const body = beforeRuleMatch![1];
-    // Counter content + increment still wired.
-    expect(body).toMatch(/content:\s*counter\(ef,\s*decimal-leading-zero\)/);
-    expect(body).toMatch(/counter-increment:\s*ef/);
-    // Fixed width for the counter — match either the `flex` shorthand
-    // or the longhand `flex-basis`. The 28px target keeps row
-    // alignment identical to the PR #26 render minus the bug.
-    expect(body).toMatch(/flex:\s*0\s+0\s+28px|flex-basis:\s*28px/);
-  });
+  // The PR #27 flex layout was superseded by PR #28's absolute-counter
+  // layout — see styles-numlist-absolute-layout.test.ts for the
+  // layout shape. The remaining test in this file is the structural
+  // smoke test, which is still valid: the renderer must keep emitting
+  // the pill + title + citation as inline children of <li>.
 
   it('rendered <li> still contains pill + title text + citation as inline children', () => {
     // Structural smoke test — the renderer HTML must not change.
