@@ -31,7 +31,8 @@ program
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
   .option('-o, --output <path>', 'Save report to file (default: stdout)')
-  .option('-f, --format <format>', 'Output format: markdown or json', 'markdown')
+  .option('-f, --format <format>', 'Output format: markdown, html, or json', 'markdown')
+  .option('--scans-dir <dir>', 'Directory for scan record mirrors (AAP-52 browser dashboard)', './.heron/scans')
   .option('-c, --config <path>', 'Path to heron.yaml config file')
   .option('--max-followups <n>', 'Max follow-up questions per category', '3')
   .option('--report-dir <dir>', 'Directory to save reports', './reports')
@@ -52,17 +53,22 @@ program
         const declaredSource = typeof opts.declaredSource === 'string' && opts.declaredSource.trim() !== ''
           ? parseDeclaredSourceFlag(opts.declaredSource)
           : undefined;
+        const format: 'markdown' | 'json' | 'html' =
+          opts.format === 'json' ? 'json'
+          : opts.format === 'html' ? 'html'
+          : 'markdown';
         await runMcpScan({
           mcp: opts.mcp,
           outputPath: opts.output,
           reportDir: opts.reportDir ?? './reports',
-          format: (opts.format === 'json' ? 'json' : 'markdown'),
+          format,
           verify: verifySources,
           declaredTools,
           ...(declaredSource !== undefined ? { declaredSource } : {}),
           ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
           ...(typeof opts.approvalAgentId === 'string' ? { approvalAgentId: opts.approvalAgentId } : {}),
           ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
+          ...(typeof opts.scansDir === 'string' ? { scansDir: opts.scansDir } : {}),
         });
         return;
       }
