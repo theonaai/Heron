@@ -97,13 +97,15 @@ export const REPORT_CSS = `
 /* PR #26: more generous breathing room between cover / TOC / first
    section. The PR #25 spacing was print-dense; Vijil's reference has
    ~80px gaps between major blocks. */
+/* PR #27 / AAP-56 — halve the cover-to-TOC gap so the cover doesn't
+   shed ~120px of whitespace before the first navigable block. */
 .heron-report .cover {
   display: flex;
   flex-direction: column;
   gap: 28px;
-  padding: 0 0 56px;
+  padding: 0 0 32px;
   border-bottom: 1px solid var(--r-border);
-  margin-bottom: 64px;
+  margin-bottom: 32px;
 }
 .heron-report .cover-brand {
   display: flex;
@@ -262,8 +264,8 @@ export const REPORT_CSS = `
   border-radius: var(--r-radius);
   background: var(--r-bg-muted);
   padding: 20px 24px;
-  margin-top: 8px;
-  margin-bottom: 64px;
+  margin-top: 24px;
+  margin-bottom: 32px;
 }
 .heron-report .toc-title {
   font-family: var(--r-font-mono);
@@ -376,7 +378,7 @@ export const REPORT_CSS = `
   margin: 0 0 8px;
 }
 .heron-report .exec-sub p {
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.55;
   color: var(--r-ink-2);
 }
@@ -403,7 +405,7 @@ export const REPORT_CSS = `
   align-items: baseline;
   flex-wrap: wrap;
   gap: 8px;
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.5;
   color: var(--r-ink-2);
   padding-left: 0;
@@ -426,7 +428,7 @@ export const REPORT_CSS = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--r-ink-2);
 }
 .heron-report .framework-coverage > li {
@@ -436,7 +438,7 @@ export const REPORT_CSS = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--r-ink-2);
 }
 .heron-report .chain-status {
@@ -598,7 +600,7 @@ export const REPORT_CSS = `
   border-left: 3px solid var(--r-ink-2);
   background: var(--r-bg-muted);
   color: var(--r-ink-2);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.6;
   padding: 14px 18px;
   border-radius: 0 var(--r-radius) var(--r-radius) 0;
@@ -743,7 +745,7 @@ export const REPORT_CSS = `
   gap: 12px;
   padding: 12px 0;
   border-bottom: 1px solid var(--r-border);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.55;
   color: var(--r-ink-2);
 }
