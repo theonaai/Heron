@@ -686,7 +686,24 @@ npx heron-ai serve [options]
 | `/api/sessions` | GET | List all sessions (JSON) |
 | `/api/sessions/:id` | GET | Session details + transcript |
 | `/api/sessions/:id/report` | GET | Download audit report (markdown) |
+| `/scans` | GET | Verification-scan dashboard (HTML) |
+| `/scans/new` | GET | Browser form &mdash; trigger a new scan |
+| `/api/scans` | POST | Submit the trigger form (303 redirect to scan detail) |
+| `/approvals/:agentId` | GET | Approval chain for an agent (HTML) |
+| `/approvals/:agentId/new` | GET | Browser form &mdash; append an approval entry |
+| `/api/approvals/:agentId` | POST | Submit the approval entry (303 redirect) |
+| `/declared` | GET | List of uploaded declared baselines |
+| `/declared/upload` | GET | Browser form &mdash; upload a baseline JSON |
+| `/api/declared` | POST | Submit the upload (multipart, 303 redirect) |
 | `/` | GET | Dashboard |
+
+**Browser write workflows** &mdash; the form-driven routes above let a DPO drive Heron without ever opening a CLI. Discipline:
+
+- Every POST enforces a 1&nbsp;MiB body cap.
+- Every POST checks `Origin` / `Referer` against the server host &mdash; cross-origin POSTs are rejected with a 403.
+- Forms are server-rendered with no JavaScript. The flow is classic post-redirect-get: form POST &rarr; 303 to the detail page.
+- **Scan execution is synchronous**: `POST /api/scans` blocks until the scan completes. Long scans (multiple verify sources, slow MCP servers) may take 30+ seconds. Async job queueing is out of scope for OSS v1.
+- Declared-baseline filenames are sanitised to `decl-[a-z0-9-]{1,64}\.json`.
 
 </details>
 
