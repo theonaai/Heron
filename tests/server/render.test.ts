@@ -81,6 +81,23 @@ describe('renderHtmlShell', () => {
     expect(out).not.toMatch(/<script\s+src=/i);
     expect(SHARED_CSS.length).toBeGreaterThan(100);
   });
+
+  // Round 2 — Fix 6 (LOW): a `.html` file dropped on disk (e.g. opened
+  // from a DPO's email attachment) cannot resolve an absolute server
+  // path like `/favicon.svg`. The favicon must be either omitted or
+  // inlined as a `data:` URI so the doc is truly self-contained.
+  it('favicon does not reference the absolute /favicon.svg server path', () => {
+    const out = renderHtmlShell('Page', '<p>x</p>');
+    expect(out).not.toMatch(/href=["']\/favicon\.svg["']/i);
+  });
+
+  it('if a favicon link is present, it is a well-formed data: URI', () => {
+    const out = renderHtmlShell('Page', '<p>x</p>');
+    const linkMatch = out.match(/<link\s+rel="icon"[^>]*>/i);
+    if (linkMatch) {
+      expect(linkMatch[0]).toMatch(/href=["']data:image\/svg\+xml[;,]/i);
+    }
+  });
 });
 
 describe('escapeHtml', () => {
