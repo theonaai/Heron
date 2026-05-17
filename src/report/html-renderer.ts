@@ -119,10 +119,21 @@ function nl2br(s: string): string {
 export function computeComplianceScore(report: VerificationReport): ComplianceScoreResult {
   const threshold = 70;
   const fm = report.frameworkMapping;
-  if (!fm || fm.controls.length === 0) {
+  // PR #25 round 2 (MEDIUM): 3-way guard. The type contract guarantees
+  // `controls` is an array, but a corrupted / partial-mock report can
+  // arrive with `controls === undefined` and the previous
+  // `fm.controls.length` access threw `TypeError`. Bail out early with
+  // a FAILED verdict instead of crashing the renderer.
+  if (!fm || !fm.controls || fm.controls.length === 0) {
     return { score: 0, verdict: 'FAILED', threshold };
   }
-  const { verifiedCount, partialCount, failCount, unverifiedCount } = fm.summary;
+  // PR #25 round 2 (LOW): clamp negative summary counts at zero. A
+  // corrupted state where (e.g.) `verifiedCount === -1` would otherwise
+  // produce a nonsense PASSED verdict from `(-1)/(-1)*100 === 100`.
+  const verifiedCount = Math.max(0, fm.summary.verifiedCount);
+  const partialCount = Math.max(0, fm.summary.partialCount);
+  const failCount = Math.max(0, fm.summary.failCount);
+  const unverifiedCount = Math.max(0, fm.summary.unverifiedCount);
   const total = verifiedCount + partialCount + failCount + unverifiedCount;
   if (total === 0) {
     return { score: 0, verdict: 'FAILED', threshold };
