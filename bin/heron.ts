@@ -106,7 +106,7 @@ program
   .command('serve')
   .description('Start Heron server — agents connect to be interrogated')
   .option('-p, --port <port>', 'Port to listen on', '3700')
-  .option('-H, --host <host>', 'Host to bind to', '0.0.0.0')
+  .option('-H, --host <host>', 'Host to bind to (loopback by default; use 0.0.0.0 to expose to the LAN, but see warning)', '127.0.0.1')
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')

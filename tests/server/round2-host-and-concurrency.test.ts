@@ -17,8 +17,51 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import type { Server } from 'node:http';
+
+interface RawResponse {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}
+
+/**
+ * Raw HTTP request — undici's `fetch` strips/overrides the `Host`
+ * header, so we cannot use it to test Host-header rejection. This helper
+ * sends the request via `node:http` directly so the header reaches the
+ * server verbatim.
+ */
+function rawHttp(
+  port: number,
+  opts: { method: string; path: string; headers?: Record<string, string>; body?: string },
+): Promise<RawResponse> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        method: opts.method,
+        path: opts.path,
+        headers: { ...(opts.headers ?? {}) },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString('utf-8'),
+          });
+        });
+      },
+    );
+    req.on('error', reject);
+    if (opts.body) req.write(opts.body);
+    req.end();
+  });
+}
 
 import { startServer } from '../../src/server/index.js';
 import * as llmModule from '../../src/llm/client.js';
@@ -135,28 +178,33 @@ describe('round-2: Host-header allow-list (CRITICAL — DNS rebinding defence)',
       mcp: 'stdio:node s.js',
       'agent-label': 'x',
     }).toString();
-    const r = await fetch(`${h.baseUrl}/api/scans`, {
+    const r = await rawHttp(h.port, {
       method: 'POST',
+      path: '/api/scans',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
         Host: 'evil.attacker.com',
         Origin: 'http://evil.attacker.com',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': String(Buffer.byteLength(body)),
       },
       body,
-      redirect: 'manual',
     });
     expect(r.status).toBe(421);
   });
 
   it('rejects GET / when Host header is not in the allow-list (421)', async () => {
-    const r = await fetch(`${h.baseUrl}/`, {
+    const r = await rawHttp(h.port, {
+      method: 'GET',
+      path: '/',
       headers: { Host: 'evil.attacker.com' },
     });
     expect(r.status).toBe(421);
   });
 
   it('allows GET / with same-host Host header (200)', async () => {
-    const r = await fetch(`${h.baseUrl}/`, {
+    const r = await rawHttp(h.port, {
+      method: 'GET',
+      path: '/',
       headers: { Host: h.host },
     });
     expect(r.status).toBe(200);
@@ -168,15 +216,16 @@ describe('round-2: Host-header allow-list (CRITICAL — DNS rebinding defence)',
       'actor-name': 'T',
       'actor-role': 'R',
     }).toString();
-    const r = await fetch(`${h.baseUrl}/api/approvals/test-x`, {
+    const r = await rawHttp(h.port, {
       method: 'POST',
+      path: '/api/approvals/test-x',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
         Host: h.host,
         Origin: h.baseUrl,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': String(Buffer.byteLength(body)),
       },
       body,
-      redirect: 'manual',
     });
     expect(r.status).toBe(303);
   });
@@ -187,7 +236,9 @@ describe('round-2: Host-header allow-list (CRITICAL — DNS rebinding defence)',
     process.env.HERON_ALLOWED_HOSTS = 'allow.example.com';
     try {
       h = await startTestServer();
-      const r = await fetch(`${h.baseUrl}/`, {
+      const r = await rawHttp(h.port, {
+        method: 'GET',
+        path: '/',
         headers: { Host: 'allow.example.com' },
       });
       expect(r.status).toBe(200);

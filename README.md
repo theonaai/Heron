@@ -671,7 +671,7 @@ npx heron-ai serve [options]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-p, --port <port>` | Port to listen on | `3700` |
-| `-H, --host <host>` | Host to bind to | `0.0.0.0` |
+| `-H, --host <host>` | Host to bind to. Loopback by default. Pass `0.0.0.0` to expose to the LAN — Heron OSS has **no authentication** and POST endpoints can spawn arbitrary processes via the MCP stdio transport. Never expose to the public Internet. | `127.0.0.1` |
 | `--llm-key <key>` | LLM API key | `HERON_LLM_API_KEY` env |
 | `--llm-provider <p>` | `anthropic`, `openai`, or `gemini` | auto-detect |
 | `--llm-model <model>` | Analysis LLM model | auto per provider |
@@ -703,6 +703,9 @@ npx heron-ai serve [options]
 - Every POST checks `Origin` / `Referer` against the server host &mdash; cross-origin POSTs are rejected with a 403.
 - Forms are server-rendered with no JavaScript. The flow is classic post-redirect-get: form POST &rarr; 303 to the detail page.
 - **Scan execution is synchronous**: `POST /api/scans` blocks until the scan completes. Long scans (multiple verify sources, slow MCP servers) may take 30+ seconds. Async job queueing is out of scope for OSS v1.
+- **Concurrency cap**: at most `HERON_MAX_CONCURRENT_SCANS` in-flight scans (default `3`). Excess requests get `429 Too Many Requests` with a `Retry-After: 30` header.
+- **Per-request timeout**: a scan that runs longer than `HERON_SCAN_TIMEOUT_MS` (default `300000`, i.e. 5 minutes) is aborted with `504 Gateway Timeout`.
+- **Host-header allow-list**: inbound requests whose `Host:` header is not in the allow-list are rejected with `421 Misdirected Request`. The allow-list starts with loopback + the bound host. To add more (e.g. when fronted by nginx / Caddy), set `HERON_ALLOWED_HOSTS=public.example.com,other.example.com` before starting `heron serve`. This defends against DNS-rebinding attacks where a hostile webpage in the user's browser issues writes to Heron's loopback port.
 - Declared-baseline filenames are sanitised to `decl-[a-z0-9-]{1,64}\.json`.
 
 </details>

@@ -175,15 +175,41 @@ export async function startServer(config: ServerConfig): Promise<import('node:ht
     );
   }
 
-  // 0.0.0.0 + no auth — print a one-line warning. Heron OSS is intended
-  // for local-dev / private-network use; Heron_v1 hosted handles auth.
-  if (config.host === '0.0.0.0') {
+  // 0.0.0.0 + no auth — print an emphatic warning. Heron OSS has NO
+  // authentication and the POST endpoints can spawn arbitrary processes
+  // via the MCP stdio transport. Treat 0.0.0.0 as "trusted private LAN
+  // only" — never expose to the public internet.
+  if (config.host === '0.0.0.0' || config.host === '::') {
     logger.raw(
-      '  \x1b[33mNote:\x1b[0m bound on 0.0.0.0 with no auth — intended for local-dev / private network only. Do NOT expose this port to the public internet.',
+      '  \x1b[31m\x1b[1mWARNING:\x1b[0m bound on ' + config.host + ' — Heron OSS has NO authentication and POST endpoints can spawn arbitrary processes via the MCP stdio transport. Do NOT expose this port to the public Internet. Loopback (127.0.0.1) is the new default; pass --host explicitly to opt in to LAN exposure.',
     );
   }
 
+  // CRITICAL: Host-header allow-list. Defends against DNS-rebinding
+  // attacks where a hostile webpage in the user's browser (which can
+  // freely reach loopback) issues a POST whose Host: header resolves to
+  // attacker.com but whose TCP connection lands on our loopback server.
+  // We reject any request whose Host: header is not in this set BEFORE
+  // any route dispatch — return 421 Misdirected Request (the
+  // spec-correct status for an unrecognised Host).
+  const allowedHosts = buildAllowedHosts(config);
+
   const server = createServer(async (req, res) => {
+    // Host-header allow-list (CRITICAL — defence against DNS rebinding).
+    // Reject before any route dispatch so a hostile Host header cannot
+    // ride the user's loopback browser session into a write endpoint.
+    if (!isAllowedHost(req.headers.host, allowedHosts)) {
+      res.writeHead(421, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(
+        `421 Misdirected Request — Host header '${String(req.headers.host ?? '')}' is not in the allow-list. ` +
+          'If this is intentional, set HERON_ALLOWED_HOSTS=hostname1,hostname2 before starting heron serve.',
+      );
+      return;
+    }
+
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1203,6 +1229,53 @@ async function readRawBody(req: IncomingMessage, limit: number): Promise<Buffer>
  * a hostile cross-origin page from triggering writes via the user's
  * browser session.
  */
+/**
+ * CRITICAL: Build the Host-header allow-list at server start.
+ *
+ * Loopback names + the configured bind host are always allowed. The
+ * `HERON_ALLOWED_HOSTS` env var (comma-separated) lets the operator
+ * extend the set without rebuilding — useful for reverse-proxy /
+ * production-style deploys where the public hostname is fronted by
+ * nginx/Caddy and the inbound Host header is the public DNS name.
+ *
+ * 0.0.0.0 / `::` / wildcard binds do NOT auto-extend the allow-list —
+ * the operator must opt in via HERON_ALLOWED_HOSTS so we never accept
+ * an arbitrary `Host: attacker.com` just because we bound widely.
+ */
+function buildAllowedHosts(config: ServerConfig): Set<string> {
+  const set = new Set<string>();
+  const addAll = (names: string[]) => names.forEach((n) => set.add(n.toLowerCase()));
+  // Loopback is always allowed, both with and without port.
+  addAll(['localhost', '127.0.0.1', '[::1]']);
+  addAll([`localhost:${config.port}`, `127.0.0.1:${config.port}`, `[::1]:${config.port}`]);
+  // Configured bind host — added unless it is a wildcard / loopback alias.
+  if (
+    config.host &&
+    !['127.0.0.1', '0.0.0.0', '::', 'localhost'].includes(config.host)
+  ) {
+    set.add(config.host.toLowerCase());
+    set.add(`${config.host.toLowerCase()}:${config.port}`);
+  }
+  // Optional env override.
+  const env = process.env.HERON_ALLOWED_HOSTS;
+  if (env) {
+    for (const h of env.split(',').map((s) => s.trim()).filter(Boolean)) {
+      set.add(h.toLowerCase());
+    }
+  }
+  return set;
+}
+
+/**
+ * Returns true when `reqHost` is in `allowed`. Comparison is
+ * case-insensitive. Missing Host header → reject (HTTP/1.1 requires
+ * Host; absence is a 400-class signal).
+ */
+function isAllowedHost(reqHost: string | undefined, allowed: Set<string>): boolean {
+  if (!reqHost || typeof reqHost !== 'string') return false;
+  return allowed.has(reqHost.toLowerCase());
+}
+
 function isSameOriginPost(req: IncomingMessage): boolean {
   const host = req.headers.host;
   if (!host) return false;
