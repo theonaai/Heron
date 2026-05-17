@@ -89,6 +89,14 @@ export interface ScanRunnerArgs {
   verify?: string;
   declaredSourceSpec?: string;
   approvalAgentId?: string;
+  /**
+   * Round-2 M2: per-request timeout signal. Runners that own a stdio
+   * subprocess / HTTP fetch SHOULD listen on this and abort early when
+   * the signal fires; the server's `Promise.race` will surface a 504
+   * regardless. Optional so test stubs and the default runner stay
+   * backwards-compatible.
+   */
+  signal?: AbortSignal;
 }
 
 export type ScanRunner = (args: ScanRunnerArgs) => Promise<string>;
@@ -1185,6 +1193,30 @@ async function handleApiScanDetail(res: ServerResponse, scans: ScanManager, id: 
 /** Per-POST body cap (1 MiB) — applies to every write handler. */
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
 
+/**
+ * Round-2 M2: cap on concurrent /api/scans triggers per process.
+ * Scans are CPU/IO heavy and can each spawn a subprocess (stdio MCP).
+ * Unbounded fan-out from a single (loopback) attacker who reaches the
+ * write endpoint would otherwise OOM the host. Defaults to 3; operator
+ * raises it via `HERON_MAX_CONCURRENT_SCANS` if they have headroom.
+ */
+function parseEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+let _inFlightScans = 0;
+
+/**
+ * Round-2 M2: HTTP-layer caps on form arrays. The downstream parsers
+ * also have their own caps; this layer rejects oversize lists BEFORE
+ * any parsing work runs.
+ */
+const MAX_VERIFY_ENTRIES = 16;
+const MAX_EVIDENCE_REFS = 32;
+
 /** Cap on the sanitised display-name slug. */
 const MAX_DECLARED_DISPLAY_NAME_LEN = 64;
 
@@ -1556,9 +1588,39 @@ async function handleApiScanTrigger(
     return;
   }
 
+  // Round-2 M2: concurrency cap. Reject with 429 + Retry-After when
+  // the per-process inflight scan count is already at the cap. Each
+  // scan can spawn a stdio subprocess and tie up an MCP connection, so
+  // unbounded fan-out from a single client is an easy memory/FD DoS.
+  const maxConcurrent = parseEnvInt('HERON_MAX_CONCURRENT_SCANS', 3);
+  if (_inFlightScans >= maxConcurrent) {
+    res.writeHead(429, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Retry-After': '30',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(
+      `429 Too Many Concurrent Scans (${_inFlightScans}/${maxConcurrent}). Try again in 30 seconds.`,
+    );
+    return;
+  }
+
+  // Round-2 M2: per-request timeout. A wedged MCP server (slow stdio,
+  // hung HTTP) would otherwise hold the scan slot forever and let one
+  // attacker park all concurrency-budgets indefinitely. AbortController
+  // signals the runner to bail; we surface 504 to the browser if the
+  // signal fires before the runner resolves. The signal is also passed
+  // through `signal` on the runner args so runners that opt in can
+  // tear down their own subprocesses.
+  const timeoutMs = parseEnvInt('HERON_SCAN_TIMEOUT_MS', 300000);
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  _inFlightScans++;
   let scanId: string;
+  let timedOut = false;
   try {
-    scanId = await ctx.runner({
+    const runnerPromise = ctx.runner({
       scanManager: ctx.scans,
       reportDir: ctx.reportDir,
       ...(ctx.approvalsDir ? { approvalsDir: ctx.approvalsDir } : {}),
@@ -1569,11 +1631,34 @@ async function handleApiScanTrigger(
       ...(verifyJoined ? { verify: verifyJoined } : {}),
       ...(declaredSourceRaw ? { declaredSourceSpec: declaredSourceRaw } : {}),
       ...(approvalAgentId ? { approvalAgentId } : {}),
+      signal: controller.signal,
     });
+    const abortPromise = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener(
+        'abort',
+        () => {
+          timedOut = true;
+          reject(new Error(`scan exceeded timeout of ${timeoutMs} ms`));
+        },
+        { once: true },
+      );
+    });
+    scanId = await Promise.race([runnerPromise, abortPromise]);
   } catch (err) {
+    if (timedOut) {
+      res.writeHead(504, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(`504 Gateway Timeout — scan exceeded ${timeoutMs} ms (set HERON_SCAN_TIMEOUT_MS to raise).`);
+      return;
+    }
     logger.error(`Scan trigger failed: ${err instanceof Error ? err.message : String(err)}`);
     htmlError(res, 500, 'Scan failed', err instanceof Error ? err.message : String(err));
     return;
+  } finally {
+    clearTimeout(timeoutHandle);
+    _inFlightScans--;
   }
 
   redirect303(res, `/scans/${scanId}`);
