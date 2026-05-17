@@ -1540,6 +1540,18 @@ async function handleApiScanTrigger(
     return;
   }
 
+  // Round-2 L1: HTTP-layer cap on verify list size. Rejected BEFORE
+  // parseVerifyFlag runs so a hostile body never reaches the downstream
+  // parsers' loops.
+  if (verifyArray.length > MAX_VERIFY_ENTRIES) {
+    htmlError(
+      res,
+      400,
+      'Too many verify sources',
+      `at most ${MAX_VERIFY_ENTRIES} verify entries are accepted per request`,
+    );
+    return;
+  }
   let verifyJoined = '';
   if (verifyArray.length > 0) {
     verifyJoined = verifyArray.join(',');
@@ -1711,6 +1723,18 @@ async function handleApiApprovalAdd(
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean);
+
+  // Round-2 L1: HTTP-layer cap on evidence-refs list size. Rejected
+  // BEFORE the chain append touches disk.
+  if (evidenceRefs.length > MAX_EVIDENCE_REFS) {
+    htmlError(
+      res,
+      400,
+      'Too many evidence refs',
+      `at most ${MAX_EVIDENCE_REFS} evidence-refs entries are accepted per request`,
+    );
+    return;
+  }
 
   const entry: Omit<ApprovalEntry, 'prevHash'> = {
     action: action as ApprovalAction,
