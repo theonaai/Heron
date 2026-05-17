@@ -124,7 +124,10 @@ describe('scan + approval routes', () => {
     expect(detail.status).toBe(200);
     const detailHtml = await detail.text();
     expect(detailHtml).toContain('sample-agent');
-    expect(detailHtml).toContain('<h1>');
+    // AAP-54: the new SOC-style renderer emits <h1 class="cover-title">
+    // for the document heading; match the tag prefix instead of the
+    // bare <h1> string the prior shell used.
+    expect(detailHtml).toMatch(/<h1[\s>]/);
   });
 
   it('rejects a malformed scan id with 404 — never escapes scansDir', async () => {

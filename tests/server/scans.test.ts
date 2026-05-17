@@ -232,7 +232,7 @@ describe('ScanManager — disk layout invariants', () => {
     }
   });
 
-  it('html file is self-contained (no <script src>, no <link rel=stylesheet>)', async () => {
+  it('html file is self-contained (no <script src>, no third-party stylesheet besides Google Fonts)', async () => {
     const mgr = new ScanManager(dir);
     const rec = await mgr.create({
       agentLabel: 'self',
@@ -242,8 +242,16 @@ describe('ScanManager — disk layout invariants', () => {
     await mgr.complete(rec.id, makeReport(), '# Hello');
     const html = readFileSync(join(dir, `${rec.id}.html`), 'utf-8');
     expect(html).toContain('<!DOCTYPE html>');
+    // No external scripts whatsoever.
     expect(html).not.toMatch(/<script\s+src=/i);
-    expect(html).not.toMatch(/<link\s+rel="stylesheet"/i);
+    // AAP-54: Google Fonts is the SINGLE approved external resource —
+    // typography is core to the design and the system stack in
+    // --r-font-* takes over gracefully when the link is unreachable.
+    // Anything else (other CDNs, app stylesheets) is still forbidden.
+    const stylesheetLinks = [...html.matchAll(/<link\s+[^>]*rel="stylesheet"[^>]*>/gi)];
+    for (const m of stylesheetLinks) {
+      expect(m[0]).toMatch(/fonts\.googleapis\.com/);
+    }
   });
 
   it('persists the report object inside the JSON file', async () => {
