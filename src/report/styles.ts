@@ -63,7 +63,10 @@ export const REPORT_CSS = `
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 
-  max-width: 1400px;
+  /* PR #27 / AAP-56 — 1400px column was too wide for prose. Narrow to
+     980px (Vijil reference) for a measure of ~75-90 characters per line
+     in the sans body and the serif headings. */
+  max-width: 980px;
   margin: 0 auto;
   padding: 32px 40px 80px;
 }
@@ -97,13 +100,15 @@ export const REPORT_CSS = `
 /* PR #26: more generous breathing room between cover / TOC / first
    section. The PR #25 spacing was print-dense; Vijil's reference has
    ~80px gaps between major blocks. */
+/* PR #27 / AAP-56 — halve the cover-to-TOC gap so the cover doesn't
+   shed ~120px of whitespace before the first navigable block. */
 .heron-report .cover {
   display: flex;
   flex-direction: column;
   gap: 28px;
-  padding: 0 0 56px;
+  padding: 0 0 32px;
   border-bottom: 1px solid var(--r-border);
-  margin-bottom: 64px;
+  margin-bottom: 32px;
 }
 .heron-report .cover-brand {
   display: flex;
@@ -262,8 +267,8 @@ export const REPORT_CSS = `
   border-radius: var(--r-radius);
   background: var(--r-bg-muted);
   padding: 20px 24px;
-  margin-top: 8px;
-  margin-bottom: 64px;
+  margin-top: 24px;
+  margin-bottom: 32px;
 }
 .heron-report .toc-title {
   font-family: var(--r-font-mono);
@@ -376,7 +381,7 @@ export const REPORT_CSS = `
   margin: 0 0 8px;
 }
 .heron-report .exec-sub p {
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.55;
   color: var(--r-ink-2);
 }
@@ -388,31 +393,45 @@ export const REPORT_CSS = `
   gap: 6px;
   margin: 4px 0 0;
 }
+/* PR #27 / AAP-56 — the previous grid rule (display: grid;
+   grid-template-columns: 28px 1fr) was auto-distributing the LI's
+   three inline children (severity pill, title text node, citation
+   muted-span) across a 2x2 grid: the pill stretched to fill the
+   content column, the title text wrapped to the counter column one
+   word per line, and the citation overlapped the title column. Flex
+   with baseline alignment lets the counter sit as a fixed-width
+   leading column while the pill keeps its inline-flex natural width
+   and the title + citation flow inline. */
 .heron-report .findings-list > li,
 .heron-report .recommended-actions > li {
-  display: grid;
-  grid-template-columns: 28px 1fr;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
   gap: 8px;
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.5;
   color: var(--r-ink-2);
   padding-left: 0;
+}
+.heron-report .findings-list > li > .sev {
+  flex: 0 0 auto;
 }
 .heron-report .findings-list > li::before,
 .heron-report .recommended-actions > li::before {
   content: counter(ef, decimal-leading-zero);
   counter-increment: ef;
+  flex: 0 0 28px;
   font-family: var(--r-font-mono);
   font-size: 11px;
   color: var(--r-ink-4);
   letter-spacing: 0.05em;
-  padding-top: 3px;
+  align-self: baseline;
 }
 .heron-report .framework-coverage {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--r-ink-2);
 }
 .heron-report .framework-coverage > li {
@@ -422,7 +441,7 @@ export const REPORT_CSS = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--r-ink-2);
 }
 .heron-report .chain-status {
@@ -584,7 +603,7 @@ export const REPORT_CSS = `
   border-left: 3px solid var(--r-ink-2);
   background: var(--r-bg-muted);
   color: var(--r-ink-2);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.6;
   padding: 14px 18px;
   border-radius: 0 var(--r-radius) var(--r-radius) 0;
@@ -729,7 +748,7 @@ export const REPORT_CSS = `
   gap: 12px;
   padding: 12px 0;
   border-bottom: 1px solid var(--r-border);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.55;
   color: var(--r-ink-2);
 }
