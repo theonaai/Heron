@@ -396,6 +396,98 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<RunMcpScanRes
   return { ...result.value, scanId: managerScanId ?? scanId };
 }
 
+/**
+ * AAP-59 (PR #30): emit operator-visible warnings for source-level failures.
+ *
+ * Called from `runVerificationForCli` after `runVerification` returns and
+ * before the report is rendered / written to disk. The goal is to surface
+ * source-level outcomes the operator could otherwise miss when scanning
+ * a long Markdown report — specifically the case where a verification
+ * source returned `unverified` (auth failure, transport error, invalid
+ * config, parse error) and the rendered report shows 0 findings with no
+ * explanation. A pilot reviewer would read that as "clean" instead of
+ * "we could not check".
+ *
+ * Contract:
+ *  - For `verdict: 'unverified'` (or future `failed`), emit a yellow
+ *    "Warning:" header naming the sourceId, error kind, scrubbed reason,
+ *    and a connector-specific hint where one applies.
+ *  - For ok-verdict sources with non-empty `warnings`, emit
+ *    `Note (<sourceId>): ...` lines — matches the existing
+ *    `Note (declared-source): ...` pattern at the top of
+ *    `runVerificationForCli`.
+ *  - For `verified` / `discrepancy` verdicts with no warnings, emit
+ *    nothing (these are the success / success-with-findings paths and
+ *    are already represented in the report body).
+ *
+ * Credentials: `source.error.message` is already scrubbed at the source
+ * boundary (see `src/verification/sources/oauth-scopes/scrub.ts`). We
+ * trust that contract here and do NOT re-apply scrub at the CLI layer —
+ * that would require the CLI to know each source's credential shape,
+ * which is exactly the coupling the scrub helper exists to avoid.
+ *
+ * Exported for unit-test direct-call coverage; the wired call site is
+ * `runVerificationForCli`.
+ */
+export function emitSourceVerdictWarnings(report: VerificationReport): void {
+  if (!report.sources || report.sources.length === 0) return;
+
+  for (const source of report.sources) {
+    const isFailure =
+      source.verdict === 'unverified' ||
+      // Forward-compat: a future verdict like `failed` should also
+      // surface here. The current union type is verified|discrepancy|
+      // unverified, but we keep this branch so adding `failed` to the
+      // union does not require a follow-up CLI patch.
+      (source.verdict as string) === 'failed';
+
+    if (isFailure) {
+      const reason = source.error?.message ?? 'no actual inventory returned';
+      const kind = source.error?.kind ?? 'unverified';
+      // YELLOW + RESET escape codes mirror the bold-banner style used
+      // elsewhere in this file (see lines ~160, ~390). Tests assert on
+      // the plain-text content so the colour codes are invisible to the
+      // assertion layer.
+      logger.raw('');
+      logger.raw(
+        `  \x1b[33mWarning:\x1b[0m verification source '${source.sourceId}' returned ${source.verdict}`,
+      );
+      logger.raw(`           kind:   ${kind}`);
+      logger.raw(`           reason: ${reason}`);
+
+      // Connector-specific remediation hints. Keep these tightly scoped
+      // — a wrong-hint costs more operator-confidence than no hint.
+      if (source.sourceId === 'oauth-scopes' && source.error?.kind === 'unauthorized') {
+        logger.raw(
+          `           hint:   access token may have expired (Google tokens live 1 hour). Re-generate via https://developers.google.com/oauthplayground/`,
+        );
+      } else if (
+        source.sourceId === 'oauth-scopes' &&
+        source.error?.kind === 'invalid_config'
+      ) {
+        logger.raw(
+          `           hint:   check HERON_GOOGLE_ACCESS_TOKEN / HERON_GREENHOUSE_API_KEY / HERON_BAMBOOHR_API_KEY env var format`,
+        );
+      }
+      logger.raw('');
+    }
+
+    // Surface partial-read warnings even for ok-verdict sources. For
+    // failure verdicts the big block above already names the root cause
+    // — we skip the `Note (...)` repeat to keep the operator's eye on
+    // the actionable kind/reason/hint lines.
+    if (
+      !isFailure &&
+      source.warnings &&
+      source.warnings.length > 0
+    ) {
+      for (const w of source.warnings) {
+        logger.raw(`  Note (${source.sourceId}): ${w}`);
+      }
+    }
+  }
+}
+
 /** Sanitised one-line summary of a declared-source config (no raw paths/credentials in user-facing log). */
 function declaredSourceSummary(cfg: DeclaredSourceConfig): string {
   if (cfg.backend === 'file') return `file:${cfg.path}`;
@@ -707,6 +799,15 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<V
     sources,
     agentLabel: args.agentLabel,
   });
+
+  // AAP-59 (PR #30): surface source-level outcomes on stderr before the
+  // final report write. Without this, a `--verify oauth-scopes:google-
+  // workspace` run with an expired access token returns `unverified` + 0
+  // findings silently — the operator sees only a low score and no clue
+  // what went wrong. `emitSourceVerdictWarnings` names the source, the
+  // error kind, the (already-scrubbed) reason, and a connector-specific
+  // remediation hint.
+  emitSourceVerdictWarnings(report);
 
   // AAP-49 round 2 (HIGH-1): attach the pre-resolved approval chain
   // and run the framework mapper here, at the CLI boundary. Doing this
