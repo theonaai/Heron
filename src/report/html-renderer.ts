@@ -53,6 +53,7 @@ import type {
   VerificationReport,
 } from '../verification/types.js';
 import { FAVICON_LINK } from '../server/render.js';
+import { HERON_LOGO_SVG } from './logo.js';
 import { REPORT_CSS, REPORT_FONTS_HEAD } from './styles.js';
 
 // ─── Public types ───────────────────────────────────────────────────
@@ -301,8 +302,12 @@ function renderCoverPage(_report: VerificationReport, opts: HtmlRenderOptions, s
   // restores the original intent without leaving the dead branch.
   const scoreToneClass = score.verdict === 'PASSED' ? 'mono' : score.verdict === 'PARTIAL' ? 'mono warn' : 'mono crit';
   const generatedFormatted = formatGeneratedTimestamp(opts.generatedAt);
+  // PR #29 / AAP-58: embed the Heron brand mark as an inline SVG next
+  // to the wordmark. The constant in ./logo.js carries class="cover-logo"
+  // and fill="currentColor"; sizing lives in styles.ts (.cover-logo).
   return `<section class="cover">
   <div class="cover-brand">
+    ${HERON_LOGO_SVG}
     <span class="cover-mark">Heron</span>
   </div>
   <div class="cover-titles">
