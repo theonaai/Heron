@@ -110,10 +110,20 @@ export const REPORT_CSS = `
   border-bottom: 1px solid var(--r-border);
   margin-bottom: 32px;
 }
+/* PR #29 / AAP-58 — cover-brand carries the inline Heron SVG mark
+   alongside the wordmark. align-items switches from baseline to center
+   so the SVG box sits visually centered against the wordmark
+   cap-height instead of riding off the descender baseline. */
 .heron-report .cover-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
+}
+.heron-report .cover-logo {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  color: var(--r-ink);
 }
 .heron-report .cover-mark {
   font-family: var(--r-font-serif);
