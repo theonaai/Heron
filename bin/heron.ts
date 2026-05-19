@@ -307,6 +307,21 @@ program
     }
   });
 
+// ─── setup: interactive LLM credentials wizard (AAP-61) ────────────────────
+
+program
+  .command('setup')
+  .description('Configure LLM provider and credentials — saves to ~/.heron/credentials.json')
+  .action(async () => {
+    try {
+      const { runSetupCommand } = await import('../src/commands/setup.js');
+      await runSetupCommand();
+    } catch (err) {
+      logger.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
 // ─── Interactive mode: no args → ask what to do ─────────────────────────────
 
 import { createInterface } from 'node:readline';
@@ -420,7 +435,7 @@ async function interactiveStart(): Promise<void> {
 }
 
 const args = process.argv.slice(2);
-const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'diff', 'mcp-serve', 'approve', 'approvals', 'interview', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
+const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'setup', 'diff', 'mcp-serve', 'approve', 'approvals', 'interview', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
 
 if (!hasSubcommand && args.length > 0) {
   // Legacy: flags without subcommand → scan

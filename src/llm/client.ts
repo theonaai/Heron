@@ -229,6 +229,18 @@ export async function createLLMClient(config: LLMConfig): Promise<LLMClient> {
 
   let providerOverride: 'anthropic' | 'openai' | 'gemini' | undefined;
 
+  // Try ~/.heron/credentials.json before falling back to the wizard
+  // (only when no key was supplied via flag or env var).
+  if (!apiKey) {
+    const { loadCredentials } = await import('../commands/setup.js');
+    const saved = await loadCredentials();
+    if (saved) {
+      apiKey = saved.apiKey;
+      if (saved.baseURL) baseURL = saved.baseURL;
+      providerOverride = saved.provider;
+    }
+  }
+
   if (!apiKey) {
     if (process.stdin.isTTY) {
       const { runLLMOnboarding, OnboardingCancelled } = await import('./onboarding.js');
@@ -246,10 +258,11 @@ export async function createLLMClient(config: LLMConfig): Promise<LLMClient> {
     } else {
       throw new Error(
         `No API key found. Use one of:\n` +
-        `  1. --llm-key <key>  (optionally --llm-base-url <url>)\n` +
-        `  2. HERON_LLM_API_KEY env var (optionally HERON_LLM_BASE_URL)\n` +
-        `  3. ANTHROPIC_API_KEY env var\n` +
-        `  4. OPENAI_API_KEY env var`,
+        `  1. heron setup  (interactive — saves to ~/.heron/credentials.json)\n` +
+        `  2. --llm-key <key>  (optionally --llm-base-url <url>)\n` +
+        `  3. HERON_LLM_API_KEY env var (optionally HERON_LLM_BASE_URL)\n` +
+        `  4. ANTHROPIC_API_KEY env var\n` +
+        `  5. OPENAI_API_KEY env var`,
       );
     }
   }
