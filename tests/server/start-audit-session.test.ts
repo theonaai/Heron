@@ -131,12 +131,30 @@ describe('HeronMCPServer.start_audit_session', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
+    // AAP-53.5 — tool call returns immediately with status 'interviewing'.
+    // Background work continues; we poll for completion.
     expect(result.value.session_id).toMatch(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/);
-    expect(result.value.status).toBe('complete');
+    expect(result.value.status).toBe('interviewing');
+    expect(result.value.questions_asked).toBe(0);
+
+    // Wait for the background interview + analyze to settle. Poll the
+    // store rather than rely on a fixed sleep; fake runners resolve
+    // within a couple of microtask turns.
+    const sessionId = result.value.session_id;
+    let stored = await getSession(sessionId);
+    const start = Date.now();
+    // Wait for both status=complete AND riskLevel set — there's an
+    // ordering race where writeReport flips status before
+    // updateSessionMeta sets riskLevel.
+    while (
+      (stored?.status !== 'complete' || stored?.riskLevel === undefined) &&
+      Date.now() - start < 5000
+    ) {
+      await new Promise((r) => setTimeout(r, 10));
+      stored = await getSession(sessionId);
+    }
     expect(fakeRunInterview).toHaveBeenCalledTimes(1);
     expect(fakeAnalyze).toHaveBeenCalledTimes(1);
-
-    const stored = await getSession(result.value.session_id);
     expect(stored).not.toBeNull();
     expect(stored!.status).toBe('complete');
     expect(stored!.transcript.length).toBe(3);

@@ -166,16 +166,19 @@ describe('start_audit_session — MCP sampling E2E', () => {
           report_markdown?: string;
         };
       };
+      // AAP-53.5 — tool call returns immediately with status 'interviewing'.
+      // Background interview + analyze continues; we poll for completion.
       expect(r.isError).toBeFalsy();
-      expect(r.structuredContent?.status).toBe('complete');
+      expect(r.structuredContent?.status).toBe('interviewing');
       expect(r.structuredContent?.session_id).toMatch(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/);
-      expect(r.structuredContent?.questions_asked).toBeGreaterThanOrEqual(9);
-      expect(r.structuredContent?.report_markdown).toMatch(/Audit Report/);
 
-      // The transcript and the report blob must round-trip through the
-      // filesystem store the dashboard reads from.
       const sessionId = r.structuredContent!.session_id!;
-      const stored = await getSession(sessionId);
+      let stored = await getSession(sessionId);
+      const start = Date.now();
+      while ((stored?.status !== 'complete') && Date.now() - start < 25_000) {
+        await new Promise((res) => setTimeout(res, 50));
+        stored = await getSession(sessionId);
+      }
       expect(stored).not.toBeNull();
       expect(stored!.status).toBe('complete');
       expect(stored!.transcript.length).toBeGreaterThanOrEqual(9);
