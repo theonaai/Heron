@@ -506,67 +506,88 @@ export class HeronMCPServer {
     // Emit a status-change event so the SSE listeners pick up the new session
     publishSessionEvent(sessionId, { type: 'status-change', status: 'interviewing' });
 
-    try {
-      // AAP-53.4 — heartbeat right after session creation so the
-      // client's tool-call timer resets BEFORE the first sampling
-      // round-trip starts. Codex CLI's 120s default would otherwise
-      // count down through the entire interview.
-      ctx.progress({ stage: 'interview-start', message: `Audit session ${sessionId} started` });
+    // AAP-53.5 — fire-and-forget pattern.
+    //
+    // Earlier attempts (AAP-53.3/53.4) tried to keep the tool call open
+    // for the full interview duration (3-5 min). Two timeouts killed
+    // every run:
+    //   - Codex CLI's tool-call client timeout (120s, not user-configurable)
+    //     — our MCP `notifications/progress` heartbeats turned out NOT to
+    //     reset Codex's client timer.
+    //   - Our own SamplingConnector per-question timeout (5min) — fired
+    //     once Codex aborted the tool call, leaving the session in 'error'.
+    //
+    // The fix: return from the tool call immediately with just the session
+    // id, and run the interview as a background promise. MCP **sessions**
+    // are long-lived; only tool **calls** are bounded. The same SDK
+    // `Server` instance keeps accepting sampling/createMessage requests
+    // after this handler returns. Codex's client SDK handles incoming
+    // sampling/createMessage requests asynchronously regardless of any
+    // tool call being active.
+    //
+    // Clients retrieve the finished report by polling `get_report` with
+    // the returned session_id. The dashboard SSE bus continues to stream
+    // live transcript updates as the interview progresses.
+    const samplingServer = this.samplingServer;
+    const runSamplingInterview = this.runSamplingInterview;
+    const analyzeAndRenderReport = this.analyzeAndRenderReport;
 
-      const interviewResult = await this.runSamplingInterview({
-        sessionId,
-        sampler: this.samplingServer,
-        signal: ctx.signal,
-        progress: ctx.progress,
-      });
-
-      await updateSessionMeta(sessionId, { status: 'analyzing' });
-      publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
-      ctx.progress({ stage: 'analyzing', message: 'Interview complete — generating report' });
-
-      const rendered = await this.analyzeAndRenderReport({
-        sessionId,
-        transcript: interviewResult.transcript,
-        ...(agent_name !== undefined ? { agentName: agent_name } : {}),
-      });
-
-      await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-      if (rendered.riskLevel) {
-        await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
-      }
-      publishSessionEvent(sessionId, {
-        type: 'status-change',
-        status: 'complete',
-        ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
-      });
-
-      return {
-        ok: true,
-        value: {
-          session_id: sessionId,
-          status: 'complete',
-          questions_asked: interviewResult.questionsAsked,
-          ...(rendered.riskLevel !== undefined ? { risk_level: rendered.riskLevel } : {}),
-          report_markdown: rendered.markdown,
-        },
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+    // Best-effort fire-and-forget. `void` so we don't accidentally await.
+    void (async (): Promise<void> => {
       try {
-        await updateSessionMeta(sessionId, { status: 'error' });
-      } catch {
-        // Best-effort — meta might already be broken.
+        const interviewResult = await runSamplingInterview({
+          sessionId,
+          sampler: samplingServer,
+          signal: ctx.signal,
+          progress: ctx.progress,
+        });
+
+        await updateSessionMeta(sessionId, { status: 'analyzing' });
+        publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
+
+        const rendered = await analyzeAndRenderReport({
+          sessionId,
+          transcript: interviewResult.transcript,
+          ...(agent_name !== undefined ? { agentName: agent_name } : {}),
+        });
+
+        await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+        if (rendered.riskLevel) {
+          await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+        }
+        publishSessionEvent(sessionId, {
+          type: 'status-change',
+          status: 'complete',
+          ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        try {
+          await updateSessionMeta(sessionId, { status: 'error' });
+        } catch {
+          // Best-effort — meta might already be broken.
+        }
+        publishSessionEvent(sessionId, { type: 'error', message });
       }
-      publishSessionEvent(sessionId, { type: 'error', message });
-      return {
-        ok: false,
-        error: {
-          kind: 'tool_failure',
-          cause: 'interview_or_analysis',
-          message,
-        },
-      };
-    }
+    })();
+
+    // Return immediately. Status is 'interviewing' — the client polls
+    // get_report or watches the dashboard SSE stream to track progress.
+    return {
+      ok: true,
+      value: {
+        session_id: sessionId,
+        status: 'interviewing',
+        questions_asked: 0,
+        report_markdown:
+          `Audit session **${sessionId}** started in the background. ` +
+          `The full interview takes 3-5 minutes; the dashboard at ` +
+          `http://127.0.0.1:3700/dashboard/sessions/${sessionId} updates ` +
+          `live as each question is answered. Once the status flips to ` +
+          `'complete', call \`get_report\` with this session id to retrieve ` +
+          `the final markdown report.`,
+      },
+    };
   }
 
   private handleGetReport(rawInput: GetReportInput): MCPServerResult<GetReportOutput> {
