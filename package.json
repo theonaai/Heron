@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@clack/prompts": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.0.0",
     "openai": "^4.70.0",
