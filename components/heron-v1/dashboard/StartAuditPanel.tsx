@@ -15,10 +15,26 @@ import { Check, Copy, Loader2 } from 'lucide-react';
 // redirects to the session detail page as soon as one shows up.
 // ────────────────────────────────────────────────────────────────
 
-const HERON_MCP_ENDPOINT = 'http://127.0.0.1:3700/mcp';
-const CONNECT_PROMPT = `Please configure Heron as an MCP server at ${HERON_MCP_ENDPOINT} and then call the start_audit_session tool to begin a compliance audit of yourself. Report what comes back.`;
-
+// AAP-53.2 — bug fix. Previous hardcoded `:3700` assumed Heron always
+// binds the default port, but `browser-first.ts` falls back to 3701–3710
+// when 3700 is busy (common after a stale build). Codex was given the
+// 3700 URL by the dashboard, hit a stale Heron on 3700, got a 500, and
+// fell back to a CLI-spawned standalone server on a spare port. Compute
+// the endpoint from `window.location` at render time so the prompt
+// always points at the actual server the user is looking at.
 const POLL_INTERVAL_MS = 2000;
+
+function computeMcpEndpoint(): string {
+  // SSR guard — `window` is undefined during static generation. Fall
+  // back to a sensible default; the client component re-renders with
+  // the real host once hydrated.
+  if (typeof window === 'undefined') return 'http://127.0.0.1:3700/mcp';
+  return `${window.location.protocol}//${window.location.host}/mcp`;
+}
+
+function buildConnectPrompt(endpoint: string): string {
+  return `Please configure Heron as an MCP server at ${endpoint} and then call the start_audit_session tool to begin a compliance audit of yourself. Report what comes back.`;
+}
 
 function CopyButton({ text, label = 'Copy to clipboard' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -63,6 +79,15 @@ export default function StartAuditPanel() {
   const [conn, setConn] = useState<ConnectionState>('idle');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const startedAt = useState(() => Date.now())[0];
+
+  // Compute endpoint from the live window — survives port fallback
+  // when 3700 is busy. SSR renders the 3700 default; client hydration
+  // swaps in the real host.
+  const [endpoint, setEndpoint] = useState<string>('http://127.0.0.1:3700/mcp');
+  useEffect(() => {
+    setEndpoint(computeMcpEndpoint());
+  }, []);
+  const connectPrompt = buildConnectPrompt(endpoint);
 
   // Poll for newly-created sessions in 'interviewing' state. When one
   // appears, switch to 'audit_in_progress' and auto-redirect.
@@ -132,9 +157,9 @@ export default function StartAuditPanel() {
         <p className="mb-2 text-sm font-semibold text-slate-700">Endpoint</p>
         <div className="relative">
           <pre className="overflow-x-auto rounded-xl bg-slate-900 px-5 py-4 pr-12 font-mono text-sm text-slate-200">
-            {HERON_MCP_ENDPOINT}
+            {endpoint}
           </pre>
-          <CopyButton text={HERON_MCP_ENDPOINT} label="Copy endpoint URL" />
+          <CopyButton text={endpoint} label="Copy endpoint URL" />
         </div>
       </section>
 
@@ -144,9 +169,9 @@ export default function StartAuditPanel() {
         </p>
         <div className="relative">
           <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-slate-900 px-5 py-4 pr-12 font-mono text-sm leading-relaxed text-slate-200">
-            {CONNECT_PROMPT}
+            {connectPrompt}
           </pre>
-          <CopyButton text={CONNECT_PROMPT} label="Copy connection prompt" />
+          <CopyButton text={connectPrompt} label="Copy connection prompt" />
         </div>
         <p className="mt-2 text-xs text-slate-400">
           Most coding agents (Claude Code, Codex, Cursor, Continue) will update their own
