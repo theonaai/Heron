@@ -532,13 +532,24 @@ export class HeronMCPServer {
     const runSamplingInterview = this.runSamplingInterview;
     const analyzeAndRenderReport = this.analyzeAndRenderReport;
 
+    // AAP-53.5.1 — ctx.signal belongs to the parent tool call. The MCP
+    // SDK aborts it the moment the handler returns, which cascades into
+    // any pending sampling/createMessage and kills the background
+    // interview in 200-500ms with 0 questions asked. Use a fresh
+    // AbortController that lives for the background promise instead.
+    // The original ctx.progress callback also targets the tool-call's
+    // response stream and goes inert after the handler returns; we
+    // still pass it (no-op late notifications are harmless), but we
+    // do not rely on it for client-side timer resets in async mode.
+    const bgController = new AbortController();
+
     // Best-effort fire-and-forget. `void` so we don't accidentally await.
     void (async (): Promise<void> => {
       try {
         const interviewResult = await runSamplingInterview({
           sessionId,
           sampler: samplingServer,
-          signal: ctx.signal,
+          signal: bgController.signal,
           progress: ctx.progress,
         });
 
