@@ -90,6 +90,14 @@ export interface SamplingInterviewRunner {
     sessionId: string;
     sampler: Pick<Server, 'createMessage'>;
     signal: AbortSignal;
+    /**
+     * AAP-53.4 — optional progress callback. When provided, the runner
+     * calls it after every Q/A pair so the MCP `notifications/progress`
+     * bridge resets the client's tool-call timer. Without this, clients
+     * with a 120s default tool-call timeout (Codex CLI) abort before
+     * the multi-question interview can complete.
+     */
+    progress?: (n: { stage: string; pct?: number; message?: string }) => void;
   }): Promise<{
     transcript: QAPair[];
     questionsAsked: number;
@@ -499,14 +507,22 @@ export class HeronMCPServer {
     publishSessionEvent(sessionId, { type: 'status-change', status: 'interviewing' });
 
     try {
+      // AAP-53.4 — heartbeat right after session creation so the
+      // client's tool-call timer resets BEFORE the first sampling
+      // round-trip starts. Codex CLI's 120s default would otherwise
+      // count down through the entire interview.
+      ctx.progress({ stage: 'interview-start', message: `Audit session ${sessionId} started` });
+
       const interviewResult = await this.runSamplingInterview({
         sessionId,
         sampler: this.samplingServer,
         signal: ctx.signal,
+        progress: ctx.progress,
       });
 
       await updateSessionMeta(sessionId, { status: 'analyzing' });
       publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
+      ctx.progress({ stage: 'analyzing', message: 'Interview complete — generating report' });
 
       const rendered = await this.analyzeAndRenderReport({
         sessionId,

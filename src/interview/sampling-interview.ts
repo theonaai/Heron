@@ -27,6 +27,14 @@ export interface SamplingInterviewOptions {
   maxFollowUps?: number;
   /** Cooperative cancellation. */
   signal?: AbortSignal;
+  /**
+   * AAP-53.4 — heartbeat callback. Called after every Q/A pair the
+   * client answered. The MCP server bridge sends each call as
+   * `notifications/progress`, which resets the client's tool-call
+   * timer. Without it, clients (e.g. Codex CLI default 120s) abort
+   * the tool call long before the full interview finishes.
+   */
+  progress?: (n: { stage: string; pct?: number; message?: string }) => void;
 }
 
 export interface SamplingInterviewResult {
@@ -37,11 +45,12 @@ export interface SamplingInterviewResult {
 export async function runSamplingInterview(
   options: SamplingInterviewOptions,
 ): Promise<SamplingInterviewResult> {
-  const { sessionId, connector, llmClient, maxFollowUps = 3, signal } = options;
+  const { sessionId, connector, llmClient, maxFollowUps = 3, signal, progress } = options;
 
   const protocol = createProtocol(llmClient, maxFollowUps);
   const total = protocol.totalCoreQuestions;
   let prevCategory: QAPair['category'] | null = null;
+  let questionsCompleted = 0;
 
   const persistAndEmit = async (
     question: { category: QAPair['category']; text: string },
@@ -54,6 +63,13 @@ export async function runSamplingInterview(
     };
     await appendTranscriptEntry(sessionId, entry);
     publishSessionEvent(sessionId, { type: 'transcript-append', entry });
+    questionsCompleted += 1;
+    // AAP-53.4 — reset client's tool-call timer after every answer.
+    progress?.({
+      stage: 'interview',
+      pct: Math.round((questionsCompleted / total) * 100),
+      message: `Question ${questionsCompleted}/${total} answered (${question.category})`,
+    });
   };
 
   for (let i = 0; i < total; i++) {

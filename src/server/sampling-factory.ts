@@ -49,7 +49,7 @@ export async function buildSamplingDeps(
     options.llmClient ?? (await createLLMClient({} as Parameters<typeof createLLMClient>[0]));
   const maxFollowUps = options.maxFollowUps ?? 3;
 
-  const runSamplingInterview: SamplingInterviewRunner = async ({ sessionId, sampler, signal }) => {
+  const runSamplingInterview: SamplingInterviewRunner = async ({ sessionId, sampler, signal, progress }) => {
     const connector = new SamplingConnector({ server: sampler });
     try {
       return await runInterviewLoop({
@@ -58,6 +58,7 @@ export async function buildSamplingDeps(
         llmClient,
         maxFollowUps,
         signal,
+        ...(progress ? { progress } : {}),
       });
     } finally {
       await connector.close();
