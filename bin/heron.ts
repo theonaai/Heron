@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { loadConfigFromFlags } from '../src/config/loader.js';
-import { run } from '../src/index.js';
 import { startServer } from '../src/server/index.js';
 import * as logger from '../src/util/logger.js';
 
@@ -15,86 +13,58 @@ program
 
 // ─── scan: active mode (Heron → Agent) ───────────────────────────────────
 
+// AAP-64 / #33-C: `heron scan` is MCP-only now. The legacy
+// `--target <url>` HTTP interview-mode (Heron calls an OpenAI-compatible
+// chat API and asks structured questions) is removed — Ilya's call:
+// "вырезать функциональность, которая у нас была через CLI где мы ходим
+// к LLM сами и опрашиваем." The interactive interview that lives behind
+// `heron serve` (interactive-connector path) stays.
 program
   .command('scan')
-  .description('Interrogate an agent by connecting to its API')
-  .option('-t, --target <url>', 'Target agent URL (OpenAI-compatible chat API)')
-  .option('--target-type <type>', 'Connection type: http or interactive', 'http')
+  .description('Read an MCP server tool inventory and emit a verification report')
   .option('--mcp <config>', 'Connect to an MCP server (JSON config, http(s):// URL, or stdio:<command [args...]>) and emit a tool inventory report')
-  .option('--verify <sources>', 'Comma-separated verification sources to run alongside --mcp (currently: mcp-tools)')
+  .option('--verify <sources>', 'Comma-separated verification sources to run alongside --mcp (currently: mcp-tools, oauth-scopes:google-workspace, oauth-scopes:greenhouse, oauth-scopes:bamboohr)')
   .option('--declared-tools <names>', 'Comma-separated list of declared tool names (paired with --verify=mcp-tools)')
   .option('--declared-source <spec>', 'Declared-scope source — file:<path> or theona-mcp:<agentId>. Wins over --declared-tools when both are set.')
   .option('--agent-label <label>', 'Label for the verification report header (defaults to the MCP server label)')
-  .option('--approval-agent-id <id>', 'Agent identifier to look up the approval audit trail for (AAP-48 deliverable #5). The trail is spliced into the report; missing chain emits a recommendation, not a hard failure.')
+  .option('--approval-agent-id <id>', 'Agent identifier to look up the approval audit trail for. The trail is spliced into the report; missing chain emits a recommendation, not a hard failure.')
   .option('--approvals-dir <path>', 'Override approvals directory (default: ./.heron/approvals or HERON_APPROVALS_DIR)')
-  .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
-  .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
-  .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
-  .option('--llm-base-url <url>', 'LLM base URL — for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways (or set HERON_LLM_BASE_URL)')
   .option('-o, --output <path>', 'Save report to file (default: stdout)')
   .option('-f, --format <format>', 'Output format: markdown, html, or json', 'markdown')
-  .option('--scans-dir <dir>', 'Directory for scan record mirrors (AAP-52 browser dashboard)', './.heron/scans')
-  .option('-c, --config <path>', 'Path to heron.yaml config file')
-  .option('--max-followups <n>', 'Max follow-up questions per category', '3')
+  .option('--scans-dir <dir>', 'Directory for scan record mirrors', './.heron/scans')
   .option('--report-dir <dir>', 'Directory to save reports', './reports')
-  .option('-v, --verbose', 'Show detailed interview progress')
   .action(async (opts) => {
     try {
-      if (opts.mcp) {
-        // AAP-46 Role A: MCP transport replaces the OpenAI-compatible HTTP
-        // path. The interrogation pipeline is bypassed because MCP servers
-        // do not speak chat — instead we read tools/list and emit a
-        // tool-inventory report. Role B (heron mcp-serve) is in a follow-up
-        // PR; see src/connectors/mcp-types.ts and Linear AAP-46.
-        const { runMcpScan, parseVerifyFlag, parseDeclaredSourceFlag } = await import('../src/commands/mcp-scan.js');
-        const verifySources = typeof opts.verify === 'string' ? parseVerifyFlag(opts.verify) : [];
-        const declaredTools = typeof opts.declaredTools === 'string' && opts.declaredTools.trim() !== ''
-          ? opts.declaredTools.split(',').map((s: string) => ({ name: s.trim() })).filter((t: { name: string }) => t.name.length > 0)
-          : [];
-        const declaredSource = typeof opts.declaredSource === 'string' && opts.declaredSource.trim() !== ''
-          ? parseDeclaredSourceFlag(opts.declaredSource)
-          : undefined;
-        const format: 'markdown' | 'json' | 'html' =
-          opts.format === 'json' ? 'json'
-          : opts.format === 'html' ? 'html'
-          : 'markdown';
-        await runMcpScan({
-          mcp: opts.mcp,
-          outputPath: opts.output,
-          reportDir: opts.reportDir ?? './reports',
-          format,
-          verify: verifySources,
-          declaredTools,
-          ...(declaredSource !== undefined ? { declaredSource } : {}),
-          ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
-          ...(typeof opts.approvalAgentId === 'string' ? { approvalAgentId: opts.approvalAgentId } : {}),
-          ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
-          ...(typeof opts.scansDir === 'string' ? { scansDir: opts.scansDir } : {}),
-        });
-        return;
-      }
-
-      if (!opts.target && !opts.config && opts.targetType !== 'interactive') {
-        console.error('Either --target <url>, --config <path>, --target-type interactive, or --mcp <config> is required');
+      if (!opts.mcp) {
+        console.error('  --mcp <config> is required. Example: heron scan --mcp "stdio:node ./srv.js"');
+        console.error('  (the legacy --target HTTP interview-mode was removed in 0.5; use `heron serve` for browser-based interviews)');
         process.exit(1);
       }
 
-      const config = loadConfigFromFlags({
-        target: opts.target,
-        targetType: opts.targetType,
-        llmProvider: opts.llmProvider,
-        llmModel: opts.llmModel,
-        llmKey: opts.llmKey,
-        llmBaseURL: opts.llmBaseUrl,
-        output: opts.output,
-        format: opts.format,
-        config: opts.config,
-      });
-
-      await run(config, {
-        verbose: opts.verbose ?? false,
-        maxFollowUps: parseInt(opts.maxFollowups ?? '3', 10),
-        reportDir: opts.reportDir,
+      const { runMcpScan, parseVerifyFlag, parseDeclaredSourceFlag } = await import('../src/commands/mcp-scan.js');
+      const verifySources = typeof opts.verify === 'string' ? parseVerifyFlag(opts.verify) : [];
+      const declaredTools = typeof opts.declaredTools === 'string' && opts.declaredTools.trim() !== ''
+        ? opts.declaredTools.split(',').map((s: string) => ({ name: s.trim() })).filter((t: { name: string }) => t.name.length > 0)
+        : [];
+      const declaredSource = typeof opts.declaredSource === 'string' && opts.declaredSource.trim() !== ''
+        ? parseDeclaredSourceFlag(opts.declaredSource)
+        : undefined;
+      const format: 'markdown' | 'json' | 'html' =
+        opts.format === 'json' ? 'json'
+        : opts.format === 'html' ? 'html'
+        : 'markdown';
+      await runMcpScan({
+        mcp: opts.mcp,
+        outputPath: opts.output,
+        reportDir: opts.reportDir ?? './reports',
+        format,
+        verify: verifySources,
+        declaredTools,
+        ...(declaredSource !== undefined ? { declaredSource } : {}),
+        ...(typeof opts.agentLabel === 'string' ? { agentLabel: opts.agentLabel } : {}),
+        ...(typeof opts.approvalAgentId === 'string' ? { approvalAgentId: opts.approvalAgentId } : {}),
+        ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
+        ...(typeof opts.scansDir === 'string' ? { scansDir: opts.scansDir } : {}),
       });
     } catch (err) {
       logger.error(err instanceof Error ? err.message : String(err));
@@ -322,117 +292,15 @@ program
     }
   });
 
-// ─── Interactive mode: no args → ask what to do ─────────────────────────────
+// ─── Browser-first start: no args → spawn Next.js + open browser ────────────
+//
+// AAP-64 / #33-C: typing `heron` with no args now boots the Next.js
+// standalone server on 127.0.0.1:3700 (or the first free port up to
+// 3710) and opens the default browser. The arrow-key interactive
+// menu that used to prompt for "Start server vs Scan an agent" is
+// gone because the dashboard handles both flows.
 
-import { createInterface } from 'node:readline';
-
-interface SelectOption {
-  label: string;
-  description: string;
-  value: string;
-}
-
-/** Arrow-key selector like Claude Code / npm init */
-function selectPrompt(title: string, options: SelectOption[]): Promise<string> {
-  return new Promise(resolve => {
-    let selected = 0;
-    const out = process.stderr;
-
-    function render(): void {
-      // Move cursor up to redraw (after first render)
-      for (const [i, opt] of options.entries()) {
-        const indicator = i === selected ? '\x1b[36m❯\x1b[0m' : ' ';
-        const label = i === selected ? `\x1b[1m${opt.label}\x1b[0m` : `\x1b[2m${opt.label}\x1b[0m`;
-        const desc = i === selected ? `  \x1b[2m${opt.description}\x1b[0m` : '';
-        out.write(`  ${indicator} ${label}${desc}\n`);
-      }
-    }
-
-    function clear(): void {
-      // Move up and clear each line
-      for (let i = 0; i < options.length; i++) {
-        out.write('\x1b[A\x1b[2K');
-      }
-    }
-
-    out.write(`\n  \x1b[1m${title}\x1b[0m\n\n`);
-    render();
-
-    if (!process.stdin.isTTY) {
-      // Non-interactive: use default
-      resolve(options[0].value);
-      return;
-    }
-
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf-8');
-
-    function onData(key: string): void {
-      if (key === '\x1b[A' || key === 'k') {
-        // Up arrow or k
-        selected = (selected - 1 + options.length) % options.length;
-        clear();
-        render();
-      } else if (key === '\x1b[B' || key === 'j') {
-        // Down arrow or j
-        selected = (selected + 1) % options.length;
-        clear();
-        render();
-      } else if (key === '\r' || key === '\n') {
-        // Enter
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
-        process.stdin.removeListener('data', onData);
-        // Redraw final state with checkmark
-        clear();
-        for (const [i, opt] of options.entries()) {
-          if (i === selected) {
-            out.write(`  \x1b[32m✓\x1b[0m \x1b[1m${opt.label}\x1b[0m\n`);
-          }
-        }
-        out.write('\n');
-        resolve(options[selected].value);
-      } else if (key === '\x03') {
-        // Ctrl+C
-        process.stdin.setRawMode(false);
-        process.exit(0);
-      }
-    }
-
-    process.stdin.on('data', onData);
-  });
-}
-
-function textPrompt(label: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise(resolve => {
-    rl.question(`  ${label}`, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
-async function interactiveStart(): Promise<void> {
-  const mode = await selectPrompt('Heron — AI Agent Auditor', [
-    { label: 'Start server', description: 'agents connect to you', value: 'serve' },
-    { label: 'Scan an agent', description: 'you connect to an agent', value: 'scan' },
-  ]);
-
-  if (mode === 'serve') {
-    process.argv.splice(2, 0, 'serve');
-    program.parse();
-  } else {
-    const url = await textPrompt('Agent URL: ');
-    if (!url) {
-      console.error('  URL is required.');
-      process.exit(1);
-    }
-    process.argv.splice(2, 0, 'scan', '--target', url);
-    program.parse();
-  }
-}
+import { browserFirstStart } from '../src/util/browser-first.js';
 
 const args = process.argv.slice(2);
 const hasSubcommand = args.length > 0 && ['scan', 'serve', 'install-skill', 'setup', 'diff', 'mcp-serve', 'approve', 'approvals', 'interview', 'help', '--help', '-h', '--version', '-V'].includes(args[0]);
@@ -442,8 +310,8 @@ if (!hasSubcommand && args.length > 0) {
   process.argv.splice(2, 0, 'scan');
   program.parse();
 } else if (!hasSubcommand) {
-  // No args at all → interactive menu
-  interactiveStart().catch(err => {
+  // No args → browser-first dashboard.
+  browserFirstStart().catch((err) => {
     logger.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });

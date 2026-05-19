@@ -1,22 +1,13 @@
 # Heron Agent Checkpoint — Configuration Example
-# Copy this file to heron.yaml and fill in your values
-
-# ─── Scan mode (Heron → Agent) ─────────────────────────────────
-target:
-  # How to connect to the agent you want to audit
-  # Options: http, interactive
-  type: http
-
-  # For HTTP targets (OpenAI-compatible chat API)
-  url: http://localhost:8080/v1/chat/completions
-  # apiKey: sk-...
-  # model: gpt-4o  # optional, depends on target
-
-  # For interactive mode (you copy questions to the agent manually):
-  # type: interactive
+# Copy this file to heron.yaml and fill in your values.
+#
+# AAP-64 (#33-C): the legacy `--target <url>` HTTP interview-mode was
+# removed in 0.5. `heron scan` is MCP-only now (--mcp <config>);
+# interactive interviews stay behind the dashboard via `heron serve`
+# or `heron` (no args).
 
 # ─── Server mode (Agent → Heron) ───────────────────────────────
-# Start with: npx heron-ai serve
+# Start with: heron serve  (deprecated — prefer `heron` to open the dashboard)
 # server:
 #   port: 3700
 #   host: 0.0.0.0
@@ -27,17 +18,16 @@ llm:
   # LLM used by Heron to analyze agent responses.
   # Options: anthropic, openai, gemini
   #
-  # First-time setup: just run `heron scan ...` without setting
-  # anything here — an interactive wizard will ask which provider
-  # to use (Anthropic, OpenAI, Google, OpenRouter, LiteLLM) and
-  # collect the credentials it needs.
+  # First-time setup: run `heron setup` (or open the dashboard at /setup) —
+  # an interactive wizard will ask which provider to use and collect
+  # the credentials it needs.
   provider: anthropic
 
   # API key resolution (in order):
   #   1. --llm-key flag
   #   2. apiKey below
   #   3. HERON_LLM_API_KEY env var
-  #   4. Interactive wizard (TTY only)
+  #   4. ~/.heron/credentials.json (saved by `heron setup`)
   #
   # apiKey: sk-ant-...
 
