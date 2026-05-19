@@ -194,9 +194,48 @@ export interface VersionDiff {
   diffGeneratedAt: string;
 }
 
-/** OSS stub — diff API lands in #33-C+. */
-export async function fetchVersionDiff(_id: string): Promise<VersionDiff | null> {
-  return null;
+/**
+ * Compare an audit session against the immediately-previous complete
+ * session (#33-C / AAP-64). The dashboard's Compare tab gates on a
+ * non-null return: when there is no prior session, this stays null and
+ * the tab stays hidden.
+ *
+ * Picking the baseline: take the most-recent complete session whose
+ * `createdAt` is strictly earlier than the target session's
+ * `createdAt`. If none exists, return null. Callers that want a
+ * specific baseline can pass `againstId` to override.
+ */
+export async function fetchVersionDiff(
+  id: string,
+  againstId?: string,
+): Promise<VersionDiff | null> {
+  try {
+    let baselineId = againstId;
+    if (!baselineId) {
+      const list = await fetchAuditSessions();
+      const target = list.find((s) => s.id === id);
+      if (!target) return null;
+      const targetCreated = target.createdAt;
+      const candidates = list
+        .filter(
+          (s) =>
+            s.id !== id &&
+            s.status === 'complete' &&
+            s.createdAt < targetCreated,
+        )
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      if (candidates.length === 0) return null;
+      baselineId = candidates[0].id;
+    }
+    const res = await fetch(
+      `/api/audit/sessions/${encodeURIComponent(id)}/diff?against=${encodeURIComponent(baselineId)}`,
+      { cache: 'no-store' },
+    );
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
 }
 
 // ── Settings: LLM credentials ──────────────────────────────────────

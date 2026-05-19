@@ -66,67 +66,37 @@ Try it: `npx heron-ai`
 
 Three ways to use Heron, depending on your setup.
 
-### Option 1: Local CLI (open source)
+### Option 1: Browser-first (recommended)
 
-One command. No install, no config, no env vars. The CLI prompts for your LLM API key on first run.
+One command. Heron boots a local Next.js dashboard at
+`http://127.0.0.1:3700/` and opens your default browser.
 
 ```bash
 npx heron-ai
 ```
 
-An interactive menu lets you choose between two modes:
+First-run flow: if `~/.heron/credentials.json` is missing the dashboard
+bounces you to `/setup` to configure the LLM provider (Anthropic /
+OpenAI / Gemini, plus optional base URL for LiteLLM / OpenRouter /
+vLLM / Azure-OpenAI gateways). The form saves credentials locally and
+drops you into the dashboard.
 
-```
-  Heron — AI Agent Auditor
+The dashboard surfaces every audit session in `~/.heron/sessions/`:
+interview-style audits AND `heron scan --mcp` reports land in the same
+list. Each session opens a structured report with risk findings,
+permissions delta, regulatory mapping, and (for MCP scans) tool
+inventory, declared-diff, and OAuth-scope sections.
 
-  > Start server    agents connect to you
-    Scan an agent   you connect to an agent
-```
-
-#### Mode A: Server (`heron-ai serve`)
-
-Heron runs locally and waits for agents to connect. Two ways to point your agent at it:
-
-**1) Paste a prompt into your agent's chat** &mdash; works with any agent
-
-```
-I need you to complete a security access review for this project.
-Make sequential API calls to the Heron endpoint until it says "Interview complete".
-
-Step 1 — Start the interview:
-POST http://localhost:3700/v1/chat/completions
-Body: {"model":"any","messages":[{"role":"user","content":"Hi, I am ready to answer questions about this project."}]}
-
-The response will contain a question and a session ID (in the "heron_session_id" JSON field).
-
-Step 2 — Send each answer:
-POST http://localhost:3700/v1/chat/completions
-Body: {"model":"any","messages":[{"role":"user","content":"YOUR ANSWER HERE"}],"heron_session_id":"SESSION_ID_FROM_STEP_1"}
-
-Step 3 — Repeat step 2 until the response says "Interview complete".
-
-Important: answer about THIS specific project — what you actually do, what systems
-you connect to, what data you handle. Not general capabilities. Never reveal actual
-secret values — just describe credential types.
-```
-
-**2) Override `OPENAI_BASE_URL`** &mdash; zero code changes to the agent
+You can also configure credentials from the terminal:
 
 ```bash
-OPENAI_BASE_URL=http://localhost:3700/v1 python your_agent.py
+npx heron-ai setup
 ```
 
-The agent thinks it's talking to GPT. Heron intercepts, runs the interview, generates the report.
+The wizard asks which provider, where the key lives, and (after saving)
+offers to open the dashboard immediately.
 
-#### Mode B: Scan (`heron-ai scan`)
-
-Heron connects directly to your agent's chat API and runs the interview itself.
-
-```bash
-npx heron-ai scan --target http://your-agent/v1/chat/completions
-```
-
-#### Mode C: Scan an MCP server (`heron-ai scan --mcp`)
+#### Mode: Scan an MCP server (`heron-ai scan --mcp`)
 
 If your agent exposes its tools through an MCP server, Heron can connect to the server directly and emit a tool-inventory report — what the server declares it can do, with input schemas and behavior hints (`readOnlyHint`, `destructiveHint`, …) preserved verbatim. Useful as Source #1 for declared-vs-actual scope verification.
 
@@ -728,22 +698,30 @@ npx heron-ai serve [options]
 </details>
 
 <details>
-<summary>Scan Mode &mdash; <code>heron scan</code></summary>
+<summary>Scan Mode &mdash; <code>heron scan --mcp</code></summary>
 
 ```bash
-npx heron-ai scan [options]
+npx heron-ai scan --mcp <config> [options]
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-t, --target <url>` | Agent's chat API URL | required |
-| `--llm-key <key>` | LLM API key | `HERON_LLM_API_KEY` env |
-| `--llm-base-url <url>` | LLM base URL for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways | `HERON_LLM_BASE_URL` env |
-| `--llm-provider <p>` | `anthropic`, `openai`, or `gemini` | auto-detect |
-| `--llm-model <model>` | Analysis LLM model | auto per provider |
-| `-o, --output <path>` | Save report to file | `./reports/scan_xxx.md` |
-| `--max-followups <n>` | Max follow-up questions | `3` |
-| `--report-dir <dir>` | Where to save reports | `./reports` |
+| `--mcp <config>` | MCP server: JSON config, `http(s)://…` URL, or `stdio:<command [args…]>` | required |
+| `--verify <sources>` | Comma-separated verification sources: `mcp-tools`, `oauth-scopes:google-workspace`, `oauth-scopes:greenhouse`, `oauth-scopes:bamboohr` | none |
+| `--declared-tools <names>` | Comma-separated list of declared tool names (paired with `--verify=mcp-tools`) | none |
+| `--declared-source <spec>` | Declared-scope source — `file:<path>` or `theona-mcp:<agentId>`. Wins over `--declared-tools`. | none |
+| `--agent-label <label>` | Header for the verification report | MCP server label |
+| `--approval-agent-id <id>` | Splice an approval audit trail (AAP-48 #5) into the report | none |
+| `-o, --output <path>` | Save report to file | `./reports/mcp-scan_<id>.md` |
+| `-f, --format <fmt>` | `markdown` / `json` / `html` | `markdown` |
+| `--scans-dir <dir>` | Where to mirror scan records | `./.heron/scans` |
+
+The legacy `--target <url>` HTTP interview-mode (Heron called an
+OpenAI-compatible chat API and asked structured questions) was removed
+in 0.5. Browser-based interviews live behind the dashboard now.
+
+After the scan the dashboard sidebar lists the new audit session
+alongside any prior interview audits — same storage, same UI.
 
 </details>
 
@@ -787,28 +765,46 @@ npm test
 
 ### Browser UI
 
-The Next.js dashboard at `localhost:3700/dashboard` shows every audit
-session in `~/.heron/sessions/` (override with `HERON_SESSIONS_DIR`),
-renders each report inline, and surfaces the LLM connection saved by
-`heron setup` in `~/.heron/credentials.json` (key is masked over HTTP).
+The browser dashboard is the default entry point. Run `heron` (no
+args) and it spawns the Next.js standalone server on
+`127.0.0.1:3700` (or the first free port up to 3710) and opens the
+browser. `heron setup`'s outro confirm offers the same.
 
 ```bash
-# Build everything (CLI + Next.js app router)
+# Build everything (CLI + Next.js standalone)
 npm run build
 
-# Serve the built app on loopback only (default: 127.0.0.1:3700)
+# Boot the dashboard (npm start uses the same script `heron` uses)
 npm start
-# → open http://localhost:3700/dashboard
+# → opens http://127.0.0.1:3700/dashboard
 ```
 
-`/` redirects to `/dashboard`. `/dashboard/settings` shows the masked
-saved credentials. `/setup` is a stub today — run `heron setup` from
-the terminal to (re)configure the LLM provider until the in-browser
-form lands in PR #33-C.
+Routes:
+  - `/` redirects to `/dashboard`.
+  - `/dashboard` shows every audit session in `~/.heron/sessions/`
+    (override with `HERON_SESSIONS_DIR`). Each report renders with
+    risk findings, systems, regulatory mapping, and — for MCP
+    scans — tool inventory, declared diff, and OAuth scope sections.
+  - `/dashboard/settings` shows masked saved credentials.
+  - `/setup` is the in-browser LLM configuration form. The dashboard
+    layout redirects here on first run when
+    `~/.heron/credentials.json` is missing.
+  - `/api/setup/credentials` — `GET` (masked read), `POST` (CSRF-
+    protected write).
+  - `/api/audit/sessions/...` — list / detail / transcript / report /
+    diff.
 
-The CLI workflow (`heron scan`, `heron serve`, `heron diff`, ...) is
-unchanged. `heron serve` (vanilla-Node) and the Next.js dashboard read
-the same session store, so you can mix them while #33-C consolidates.
+Security:
+  - Loopback-only middleware refuses any non-loopback Host header.
+  - `/api/setup/credentials` `POST` requires a same-origin
+    `csrf-token` cookie + `x-csrf-token` header pair.
+  - Raw LLM api keys never leave the server. The dashboard reads a
+    `<first 6>…<last 4>` mask via `/api/setup/credentials`.
+
+`heron serve` (the legacy vanilla-Node http server) still works for
+CI / scripted consumers but prints a yellow deprecation banner on
+startup pointing to the dashboard. Both servers read the same session
+store. Removal of the legacy server is tracked for a follow-up PR.
 
 ## Contributing
 
