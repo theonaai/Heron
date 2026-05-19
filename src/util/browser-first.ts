@@ -241,18 +241,41 @@ export async function browserFirstStart(): Promise<void> {
   child.stderr?.pipe(process.stderr);
 
   // Keep the parent alive until either the child exits or the user
-  // presses Ctrl+C. SIGINT is forwarded to the child so its cleanup
-  // hooks run.
-  const cleanup = (): void => {
-    if (!child.killed) child.kill('SIGTERM');
+  // presses Ctrl+C. AAP-53.6 — earlier versions of this cleanup raced:
+  // parent called child.kill('SIGTERM') and then process.exit(0)
+  // immediately, so the child never received the signal in time and
+  // got reparented to PID 1, leaving an orphaned next-server squatting
+  // on the port. Now we wait for the child to actually exit (up to
+  // 5 seconds) and escalate to SIGKILL if it doesn't.
+  let shuttingDown = false;
+  const cleanup = async (sig: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (!child.killed && child.exitCode === null) {
+      child.kill('SIGTERM');
+      const exited = await new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(false), 5000);
+        child.once('exit', () => {
+          clearTimeout(t);
+          resolve(true);
+        });
+      });
+      if (!exited && child.exitCode === null) {
+        // Child ignored SIGTERM (or our process was about to die before
+        // it could process it). Force-kill so the port is freed before
+        // we exit.
+        child.kill('SIGKILL');
+        // Brief beat so the kernel actually reaps the process.
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    process.exit(sig === 'SIGINT' ? 0 : 0);
   };
   process.on('SIGINT', () => {
-    cleanup();
-    process.exit(0);
+    void cleanup('SIGINT');
   });
   process.on('SIGTERM', () => {
-    cleanup();
-    process.exit(0);
+    void cleanup('SIGTERM');
   });
 
   await new Promise<void>((resolve) => {
