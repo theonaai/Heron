@@ -785,27 +785,30 @@ npx heron-ai serve
 npm test
 ```
 
-### Browser UI (in progress)
+### Browser UI
 
-PR #33-A scaffolds a Next.js 15 + React 19 + Tailwind 3 frontend that will replace the vanilla-Node `heron serve` dashboard in PR #33-C. Today, the skeleton ships:
-
-- A loopback-only Next.js app router under `app/`, serving a placeholder landing page at `/`.
-- A local-files audit-session store under `~/.heron/sessions/` (override with `HERON_SESSIONS_DIR`).
-- Route handlers under `app/api/audit/sessions/...` matching the API surface the dashboard will consume.
+The Next.js dashboard at `localhost:3700/dashboard` shows every audit
+session in `~/.heron/sessions/` (override with `HERON_SESSIONS_DIR`),
+renders each report inline, and surfaces the LLM connection saved by
+`heron setup` in `~/.heron/credentials.json` (key is masked over HTTP).
 
 ```bash
-# Dev server (Next.js, 127.0.0.1:3700)
-npm run dev
-
-# Build both CLI and frontend
+# Build everything (CLI + Next.js app router)
 npm run build
 
-# Build only one or the other
-npm run build:cli
-npm run build:web
+# Serve the built app on loopback only (default: 127.0.0.1:3700)
+npm start
+# → open http://localhost:3700/dashboard
 ```
 
-The CLI workflow (`heron scan`, `heron serve`, `heron diff`, ...) is unchanged in this stage.
+`/` redirects to `/dashboard`. `/dashboard/settings` shows the masked
+saved credentials. `/setup` is a stub today — run `heron setup` from
+the terminal to (re)configure the LLM provider until the in-browser
+form lands in PR #33-C.
+
+The CLI workflow (`heron scan`, `heron serve`, `heron diff`, ...) is
+unchanged. `heron serve` (vanilla-Node) and the Next.js dashboard read
+the same session store, so you can mix them while #33-C consolidates.
 
 ## Contributing
 
