@@ -76,8 +76,30 @@ export async function runSetupCommand(opts: {
   logger.raw(`  \x1b[32m✓\x1b[0m Saved credentials to \x1b[1m${path}\x1b[0m`);
   logger.raw(`  ${result.provider} (${masked})${where}`);
   logger.raw('');
-  logger.raw('  Now you can run any heron command — no env vars needed.');
-  logger.raw('  To reconfigure, run \x1b[1mheron setup\x1b[0m again.');
-  logger.raw('');
+
+  // AAP-64 / #33-C: outro confirm — offer to open the browser dashboard
+  // immediately. Default Y. CI / scripted invocations (HERON_NO_BROWSER
+  // env or non-TTY stdin) skip the prompt cleanly with a short pointer.
+  const skipBrowser =
+    process.env.HERON_NO_BROWSER === '1' || !process.stdin.isTTY;
+  if (skipBrowser) {
+    logger.raw('  Run `heron` later to open the dashboard.');
+    logger.raw('');
+    return path;
+  }
+
+  const { confirm, isCancel } = await import('@clack/prompts');
+  const openNow = await confirm({
+    message: 'Open the Heron dashboard now?',
+    initialValue: true,
+  });
+  if (isCancel(openNow) || openNow === false) {
+    logger.raw('  Run `heron` later to open the dashboard.');
+    logger.raw('');
+    return path;
+  }
+
+  const { browserFirstStart } = await import('../util/browser-first.js');
+  await browserFirstStart();
   return path;
 }
