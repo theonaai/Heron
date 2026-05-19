@@ -9,3 +9,8 @@ reports/
 .heron/
 .gstack/
 .claude/
+.next/
+out/
+smoke-reports/
+*.tsbuildinfo
+next-env.d.ts
