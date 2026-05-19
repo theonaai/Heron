@@ -34,14 +34,26 @@ export interface SamplingConnectorOptions {
   maxTokens?: number;
   /** Optional system prompt to attach to every sampling call. */
   systemPrompt?: string;
+  /**
+   * Per-question request timeout in milliseconds. AAP-53.3 bug fix:
+   * the MCP SDK default is 60s, which is too short for real-world
+   * client LLM calls. Codex with GPT-5.5 routinely takes 30–90s per
+   * question; if the client throttles or batches, individual sampling
+   * round-trips can exceed 2 minutes. Heron raises the cap to 5
+   * minutes by default and resets the timer on every progress
+   * notification the client emits.
+   */
+  requestTimeoutMs?: number;
 }
 
 const DEFAULT_MAX_TOKENS = 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export class SamplingConnector implements AgentConnector {
   private readonly server: Pick<Server, 'createMessage'>;
   private readonly maxTokens: number;
   private readonly systemPrompt: string | undefined;
+  private readonly requestTimeoutMs: number;
   private readonly history: SamplingMessage[] = [];
   private closed = false;
 
@@ -49,6 +61,7 @@ export class SamplingConnector implements AgentConnector {
     this.server = opts.server;
     this.maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.systemPrompt = opts.systemPrompt;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   async sendMessage(message: string): Promise<string> {
@@ -68,7 +81,11 @@ export class SamplingConnector implements AgentConnector {
       // SDK exposes overloads; we use the no-tools variant. Cast through
       // unknown so the test stub (a minimal Pick<Server, 'createMessage'>)
       // satisfies the call site without dragging in the full SDK type.
-      result = (await this.server.createMessage(params)) as CreateMessageResult;
+      // Pass an explicit request-timeout that survives slow client LLMs.
+      result = (await this.server.createMessage(params, {
+        timeout: this.requestTimeoutMs,
+        resetTimeoutOnProgress: true,
+      } as unknown as Parameters<typeof this.server.createMessage>[1])) as CreateMessageResult;
     } catch (err) {
       // Pull off the bookkeeping turn so a retried sendMessage doesn't
       // see a dangling user turn with no assistant reply.
