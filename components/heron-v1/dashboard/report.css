@@ -1,0 +1,1982 @@
+/* Heron audit report — strict enterprise SOC styling.
+   Adapted from /tmp/heron-design3 design bundle: white bg, fine grid,
+   neutral grays + 4-tier severity ramp. Inter for UI, IBM Plex Mono
+   for IDs/code/numbers.
+
+   ALL classes here are scoped under `.report` so they don't leak into
+   the rest of the dashboard. The `.report` root sets typography, color,
+   line-height and font; child selectors carry the rest.
+*/
+
+/* Fonts (Plus Jakarta Sans, IBM Plex Mono) are loaded globally in
+   frontend/app/globals.css. No additional @import here. */
+
+.report {
+  /* Surface */
+  --r-bg: #ffffff;
+  --r-bg-muted: #fafafa;
+  --r-bg-subtle: #f4f4f5;
+  --r-bg-row-hover: #f8f8f7;
+
+  /* Borders / lines */
+  --r-border: #e6e6e3;
+  --r-border-strong: #d4d4d0;
+
+  /* Ink */
+  --r-ink: #18181b;
+  --r-ink-2: #3f3f46;
+  --r-ink-3: #71717a;
+  --r-ink-4: #a1a1aa;
+
+  /* Severity ramp */
+  --r-crit:    #991b1b; --r-crit-bg:    #fef2f2; --r-crit-bd:    #fecaca;
+  --r-high:    #c2410c; --r-high-bg:    #fff4ed; --r-high-bd:    #fed7aa;
+  --r-med:     #a16207; --r-med-bg:     #fef9c3; --r-med-bd:     #fde68a;
+  --r-low:     #15803d; --r-low-bg:     #f0fdf4; --r-low-bd:     #bbf7d0;
+  --r-info:    #1e40af; --r-info-bg:    #eff6ff; --r-info-bd:    #bfdbfe;
+  --r-review:  #92400e; --r-review-bg:  #fffbeb; --r-review-bd:  #fde68a;
+
+  /* Type — match project's global stack from globals.css */
+  --r-font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --r-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --r-radius: 6px;
+
+  font-family: var(--r-font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+  color: var(--r-ink);
+  background: var(--r-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+
+  /* Left-aligned and fluid. The dashboard's right pane already has its
+     own width; capping again at 980px left huge empty space on wide
+     screens. Drop the cap; only ultra-wide displays get a soft 1400px
+     limit so prose paragraphs don't sprawl past readable line lengths. */
+  max-width: 1400px;
+  margin: 0;
+  padding: 24px 40px 80px;
+}
+@media (max-width: 1100px) {
+  .report { padding: 22px 28px 60px; }
+}
+@media (max-width: 700px) {
+  .report { padding: 18px 18px 48px; }
+}
+
+/* Reset some browser defaults inside the report so Tailwind's preflight
+   can't introduce surprises. */
+.report * { box-sizing: border-box; }
+.report h1, .report h2, .report h3, .report h4 {
+  margin: 0;
+  letter-spacing: -0.015em;
+}
+.report p { margin: 0; }
+.report dl, .report dd { margin: 0; }
+.report ol, .report ul { margin: 0; padding: 0; list-style: none; }
+
+.report .mono {
+  font-family: var(--r-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.report .muted   { color: var(--r-ink-3); }
+.report .muted-2 { color: var(--r-ink-4); }
+
+/* ─── Section header ────────────────────────────────────────────── */
+.report .h-section {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  border-top: 1px solid var(--r-border);
+  padding-top: 24px;
+  margin-top: 32px;
+  margin-bottom: 16px;
+  scroll-margin-top: 16px;
+}
+.report .h-section .num {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  color: var(--r-ink-4);
+  letter-spacing: 0.05em;
+}
+.report .h-section .label {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--r-ink-3);
+  text-transform: uppercase;
+}
+.report .h-section .title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--r-ink);
+  letter-spacing: -0.01em;
+}
+.report .h-section .meta {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--r-ink-3);
+  font-family: var(--r-font-mono);
+}
+
+/* ─── Severity pill ─────────────────────────────────────────────── */
+.report .sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 3px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.report .sev-critical { color: var(--r-crit);   background: var(--r-crit-bg);   border-color: var(--r-crit-bd); }
+.report .sev-high     { color: var(--r-high);   background: var(--r-high-bg);   border-color: var(--r-high-bd); }
+.report .sev-medium   { color: var(--r-med);    background: var(--r-med-bg);    border-color: var(--r-med-bd); }
+.report .sev-low      { color: var(--r-low);    background: var(--r-low-bg);    border-color: var(--r-low-bd); }
+.report .sev-info     { color: var(--r-info);   background: var(--r-info-bg);   border-color: var(--r-info-bd); }
+.report .sev-review   { color: var(--r-review); background: var(--r-review-bg); border-color: var(--r-review-bd); }
+.report .sev-ok       { color: var(--r-low);    background: var(--r-low-bg);    border-color: var(--r-low-bd); }
+.report .sev-clarify  { color: var(--r-med);    background: var(--r-med-bg);    border-color: var(--r-med-bd); }
+.report .sev-action   { color: var(--r-high);   background: var(--r-high-bg);   border-color: var(--r-high-bd); }
+
+/* ─── Severity dot ─────────────────────────────────────────────── */
+.report .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.report .dot.critical { background: var(--r-crit); }
+.report .dot.high     { background: var(--r-high); }
+.report .dot.medium   { background: var(--r-med); }
+.report .dot.low      { background: var(--r-low); }
+.report .dot.ok       { background: var(--r-low); }
+.report .dot.info     { background: var(--r-info); }
+
+/* ─── Tables ───────────────────────────────────────────────────── */
+.report .tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  overflow: hidden;
+  background: var(--r-bg);
+}
+.report .tbl thead th {
+  text-align: left;
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--r-ink-3);
+  text-transform: uppercase;
+  background: var(--r-bg-muted);
+  border-bottom: 1px solid var(--r-border);
+  padding: 10px 14px;
+}
+.report .tbl td {
+  padding: 14px;
+  border-bottom: 1px solid var(--r-border);
+  vertical-align: top;
+  color: var(--r-ink);
+}
+.report .tbl tbody tr:last-child td { border-bottom: none; }
+.report .tbl tbody tr.clickable { cursor: pointer; transition: background .08s; }
+.report .tbl tbody tr.clickable:hover { background: var(--r-bg-row-hover); }
+.report .tbl .empty {
+  text-align: center;
+  color: var(--r-ink-4);
+  font-size: 12.5px;
+  padding: 20px;
+}
+
+/* Findings table — wide layout (6 columns). On narrow viewports
+   horizontal scroll inside the wrapper instead of squashing cells. */
+.report .tbl-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+.report .tbl-findings {
+  min-width: 1100px;
+  table-layout: fixed;
+}
+.report .tbl-findings td {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ─── Panel / card ─────────────────────────────────────────────── */
+.report .panel {
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  background: var(--r-bg);
+}
+.report .panel-pad   { padding: 16px 18px; }
+.report .panel-muted { background: var(--r-bg-muted); }
+
+/* ─── Key-value definition list ───────────────────────────────── */
+.report .kv {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  font-size: 13px;
+}
+.report .kv > dt {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--r-border);
+}
+.report .kv > dd {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--r-border);
+  color: var(--r-ink-2);
+}
+.report .kv > dt:last-of-type,
+.report .kv > dd:last-of-type { border-bottom: none; }
+
+/* ─── Toolbar / filter chips ─────────────────────────────────── */
+.report .toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  background: var(--r-bg-muted);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.report .toolbar .toolbar-label {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--r-ink-3);
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+.report .toolbar .toolbar-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--r-ink-3);
+  font-family: var(--r-font-mono);
+}
+
+.report .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-family: var(--r-font-mono);
+  letter-spacing: 0.04em;
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--r-border);
+  background: var(--r-bg);
+  color: var(--r-ink-2);
+  cursor: pointer;
+  user-select: none;
+  transition: background .08s, border-color .08s;
+}
+.report .chip:hover { background: var(--r-bg-subtle); }
+.report .chip.active {
+  background: var(--r-ink);
+  color: #fff;
+  border-color: var(--r-ink);
+}
+.report .chip .count {
+  font-size: 10.5px;
+  color: inherit;
+  opacity: 0.65;
+}
+
+/* Static framework chip (compliance "Affects" row) */
+.report .fw-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--r-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: var(--r-bg-muted);
+}
+.report .fw-chip .fw-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--r-ink-2);
+}
+.report .fw-chip .fw-refs {
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  color: var(--r-ink-3);
+  letter-spacing: 0.02em;
+}
+
+/* Note panel — used for "permissions delta" entries that are full
+   sentences explaining WHY a scope is excessive. Sans-serif body for
+   readability; soft orange accent (border-left + tinted bg) signals
+   "this is a finding to action". */
+.report .delta-note {
+  border-left: 3px solid var(--r-high);
+  background: var(--r-high-bg);
+  color: var(--r-ink-2);
+  font-family: var(--r-font-sans);
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 8px 12px;
+  border-radius: 0 4px 4px 0;
+}
+
+/* Scope chip variants used in system rows */
+.report .scope-chip {
+  display: inline-flex;
+  font-family: var(--r-font-mono);
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--r-border);
+  background: var(--r-bg-muted);
+  color: var(--r-ink-2);
+}
+.report .scope-chip.excess {
+  background: var(--r-high-bg);
+  border-color: var(--r-high-bd);
+  color: var(--r-high);
+}
+.report .scope-chip.required {
+  background: var(--r-low-bg);
+  border-color: var(--r-low-bd);
+  color: var(--r-low);
+}
+
+/* ─── Verdict banner ─────────────────────────────────────────── */
+.report .verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--r-review-bd);
+  background: var(--r-review-bg);
+  border-radius: var(--r-radius);
+  font-family: var(--r-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-review);
+}
+.report .verdict.deny {
+  border-color: var(--r-crit-bd);
+  background: var(--r-crit-bg);
+  color: var(--r-crit);
+}
+.report .verdict.approve {
+  border-color: var(--r-low-bd);
+  background: var(--r-low-bg);
+  color: var(--r-low);
+}
+.report .verdict .verdict-meta {
+  margin-left: auto;
+  color: var(--r-ink-3);
+  letter-spacing: 0.05em;
+  font-weight: 500;
+  text-transform: none;
+}
+
+/* ─── Anchor rail — sticky to top of the .body scroll container ─────
+   IMPORTANT: bg must be SOLID white, not translucent. Earlier we used
+   bg-white/95 + backdrop-blur and content scrolling under it leaked
+   through as ghost text. The current scroll container is .report-shell
+   .body so position: sticky inside its descendants works correctly. */
+.report .anchor-rail {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+  display: flex;
+  gap: 18px;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid var(--r-border);
+  margin-bottom: 16px;
+  overflow-x: auto;
+  position: sticky;
+  top: 0;
+  background: var(--r-bg);
+  z-index: 5;
+  /* Soft shadow on bottom edge so users sense scrolled content is
+     hidden underneath. Subtle — avoids visual chrome buildup. */
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+.report .anchor-rail a {
+  color: var(--r-ink-3);
+  text-decoration: none;
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color .1s, border-color .1s;
+  cursor: pointer;
+}
+.report .anchor-rail a:hover,
+.report .anchor-rail a.active {
+  color: var(--r-ink);
+  border-bottom-color: var(--r-ink);
+}
+
+/* ─── Group header (severity bucket / domain accordion) ────── */
+.report .group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--r-bg-muted);
+  border: 1px solid var(--r-border);
+  border-radius: 5px 5px 0 0;
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-ink-2);
+  cursor: pointer;
+  user-select: none;
+}
+.report .group-head.collapsed {
+  border-radius: 5px;
+}
+.report .group-head .caret {
+  font-size: 9px;
+  display: inline-block;
+  transition: transform .15s;
+}
+.report .group-head.collapsed .caret { transform: rotate(-90deg); }
+.report .group-head .count {
+  margin-left: auto;
+  color: var(--r-ink-3);
+  font-weight: 500;
+}
+
+/* Tier label (HIGH / MEDIUM / LOW risk) — non-clickable section sub-header */
+.report .tier-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+  margin-bottom: 10px;
+}
+.report .tier-label .tier-count {
+  margin-left: auto;
+  color: var(--r-ink-4);
+  font-weight: 500;
+}
+
+/* System card — always expanded, no inner collapse */
+.report .sys-card {
+  overflow: hidden;
+}
+.report .sys-card .sys-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--r-border);
+}
+.report .sys-card .sys-card-body {
+  padding: 14px 16px 16px;
+  background: var(--r-bg-muted);
+}
+.report .sys-card .sys-name {
+  font-family: var(--r-font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--r-ink);
+  word-break: break-word;
+}
+.report .sys-card .sys-sub {
+  font-family: var(--r-font-sans);
+  font-size: 12px;
+  color: var(--r-ink-3);
+  letter-spacing: 0;
+}
+
+/* Field label inside detail panels */
+.report .field-label {
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+  margin-bottom: 6px;
+  display: block;
+}
+
+/* ─── Numbered list (recommendations, transcript) ─────────── */
+.report .numlist > li {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--r-border);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--r-ink-2);
+}
+.report .numlist > li:last-child { border-bottom: none; }
+.report .numlist > li::before {
+  content: counter(nl, decimal-leading-zero);
+  counter-increment: nl;
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  color: var(--r-ink-4);
+  letter-spacing: 0.05em;
+  padding-top: 1px;
+}
+.report .numlist { counter-reset: nl; }
+
+/* ─── Bar (data quality) ─────────────────────────────────── */
+.report .bar-track {
+  height: 5px;
+  background: var(--r-bg-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.report .bar-fill {
+  height: 100%;
+  background: var(--r-low);
+  transition: width .2s;
+}
+.report .bar-fill.warn { background: var(--r-med); }
+.report .bar-fill.crit { background: var(--r-high); }
+
+/* ─── Layout helpers ─────────────────────────────────────── */
+.report .row        { display: flex; align-items: center; gap: 8px; }
+.report .row-tight  { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.report .stack      { display: flex; flex-direction: column; gap: 4px; }
+.report .stack-md   { display: flex; flex-direction: column; gap: 12px; }
+.report .stack-lg   { display: flex; flex-direction: column; gap: 22px; }
+.report .spread     { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.report .grow       { flex: 1; }
+.report .nowrap     { white-space: nowrap; }
+.report .flex-wrap  { flex-wrap: wrap; }
+.report .gap-2      { gap: 8px; }
+
+.report .info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--r-med-bd);
+  background: var(--r-med-bg);
+  border-radius: var(--r-radius);
+  font-size: 12px;
+  color: var(--r-med);
+  margin-bottom: 12px;
+}
+
+/* Working-controls panel: green-tinted */
+.report .working {
+  border: 1px solid var(--r-low-bd);
+  background: var(--r-low-bg);
+  border-radius: var(--r-radius);
+  padding: 14px 16px;
+}
+.report .working .working-label {
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-low);
+  margin-bottom: 10px;
+}
+.report .working li {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--r-ink-2);
+  padding: 3px 0;
+}
+.report .working li .check { color: var(--r-low); flex-shrink: 0; }
+
+/* ─── Concern card (compliance) ─────────────────────────── */
+.report .concern {
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  background: var(--r-bg);
+  padding: 16px 18px;
+}
+.report .concern + .concern { margin-top: 12px; }
+.report .concern .concern-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.report .concern .concern-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--r-ink);
+}
+.report .concern .concern-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--r-ink-2);
+  margin: 0 0 10px;
+  text-wrap: pretty;
+}
+.report .concern .concern-affects {
+  padding-top: 10px;
+  border-top: 1px dashed var(--r-border);
+}
+.report .concern details > summary {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--r-ink-3);
+  cursor: pointer;
+  list-style: none;
+}
+.report .concern details > summary::-webkit-details-marker { display: none; }
+.report .concern details ul {
+  margin: 8px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--r-border);
+  color: var(--r-ink-3);
+  font-size: 12.5px;
+}
+.report .concern details ul li { padding: 2px 0; }
+.report .concern details { margin-bottom: 12px; }
+
+/* Top verdict (first child of .report) — leave space before the
+   sticky anchor rail. */
+.report > .verdict:first-child {
+  margin-bottom: 18px;
+}
+.report .meta-line {
+  font-family: var(--r-font-mono);
+  font-size: 11.5px;
+  color: var(--r-ink-4);
+  margin-top: 6px;
+  letter-spacing: 0.04em;
+}
+
+/* Buttons */
+.report .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--r-font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--r-border-strong);
+  background: var(--r-bg);
+  color: var(--r-ink);
+  cursor: pointer;
+  transition: background .08s;
+  white-space: nowrap;
+}
+.report .btn:hover { background: var(--r-bg-subtle); }
+.report .btn-primary {
+  background: var(--r-ink);
+  color: #fff;
+  border-color: var(--r-ink);
+}
+.report .btn-primary:hover { background: #000; }
+
+/* Owner avatar (initials chip) */
+.report .owner-avatar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--r-ink-2);
+}
+.report .owner-avatar .av {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--r-bg-subtle);
+  border: 1px solid var(--r-border);
+  font-size: 9.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--r-ink-2);
+  font-family: var(--r-font-mono);
+}
+
+/* ─── EU classification banner ─────────────────────────────── */
+.report .eu-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--r-border);
+  background: var(--r-bg-muted);
+  border-radius: var(--r-radius);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+.report .eu-banner .eu-banner-help {
+  font-size: 12px;
+  color: var(--r-ink-3);
+  line-height: 1.55;
+  margin-bottom: 4px;
+}
+.report .eu-banner .eu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.report .eu-banner .eu-label {
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+}
+.report .eu-banner .eu-fw {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--r-bg);
+  border: 1px solid var(--r-border);
+  color: var(--r-ink-2);
+}
+/* High-risk / prohibited EU AI Act chip — reuses the same colour tokens
+   as .sev-high so the classification stays visually emphasised even
+   though the standalone red badge is gone. */
+.report .eu-banner .eu-fw.eu-fw-warn {
+  color: var(--r-high);
+  background: var(--r-high-bg);
+  border-color: var(--r-high-bd);
+}
+.report .eu-banner .eu-mapping {
+  font-family: var(--r-font-mono);
+  font-size: 10px;
+  color: var(--r-ink-4);
+  padding-top: 2px;
+}
+
+/* Footer */
+.report .footer {
+  margin-top: 56px;
+  padding-top: 18px;
+  border-top: 1px solid var(--r-border);
+  display: flex;
+  justify-content: space-between;
+  color: var(--r-ink-3);
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Drawer (overrides for drawer when wrapped in .report root) ── */
+/* The drawer lives outside the report tree, so its own classes stay
+   independent — see ReportFindingDrawer. */
+
+/* ─── Transcript view ─────────────────────────────────────────
+   Sits inside .report (left-aligned, max-width fluid). Mirrors the
+   design bundle: header bar with title + meta + Copy/Download
+   actions; each Q/A is a card with Q-number + category pill,
+   question in sans, answer in mono. */
+.transcript-doc .transcript-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid var(--r-border);
+  background: var(--r-bg-muted);
+  border-radius: var(--r-radius);
+  margin-bottom: 18px;
+}
+.transcript-doc .transcript-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.transcript-doc .transcript-title-label {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+}
+.transcript-doc .transcript-title-meta {
+  font-family: var(--r-font-mono);
+  font-size: 11.5px;
+  color: var(--r-ink-3);
+}
+.transcript-doc .transcript-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.transcript-doc .transcript-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.transcript-doc .qa {
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  background: var(--r-bg);
+  padding: 12px 16px 14px;
+}
+.transcript-doc .qa-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.transcript-doc .qa-num {
+  font-family: var(--r-font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--r-ink-3);
+}
+.transcript-doc .qa-ts {
+  margin-left: auto;
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  color: var(--r-ink-4);
+  letter-spacing: 0.04em;
+}
+
+.transcript-doc .qa-row {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.transcript-doc .qa-tag {
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--r-ink-4);
+  text-transform: uppercase;
+  padding-top: 2px;
+}
+.transcript-doc .qa-q {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--r-ink);
+}
+.transcript-doc .qa-a {
+  margin: 0;
+  font-family: var(--r-font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--r-ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.transcript-doc .qa-divider {
+  border-top: 1px solid var(--r-border);
+  margin: 10px 0;
+}
+
+/* Category pill */
+.transcript-doc .cat-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid;
+  text-transform: lowercase;
+  font-family: var(--r-font-sans);
+  font-weight: 500;
+}
+.transcript-doc .cat-default     { color: #4b5563; background: #f3f4f6; border-color: #e5e7eb; }
+.transcript-doc .cat-permissions { color: #1e40af; background: #eff6ff; border-color: #bfdbfe; }
+.transcript-doc .cat-writes      { color: #c2410c; background: #fff4ed; border-color: #fed7aa; }
+.transcript-doc .cat-data        { color: #a16207; background: #fef9c3; border-color: #fde68a; }
+.transcript-doc .cat-security    { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+.transcript-doc .cat-network     { color: #6b21a8; background: #faf5ff; border-color: #e9d5ff; }
+.transcript-doc .cat-filesystem  { color: #15803d; background: #f0fdf4; border-color: #bbf7d0; }
+.transcript-doc .cat-decisions   { color: #0e7490; background: #ecfeff; border-color: #a5f3fc; }
+.transcript-doc .cat-identity    { color: #6d28d9; background: #f5f3ff; border-color: #ddd6fe; }
+
+/* ─── App-shell chrome (session top-bar + tab row) ──────────────
+   These live OUTSIDE .report so they apply to SessionDetail's chrome.
+   Scoped under .report-shell to avoid bleeding into the rest of the app.
+*/
+.report-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #ffffff;
+  font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: #18181b;
+  font-size: 13px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+}
+
+.report-shell .topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 22px;
+  border-bottom: 1px solid #e6e6e3;
+  background: #ffffff;
+  flex-wrap: wrap;
+  position: relative;
+}
+/* Left cluster: shrinks first so the actions on the right always stay
+   on the same row when there's enough width for them. The session-id
+   inside this cluster can ellipse since the cluster owns the overflow. */
+.report-shell .topbar .topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.report-shell .topbar .session-id {
+  font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: #18181b;
+  letter-spacing: -0.01em;
+  /* Long agent names truncate with ellipsis instead of breaking the
+     row. Tooltip carries the full name. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Short session ID rendered after the agent name, muted + mono. */
+.report-shell .topbar .session-id .session-id-suffix {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #a1a1aa;
+  margin-left: 4px;
+  letter-spacing: 0;
+}
+.report-shell .topbar .topbar-meta {
+  margin-left: auto;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  color: #71717a;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.report-shell .topbar .topbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Narrow viewports — drop the session-id cap so the name truncates
+   harder before the actions row wraps. */
+@media (max-width: 1100px) {
+  .report-shell .topbar .session-id {
+    max-width: 240px;
+  }
+}
+
+/* Tab row */
+.report-shell .tab-row {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e6e6e3;
+  padding: 0 22px;
+  background: #ffffff;
+}
+.report-shell .tab-row .tab {
+  padding: 10px 14px;
+  font-size: 13px;
+  border: none;
+  background: transparent;
+  color: #71717a;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color .1s, border-color .1s;
+  font-family: inherit;
+  font-weight: 500;
+}
+.report-shell .tab-row .tab:hover { color: #3f3f46; }
+.report-shell .tab-row .tab.active {
+  color: #18181b;
+  border-bottom-color: #18181b;
+}
+
+/* Body wrap — owns the scroll */
+.report-shell .body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+/* Severity pills reused on top-bar */
+.report-shell .sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 3px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.report-shell .sev-critical { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+.report-shell .sev-high     { color: #c2410c; background: #fff4ed; border-color: #fed7aa; }
+.report-shell .sev-medium   { color: #a16207; background: #fef9c3; border-color: #fde68a; }
+.report-shell .sev-low      { color: #15803d; background: #f0fdf4; border-color: #bbf7d0; }
+.report-shell .sev-info     { color: #1e40af; background: #eff6ff; border-color: #bfdbfe; }
+.report-shell .sev-ok       { color: #15803d; background: #f0fdf4; border-color: #bbf7d0; }
+.report-shell .sev-neutral  { color: #71717a; background: #fafafa; border-color: #e6e6e3; }
+
+/* Buttons (shared with .report .btn but scoped here too) */
+.report-shell .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 11px;
+  border-radius: 5px;
+  border: 1px solid #d4d4d0;
+  background: #ffffff;
+  color: #18181b;
+  cursor: pointer;
+  transition: background .08s;
+  white-space: nowrap;
+}
+.report-shell .btn:hover { background: #f4f4f5; }
+.report-shell .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.report-shell .btn-primary {
+  background: #18181b;
+  color: #fff;
+  border-color: #18181b;
+}
+.report-shell .btn-primary:hover { background: #000; }
+.report-shell .btn-icon-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #18181b;
+  color: #fff;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+/* Share popover — absolute, doesn't push layout. Anchored to the
+   share button wrap (position: relative), not the topbar — so it lines
+   up with the button regardless of viewport / wrap. */
+.report-shell .share-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 420px;
+  max-width: calc(100vw - 44px);
+  background: #ffffff;
+  border: 1px solid #e6e6e3;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.12), 0 2px 8px rgba(0,0,0,.06);
+  padding: 16px 18px;
+  z-index: 30;
+}
+.report-shell .share-popover .label-mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #71717a;
+  margin-bottom: 8px;
+}
+.report-shell .share-popover .field {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.report-shell .share-popover input {
+  flex: 1;
+  border: 1px solid #d4d4d0;
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #ffffff;
+  color: #18181b;
+  outline: none;
+}
+.report-shell .share-popover input:focus { border-color: #71717a; }
+.report-shell .share-popover input[readonly] {
+  background: #fafafa;
+  color: #3f3f46;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+.report-shell .share-popover .grants-list {
+  border: 1px solid #e6e6e3;
+  border-radius: 5px;
+  margin-top: 10px;
+  margin-bottom: 4px;
+}
+.report-shell .share-popover .grants-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f4f4f5;
+  font-size: 12.5px;
+  list-style: none;
+}
+.report-shell .share-popover .grants-list li:last-child { border-bottom: none; }
+.report-shell .share-popover .grants-list .email {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  color: #18181b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.report-shell .share-popover .grants-list .meta {
+  font-size: 11px;
+  color: #a1a1aa;
+}
+.report-shell .share-popover .grants-list .remove {
+  font-size: 11.5px;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  background: #ffffff;
+  border-radius: 4px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+.report-shell .share-popover .grants-list .remove:hover { background: #fef2f2; }
+.report-shell .share-popover .empty-line {
+  font-size: 11.5px;
+  color: #71717a;
+  margin: 4px 0 12px;
+}
+.report-shell .share-popover .divider-line {
+  border-top: 1px solid #e6e6e3;
+  margin: 14px 0 10px;
+}
+.report-shell .share-popover .row-tight {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.report-shell .share-popover .link-help {
+  font-size: 11.5px;
+  color: #71717a;
+  margin: 4px 0 10px;
+  line-height: 1.5;
+}
+
+/* Diff/transcript wrappers — same body padding as report but no max-width
+   constraint baked in (let TranscriptView/DiffView set their own column).
+   Left-aligned to match .report. */
+.report-shell .body-pad {
+  padding: 22px 28px 60px;
+  max-width: 980px;
+  margin: 0;
+}
+
+/* Diff picker popover — dropdown attached to the "Compare versions"
+   button. Lists the user's other completed audits so they can pick
+   the previous version manually (covers rename / auto-match misses). */
+.report-shell .diff-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 380px;
+  max-width: calc(100vw - 44px);
+  max-height: 60vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid #e6e6e3;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.12), 0 2px 8px rgba(0,0,0,.06);
+  z-index: 30;
+}
+.report-shell .diff-picker .diff-picker-head {
+  padding: 12px 14px 4px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #71717a;
+}
+.report-shell .diff-picker .diff-picker-help {
+  padding: 0 14px 10px;
+  font-size: 11.5px;
+  color: #71717a;
+  line-height: 1.5;
+  border-bottom: 1px solid #f4f4f5;
+}
+.report-shell .diff-picker .diff-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+.report-shell .diff-picker .diff-picker-row {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 5px;
+  font-family: inherit;
+}
+.report-shell .diff-picker .diff-picker-row:hover {
+  background: #f4f4f5;
+}
+.report-shell .diff-picker .diff-picker-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.report-shell .diff-picker .diff-picker-row:disabled:hover {
+  background: transparent;
+}
+.report-shell .diff-picker .diff-picker-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.report-shell .diff-picker .diff-picker-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #18181b;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.report-shell .diff-picker .diff-picker-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #a1a1aa;
+}
+.report-shell .diff-picker .diff-picker-row-meta .mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Suggested previous-version plate. Surfaces the top-N candidates ranked
+   by canonical-system overlap when the strict auto-pair gate didn't fire.
+   Sits inline above the report so the user notices and resolves the
+   pairing once, instead of rediscovering it from the dropdown each time. */
+.report-shell .diff-suggestions-plate {
+  margin: 0 0 18px 0;
+  padding: 12px 14px;
+  background: #fbfaf6;
+  border: 1px solid #ece9d8;
+  border-radius: 8px;
+}
+.report-shell .diff-suggestions-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.report-shell .diff-suggestions-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #3f3f46;
+}
+.report-shell .diff-suggestions-dismiss {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  color: #a1a1aa;
+}
+.report-shell .diff-suggestions-dismiss:hover {
+  background: #f4f4f5;
+  color: #52525b;
+}
+.report-shell .diff-suggestions-help {
+  margin: 4px 0 8px 0;
+  font-size: 11.5px;
+  color: #71717a;
+  line-height: 1.5;
+}
+.report-shell .diff-suggestions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.report-shell .diff-suggestions-row {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #ece9d8;
+  background: #ffffff;
+  cursor: pointer;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+}
+.report-shell .diff-suggestions-row:hover:not(:disabled) {
+  background: #f8f7f0;
+  border-color: #d6d3b4;
+}
+.report-shell .diff-suggestions-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.report-shell .diff-suggestions-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.report-shell .diff-suggestions-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #18181b;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.report-shell .diff-suggestions-score {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #6b7280;
+  background: #f4f4f5;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+.report-shell .diff-suggestions-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #a1a1aa;
+  overflow: hidden;
+}
+.report-shell .diff-suggestions-shared {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Compare tab body. Two render paths share styling:
+     - structured (DiffView.tsx): summary card + Findings/Systems/Compliance tables
+     - legacy markdown fallback (diffMarkdown.ts): for sessions diffed before
+       the JSON path landed. Both reuse the .report shell so typography, width,
+       and table density match the Report tab. */
+.report-shell .report.diff-report {
+  max-width: 1400px;
+}
+.report-shell .report.diff-report .diff-meta {
+  border: 1px solid var(--r-border);
+  background: var(--r-bg-muted);
+  border-radius: 6px;
+  padding: 12px 14px 12px 16px;
+  font-size: 12px;
+  color: var(--r-ink-3);
+  margin-bottom: 24px;
+  font-family: var(--r-font-mono);
+  line-height: 1.5;
+  max-width: 1120px;
+}
+.report-shell .report.diff-report .diff-md {
+  max-width: 1120px;
+  font-size: 14px;
+  color: var(--r-ink-2);
+  line-height: 1.6;
+}
+.report-shell .report.diff-report .diff-md h1 {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--r-ink);
+  margin: 24px 0 10px;
+  letter-spacing: -0.015em;
+}
+.report-shell .report.diff-report .diff-md h1:first-child {
+  margin-top: 0;
+}
+.report-shell .report.diff-report .diff-md h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--r-ink);
+  margin: 30px 0 12px;
+  padding-top: 22px;
+  border-top: 1px solid var(--r-border);
+  letter-spacing: -0.01em;
+}
+.report-shell .report.diff-report .diff-md h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--r-ink-3);
+  margin: 18px 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--r-font-mono);
+}
+.report-shell .report.diff-report .diff-md p {
+  margin: 0 0 10px;
+  max-width: 880px;
+}
+.report-shell .report.diff-report .diff-md strong {
+  color: var(--r-ink);
+  font-weight: 600;
+}
+.report-shell .report.diff-report .diff-md em {
+  color: var(--r-ink-3);
+  font-style: italic;
+}
+.report-shell .report.diff-report .diff-md code {
+  font-family: var(--r-font-mono);
+  font-size: 12.5px;
+  background: var(--r-bg-subtle);
+  border: 1px solid var(--r-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--r-ink);
+}
+.report-shell .report.diff-report .diff-md ul {
+  list-style: disc;
+  margin: 6px 0 12px;
+  padding-left: 22px;
+  max-width: 920px;
+}
+.report-shell .report.diff-report .diff-md ul ul {
+  margin: 4px 0;
+  list-style: circle;
+}
+.report-shell .report.diff-report .diff-md li {
+  margin: 4px 0;
+  padding-left: 2px;
+}
+.report-shell .report.diff-report .diff-md .diff-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 12px 0 22px;
+  border: 1px solid var(--r-border);
+  border-radius: 6px;
+  background: var(--r-bg);
+}
+.report-shell .report.diff-report .diff-md .diff-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+.report-shell .report.diff-report .diff-md .diff-table thead th {
+  background: var(--r-bg-muted);
+  text-align: left;
+  font-weight: 600;
+  color: var(--r-ink-2);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--r-border);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-family: var(--r-font-mono);
+}
+.report-shell .report.diff-report .diff-md .diff-table tbody td {
+  padding: 10px 12px;
+  border-top: 1px solid var(--r-bg-subtle);
+  color: var(--r-ink-2);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.report-shell .report.diff-report .diff-md .diff-table tbody tr:first-child td {
+  border-top: none;
+}
+
+/* ── Structured Compare view (DiffView.tsx) ───────────────────────── */
+
+.report-shell .diff-structured {
+  max-width: 1120px;
+  font-size: 14px;
+  color: var(--r-ink-2);
+  line-height: 1.55;
+}
+.report-shell .diff-structured .diff-section {
+  margin: 0 0 32px;
+}
+.report-shell .diff-structured .diff-section + .diff-section {
+  padding-top: 28px;
+  border-top: 1px solid var(--r-border);
+}
+.report-shell .diff-structured .diff-section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--r-ink);
+  margin: 0 0 14px;
+  letter-spacing: -0.01em;
+}
+.report-shell .diff-structured .diff-subsection {
+  margin: 18px 0 0;
+}
+.report-shell .diff-structured .diff-subsection-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--r-ink-3);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--r-font-mono);
+}
+
+/* Summary grid + stat cards */
+.report-shell .diff-structured .diff-summary-grid {
+  display: grid;
+  /* Risk gets wider since it carries a "FROM → TO + direction" flow.
+     Remaining stats are equal. We anchor at 6 columns on wide screens
+     and collapse to a 3+3 layout below 900px so we never end up with
+     a single orphan card on its own row. */
+  grid-template-columns: minmax(220px, 1.6fr) repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+@media (max-width: 900px) {
+  .report-shell .diff-structured .diff-summary-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .report-shell .diff-structured .diff-stat:first-child {
+    grid-column: span 3;
+  }
+}
+@media (max-width: 600px) {
+  .report-shell .diff-structured .diff-summary-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .report-shell .diff-structured .diff-stat:first-child {
+    grid-column: span 2;
+  }
+}
+.report-shell .diff-structured .diff-stat {
+  border: 1px solid var(--r-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--r-bg);
+}
+.report-shell .diff-structured .diff-stat-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--r-ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--r-font-mono);
+  margin-bottom: 4px;
+}
+.report-shell .diff-structured .diff-stat-value {
+  font-size: 15px;
+  color: var(--r-ink);
+  font-weight: 500;
+}
+.report-shell .diff-structured .diff-stat-good {
+  border-left: 3px solid var(--r-low);
+}
+.report-shell .diff-structured .diff-stat-bad {
+  border-left: 3px solid var(--r-high);
+}
+
+/* Vertical breakdown inside a stat value — used by the Systems card so
+   "added / removed / changed / reworded" stack legibly instead of wrapping
+   a single horizontal string. */
+.report-shell .diff-structured .diff-stat-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--r-ink);
+  line-height: 1.35;
+}
+.report-shell .diff-structured .diff-stat-breakdown-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.report-shell .diff-structured .diff-stat-breakdown-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 1.4ch;
+  text-align: right;
+}
+.report-shell .diff-structured .diff-stat-breakdown-label {
+  font-size: 12px;
+  color: var(--r-ink-3);
+}
+
+.report-shell .diff-structured .diff-narrative {
+  margin: 4px 0 0;
+  padding: 12px 14px;
+  background: var(--r-bg-muted);
+  border-left: 3px solid var(--r-info);
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--r-ink-2);
+  line-height: 1.6;
+}
+
+.report-shell .diff-structured .diff-data-quality {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--r-ink-3);
+  font-family: var(--r-font-mono);
+}
+
+/* Risk flow / direction chip */
+.report-shell .diff-structured .diff-risk-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.report-shell .diff-structured .diff-direction {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--r-font-mono);
+  margin-left: 4px;
+}
+.report-shell .diff-structured .diff-direction-improved { color: var(--r-low); }
+.report-shell .diff-structured .diff-direction-worsened { color: var(--r-high); }
+.report-shell .diff-structured .diff-direction-unchanged { color: var(--r-ink-3); }
+
+.report-shell .diff-structured .diff-arrow {
+  color: var(--r-ink-4);
+  font-family: var(--r-font-mono);
+}
+.report-shell .diff-structured .diff-arrow-improved { color: var(--r-low); }
+.report-shell .diff-structured .diff-arrow-worsened { color: var(--r-high); }
+
+/* Tables */
+.report-shell .diff-structured .diff-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 6px 0 0;
+  border: 1px solid var(--r-border);
+  border-radius: 6px;
+  background: var(--r-bg);
+}
+.report-shell .diff-structured .diff-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.report-shell .diff-structured .diff-table thead th {
+  background: var(--r-bg-muted);
+  text-align: left;
+  font-weight: 600;
+  color: var(--r-ink-2);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--r-border);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-family: var(--r-font-mono);
+}
+.report-shell .diff-structured .diff-table tbody td {
+  padding: 10px 12px;
+  border-top: 1px solid var(--r-bg-subtle);
+  color: var(--r-ink-2);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.report-shell .diff-structured .diff-table tbody tr:first-child td {
+  border-top: none;
+}
+.report-shell .diff-structured .diff-row-added       { background: rgba(254, 226, 226, 0.18); }
+.report-shell .diff-structured .diff-row-severity_up { background: rgba(254, 226, 226, 0.18); }
+.report-shell .diff-structured .diff-row-rephrased   { background: rgba(254, 240, 196, 0.18); }
+.report-shell .diff-structured .diff-row-severity_down { background: rgba(220, 252, 231, 0.18); }
+.report-shell .diff-structured .diff-row-resolved    { background: rgba(220, 252, 231, 0.25); }
+
+/* Status badge */
+.report-shell .diff-structured .diff-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--r-font-mono);
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.report-shell .diff-structured .diff-status-added         { color: var(--r-high);   background: var(--r-high-bg);   border: 1px solid var(--r-high-bd); }
+.report-shell .diff-structured .diff-status-severity_up   { color: var(--r-high);   background: var(--r-high-bg);   border: 1px solid var(--r-high-bd); }
+.report-shell .diff-structured .diff-status-rephrased     { color: var(--r-review); background: var(--r-review-bg); border: 1px solid var(--r-review-bd); }
+.report-shell .diff-structured .diff-status-severity_down { color: var(--r-low);    background: var(--r-low-bg);    border: 1px solid var(--r-low-bd); }
+.report-shell .diff-structured .diff-status-resolved      { color: var(--r-low);    background: var(--r-low-bg);    border: 1px solid var(--r-low-bd); }
+
+/* Severity flow inside cells: "FROM → TO" must stay on a single line.
+   With flex-wrap the chip after the arrow was breaking onto its own
+   row when the column was even slightly tight, so the table looked
+   like the severity got split in two. */
+.report-shell .diff-structured .diff-sev-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+/* Scope chips */
+.report-shell .diff-structured .diff-scope {
+  display: inline-block;
+  font-family: var(--r-font-mono);
+  font-size: 12px;
+  background: var(--r-bg-subtle);
+  border: 1px solid var(--r-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin: 2px 4px 2px 0;
+  color: var(--r-ink);
+  /* Scopes are SUPPOSED to be short tokens like "drive.file", but the
+     audit pipeline sometimes emits whole sentences (Q&A snippets) into
+     this field. Keep break-all out of it — it would chop legitimate
+     dotted scopes mid-word — and let prose wrap cleanly instead. */
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+  line-height: 1.4;
+}
+/* Inside the Changed-systems table the cell is narrow and long-form
+   scope strings stack better as a vertical list than as inline chips. */
+.report-shell .diff-structured .diff-table .diff-scope {
+  display: block;
+  max-width: 100%;
+  margin: 4px 0;
+}
+.report-shell .diff-structured .diff-scope-added {
+  background: var(--r-high-bg);
+  border-color: var(--r-high-bd);
+  color: var(--r-high);
+}
+.report-shell .diff-structured .diff-scope-removed {
+  background: var(--r-low-bg);
+  border-color: var(--r-low-bd);
+  color: var(--r-low);
+  text-decoration: line-through;
+  text-decoration-color: rgba(21, 128, 61, 0.6);
+}
+
+/* Lists in Systems / Compliance */
+.report-shell .diff-structured .diff-system-list,
+.report-shell .diff-structured .diff-compliance-list {
+  list-style: disc;
+  margin: 4px 0 0;
+  padding-left: 22px;
+}
+.report-shell .diff-structured .diff-system-list li,
+.report-shell .diff-structured .diff-compliance-list li {
+  margin: 10px 0;
+}
+
+/* The system-id field bakes in transport + auth + provider as one
+   long em-dash-joined string. Split it: bold the first segment as
+   the name, dim the trailing metadata so each entry reads like a
+   stacked card instead of a paragraph. */
+.report-shell .diff-structured .diff-system-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--r-ink-3);
+  line-height: 1.5;
+}
+.report-shell .diff-structured .diff-system-meta-part {
+  display: inline;
+}
+.report-shell .diff-structured .diff-system-meta-part + .diff-system-meta-part::before {
+  content: '·';
+  margin: 0 6px;
+  color: var(--r-ink-4);
+}
+.report-shell .diff-structured .diff-system-detail {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--r-ink-3);
+  /* The "Was: …" line in Reworded carries a verbose human-formatted
+     systemId; force it to wrap inside the card instead of overflowing
+     the section gutter. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.report-shell .diff-structured .diff-system-detail-label {
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--r-ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 2px;
+}
+
+/* Framework codes (gdpr, eu-ai-act, ...) in the Compliance section.
+   These are activations, not security scope changes — neutral chip
+   styling instead of the alarming red used for .diff-scope-added. */
+.report-shell .diff-structured .diff-framework-chip {
+  display: inline-block;
+  font-family: var(--r-font-mono);
+  font-size: 12px;
+  background: var(--r-bg-subtle);
+  border: 1px solid var(--r-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin: 2px 4px 2px 0;
+  color: var(--r-ink);
+}
+.report-shell .diff-structured .diff-other-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.report-shell .diff-structured .diff-other-changes li {
+  margin: 2px 0;
+  color: var(--r-ink-3);
+}
+
+/* Stacked before/after for prose system fields (Description, Sensitivity,
+   Frequency, Blast radius). Mirrors the red-add / green-remove palette of
+   the Scopes columns so the row reads as a diff at a glance. */
+.report-shell .diff-structured .diff-change-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.report-shell .diff-structured .diff-change-label {
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+}
+.report-shell .diff-structured .diff-change-from,
+.report-shell .diff-structured .diff-change-to {
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 5px 8px;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+}
+.report-shell .diff-structured .diff-change-from {
+  background: var(--r-low-bg);
+  border-color: var(--r-low-bd);
+  color: var(--r-low);
+  text-decoration: line-through;
+  text-decoration-color: rgba(21, 128, 61, 0.55);
+}
+.report-shell .diff-structured .diff-change-to {
+  background: var(--r-high-bg);
+  border-color: var(--r-high-bd);
+  color: var(--r-high);
+}
+
+.report-shell .diff-structured .diff-muted {
+  color: var(--r-ink-4);
+}
+.report-shell .diff-structured .diff-empty {
+  padding: 18px;
+  text-align: center;
+  color: var(--r-ink-3);
+  font-size: 13px;
+  font-family: var(--r-font-mono);
+  border: 1px dashed var(--r-border);
+  border-radius: 6px;
+  background: var(--r-bg-muted);
+}
+.report-shell .diff-structured .diff-footnote {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--r-ink-3);
+  font-style: italic;
+}
+
+.report-shell .diff-structured .diff-footnote-inline {
+  margin: -2px 0 6px 0;
+  font-size: 12px;
+  color: var(--r-ink-3);
+}

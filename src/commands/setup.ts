@@ -9,72 +9,21 @@
  * CLI flags and env vars.
  */
 
-import { promises as fs } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
 import * as logger from '../util/logger.js';
 
-/** Shape persisted to `~/.heron/credentials.json`. */
-export interface SavedCredentials {
-  provider: 'anthropic' | 'openai' | 'gemini';
-  apiKey: string;
-  baseURL?: string;
-  /** Saved at, ISO-8601 UTC. */
-  savedAt: string;
-}
-
-/**
- * Default location. Override via `HERON_CREDENTIALS_PATH` for tests
- * or for users who want a custom location (e.g. encrypted volume).
- */
-export function defaultCredentialsPath(): string {
-  return process.env.HERON_CREDENTIALS_PATH
-    ?? join(homedir(), '.heron', 'credentials.json');
-}
-
-/**
- * Load saved credentials if the file exists. Returns `undefined`
- * when the file is absent, malformed, or unreadable — caller
- * decides whether to fall through to env vars / wizard.
- */
-export async function loadCredentials(
-  path: string = defaultCredentialsPath(),
-): Promise<SavedCredentials | undefined> {
-  try {
-    const raw = await fs.readFile(path, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<SavedCredentials>;
-    if (!parsed.provider || !parsed.apiKey) return undefined;
-    if (parsed.provider !== 'anthropic'
-        && parsed.provider !== 'openai'
-        && parsed.provider !== 'gemini') {
-      return undefined;
-    }
-    return {
-      provider: parsed.provider,
-      apiKey: parsed.apiKey,
-      baseURL: parsed.baseURL,
-      savedAt: parsed.savedAt ?? new Date().toISOString(),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Write credentials atomically with `0600` perms. Parent dir is
- * created with `0700` if missing.
- */
-export async function saveCredentials(
-  creds: Omit<SavedCredentials, 'savedAt'>,
-  path: string = defaultCredentialsPath(),
-): Promise<void> {
-  const dir = dirname(path);
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  const payload: SavedCredentials = { ...creds, savedAt: new Date().toISOString() };
-  const tmp = `${path}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
-  await fs.rename(tmp, path);
-}
+// Credentials storage lives in a small, zero-dep module so Next.js
+// route handlers can import the loader without pulling the CLI wizard.
+export {
+  defaultCredentialsPath,
+  loadCredentials,
+  saveCredentials,
+  type SavedCredentials,
+} from './credentials-store.js';
+import {
+  defaultCredentialsPath,
+  loadCredentials,
+  saveCredentials,
+} from './credentials-store.js';
 
 /**
  * Entry point for `heron setup`. Runs the wizard, persists the
