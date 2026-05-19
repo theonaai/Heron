@@ -26,20 +26,71 @@ import * as logger from './logger.js';
 const PORT_RANGE_START = 3700;
 const PORT_RANGE_END = 3710;
 
-/** Resolve the Heron repo root (where .next/standalone/server.js lives). */
+/**
+ * Resolve the Heron repo root (the directory that holds package.json and
+ * .next/standalone/...). The source lives at
+ * `src/util/browser-first.ts` (2 levels up from <root>) under tsx-dev,
+ * and at `dist/src/util/browser-first.js` (3 levels up) after `tsc`.
+ * Walk up until we hit a directory containing package.json — that's
+ * the repo root and the only sensible place .next/standalone could be.
+ */
 function repoRoot(): string {
-  // dist/util/browser-first.js lives at <root>/dist/util/. The standalone
-  // build also gets shipped under <root>/.next/. Walk two levels up.
   const here = dirname(fileURLToPath(import.meta.url));
-  // dev (tsx): bin/../src/util/ → root is two levels up.
-  // built: dist/util/ → root is two levels up.
+  let cur = here;
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(resolvePath(cur, 'package.json'))) return cur;
+    const parent = resolvePath(cur, '..');
+    if (parent === cur) break;
+    cur = parent;
+  }
+  // Fallback: 2 levels up (dev case) — keeps old behaviour when the
+  // walk doesn't find package.json (e.g. monorepo workspaces test).
   return resolvePath(here, '..', '..');
 }
 
 export function standaloneEntry(): string | undefined {
   const root = repoRoot();
-  const candidate = resolvePath(root, '.next', 'standalone', 'server.js');
-  if (existsSync(candidate)) return candidate;
+  // Next.js standalone bundles server.js under
+  // `.next/standalone/<cwd-from-monorepo-root>/server.js`. When the repo
+  // is the entire project (the OSS shape) the path is
+  // `.next/standalone/server.js`; when Next was built from a sub-dir
+  // (rare here, but Vercel does this) the server.js lives one or more
+  // directories deep. Look for the closest server.js under standalone.
+  const direct = resolvePath(root, '.next', 'standalone', 'server.js');
+  if (existsSync(direct)) return direct;
+
+  // Fallback: scan for server.js inside .next/standalone. We intentionally
+  // stop at depth 6 — Next's nesting is "<dev-root>/<repo-name>/server.js"
+  // at worst.
+  const standaloneRoot = resolvePath(root, '.next', 'standalone');
+  if (!existsSync(standaloneRoot)) return undefined;
+  return findServerJs(standaloneRoot, 0);
+}
+
+function findServerJs(dir: string, depth: number): string | undefined {
+  if (depth > 6) return undefined;
+  let entries: import('node:fs').Dirent[];
+  try {
+    // require-time import to avoid a top-level eager read.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  // Prefer a server.js at this level.
+  for (const e of entries) {
+    if (e.isFile() && e.name === 'server.js') {
+      return resolvePath(dir, 'server.js');
+    }
+  }
+  // Skip node_modules — Next's vendored package has its own server.js.
+  for (const e of entries) {
+    if (e.isDirectory() && e.name !== 'node_modules') {
+      const found = findServerJs(resolvePath(dir, e.name), depth + 1);
+      if (found) return found;
+    }
+  }
   return undefined;
 }
 
