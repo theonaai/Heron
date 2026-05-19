@@ -187,15 +187,18 @@ function detectProvider(apiKey: string): 'anthropic' | 'openai' | 'gemini' {
   return 'anthropic'; // fallback
 }
 
-// Defaults bumped on 2026-05-19 to current-flagship model IDs. The
-// `model` parameter is string-typed in both @anthropic-ai/sdk@^0.39
-// (Model = (string & {})) and openai@^4.70, so TypeScript accepts
-// any id; runtime acceptance depends on the live provider. Bump
-// these as providers release new versions — users can always
-// override per-call via `--llm-model` or HERON_LLM_MODEL.
+// Current-flagship model IDs, verified against vendor docs:
+//   - Anthropic: `claude-opus-4-7` (dateless pinned snapshot, 4.6
+//     generation onward). docs.anthropic.com/en/docs/about-claude/models
+//   - OpenAI: `gpt-5.5` (developers.openai.com/api/docs/models/gpt-5.5)
+//   - Gemini: `gemini-2.5-pro` (stable; preview models like
+//     gemini-3.1-pro-preview not used as default). ai.google.dev
+// Both SDKs type `model` as `(string & {})` so any id compiles —
+// runtime acceptance depends on the live provider. Users override
+// per-call via `--llm-model` or HERON_LLM_MODEL.
 const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: 'claude-opus-4-7-20260301',
-  openai: 'gpt-5.5-mini',
+  anthropic: 'claude-opus-4-7',
+  openai: 'gpt-5.5',
   gemini: 'gemini-2.5-pro',
 };
 

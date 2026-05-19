@@ -658,8 +658,8 @@ First run with no env vars / flags drops you into an arrow-key wizard:
 
 | Option | What it asks for | Notes |
 |--------|------------------|-------|
-| **Anthropic** | API key | Default model: `claude-opus-4-7-20260301` |
-| **OpenAI** | API key | Default model: `gpt-5.5-mini` |
+| **Anthropic** | API key | Default model: `claude-opus-4-7` |
+| **OpenAI** | API key | Default model: `gpt-5.5` |
 | **Google** | API key | Gemini — default model: `gemini-2.5-pro` |
 | **OpenRouter** | API key | Base URL hardcoded to `https://openrouter.ai/api/v1`, OpenAI-compatible |
 | **LiteLLM** | Base URL, then API key | OpenAI-compatible passthrough to any backend |
@@ -670,7 +670,7 @@ To skip the wizard (CI, scripts), use env vars or CLI flags:
 export HERON_LLM_API_KEY=sk-...                      # required
 export HERON_LLM_BASE_URL=https://litellm.example.com  # only for LiteLLM / OpenRouter / vLLM / Azure
 export HERON_LLM_PROVIDER=openai                     # only when auto-detection from key prefix is wrong
-export HERON_LLM_MODEL=claude-opus-4-7-20260301      # only to override the default
+export HERON_LLM_MODEL=claude-opus-4-7               # only to override the default
 ```
 
 Same fields exist as CLI flags: `--llm-key`, `--llm-base-url`, `--llm-provider`, `--llm-model`.

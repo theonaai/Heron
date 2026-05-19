@@ -43,8 +43,8 @@ llm:
 
   # Optional model override. Defaults track the current flagship
   # per provider — see DEFAULT_MODELS in src/llm/client.ts.
-  # model: claude-opus-4-7-20260301
-  # For OpenAI:  gpt-5.5-mini
+  # model: claude-opus-4-7
+  # For OpenAI:  gpt-5.5
   # For Gemini:  gemini-2.5-pro
 
   # Optional base URL — set this when pointing at an
