@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { runMcpServe, FileSystemReportStore } from '../../src/commands/mcp-serve.js';
-import { HeronMCPServer, type AuditPipeline, type ReportDiffer, type StoredReport } from '../../src/server/mcp-server.js';
+import { HeronMCPServer, type ReportDiffer, type StoredReport } from '../../src/server/mcp-server.js';
 import { generateId } from '../../src/util/id.js';
 
 describe('mcp-serve — runMcpServe wiring smoke', () => {
@@ -93,55 +93,33 @@ describe('FileSystemReportStore — put/get round-trip', () => {
 });
 
 describe('FileSystemReportStore — end-to-end through HeronMCPServer.get_report', () => {
-  it('audit_agent writes through the store; get_report reads it back', async () => {
-    // SSRF guard (F-1) blocks unresolvable placeholder hostnames. The
-    // test runs against a fake pipeline that never makes a network
-    // call, so flip the documented escape hatch on for this case.
-    const prev = process.env.HERON_ALLOW_PRIVATE_TARGETS;
-    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
-    try {
+  it('persisted records hydrate cleanly through a fresh wrapper', async () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'heron-mcp-serve-e2e-'));
     const store = new FileSystemReportStore(dir);
 
-    // Stub pipeline that returns a deterministic report id, mimicking the
-    // production wiring without needing an LLM or live target.
-    const auditPipeline: AuditPipeline = {
-      async run(input) {
-        const reportId = generateId('report');
-        return {
-          reportId,
-          target: input.targetEndpoint,
-          report: `# Stub Audit\n\nTarget: ${input.targetEndpoint}`,
-          summary: { riskLevel: 'low', findingsCount: 0 },
-        };
-      },
+    // Seed the store directly. AAP-52 retired audit_agent — there is no
+    // longer a tool that drives the store from the MCP surface — so we
+    // exercise the get_report path against a pre-populated store.
+    const reportId = generateId('report');
+    const record: StoredReport = {
+      reportId,
+      target: 'http://e2e.example/v1',
+      report: `# Stub Audit\n\nTarget: http://e2e.example/v1`,
+      createdAt: '2026-05-19T12:00:00.000Z',
+      summary: { riskLevel: 'low', findingsCount: 0 },
     };
+    store.put(record);
+
+    expect(existsSync(resolve(dir, `${reportId}.md`))).toBe(true);
+    expect(existsSync(resolve(dir, `${reportId}.meta.json`))).toBe(true);
+
     const differ: ReportDiffer = {
       async diff() { return ''; },
     };
 
-    const server = new HeronMCPServer({ auditPipeline, reportStore: store, differ });
+    const server = new HeronMCPServer({ reportStore: store, differ });
 
-    // 1) call audit_agent end-to-end through the wrapper
-    const auditResult = await server.invoke(
-      'audit_agent',
-      { target_endpoint: 'http://e2e.example/v1' },
-      {
-        authPrincipal: null,
-        sessionId: 'sess_e2e',
-        progress: () => undefined,
-        signal: new AbortController().signal,
-      },
-    );
-    expect(auditResult.ok).toBe(true);
-    if (!auditResult.ok) return;
-    const reportId = auditResult.value.report_id;
-
-    // 2) verify the store actually persisted the record to disk
-    expect(existsSync(resolve(dir, `${reportId}.md`))).toBe(true);
-    expect(existsSync(resolve(dir, `${reportId}.meta.json`))).toBe(true);
-
-    // 3) call get_report with the returned id and assert content matches
+    // get_report against the wrapper should hand the seeded record back.
     const getResult = await server.invoke(
       'get_report',
       { report_id: reportId },
@@ -154,15 +132,14 @@ describe('FileSystemReportStore — end-to-end through HeronMCPServer.get_report
     );
     expect(getResult.ok).toBe(true);
     if (!getResult.ok) return;
-    expect(getResult.value.report_markdown).toBe(auditResult.value.report_markdown);
+    expect(getResult.value.report_markdown).toBe(record.report);
     expect(getResult.value.metadata.report_id).toBe(reportId);
     expect(getResult.value.metadata.target).toBe('http://e2e.example/v1');
 
-    // 4) prove cross-process hydration: a brand-new store over the same
-    //    dir + a fresh wrapper can still serve the same report.
+    // Cross-process hydration: a brand-new store over the same dir +
+    // a fresh wrapper still serves the same report.
     const restartedStore = new FileSystemReportStore(dir);
     const restartedServer = new HeronMCPServer({
-      auditPipeline,
       reportStore: restartedStore,
       differ,
     });
@@ -178,10 +155,6 @@ describe('FileSystemReportStore — end-to-end through HeronMCPServer.get_report
     );
     expect(reReadResult.ok).toBe(true);
     if (!reReadResult.ok) return;
-    expect(reReadResult.value.report_markdown).toBe(auditResult.value.report_markdown);
-    } finally {
-      if (prev === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
-      else process.env.HERON_ALLOW_PRIVATE_TARGETS = prev;
-    }
+    expect(reReadResult.value.report_markdown).toBe(record.report);
   });
 });

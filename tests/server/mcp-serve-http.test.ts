@@ -19,11 +19,11 @@ import { runMcpServe } from '../../src/commands/mcp-serve.js';
  * port, then drive `tools/list` and `tools/call` through the SDK HTTP
  * client.
  *
- * Pipelines use the production `HeronAuditPipeline` wired against a fake
- * Anthropic key — `audit_agent` would normally call out to a target via
- * `HttpConnector`, but we don't invoke it here. The point is to prove the
- * wire-up: server actually binds, listens, exposes the locked tool surface,
- * and shuts down cleanly.
+ * Wired against a fake Anthropic key — start_audit_session would
+ * normally call out to a real LLM via sampling/createMessage, but we
+ * don't invoke it here. The point is to prove the wire-up: server
+ * actually binds, listens, exposes the locked tool surface, and shuts
+ * down cleanly.
  */
 
 describe('runMcpServe — HTTP transport (direct integration)', () => {
@@ -64,7 +64,7 @@ describe('runMcpServe — HTTP transport (direct integration)', () => {
     try {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report', 'start_audit_session']);
+      expect(names).toEqual(['compare_reports', 'get_report', 'start_audit_session']);
     } finally {
       await client.close();
     }

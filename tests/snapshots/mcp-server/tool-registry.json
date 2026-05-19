@@ -15,28 +15,6 @@
     }
   },
   {
-    "name": "audit_agent",
-    "description": "Run a Heron audit against a target agent endpoint. Interrogates the agent, analyzes the transcript, maps findings to compliance frameworks, and returns a markdown audit report plus a report id you can pass to get_report or compare_reports.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "target_endpoint": {
-          "type": "string",
-          "description": "URL of the target agent (OpenAI-compatible chat API)."
-        },
-        "options": {
-          "type": "object",
-          "description": "Optional pipeline tuning knobs (e.g. maxFollowUps).",
-          "additionalProperties": true
-        }
-      },
-      "required": [
-        "target_endpoint"
-      ],
-      "additionalProperties": false
-    }
-  },
-  {
     "name": "get_report",
     "description": "Retrieve a previously-generated Heron audit report by its id.",
     "inputSchema": {

@@ -16,8 +16,8 @@ const HERON_BIN = resolve(__dirname, '../../bin/heron.ts');
  *
  * `get_report` is hit with an obviously-missing id — we only care that
  * the request round-trips and produces a structured tool_failure, not
- * that the audit pipeline ran (the pipeline needs an LLM key + live
- * target which the integration tests' own fixture-server covers).
+ * that the sampling-driven interview ran (that needs a sampling-capable
+ * MCP client; coverage lives in sampling-e2e.test.ts).
  */
 
 describe('heron mcp-serve — stdio CLI', () => {
@@ -41,7 +41,7 @@ describe('heron mcp-serve — stdio CLI', () => {
     try {
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report', 'start_audit_session']);
+      expect(names).toEqual(['compare_reports', 'get_report', 'start_audit_session']);
 
       // get_report against an unknown id should round-trip and report
       // tool_failure — that proves the handler is wired, the LLM

@@ -22,7 +22,6 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 
 import {
   HeronMCPServer,
-  type AuditPipeline,
   type ReportDiffer,
 } from '@/src/server/mcp-server';
 import { buildSamplingDeps } from '@/src/server/sampling-factory';
@@ -39,17 +38,6 @@ function getSamplingDeps(): ReturnType<typeof buildSamplingDeps> {
   if (!samplingDepsPromise) samplingDepsPromise = buildSamplingDeps();
   return samplingDepsPromise;
 }
-
-/**
- * Until commit 12 retires audit_agent the wrapper still requires an
- * AuditPipeline dep. We give it a stub that errors loudly if invoked —
- * the new MCP surface never calls audit_agent.
- */
-const stubAuditPipeline: AuditPipeline = {
-  async run() {
-    throw new Error('audit_agent is deprecated under AAP-52 — use start_audit_session');
-  },
-};
 
 const stubDiffer: ReportDiffer = {
   async diff() {
@@ -104,7 +92,6 @@ async function dispatch(req: Request): Promise<Response> {
 
     const { runSamplingInterview, analyzeAndRenderReport } = await getSamplingDeps();
     const wrapper = new HeronMCPServer({
-      auditPipeline: stubAuditPipeline,
       differ: stubDiffer,
       runSamplingInterview,
       analyzeAndRenderReport,

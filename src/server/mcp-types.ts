@@ -97,34 +97,6 @@ export type MCPServerResult<T> =
 
 // ─── Tool-specific input/output shapes (locked) ─────────────────────────
 
-/** Input for the `audit_agent` MCP tool. */
-export interface AuditAgentInput {
-  /**
-   * Target agent's endpoint. Today: an OpenAI-compatible chat URL. The
-   * field is open-string rather than a discriminated union so that future
-   * transports (MCP-target verification, AAP-48) can use the same field
-   * without a contract change.
-   */
-  target_endpoint: string;
-  /** Optional bag of pipeline tuning knobs (max follow-ups, etc.). */
-  options?: {
-    maxFollowUps?: number;
-    /** Reserved — future per-target overrides. */
-    [key: string]: unknown;
-  };
-}
-
-/** Output for the `audit_agent` MCP tool. */
-export interface AuditAgentOutput {
-  report_markdown: string;
-  report_id: string;
-  summary: {
-    risk_level: string;
-    findings_count: number;
-    recommendation?: string;
-  };
-}
-
 /** Input for the `get_report` MCP tool. */
 export interface GetReportInput {
   report_id: string;
