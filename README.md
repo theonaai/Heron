@@ -645,21 +645,35 @@ A real audit of an educational content pipeline agent &mdash; reads lessons from
 
 ## LLM Provider
 
-Heron auto-detects the provider from your API key:
+First run with no env vars / flags drops you into an arrow-key wizard:
 
-| Key prefix | Provider | Default model |
-|------------|----------|---------------|
-| `sk-ant-` | Anthropic | claude-sonnet-4 |
-| `sk-` | OpenAI | gpt-5.4-mini |
-| `AIza` | Gemini | gemini-2.0-flash |
-
-The CLI prompts for your key on first run, or you can pass it via env var:
-
-```bash
-export HERON_LLM_API_KEY=sk-xxx   # optional — provider and model auto-selected
+```
+?  How do you want to connect Heron to an LLM?
+   ●  Anthropic
+   ○  OpenAI
+   ○  Google
+   ○  OpenRouter
+   ○  LiteLLM
 ```
 
-Override with `--llm-provider` and `--llm-model` if needed.
+| Option | What it asks for | Notes |
+|--------|------------------|-------|
+| **Anthropic** | API key | Default model: `claude-opus-4-7-20260301` |
+| **OpenAI** | API key | Default model: `gpt-5.5-mini` |
+| **Google** | API key | Gemini — default model: `gemini-2.5-pro` |
+| **OpenRouter** | API key | Base URL hardcoded to `https://openrouter.ai/api/v1`, OpenAI-compatible |
+| **LiteLLM** | Base URL, then API key | OpenAI-compatible passthrough to any backend |
+
+To skip the wizard (CI, scripts), use env vars or CLI flags:
+
+```bash
+export HERON_LLM_API_KEY=sk-...                      # required
+export HERON_LLM_BASE_URL=https://litellm.example.com  # only for LiteLLM / OpenRouter / vLLM / Azure
+export HERON_LLM_PROVIDER=openai                     # only when auto-detection from key prefix is wrong
+export HERON_LLM_MODEL=claude-opus-4-7-20260301      # only to override the default
+```
+
+Same fields exist as CLI flags: `--llm-key`, `--llm-base-url`, `--llm-provider`, `--llm-model`.
 
 ## Reference
 
@@ -675,6 +689,7 @@ npx heron-ai serve [options]
 | `-p, --port <port>` | Port to listen on | `3700` |
 | `-H, --host <host>` | Host to bind to. Loopback by default. Pass `0.0.0.0` to expose to the LAN — Heron OSS has **no authentication** and POST endpoints can spawn arbitrary processes via the MCP stdio transport. Never expose to the public Internet. | `127.0.0.1` |
 | `--llm-key <key>` | LLM API key | `HERON_LLM_API_KEY` env |
+| `--llm-base-url <url>` | LLM base URL for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways | `HERON_LLM_BASE_URL` env |
 | `--llm-provider <p>` | `anthropic`, `openai`, or `gemini` | auto-detect |
 | `--llm-model <model>` | Analysis LLM model | auto per provider |
 | `--max-followups <n>` | Max follow-up questions | `3` |
@@ -723,6 +738,7 @@ npx heron-ai scan [options]
 |------|-------------|---------|
 | `-t, --target <url>` | Agent's chat API URL | required |
 | `--llm-key <key>` | LLM API key | `HERON_LLM_API_KEY` env |
+| `--llm-base-url <url>` | LLM base URL for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways | `HERON_LLM_BASE_URL` env |
 | `--llm-provider <p>` | `anthropic`, `openai`, or `gemini` | auto-detect |
 | `--llm-model <model>` | Analysis LLM model | auto per provider |
 | `-o, --output <path>` | Save report to file | `./reports/scan_xxx.md` |
