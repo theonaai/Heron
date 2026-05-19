@@ -30,11 +30,14 @@ function makeReq(path: string): Request {
   });
 }
 
-async function readChunk(reader: ReadableStreamDefaultReader<Uint8Array>, deadlineMs = 1500): Promise<string> {
+async function readUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  predicate: (buf: string) => boolean,
+  deadlineMs = 2000,
+): Promise<string> {
   const decoder = new TextDecoder();
   let buf = '';
   const stop = Date.now() + deadlineMs;
-  // Loop until we've received at least one `\n\n` framing pair OR deadline.
   while (Date.now() < stop) {
     const race = Promise.race([
       reader.read(),
@@ -45,7 +48,7 @@ async function readChunk(reader: ReadableStreamDefaultReader<Uint8Array>, deadli
     const r = (await race) as { done: boolean; value?: Uint8Array };
     if (r.done) break;
     buf += decoder.decode(r.value!);
-    if (buf.includes('\n\n')) return buf;
+    if (predicate(buf)) return buf;
   }
   return buf;
 }
@@ -89,14 +92,17 @@ describe('SSE /api/audit/sessions/:id/stream', () => {
 
     const reader = res.body!.getReader();
 
-    // Fire one transcript-append, one status-change
-    publishSessionEvent(id, {
-      type: 'transcript-append',
-      entry: { category: 'identity', question: 'Q1', answer: 'A1' },
-    });
-    publishSessionEvent(id, { type: 'status-change', status: 'analyzing' });
+    // Fire one transcript-append, one status-change. Defer the publish
+    // so the stream's start() block has a chance to run subscribe().
+    setTimeout(() => {
+      publishSessionEvent(id, {
+        type: 'transcript-append',
+        entry: { category: 'identity', question: 'Q1', answer: 'A1' },
+      });
+      publishSessionEvent(id, { type: 'status-change', status: 'analyzing' });
+    }, 10);
 
-    const chunk = await readChunk(reader, 2000);
+    const chunk = await readUntil(reader, (b) => b.includes('"status":"analyzing"'), 3000);
     expect(chunk).toMatch(/event: transcript-append/);
     expect(chunk).toMatch(/"question":"Q1"/);
     expect(chunk).toMatch(/event: status-change/);
