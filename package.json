@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "next dev --port 3700 --hostname 127.0.0.1",
     "dev:cli": "tsx bin/heron.ts",
-    "build": "next build && tsc -p tsconfig.cli.json",
+    "build": "next build && npm run build:standalone-assets && tsc -p tsconfig.cli.json",
+    "build:standalone-assets": "node scripts/copy-standalone-assets.mjs",
     "build:cli": "tsc -p tsconfig.cli.json",
     "build:web": "next build",
     "start": "next start --port 3700 --hostname 127.0.0.1",
