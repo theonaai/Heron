@@ -35,6 +35,13 @@ import type {
 import { ScanManager } from '../server/scans.js';
 import { markdownToHtml, renderHtmlShell } from '../server/render.js';
 import { renderVerificationReportHtml } from '../report/html-renderer.js';
+import {
+  createSession,
+  updateSessionMeta,
+  writeReport,
+} from '../storage/sessions.js';
+import { verificationToReportJson } from '../verification/report-json-translator.js';
+import { severityForVerdict } from '../../lib/report-json.js';
 
 /**
  * Identifier set for sources the CLI can currently verify.
@@ -387,10 +394,69 @@ export async function runMcpScan(opts: RunMcpScanOptions): Promise<RunMcpScanRes
     }
   }
 
+  // AAP-64: unified-storage. After the legacy `.heron/scans/<id>` mirror,
+  // ALSO register an AuditSession under ~/.heron/sessions/<sess-id>/ so
+  // the browser dashboard (PR #33-A/B/C) lists MCP scans alongside
+  // interview audits. Translation: VerificationReport (+ raw tool
+  // inventory record) → ReportJson. Session-meta risk level is derived
+  // from the highest-severity finding via severityForVerdict.
+  //
+  // `format === 'json'` (raw tool-inventory dump) intentionally keeps
+  // the historical "no session write" behaviour — that path is for
+  // pipe-to-jq workflows, not the dashboard.
+  let auditSessionId: string | undefined;
+  if (opts.format !== 'json' && markdown) {
+    try {
+      const reportForSession: VerificationReport = verificationReport ?? {
+        capturedAt: new Date().toISOString(),
+        agentLabel: opts.agentLabel ?? label,
+        declared: [],
+        sources: [],
+      };
+      const reportJson = verificationToReportJson({
+        report: reportForSession,
+        serverLabel: describeConfig(config),
+        ...(opts.declaredSource
+          ? { declaredBaseline: declaredSourceSummary(opts.declaredSource) }
+          : (opts.declaredTools && opts.declaredTools.length > 0
+            ? { declaredBaseline: 'flags:--declared-tools' }
+            : {})),
+        inventory: result.value,
+      });
+      const created = await createSession({ agentName: opts.agentLabel ?? label });
+      auditSessionId = created.id;
+      await writeReport(created.id, { markdown, json: reportJson });
+      const findings = (reportForSession.sources ?? []).flatMap((s) =>
+        (s.diffs ?? []).map((d) => ({ severity: d.severity })),
+      );
+      const worstVerdict = (reportForSession.sources ?? []).some(
+        (s) => s.verdict === 'unverified',
+      )
+        ? 'unverified'
+        : (reportForSession.sources ?? []).some((s) => s.diffs.length > 0)
+          ? 'discrepancy'
+          : 'verified';
+      const riskLevel = severityForVerdict({
+        verdict: worstVerdict as 'verified' | 'discrepancy' | 'unverified',
+        findings,
+      });
+      await updateSessionMeta(created.id, { riskLevel });
+    } catch (err) {
+      // AuditSession write must not break the primary CLI output —
+      // log + continue.
+      logger.error(
+        `AuditSession write failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   logger.raw('');
   logger.raw(`  \x1b[1mMCP scan complete: ${scanId}\x1b[0m`);
   logger.raw(`  Tools:   ${result.value.tools.length}`);
   logger.raw(`  Report:  ${savePath}`);
+  if (auditSessionId) {
+    logger.raw(`  Session: ${auditSessionId}`);
+  }
   logger.raw('');
 
   return { ...result.value, scanId: managerScanId ?? scanId };
