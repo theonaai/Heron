@@ -8,7 +8,7 @@
  * `<first 6>…<last 4>` for keys >= 10 chars, and `***` for shorter keys.
  */
 
-import { loadCredentials } from '@/src/commands/setup';
+import { loadCredentials } from '@/src/commands/credentials-store';
 
 export const dynamic = 'force-dynamic';
 
