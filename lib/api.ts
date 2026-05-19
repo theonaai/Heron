@@ -84,6 +84,121 @@ export async function deleteAuditSession(id: string): Promise<boolean> {
   }
 }
 
+// ── Version diff (forklifted types; OSS does not yet produce diffs) ─
+//
+// The Compare tab in `SessionDetail` is gated on a non-null `VersionDiff`.
+// In OSS we don't have a diff API in #33-A — `fetchVersionDiff` returns
+// `null` so the tab stays hidden. The types still live here because
+// `DiffView` is forklifted ready-to-use for #33-C+.
+
+export interface DiffFinding {
+  title: string;
+  severity: string;
+  description?: string;
+}
+
+export interface DiffSeverityChange {
+  title: string;
+  severityFrom: string;
+  severityTo: string;
+  direction: 'up' | 'down' | 'sideways';
+}
+
+export interface DiffRephrased {
+  oldTitle: string;
+  newTitle: string;
+  severityFrom: string;
+  severityTo: string;
+  severityDirection: 'up' | 'down' | 'sideways';
+}
+
+export interface DiffSystemAdded {
+  systemId: string;
+  scopesNeeded?: string[];
+  scopesRequested?: string[];
+  dataSensitivity?: string;
+  blastRadius?: string;
+}
+
+export interface DiffSystemChanged {
+  systemId: string;
+  scopesAdded: string[];
+  scopesRemoved: string[];
+  systemIdChanged?: { from: string; to: string };
+  dataSensitivityChanged?: { from: string; to: string };
+  blastRadiusChanged?: { from: string; to: string };
+  frequencyChanged?: { from: string; to: string };
+}
+
+export interface DiffSystemRephrased {
+  oldSystemId: string;
+  newSystemId: string;
+  scopesNeeded?: string[];
+  scopesRequested?: string[];
+  dataSensitivity?: string;
+  blastRadius?: string;
+}
+
+export interface DiffJson {
+  schemaVersion: 1;
+  oldSessionId: string | null;
+  newSessionId: string | null;
+  oldRiskLevel: string | null;
+  newRiskLevel: string | null;
+  riskDirection: 'improved' | 'worsened' | 'unchanged';
+  findings: {
+    added: DiffFinding[];
+    resolved: DiffFinding[];
+    severityChanged: DiffSeverityChange[];
+    rephrased: DiffRephrased[];
+    unchangedCount: number;
+  };
+  systems: {
+    added: DiffSystemAdded[];
+    removed: { systemId: string }[];
+    changed: DiffSystemChanged[];
+    rephrased?: DiffSystemRephrased[];
+    unchangedCount: number;
+  };
+  compliance: {
+    frameworksAdded: string[];
+    frameworksRemoved: string[];
+    flagsCountFrom: number;
+    flagsCountTo: number;
+    euAiActClassificationChange?: { from: string; to: string };
+  } | null;
+  dataQuality: {
+    scoreFrom: number | null;
+    scoreTo: number | null;
+    direction: 'up' | 'down' | 'unchanged';
+  } | null;
+  counts: {
+    findingsAdded: number;
+    findingsResolved: number;
+    findingsSeverityChanged: number;
+    findingsRephrased: number;
+    systemsAdded: number;
+    systemsRemoved: number;
+    systemsChanged: number;
+    systemsRephrased?: number;
+  };
+  narrative: string | null;
+  enriched: boolean;
+  generatedAt: string;
+}
+
+export interface VersionDiff {
+  previousSessionId: string;
+  diffJson: DiffJson | null;
+  diffMarkdown: string | null;
+  diffGeneratedAt: string;
+}
+
+/** OSS stub — diff API lands in #33-C+. */
+export async function fetchVersionDiff(_id: string): Promise<VersionDiff | null> {
+  return null;
+}
+
 // ── Settings: LLM credentials ──────────────────────────────────────
 
 export interface SavedLlmCredentials {
