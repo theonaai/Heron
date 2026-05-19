@@ -11,6 +11,8 @@
 
 import type { DiscoveredMcpServer, DiscoveredTransport } from '../types.js';
 import { redactEnvKeys, redactHeaders } from '../redaction.js';
+import { scrubUrl } from '../url-scrub.js';
+import { trimInvocation } from '../args-trim.js';
 
 type Unknown = Record<string, unknown>;
 
@@ -94,11 +96,17 @@ export function projectServer(
     redactedEnvKeys,
   };
   if (transport === 'stdio') {
-    if (typeof config.command === 'string') out.command = config.command;
-    const args = asStringArray(config.args);
-    if (args) out.args = args;
+    // Layer 3 — args trim. Keep only the base executable + first
+    // positional arg; drop inline `--token=...` style flags.
+    const trimmed = trimInvocation(
+      typeof config.command === 'string' ? config.command : undefined,
+      asStringArray(config.args),
+    );
+    if (trimmed.command !== undefined) out.command = trimmed.command;
+    if (trimmed.args.length > 0) out.args = trimmed.args;
   } else {
-    if (typeof config.url === 'string') out.url = config.url;
+    // Layer 2 — URL scrub. Strip basic-auth + secret-named query params.
+    if (typeof config.url === 'string') out.url = scrubUrl(config.url);
   }
   if (toolsAllowed) out.toolsAllowed = toolsAllowed;
   if (toolsDenied) out.toolsDenied = toolsDenied;

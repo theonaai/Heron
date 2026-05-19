@@ -25,6 +25,7 @@ import {
 import { consumeAllowOnce, getConsent } from '@/src/discovery/consent';
 import { diffAgainstTranscript } from '@/src/discovery/diff';
 import { runDiscovery } from '@/src/discovery/index';
+import { secretlintScrub } from '@/src/discovery/secretlint-scrub';
 import { getSession, patchReportJson } from '@/src/storage/sessions';
 import { publishSessionEvent } from '@/src/storage/session-events';
 
@@ -67,8 +68,12 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const result = await runDiscovery({ workspaceDir: workspaceRoot });
-  const findings = diffAgainstTranscript(result.agents, session.transcript);
-  const finalResult = { ...result, findings };
+  // Layer 4 — secretlint scan over the projected inventory. Catches
+  // inline tokens that survived Layer 2/3 scrubbers (JWT in URL, GCP
+  // service-account markers, private keys, Slack webhooks, etc.).
+  const scrubbedAgents = await secretlintScrub(result.agents);
+  const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+  const finalResult = { ...result, agents: scrubbedAgents, findings };
 
   await patchReportJson(body.data.sessionId, { localAgentDiscovery: finalResult });
 
