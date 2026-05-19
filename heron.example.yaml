@@ -24,20 +24,36 @@ target:
 
 # ─── LLM for analysis ──────────────────────────────────────────
 llm:
-  # LLM used by Heron to analyze agent responses
+  # LLM used by Heron to analyze agent responses.
   # Options: anthropic, openai, gemini
+  #
+  # First-time setup: just run `heron scan ...` without setting
+  # anything here — an interactive wizard will ask which provider
+  # to use (Anthropic, OpenAI, Google, OpenRouter, LiteLLM) and
+  # collect the credentials it needs.
   provider: anthropic
 
   # API key resolution (in order):
-  #   1. Explicit key below or --llm-key flag
-  #   2. HERON_LLM_API_KEY env var
-  #   3. Stored credentials from `heron login <provider>`
+  #   1. --llm-key flag
+  #   2. apiKey below
+  #   3. HERON_LLM_API_KEY env var
+  #   4. Interactive wizard (TTY only)
   #
   # apiKey: sk-ant-...
 
-  model: claude-sonnet-4-20250514
-  # For OpenAI:  gpt-4o
-  # For Gemini:  gemini-2.0-flash
+  # Optional model override. Defaults track the current flagship
+  # per provider — see DEFAULT_MODELS in src/llm/client.ts.
+  # model: claude-opus-4-7
+  # For OpenAI:  gpt-5.5
+  # For Gemini:  gemini-2.5-pro
+
+  # Optional base URL — set this when pointing at an
+  # OpenAI-compatible gateway (LiteLLM, OpenRouter, vLLM,
+  # Azure-OpenAI proxy). Equivalent to the --llm-base-url CLI flag
+  # and the HERON_LLM_BASE_URL env var.
+  #   - LiteLLM:    baseURL: https://litellm.example.com
+  #   - OpenRouter: baseURL: https://openrouter.ai/api/v1
+  # baseURL: https://litellm.example.com
 
 output:
   # Output format: markdown or json

@@ -187,18 +187,34 @@ function detectProvider(apiKey: string): 'anthropic' | 'openai' | 'gemini' {
   return 'anthropic'; // fallback
 }
 
+// Current-flagship model IDs, verified against vendor docs:
+//   - Anthropic: `claude-opus-4-7` (dateless pinned snapshot, 4.6
+//     generation onward). docs.anthropic.com/en/docs/about-claude/models
+//   - OpenAI: `gpt-5.5` (developers.openai.com/api/docs/models/gpt-5.5)
+//   - Gemini: `gemini-2.5-pro` (stable; preview models like
+//     gemini-3.1-pro-preview not used as default). ai.google.dev
+// Both SDKs type `model` as `(string & {})` so any id compiles —
+// runtime acceptance depends on the live provider. Users override
+// per-call via `--llm-model` or HERON_LLM_MODEL.
 const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: 'claude-sonnet-4-20250514',
-  openai: 'gpt-5.4-mini',
-  gemini: 'gemini-2.0-flash',
+  anthropic: 'claude-opus-4-7',
+  openai: 'gpt-5.5',
+  gemini: 'gemini-2.5-pro',
 };
 
 /**
- * Create an LLM client. Resolves API key in this order:
- * 1. Explicit config.apiKey (from --llm-key flag or config file)
- * 2. HERON_LLM_API_KEY env var
+ * Create an LLM client. Resolves credentials in this order:
+ * 1. Explicit `config.apiKey` / `config.baseURL` (from `--llm-key` /
+ *    `--llm-base-url` flag, or from a heron.yaml config file)
+ * 2. `HERON_LLM_API_KEY` / `HERON_LLM_BASE_URL` env vars
+ *    (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` also
+ *    honoured as fallbacks)
+ * 3. Interactive provider wizard — only when stdin is a TTY and no
+ *    credentials were supplied above. The wizard (AAP-60) replaces
+ *    the old readline prompt that silently auto-detected the
+ *    provider from the key prefix, which mis-routed LiteLLM keys.
  *
- * If provider is not explicitly set, auto-detects from API key format.
+ * Non-TTY without env vars or flags raises a hard error.
  */
 export async function createLLMClient(config: LLMConfig): Promise<LLMClient> {
   let apiKey = config.apiKey
@@ -206,66 +222,47 @@ export async function createLLMClient(config: LLMConfig): Promise<LLMClient> {
     ?? process.env.ANTHROPIC_API_KEY
     ?? process.env.OPENAI_API_KEY;
 
+  let baseURL = config.baseURL
+    ?? process.env.HERON_LLM_BASE_URL
+    ?? process.env.OPENAI_BASE_URL
+    ?? undefined;
+
+  let providerOverride: 'anthropic' | 'openai' | 'gemini' | undefined;
+
   if (!apiKey) {
-    // Interactive prompt for API key
     if (process.stdin.isTTY) {
-      const { createInterface } = await import('node:readline');
-      const rl = createInterface({ input: process.stdin, output: process.stderr });
-      apiKey = await new Promise<string>(resolve => {
-        console.error('');
-        console.error('  \x1b[1mNo API key found.\x1b[0m');
-        console.error('  Heron needs an LLM key for transcript analysis.');
-        console.error('  Supports: Anthropic (sk-ant-...), OpenAI (sk-...), Gemini (AIza...), or LiteLLM/OpenRouter gateway');
-        console.error('');
-        rl.question('  API key: ', (answer) => {
-          rl.close();
-          resolve(answer.trim());
-        });
-      });
-      if (!apiKey) {
-        throw new Error('No API key provided.');
+      const { runLLMOnboarding, OnboardingCancelled } = await import('./onboarding.js');
+      try {
+        const result = await runLLMOnboarding();
+        apiKey = result.apiKey;
+        if (result.baseURL) baseURL = result.baseURL;
+        providerOverride = result.provider;
+      } catch (e) {
+        if (e instanceof OnboardingCancelled) {
+          process.exit(0);
+        }
+        throw e;
       }
     } else {
       throw new Error(
         `No API key found. Use one of:\n` +
-        `  1. --llm-key <key>\n` +
-        `  2. HERON_LLM_API_KEY env var\n` +
+        `  1. --llm-key <key>  (optionally --llm-base-url <url>)\n` +
+        `  2. HERON_LLM_API_KEY env var (optionally HERON_LLM_BASE_URL)\n` +
         `  3. ANTHROPIC_API_KEY env var\n` +
         `  4. OPENAI_API_KEY env var`,
       );
     }
   }
 
-  // Gateway support: LiteLLM, OpenRouter, vLLM, Azure OpenAI, etc.
-  let baseURL = process.env.HERON_LLM_BASE_URL || process.env.OPENAI_BASE_URL || undefined;
-
-  // If key doesn't match known providers and no baseURL set, ask for it interactively
-  const knownPrefix = apiKey.startsWith('sk-ant-') || apiKey.startsWith('sk-') || apiKey.startsWith('AIza');
-  if (!knownPrefix && !baseURL && process.stdin.isTTY) {
-    const { createInterface } = await import('node:readline');
-    const rl = createInterface({ input: process.stdin, output: process.stderr });
-    const answer = await new Promise<string>(resolve => {
-      console.error('');
-      console.error('  \x1b[33mKey doesn\'t match Anthropic/OpenAI/Gemini format.\x1b[0m');
-      console.error('  If you\'re using a gateway (LiteLLM, OpenRouter, vLLM), enter the base URL.');
-      console.error('  Otherwise press Enter to try as-is.');
-      console.error('');
-      rl.question('  Base URL (e.g. https://your-litellm.example.com): ', (ans) => {
-        rl.close();
-        resolve(ans.trim());
-      });
-    });
-    if (answer) baseURL = answer;
-  }
-
-  // Resolve provider: explicit env var > explicit config > auto-detect from key
-  // When a baseURL is set and key doesn't match known prefixes, default to 'openai'
-  // (gateways speak OpenAI-compatible protocol)
+  // Resolve provider: env var > wizard pick > explicit config > auto-detect from key.
+  // When a baseURL is set and the key doesn't match Anthropic's prefix,
+  // assume OpenAI-compatible protocol (LiteLLM/OpenRouter/vLLM all do).
   const detected = detectProvider(apiKey);
   const providerFromDetection = (baseURL && detected === 'anthropic' && !apiKey.startsWith('sk-ant-'))
     ? 'openai'
     : detected;
   const provider = (process.env.HERON_LLM_PROVIDER as 'anthropic' | 'openai' | 'gemini')
+    ?? providerOverride
     ?? config.provider
     ?? providerFromDetection;
   // Resolve model: explicit env var > explicit config > default for provider

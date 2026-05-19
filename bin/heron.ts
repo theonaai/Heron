@@ -30,6 +30,7 @@ program
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
+  .option('--llm-base-url <url>', 'LLM base URL — for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways (or set HERON_LLM_BASE_URL)')
   .option('-o, --output <path>', 'Save report to file (default: stdout)')
   .option('-f, --format <format>', 'Output format: markdown, html, or json', 'markdown')
   .option('--scans-dir <dir>', 'Directory for scan record mirrors (AAP-52 browser dashboard)', './.heron/scans')
@@ -84,6 +85,7 @@ program
         llmProvider: opts.llmProvider,
         llmModel: opts.llmModel,
         llmKey: opts.llmKey,
+        llmBaseURL: opts.llmBaseUrl,
         output: opts.output,
         format: opts.format,
         config: opts.config,
@@ -110,6 +112,7 @@ program
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
+  .option('--llm-base-url <url>', 'LLM base URL — for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways (or set HERON_LLM_BASE_URL)')
   .option('--max-followups <n>', 'Max follow-up questions per category', '3')
   .option('--report-dir <dir>', 'Directory to save reports', './reports')
   .option('--scans-dir <dir>', 'Directory for verification scan records (AAP-52)', './.heron/scans')
@@ -123,6 +126,7 @@ program
           provider: opts.llmProvider as 'anthropic' | 'openai' | 'gemini',
           apiKey: opts.llmKey,
           model: opts.llmModel,
+          baseURL: opts.llmBaseUrl,
         },
         maxFollowUps: parseInt(opts.maxFollowups ?? '3', 10),
         reportDir: opts.reportDir,
@@ -145,6 +149,7 @@ program
   .option('--llm-provider <provider>', 'LLM provider: anthropic, openai, or gemini (auto-detected from key)')
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
+  .option('--llm-base-url <url>', 'LLM base URL — for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways (or set HERON_LLM_BASE_URL)')
   .option('-o, --output <path>', 'Save diff to this path (overrides default)')
   .option('--report-dir <dir>', 'Directory to save diff when -o not used', './reports')
   .action(async (oldPath: string, newPath: string, opts) => {
@@ -158,6 +163,7 @@ program
         llmProvider: opts.llmProvider,
         llmModel: opts.llmModel,
         llmKey: opts.llmKey,
+        llmBaseURL: opts.llmBaseUrl,
       });
     } catch (err) {
       logger.error(err instanceof Error ? err.message : String(err));

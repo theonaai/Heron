@@ -11,6 +11,14 @@ export const llmSchema = z.object({
   provider: z.enum(['anthropic', 'openai', 'gemini']),
   apiKey: z.string().optional(),
   model: z.string().optional(),
+  /**
+   * Override the provider's base URL. Used for OpenAI-compatible
+   * gateways (LiteLLM, OpenRouter, vLLM, Azure OpenAI proxy). When
+   * set with provider=openai, requests route there instead of
+   * api.openai.com. AAP-60 added the CLI flag (`--llm-base-url`)
+   * and the interactive wizard.
+   */
+  baseURL: z.string().url().optional(),
 });
 
 export const outputSchema = z.object({
