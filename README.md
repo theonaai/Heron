@@ -654,9 +654,24 @@ The interview is a self-report. Useful, but every claim is whatever the agent's 
 
 Missing files are silently skipped. Malformed files are skipped with the attempt still recorded for transparency.
 
-**Whitelist projection.** Only schema fields land in memory: MCP server names, transport (stdio / http / sse / streamable-http), URLs and commands, tool allow/deny lists, model selections. Every other field encountered while parsing is dropped after the projection.
+**Four-layer redaction stack.**
 
-**Heron never reads, logs, or transmits** API keys, OAuth tokens, environment variable values, header values, or connection-string passwords. For any env / header key matching a secret pattern (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, `*_CREDENTIAL`, or one of `GITHUB_PERSONAL_ACCESS_TOKEN` / `SLACK_BOT_TOKEN` / `BRAVE_API_KEY` / `POSTGRES_CONNECTION_STRING` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), only the **key name** is retained &mdash; the value is discarded entirely, not stored under a placeholder. For HTTP MCP servers, all header values are stripped regardless of header content.
+1. **Whitelist projection.** Only schema fields land in memory: MCP server names, transport (stdio / http / sse / streamable-http), URLs and commands, tool allow/deny lists, model selections. Every other field encountered while parsing is dropped after the projection. **Env / header values are never read** beyond an `Object.keys()`-style enumeration; only the key name is retained.
+2. **URL scrub.** For retained `url` fields: strip basic-auth (`user:p%40ss@host` &rarr; `host`), redact secret-named query params (`api_key`, `token`, `secret`, `password`, `auth`, `client_secret`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`).
+3. **Args scrub.** For retained `command` / `args[]`: replace the value half of `--token=ghp_xxx` style flags with `[REDACTED]`; replace the positional after a standalone secret-named flag (`--token`, `ghp_xxx` &rarr; `--token`, `[REDACTED]`); replace credentialled connection strings (`postgres://u:pw@h/db`) with `[REDACTED:connection-string]`. Legitimate flags (`--db main`, `--port 5432`, `--workspace ./foo`) are preserved verbatim so the operator still sees the agent's true invocation surface.
+4. **secretlint scan.** Final pass via [`@secretlint/node`](https://www.npmjs.com/package/@secretlint/node) v13 with the `preset-recommend` rule catalogue (Slack webhooks, AWS keys, GitHub PATs, Stripe / SendGrid / OpenAI / Anthropic provider tokens, 20+ others) plus three in-process patterns the preset doesn't ship: **JWTs** (`eyJ.eyJ.<sig>`), **PEM private key blocks** (`-----BEGIN [...] PRIVATE KEY-----`), **GCP service-account markers** (`"type":"service_account"`). Anything secretlint reports is replaced with `[REDACTED:<ruleId>]`.
+
+**Heron never reads, logs, or transmits** API keys, OAuth tokens, environment variable values, header values, or connection-string passwords. The four layers compose: whitelist projection prevents structural leaks, URL/args scrubs catch inline tokens in retained string fields, and the secretlint catalogue catches provider-specific token shapes that survive everything else.
+
+**Honest gaps.** Scrubbing is best-effort, not guaranteed. The following will still leak unless caught by future patterns:
+
+- Future API providers not yet in secretlint's `preset-recommend` catalogue
+- Company-internal custom-format credentials (e.g. UUIDs that are actually session IDs)
+- Webhook-style secrets where the URL IS the credential beyond Slack (Discord webhooks, Sentry DSNs, Datadog event-intake URLs)
+- Opaque session tokens that don't follow common token shapes
+- Base64-encoded blobs that decode to credentials but have low entropy
+
+Always review generated `~/.heron/sessions/<id>/report.json` artefacts before publishing.
 
 **Findings.** The discovered inventory is diffed against the interview transcript:
 
