@@ -294,7 +294,7 @@ export async function updateSessionMeta(id: string, patch: SessionMetaPatch): Pr
     if (val !== undefined) {
       // Cast through unknown to satisfy TS: each key has a different concrete
       // type in StoredMeta but we've already restricted to the patch fields.
-      (next as Record<string, unknown>)[key] = val;
+      (next as unknown as Record<string, unknown>)[key] = val;
     }
   }
   next.updatedAt = nowIso();
