@@ -22,6 +22,19 @@ const nextConfig = {
   // crypto, child_process). Mark them as external so Next.js does not try
   // to bundle them into the edge runtime when route handlers import them.
   serverExternalPackages: ['@modelcontextprotocol/sdk'],
+  // The src/ tree compiles to ESM under the CLI tsconfig (NodeNext, which
+  // requires explicit .js suffixes on relative imports). Next.js's webpack
+  // resolver doesn't know about that convention, so we wire an alias so
+  // `from '../foo.js'` resolves to `../foo.ts` when imported into a route
+  // handler. AAP-52 needed this once `app/mcp/route.ts` started pulling
+  // mcp-server.ts in via Next.
+  webpack(config) {
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      '.js': ['.ts', '.tsx', '.js'],
+    };
+    return config;
+  },
 };
 
 export default nextConfig;

@@ -42,7 +42,11 @@ export interface SamplingFactoryResult {
 export async function buildSamplingDeps(
   options: SamplingFactoryOptions = {},
 ): Promise<SamplingFactoryResult> {
-  const llmClient = options.llmClient ?? (await createLLMClient({}));
+  // createLLMClient at runtime auto-detects provider from env / credentials;
+  // the LLMConfig type insists on `provider` so we cast to satisfy the
+  // checker without lying about the runtime behaviour.
+  const llmClient =
+    options.llmClient ?? (await createLLMClient({} as Parameters<typeof createLLMClient>[0]));
   const maxFollowUps = options.maxFollowUps ?? 3;
 
   const runSamplingInterview: SamplingInterviewRunner = async ({ sessionId, sampler, signal }) => {
