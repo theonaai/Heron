@@ -7,14 +7,14 @@ import { join } from 'node:path';
 // returned `Response`. This avoids depending on `next-test-api-route-handler`
 // (which is geared towards the pages router) and keeps these tests close to
 // the same execution path Next.js uses in production.
-import { GET as listGET, POST as listPOST } from '../../../../app/api/audit/sessions/route.js';
+import { GET as listGET, POST as listPOST } from '@/app/api/audit/sessions/route';
 import {
   GET as itemGET,
   PATCH as itemPATCH,
   DELETE as itemDELETE,
-} from '../../../../app/api/audit/sessions/[id]/route.js';
-import { POST as transcriptPOST } from '../../../../app/api/audit/sessions/[id]/transcript/route.js';
-import { POST as reportPOST } from '../../../../app/api/audit/sessions/[id]/report/route.js';
+} from '@/app/api/audit/sessions/[id]/route';
+import { POST as transcriptPOST } from '@/app/api/audit/sessions/[id]/transcript/route';
+import { POST as reportPOST } from '@/app/api/audit/sessions/[id]/report/route';
 
 const ORIGIN = 'http://127.0.0.1:3700';
 
