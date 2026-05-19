@@ -99,13 +99,19 @@ export async function runMcpServe(opts: MCPServeOptions): Promise<MCPServeHandle
  * loud — we want a missing API key to fail fast at startup, not when the
  * first audit_agent call lands.
  */
-function readLLMConfig(configPath?: string): { provider: 'anthropic' | 'openai' | 'gemini'; apiKey?: string; model?: string } {
+function readLLMConfig(configPath?: string): {
+  provider: 'anthropic' | 'openai' | 'gemini';
+  apiKey?: string;
+  model?: string;
+  baseURL?: string;
+} {
   if (configPath) {
     const cfg = loadConfig(configPath);
     return {
       provider: cfg.llm.provider,
       ...(cfg.llm.apiKey !== undefined ? { apiKey: cfg.llm.apiKey } : {}),
       ...(cfg.llm.model !== undefined ? { model: cfg.llm.model } : {}),
+      ...(cfg.llm.baseURL !== undefined ? { baseURL: cfg.llm.baseURL } : {}),
     };
   }
   return { provider: 'anthropic' };

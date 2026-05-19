@@ -14,6 +14,7 @@ export function loadConfigFromFlags(flags: {
   llmProvider?: string;
   llmModel?: string;
   llmKey?: string;
+  llmBaseURL?: string;
   output?: string;
   format?: string;
   heronUrl?: string;
@@ -39,6 +40,7 @@ export function loadConfigFromFlags(flags: {
       provider: flags.llmProvider ?? (base as any)?.llm?.provider ?? 'anthropic',
       apiKey: flags.llmKey ?? process.env.HERON_LLM_API_KEY ?? (base as any)?.llm?.apiKey,
       model: flags.llmModel ?? (base as any)?.llm?.model,
+      baseURL: flags.llmBaseURL ?? process.env.HERON_LLM_BASE_URL ?? (base as any)?.llm?.baseURL,
     },
     output: {
       format: flags.format ?? (base as any)?.output?.format ?? 'markdown',

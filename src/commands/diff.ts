@@ -15,6 +15,7 @@ export interface DiffCommandOptions {
   llmProvider?: string;
   llmModel?: string;
   llmKey?: string;
+  llmBaseURL?: string;
 }
 
 /**
@@ -48,6 +49,7 @@ export async function runDiffCommand(opts: DiffCommandOptions): Promise<void> {
     provider: (opts.llmProvider as 'anthropic' | 'openai' | 'gemini') ?? 'anthropic',
     model: opts.llmModel,
     apiKey: opts.llmKey,
+    baseURL: opts.llmBaseURL,
   };
   const llmClient = await createLLMClient(llmConfig);
 
