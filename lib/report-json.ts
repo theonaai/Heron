@@ -114,6 +114,59 @@ export interface OAuthScopesSection {
   reason?: string;
 }
 
+// ─── Local-machine discovery (AAP-53) ──────────────────────────────────────
+
+/** Deterministic agent inventory from filesystem auto-discovery.
+ *
+ *  Whitelist contract: only the fields named in DiscoveredMcpServer ever
+ *  land here. Secret-pattern env / header values are dropped entirely
+ *  upstream — only the KEY NAMES survive in `redactedEnvKeys`. */
+export type LocalDiscoveryTransport = 'stdio' | 'http' | 'sse' | 'streamable-http';
+
+export interface LocalDiscoveredMcpServer {
+  name: string;
+  transport: LocalDiscoveryTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  toolsAllowed?: string[];
+  toolsDenied?: string[];
+  hasCredentials: boolean;
+  redactedEnvKeys: string[];
+}
+
+export type LocalDiscoveryRuntime =
+  | 'claude-code'
+  | 'codex'
+  | 'cursor'
+  | 'continue'
+  | 'windsurf'
+  | 'claude-desktop';
+
+export interface LocalDiscoveredAgent {
+  runtime: LocalDiscoveryRuntime;
+  configPath: string;
+  mcpServers: LocalDiscoveredMcpServer[];
+  model?: string;
+}
+
+export type LocalDiscoveryFindingKind = 'EXTRA' | 'MISSING' | 'HIDDEN-CREDENTIALS';
+
+export interface LocalDiscoveryFinding {
+  kind: LocalDiscoveryFindingKind;
+  severity: McpFindingSeverity;
+  serverName: string;
+  runtime: string;
+  description: string;
+}
+
+export interface LocalAgentDiscoverySection {
+  agents: LocalDiscoveredAgent[];
+  findings: LocalDiscoveryFinding[];
+  scannedAt: string;
+  scannedPaths: string[];
+}
+
 // ─── Compliance shapes (passthrough from server) ───────────────────────────
 
 /** ReportJson loosely mirrors the regulatoryCompliance shape consumed by
@@ -149,6 +202,11 @@ export interface ReportJson {
   mcpInventory?: McpInventorySection;
   declaredDiff?: DeclaredDiffSection;
   oauthScopes?: OAuthScopesSection;
+
+  // Local-machine discovery (AAP-53). Deterministic agent inventory
+  // produced by reading filesystem configs with the user's consent.
+  // Strictly additive — sessions without a scan render unchanged.
+  localAgentDiscovery?: LocalAgentDiscoverySection;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
