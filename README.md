@@ -87,6 +87,33 @@ list. Each session opens a structured report with risk findings,
 permissions delta, regulatory mapping, and (for MCP scans) tool
 inventory, declared-diff, and OAuth-scope sections.
 
+#### Connecting an agent (MCP sampling, AAP-52)
+
+Heron exposes itself as an MCP server at `http://127.0.0.1:3700/mcp`.
+Any MCP-native agent — Claude Code, Codex, Cursor, Continue, or your
+own — can connect, register the `sampling` capability, and call the
+`start_audit_session` tool. Heron walks the 9 core compliance
+questions back through `sampling/createMessage`, so the agent's own
+LLM answers, and Heron persists the audit to `~/.heron/sessions/` in
+real time.
+
+There is nothing to install or configure on the agent side beyond a
+single natural-language prompt. The dashboard shows it:
+
+> Please configure Heron as an MCP server at
+> http://127.0.0.1:3700/mcp and then call the start_audit_session
+> tool to begin a compliance audit of yourself. Report what comes
+> back.
+
+Paste that into Claude Code / Codex / Cursor / Continue. The agent
+updates its own mcp.json and runs the tool. As soon as the session
+appears in the dashboard, the live transcript stream takes over and
+each Q/A pair shows up in the browser.
+
+The legacy `audit_agent` tool that targeted an OpenAI-compatible
+chat URL has been retired in favour of this flow. The
+`HttpConnector` it relied on is gone too.
+
 You can also configure credentials from the terminal:
 
 ```bash
@@ -354,7 +381,7 @@ The `service` field is always `google-workspace`; the sub-service identity (`gma
 
 Run Heron as a local MCP server that any MCP host (Claude Desktop, Cursor, your own agent) can connect to. Exposes three tools:
 
-- **`audit_agent`** — run a full Heron audit against a target agent endpoint. Input: `{target_endpoint: string, options?: object}`. Output: `{report_markdown, report_id, summary}`.
+- **`start_audit_session`** — interrogate the connected agent over MCP sampling. Input: `{agent_name?: string}`. Output: `{session_id, status, questions_asked, risk_level?, report_markdown}`. The agent under audit is the MCP client that just called this tool; Heron asks the 9 core compliance questions back over `sampling/createMessage`, persists the run to `~/.heron/sessions/`, and returns the rendered report.
 - **`get_report`** — fetch a previously-generated audit report by id. Input: `{report_id}`. Output: `{report_markdown, metadata}`.
 - **`compare_reports`** — diff two audit reports. Input: `{report_id_a, report_id_b}`. Output: `{diff_markdown}`.
 
@@ -387,7 +414,7 @@ heron-ai mcp-serve --audit-config ./heron.yaml --report-dir ./audit-reports
 }
 ```
 
-Restart Claude Desktop and you can ask it to call `audit_agent`, `get_report`, or `compare_reports` from any chat.
+Restart Claude Desktop and you can ask it to call `start_audit_session`, `get_report`, or `compare_reports` from any chat.
 
 **Cursor config** — add to `~/.cursor/mcp.json` (or use Cursor's Settings → MCP Servers UI):
 
@@ -413,28 +440,28 @@ The wrapper is transport-agnostic — the same code powers stdio for local use a
 
 | Env var | Default | What it does |
 | --- | --- | --- |
-| `HERON_ALLOW_PRIVATE_TARGETS` | unset | When `1`, the `audit_agent` SSRF guard is disabled. Without this, the tool rejects target endpoints that resolve to loopback, RFC1918, link-local (incl. cloud metadata `169.254.169.254`), or non-`http(s)` schemes. Enable only for local testing against an agent on a private network. |
+| `HERON_ALLOW_PRIVATE_TARGETS` | unset | When `1`, the SSRF guard on `--verify oauth-scopes:*` base-URL overrides and the MCP-tools verifier endpoint is disabled. Without this, those paths reject targets that resolve to loopback, RFC1918, link-local (incl. cloud metadata `169.254.169.254`), or non-`http(s)` schemes. Enable only for local testing against a private network. (AAP-52 removed the `audit_agent` tool that also relied on this guard.) |
 | `HERON_MCP_HTTP_TIMEOUT_MS` | `30000` | Per-request socket timeout for HTTP mode. Lower in tests; keep >= 5 s in production. |
 | `HERON_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated allow-list passed to `StreamableHTTPServerTransport` for DNS-rebinding protection. |
 | `HERON_ALLOWED_ORIGINS` | `http://127.0.0.1[:port],http://localhost[:port]` | Same, for the `Origin` header. |
 | `HERON_GREENHOUSE_API_KEY` | unset | Greenhouse Harvest API key for `--verify oauth-scopes:greenhouse`. Set via env (never via CLI flag — argv leaks to other processes via `ps`). Used only to build the HTTP Basic Auth header on probe requests; never logged or surfaced in the rendered report. |
-| `HERON_GREENHOUSE_BASE_URL` | unset (defaults to `https://harvest.greenhouse.io/v1/`) | Override the Greenhouse Harvest base URL for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`, so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
+| `HERON_GREENHOUSE_BASE_URL` | unset (defaults to `https://harvest.greenhouse.io/v1/`) | Override the Greenhouse Harvest base URL for local-proxy testing. Gated by `validateTargetEndpoint` — the same SSRF policy that protects the rest of the verifier surface — so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
 | `HERON_GREENHOUSE_PROBE_TIMEOUT_MS` | `10000` | Per-probe wall-clock timeout for Greenhouse scope discovery. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
 | `HERON_BAMBOOHR_API_KEY` | unset | BambooHR API key for `--verify oauth-scopes:bamboohr`. Set via env (never via CLI flag — argv leaks to other processes via `ps`). Used only to build the HTTP Basic Auth header on probe requests (`<key>:x` — BambooHR's documented "no password" convention); never logged or surfaced in the rendered report. |
 | `HERON_BAMBOOHR_SUBDOMAIN` | unset | BambooHR tenant subdomain (the per-tenant prefix from your BambooHR account URL — e.g. `acme` for `acme.bamboohr.com`). Validated for DNS-label shape (letters/digits/hyphens, ≤63 chars) before any HTTP call. |
-| `HERON_BAMBOOHR_BASE_URL` | unset (defaults to `https://api.bamboohr.com/api/gateway.php`) | Override the BambooHR gateway prefix for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`. The subdomain is still appended after the override host, preserving per-tenant URL shape. |
+| `HERON_BAMBOOHR_BASE_URL` | unset (defaults to `https://api.bamboohr.com/api/gateway.php`) | Override the BambooHR gateway prefix for local-proxy testing. Gated by `validateTargetEndpoint` — the same SSRF policy that protects the rest of the verifier surface. The subdomain is still appended after the override host, preserving per-tenant URL shape. |
 | `HERON_BAMBOOHR_PROBE_TIMEOUT_MS` | `10000` | Per-probe wall-clock timeout for BambooHR scope discovery. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
 | `HERON_GOOGLE_ACCESS_TOKEN` | unset | Google Workspace OAuth 2.0 access token for `--verify oauth-scopes:google-workspace` Mode A (direct tokeninfo introspection). Set via env (never via CLI flag — argv leaks to other processes via `ps`); never logged or surfaced in the rendered report. |
 | `HERON_GOOGLE_REFRESH_TOKEN` | unset | Google Workspace OAuth 2.0 refresh token for Mode B (refresh-then-introspect). Required together with `HERON_GOOGLE_CLIENT_ID` and `HERON_GOOGLE_CLIENT_SECRET`. Never logged or surfaced in the rendered report. |
 | `HERON_GOOGLE_CLIENT_ID` | unset | OAuth client identifier for Mode B token exchange. Real Google client IDs end in `.apps.googleusercontent.com`; the connector accepts any non-whitespace identifier so workforce-identity federations are not locked out. Not strictly a secret (appears in OAuth redirect URLs). |
 | `HERON_GOOGLE_CLIENT_SECRET` | unset | OAuth client secret for Mode B token exchange. Never logged or surfaced in the rendered report. |
-| `HERON_GOOGLE_OAUTH_BASE_URL` | unset (defaults to `https://oauth2.googleapis.com`) | Override the Google OAuth 2.0 base URL for local-proxy testing. Gated by `validateTargetEndpoint` — same SSRF policy that protects `audit_agent`, so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
+| `HERON_GOOGLE_OAUTH_BASE_URL` | unset (defaults to `https://oauth2.googleapis.com`) | Override the Google OAuth 2.0 base URL for local-proxy testing. Gated by `validateTargetEndpoint` — the same SSRF policy that protects the rest of the verifier surface — so a private-IP / cloud-metadata override is rejected with `invalid_config`. |
 | `HERON_GOOGLE_PROBE_TIMEOUT_MS` | `10000` | Per-request wall-clock timeout for the Google Workspace tokeninfo / token-exchange calls. Clamped to `(0, 600000]`; invalid values silently fall back to the default. |
 | `HERON_DECLARED_SOURCE_CWD_ONLY` | unset | When set to `true`, restrict `--declared-source file:<path>` reads to subpaths of `process.cwd()`. Default behaviour allows any readable path. Recommended for hosted / sandboxed deployments where the declared-source file should never resolve outside the workspace. |
 
 The HTTP transport caps individual request bodies at **1 MiB** (oversize → `413 Payload Too Large`) and aborts stalled requests at the configured timeout (`408 Request Timeout`).
 
-DNS-rebinding mitigation note: the `target_endpoint` policy resolves the host once and then `HttpConnector` connects by hostname. A TTL-0 DNS record could in principle flip between check and connect; this raises the bar substantially but does not fully eliminate the TOCTOU class. Tracked as a follow-up.
+DNS-rebinding mitigation note: the verifier base-URL policies resolve the host once and then `fetch` connects by hostname. A TTL-0 DNS record could in principle flip between check and connect; this raises the bar substantially but does not fully eliminate the TOCTOU class. Tracked as a follow-up.
 
 ### Option 2: Hosted version (no setup)
 
@@ -746,7 +773,7 @@ src/
   llm/
     client.ts             Unified LLM client (Anthropic/OpenAI/Gemini, auto-detect)
     prompts.ts            Interview + analysis prompts with anti-hallucination rules
-  connectors/             Agent connection (HTTP, interactive)
+  connectors/             Agent connection (MCP sampling, interactive)
   config/                 YAML config loading + Zod validation
 ```
 

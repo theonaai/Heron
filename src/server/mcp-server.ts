@@ -1,22 +1,27 @@
 /**
- * Heron's MCP server (Role B of AAP-46).
+ * Heron's MCP server.
  *
- * Transport-agnostic wrapper that exposes three tools — `audit_agent`,
- * `get_report`, `compare_reports` — over any MCP transport. OSS mounts
- * this at stdio via `heron mcp-serve`; future Hosted (AAP-47) mounts the
- * same wrapper at HTTP transport with auth.
+ * Transport-agnostic wrapper that exposes three tools over any MCP
+ * transport:
+ *   - `start_audit_session` (AAP-52) — interrogate the audited agent
+ *     over MCP sampling, persist the run under `~/.heron/sessions/`,
+ *     return the rendered report.
+ *   - `get_report` — fetch an in-memory stored report by id.
+ *   - `compare_reports` — diff two reports.
  *
- * Design contract (see `src/server/mcp-types.ts` for the full type
- * locks):
+ * OSS mounts this at stdio via `heron mcp-serve` and at HTTP via
+ * `app/mcp/route.ts`. Future Hosted (AAP-47) mounts the same wrapper
+ * behind authenticated HTTP.
+ *
+ * Design contract (see `src/server/mcp-types.ts`):
  *  - Tool handlers receive an opaque `RequestContext` (auth principal,
  *    session id, progress callback, abort signal). They MUST NOT touch
- *    `process.stdin/stdout` or raw req/res. The SDK abstracts transport.
+ *    `process.stdin/stdout` or raw req/res.
  *  - No module-level mutable state. Per-session state lives behind the
  *    `RequestContext` and per-instance fields.
  *  - Handlers never throw for conditions described by `MCPServerError`.
- *    Callers branch on the typed result.
  *
- * Tracking: https://linear.app/theona/issue/AAP-46
+ * Refs https://linear.app/theona/issue/AAP-52
  */
 
 import { createHash } from 'node:crypto';
@@ -25,11 +30,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { validateTargetEndpoint } from '../connectors/url-policy.js';
 import { generateId } from '../util/id.js';
 import type {
-  AuditAgentInput,
-  AuditAgentOutput,
   CompareReportsInput,
   CompareReportsOutput,
   GetReportInput,
@@ -38,33 +40,22 @@ import type {
   MCPServerResult,
   ProgressNotification,
   RequestContext,
+  StartAuditSessionInput,
+  StartAuditSessionOutput,
 } from './mcp-types.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { QAPair } from '../report/types.js';
+import {
+  createSession,
+  updateSessionMeta,
+  writeReport,
+} from '../storage/sessions.js';
+import { publishSessionEvent } from '../storage/session-events.js';
 
 const SERVER_NAME = 'heron';
 const SERVER_VERSION = '0.4.0';
 
 // ─── Public dependency contracts ──────────────────────────────────────────
-
-/**
- * The audit pipeline the wrapper delegates `audit_agent` to. In
- * production this is wired to Heron's interrogation + analysis +
- * compliance + report pipeline (see `src/index.ts`). Tests pass stubs.
- */
-export interface AuditPipeline {
-  run(
-    input: { targetEndpoint: string; options?: Record<string, unknown> },
-    ctx: {
-      progress: (notification: ProgressNotification) => void;
-      signal: AbortSignal;
-      sessionId: string;
-    },
-  ): Promise<{
-    reportId: string;
-    target: string;
-    report: string;
-    summary: { riskLevel: string; findingsCount: number; recommendation?: string };
-  }>;
-}
 
 /**
  * Storage for completed audit reports. The wrapper writes pipeline output
@@ -89,12 +80,47 @@ export interface ReportDiffer {
   diff(a: StoredReport, b: StoredReport): Promise<string>;
 }
 
+/**
+ * Sampling-driven interview runner (AAP-52). Injected so unit tests can
+ * stub the heavy interview loop. Production wiring lives in
+ * `src/interview/sampling-interview.ts`.
+ */
+export interface SamplingInterviewRunner {
+  (params: {
+    sessionId: string;
+    sampler: Pick<Server, 'createMessage'>;
+    signal: AbortSignal;
+  }): Promise<{
+    transcript: QAPair[];
+    questionsAsked: number;
+  }>;
+}
+
+/**
+ * Render an audit report from a captured transcript (AAP-52). Injected
+ * for the same reason — keep unit tests out of the LLM hot path.
+ */
+export interface AnalyzeAndRenderReport {
+  (params: {
+    sessionId: string;
+    transcript: QAPair[];
+    agentName?: string;
+  }): Promise<{
+    markdown: string;
+    json: unknown;
+    riskLevel?: string;
+  }>;
+}
+
 /** Dependency bag for `HeronMCPServer`. */
 export interface HeronMCPServerDeps {
-  auditPipeline: AuditPipeline;
   /** Optional — defaults to an in-memory store. */
   reportStore?: ReportStore;
   differ: ReportDiffer;
+  /** AAP-52 — sampling-driven interview runner. Default wired from `src/server/sampling-factory.ts`. */
+  runSamplingInterview?: SamplingInterviewRunner;
+  /** AAP-52 — transcript → report renderer. Default wired from `src/server/sampling-factory.ts`. */
+  analyzeAndRenderReport?: AnalyzeAndRenderReport;
 }
 
 /**
@@ -154,31 +180,6 @@ interface ToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
-const AUDIT_AGENT_DEF: ToolDefinition = {
-  name: 'audit_agent',
-  description:
-    'Run a Heron audit against a target agent endpoint. Interrogates the agent, ' +
-    'analyzes the transcript, maps findings to compliance frameworks, and returns ' +
-    'a markdown audit report plus a report id you can pass to get_report or ' +
-    'compare_reports.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      target_endpoint: {
-        type: 'string',
-        description: 'URL of the target agent (OpenAI-compatible chat API).',
-      },
-      options: {
-        type: 'object',
-        description: 'Optional pipeline tuning knobs (e.g. maxFollowUps).',
-        additionalProperties: true,
-      },
-    },
-    required: ['target_endpoint'],
-    additionalProperties: false,
-  },
-};
-
 const GET_REPORT_DEF: ToolDefinition = {
   name: 'get_report',
   description:
@@ -218,16 +219,40 @@ const COMPARE_REPORTS_DEF: ToolDefinition = {
   },
 };
 
-const TOOL_DEFINITIONS: ToolDefinition[] = [AUDIT_AGENT_DEF, GET_REPORT_DEF, COMPARE_REPORTS_DEF];
+const START_AUDIT_SESSION_DEF: ToolDefinition = {
+  name: 'start_audit_session',
+  description:
+    'Heron audits the calling agent over MCP sampling. The agent under audit ' +
+    'is the MCP client that invokes this tool; Heron asks 9+ compliance ' +
+    'questions back through sampling/createMessage and returns the rendered ' +
+    'report markdown plus a session id for the dashboard.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      agent_name: {
+        type: 'string',
+        description: 'Optional human-readable name for the audited agent.',
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+const TOOL_DEFINITIONS: ToolDefinition[] = [
+  START_AUDIT_SESSION_DEF,
+  GET_REPORT_DEF,
+  COMPARE_REPORTS_DEF,
+];
+
+const startAuditSessionInputSchema = z.object({
+  agent_name: z.string().optional(),
+});
 
 // Zod schemas mirror the public JSON schemas. We keep both shapes —
 // JSON for the public registry (so the snapshot is human-readable and
 // stable), Zod for handler-side validation. They must stay in sync; the
 // golden snapshot test enforces the public side.
-const auditAgentInputSchema = z.object({
-  target_endpoint: z.string({ required_error: 'target_endpoint is required' }),
-  options: z.record(z.unknown()).optional(),
-});
 
 /**
  * Tool-input shape for `report_id`. Must match the shape the wrapper's
@@ -252,23 +277,41 @@ const compareReportsInputSchema = z.object({
 
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
-export type ToolName = 'audit_agent' | 'get_report' | 'compare_reports';
+export type ToolName =
+  | 'get_report'
+  | 'compare_reports'
+  | 'start_audit_session';
 
 type InvokeMap = {
-  audit_agent: { input: AuditAgentInput; output: AuditAgentOutput };
   get_report: { input: GetReportInput; output: GetReportOutput };
   compare_reports: { input: CompareReportsInput; output: CompareReportsOutput };
+  start_audit_session: { input: StartAuditSessionInput; output: StartAuditSessionOutput };
 };
 
 export class HeronMCPServer {
-  private readonly auditPipeline: AuditPipeline;
   private readonly reportStore: ReportStore;
   private readonly differ: ReportDiffer;
+  private readonly runSamplingInterview?: SamplingInterviewRunner;
+  private readonly analyzeAndRenderReport?: AnalyzeAndRenderReport;
+  /** Captured SDK Server for sampling/createMessage. Set by buildMcpServer or attachSamplingServer. */
+  private samplingServer: Pick<Server, 'createMessage'> | null = null;
 
   constructor(deps: HeronMCPServerDeps) {
-    this.auditPipeline = deps.auditPipeline;
     this.reportStore = deps.reportStore ?? new InMemoryReportStore();
     this.differ = deps.differ;
+    this.runSamplingInterview = deps.runSamplingInterview;
+    this.analyzeAndRenderReport = deps.analyzeAndRenderReport;
+  }
+
+  /**
+   * Attach an SDK Server so `start_audit_session` can drive sampling.
+   *
+   * `buildMcpServer()` calls this automatically with the McpServer's
+   * underlying low-level Server. Unit tests inject a stub Server
+   * directly via this method.
+   */
+  attachSamplingServer(server: Pick<Server, 'createMessage'>): void {
+    this.samplingServer = server;
   }
 
   /**
@@ -283,11 +326,6 @@ export class HeronMCPServer {
   ): Promise<MCPServerResult<InvokeMap[N]['output']>> {
     try {
       switch (name) {
-        case 'audit_agent':
-          return (await this.handleAuditAgent(
-            input as AuditAgentInput,
-            ctx,
-          )) as MCPServerResult<InvokeMap[N]['output']>;
         case 'get_report':
           return this.handleGetReport(
             input as GetReportInput,
@@ -295,6 +333,11 @@ export class HeronMCPServer {
         case 'compare_reports':
           return (await this.handleCompareReports(
             input as CompareReportsInput,
+          )) as MCPServerResult<InvokeMap[N]['output']>;
+        case 'start_audit_session':
+          return (await this.handleStartAuditSession(
+            input as StartAuditSessionInput,
+            ctx,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
           return {
@@ -338,24 +381,26 @@ export class HeronMCPServer {
    */
   buildMcpServer(): McpServer {
     const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+    // start_audit_session needs to call server.createMessage() to sample
+    // answers out of the audited client. Capture the underlying SDK
+    // Server so the handler can find it without reaching into per-call
+    // SDK internals.
+    this.attachSamplingServer(server.server);
 
-    // audit_agent
+    // start_audit_session (AAP-52)
     server.registerTool(
-      AUDIT_AGENT_DEF.name,
+      START_AUDIT_SESSION_DEF.name,
       {
-        description: AUDIT_AGENT_DEF.description,
-        inputSchema: {
-          target_endpoint: z.string(),
-          options: z.record(z.unknown()).optional(),
-        },
+        description: START_AUDIT_SESSION_DEF.description,
+        inputSchema: { agent_name: z.string().optional() },
       },
       async (args, extra) => {
         const bridge = contextFromExtra(extra);
-        const result = await this.invoke('audit_agent', args as AuditAgentInput, bridge.ctx);
-        // Make sure every progress notification has been flushed to the
-        // transport BEFORE we hand the result back to the SDK — otherwise
-        // the SDK deletes the per-request progress handler on response
-        // and the trailing notifications get dropped on the client.
+        const result = await this.invoke(
+          'start_audit_session',
+          args as StartAuditSessionInput,
+          bridge.ctx,
+        );
         await bridge.flush();
         return toolResultFromMcp(result);
       },
@@ -403,97 +448,106 @@ export class HeronMCPServer {
 
   // ─── Handlers ───────────────────────────────────────────────────────────
 
-  private async handleAuditAgent(
-    rawInput: AuditAgentInput,
+  // ─── start_audit_session (AAP-52) ────────────────────────────────────
+
+  private async handleStartAuditSession(
+    rawInput: StartAuditSessionInput,
     ctx: RequestContext,
-  ): Promise<MCPServerResult<AuditAgentOutput>> {
-    const parsed = auditAgentInputSchema.safeParse(rawInput);
+  ): Promise<MCPServerResult<StartAuditSessionOutput>> {
+    const parsed = startAuditSessionInputSchema.safeParse(rawInput);
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      const field = issue?.path?.[0]?.toString() ?? 'unknown';
       return {
         ok: false,
         error: {
           kind: 'invalid_input',
-          field,
+          field: issue?.path?.[0]?.toString() ?? 'unknown',
           message: issue?.message ?? 'invalid input',
         },
       };
     }
-    // SSRF guard (F-1, PR #14 round 3): refuse cloud metadata, loopback,
-    // RFC1918, link-local and non-HTTP schemes BEFORE handing the
-    // endpoint to the audit pipeline. The pipeline calls fetch() on the
-    // raw URL and surfaces the response body in the transcript, so an
-    // unvalidated target_endpoint is a credential-exfiltration class
-    // issue, not a connectivity nit.
-    const policy = await validateTargetEndpoint(parsed.data.target_endpoint);
-    if (!policy.ok) {
-      return { ok: false, error: policy.error };
-    }
-    if (ctx.signal.aborted) {
-      return {
-        ok: false,
-        error: { kind: 'cancelled', message: 'audit_agent cancelled before start' },
-      };
-    }
 
-    try {
-      const pipelineResult = await this.auditPipeline.run(
-        {
-          targetEndpoint: parsed.data.target_endpoint,
-          options: parsed.data.options,
-        },
-        {
-          progress: (n) => safeProgress(ctx, n),
-          signal: ctx.signal,
-          sessionId: ctx.sessionId,
-        },
-      );
-      // The pipeline may complete after a late abort — treat as cancelled
-      // rather than success so the caller gets a consistent signal.
-      if (ctx.signal.aborted) {
-        return {
-          ok: false,
-          error: { kind: 'cancelled', message: 'audit_agent cancelled mid-flight' },
-        };
-      }
-
-      const stored: StoredReport = {
-        reportId: pipelineResult.reportId,
-        target: pipelineResult.target,
-        report: pipelineResult.report,
-        createdAt: new Date().toISOString(),
-        summary: pipelineResult.summary,
-      };
-      this.reportStore.put(stored);
-
-      return {
-        ok: true,
-        value: {
-          report_markdown: stored.report,
-          report_id: stored.reportId,
-          summary: {
-            risk_level: stored.summary.riskLevel,
-            findings_count: stored.summary.findingsCount,
-            ...(stored.summary.recommendation !== undefined
-              ? { recommendation: stored.summary.recommendation }
-              : {}),
-          },
-        },
-      };
-    } catch (err) {
-      if (isAbortError(err) || ctx.signal.aborted) {
-        return {
-          ok: false,
-          error: { kind: 'cancelled', message: 'audit_agent cancelled' },
-        };
-      }
+    if (!this.samplingServer) {
       return {
         ok: false,
         error: {
           kind: 'tool_failure',
-          cause: 'audit_pipeline',
-          message: err instanceof Error ? err.message : String(err),
+          cause: 'no_sampling_server',
+          message:
+            'No MCP sampling server attached — call HeronMCPServer.buildMcpServer() ' +
+            'or HeronMCPServer.attachSamplingServer() before invoking start_audit_session.',
+        },
+      };
+    }
+    if (!this.runSamplingInterview || !this.analyzeAndRenderReport) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_interview_runner',
+          message:
+            'start_audit_session requires runSamplingInterview + analyzeAndRenderReport ' +
+            'deps. Wire them via HeronMCPServerDeps when constructing the wrapper.',
+        },
+      };
+    }
+
+    const { agent_name } = parsed.data;
+    const { id: sessionId } = await createSession(agent_name ? { agentName: agent_name } : {});
+
+    // Emit a status-change event so the SSE listeners pick up the new session
+    publishSessionEvent(sessionId, { type: 'status-change', status: 'interviewing' });
+
+    try {
+      const interviewResult = await this.runSamplingInterview({
+        sessionId,
+        sampler: this.samplingServer,
+        signal: ctx.signal,
+      });
+
+      await updateSessionMeta(sessionId, { status: 'analyzing' });
+      publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
+
+      const rendered = await this.analyzeAndRenderReport({
+        sessionId,
+        transcript: interviewResult.transcript,
+        ...(agent_name !== undefined ? { agentName: agent_name } : {}),
+      });
+
+      await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+      if (rendered.riskLevel) {
+        await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+      }
+      publishSessionEvent(sessionId, {
+        type: 'status-change',
+        status: 'complete',
+        ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+      });
+
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          status: 'complete',
+          questions_asked: interviewResult.questionsAsked,
+          ...(rendered.riskLevel !== undefined ? { risk_level: rendered.riskLevel } : {}),
+          report_markdown: rendered.markdown,
+        },
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await updateSessionMeta(sessionId, { status: 'error' });
+      } catch {
+        // Best-effort — meta might already be broken.
+      }
+      publishSessionEvent(sessionId, { type: 'error', message });
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'interview_or_analysis',
+          message,
         },
       };
     }
@@ -610,23 +664,6 @@ export async function startStdioMCPServer(
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
-
-function safeProgress(ctx: RequestContext, notification: ProgressNotification): void {
-  try {
-    ctx.progress(notification);
-  } catch {
-    // Progress is best-effort; never let a transport error nuke the
-    // handler's primary work.
-  }
-}
-
-function isAbortError(err: unknown): boolean {
-  if (err instanceof Error && err.name === 'AbortError') return true;
-  if (typeof err === 'object' && err !== null && 'name' in err) {
-    return (err as { name?: string }).name === 'AbortError';
-  }
-  return false;
-}
 
 /**
  * Stable, non-secret identifier for a bearer token.

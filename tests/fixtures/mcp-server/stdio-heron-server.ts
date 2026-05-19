@@ -1,41 +1,11 @@
 #!/usr/bin/env tsx
-// Launch Heron's MCP server in stdio mode using a stub audit pipeline so
-// integration tests do not need an LLM key or a live target.
-//
-// Same wrapper that ships under `heron mcp-serve`; only the audit
-// dependency is swapped for a deterministic stub.
+// Launch Heron's MCP server in stdio mode for integration tests. No
+// audit pipeline is wired — under AAP-52 the audit_agent tool is gone,
+// and start_audit_session needs an MCP client that supports sampling
+// (the integration tests in this file only exercise the tool registry,
+// not the full sampling flow — that's covered in sampling-e2e.test.ts).
 
-import { startStdioMCPServer, type AuditPipeline, type ReportDiffer } from '../../../src/server/mcp-server.js';
-
-const stubPipeline: AuditPipeline = {
-  async run(input, ctx) {
-    ctx.progress({ stage: 'interrogating', pct: 5, message: 'stub start' });
-    if (process.env.HERON_TEST_AUDIT_DELAY_MS) {
-      const ms = Number(process.env.HERON_TEST_AUDIT_DELAY_MS);
-      await new Promise<void>((r) => {
-        if (ctx.signal.aborted) return r();
-        const t = setTimeout(r, ms);
-        ctx.signal.addEventListener(
-          'abort',
-          () => { clearTimeout(t); r(); },
-          { once: true },
-        );
-      });
-      if (ctx.signal.aborted) {
-        throw new DOMException('aborted', 'AbortError');
-      }
-    }
-    ctx.progress({ stage: 'analyzing', pct: 50, message: 'stub analysis' });
-    ctx.progress({ stage: 'rendering', pct: 90 });
-    const reportId = `report_stdio_${Buffer.from(input.targetEndpoint).toString('hex').slice(0, 8)}`;
-    return {
-      reportId,
-      target: input.targetEndpoint,
-      report: `# Stdio Audit\n\nTarget: ${input.targetEndpoint}\nSession: ${ctx.sessionId}`,
-      summary: { riskLevel: 'medium', findingsCount: 0 },
-    };
-  },
-};
+import { startStdioMCPServer, type ReportDiffer } from '../../../src/server/mcp-server.js';
 
 const stubDiffer: ReportDiffer = {
   async diff(a, b) {
@@ -44,6 +14,5 @@ const stubDiffer: ReportDiffer = {
 };
 
 await startStdioMCPServer({
-  auditPipeline: stubPipeline,
   differ: stubDiffer,
 });

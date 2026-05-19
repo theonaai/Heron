@@ -97,34 +97,6 @@ export type MCPServerResult<T> =
 
 // ─── Tool-specific input/output shapes (locked) ─────────────────────────
 
-/** Input for the `audit_agent` MCP tool. */
-export interface AuditAgentInput {
-  /**
-   * Target agent's endpoint. Today: an OpenAI-compatible chat URL. The
-   * field is open-string rather than a discriminated union so that future
-   * transports (MCP-target verification, AAP-48) can use the same field
-   * without a contract change.
-   */
-  target_endpoint: string;
-  /** Optional bag of pipeline tuning knobs (max follow-ups, etc.). */
-  options?: {
-    maxFollowUps?: number;
-    /** Reserved — future per-target overrides. */
-    [key: string]: unknown;
-  };
-}
-
-/** Output for the `audit_agent` MCP tool. */
-export interface AuditAgentOutput {
-  report_markdown: string;
-  report_id: string;
-  summary: {
-    risk_level: string;
-    findings_count: number;
-    recommendation?: string;
-  };
-}
-
 /** Input for the `get_report` MCP tool. */
 export interface GetReportInput {
   report_id: string;
@@ -150,4 +122,32 @@ export interface CompareReportsInput {
 /** Output for the `compare_reports` MCP tool. */
 export interface CompareReportsOutput {
   diff_markdown: string;
+}
+
+// ─── start_audit_session (AAP-52) ─────────────────────────────────────────
+
+/**
+ * Input for the `start_audit_session` MCP tool.
+ *
+ * No `target_endpoint`: under AAP-52 the audited agent IS the MCP client
+ * that just called this tool. Answers flow back over the same JSON-RPC
+ * session via `sampling/createMessage`.
+ */
+export interface StartAuditSessionInput {
+  /** Optional human label for the agent under audit. */
+  agent_name?: string;
+}
+
+/** Output for the `start_audit_session` MCP tool. */
+export interface StartAuditSessionOutput {
+  /** ~/.heron/sessions/ id — pasteable into the dashboard URL. */
+  session_id: string;
+  /** Final session status (typically `complete`; `error` if the run failed). */
+  status: string;
+  /** Number of Q/A pairs captured. */
+  questions_asked: number;
+  /** Overall risk level — when the analyzer surfaced one. */
+  risk_level?: string;
+  /** Final rendered report (markdown). */
+  report_markdown?: string;
 }

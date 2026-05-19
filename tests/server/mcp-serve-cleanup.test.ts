@@ -9,8 +9,7 @@
  *  2. The in-memory report stores (`InMemoryReportStore` in
  *     `mcp-server.ts`, `FileSystemReportStore.cache` in `mcp-serve.ts`)
  *     have no upper bound. A long-running server that has answered
- *     `audit_agent` thousands of times keeps every report's markdown
- *     pinned in RAM.
+ *     many tool calls keeps every report's markdown pinned in RAM.
  *
  * After F-3 we expect:
  *  - A bounded `LruReportStore` exposed for both call sites; insertion
@@ -30,7 +29,6 @@ import { resolve } from 'node:path';
 
 import {
   HeronMCPServer,
-  type AuditPipeline,
   type ReportDiffer,
   type ReportStore,
   type StoredReport,
@@ -115,46 +113,32 @@ describe('LruReportStore — bounded store with LRU eviction (F-3)', () => {
   });
 
   it('plugs in as a ReportStore in HeronMCPServer', async () => {
-    const prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
-    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
-    try {
-      const lru: ReportStore = new LruReportStore(2);
-      const auditPipeline: AuditPipeline = {
-        async run(input) {
-          return {
-            reportId: `report_${input.targetEndpoint.slice(-1)}`,
-            target: input.targetEndpoint,
-            report: `# ${input.targetEndpoint}`,
-            summary: { riskLevel: 'low', findingsCount: 0 },
-          };
-        },
-      };
-      const differ: ReportDiffer = { async diff() { return ''; } };
-      const server = new HeronMCPServer({ auditPipeline, reportStore: lru, differ });
+    const lru: ReportStore = new LruReportStore(2);
+    const differ: ReportDiffer = { async diff() { return ''; } };
+    const server = new HeronMCPServer({ reportStore: lru, differ });
 
-      const ctx = {
-        authPrincipal: null,
-        sessionId: 'sess',
-        progress: () => undefined,
-        signal: new AbortController().signal,
-      };
+    const ctx = {
+      authPrincipal: null,
+      sessionId: 'sess',
+      progress: () => undefined,
+      signal: new AbortController().signal,
+    };
 
-      // Drive three audits — the 2-cap store should retain only 2.
-      await server.invoke('audit_agent', { target_endpoint: 'http://h.test/1' }, ctx);
-      await server.invoke('audit_agent', { target_endpoint: 'http://h.test/2' }, ctx);
-      await server.invoke('audit_agent', { target_endpoint: 'http://h.test/3' }, ctx);
+    // Seed three reports directly into the store. AAP-52 retired
+    // audit_agent — the wrapper no longer drives the store from a tool
+    // handler — so the cap is exercised by direct puts. The 2-cap
+    // store should retain only 2.
+    lru.put(makeRecord('report_1'));
+    lru.put(makeRecord('report_2'));
+    lru.put(makeRecord('report_3'));
 
-      // First report is evicted; second and third remain.
-      const get1 = await server.invoke('get_report', { report_id: 'report_1' }, ctx);
-      expect(get1.ok).toBe(false);
-      const get2 = await server.invoke('get_report', { report_id: 'report_2' }, ctx);
-      expect(get2.ok).toBe(true);
-      const get3 = await server.invoke('get_report', { report_id: 'report_3' }, ctx);
-      expect(get3.ok).toBe(true);
-    } finally {
-      if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
-      else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
-    }
+    // First report is evicted; second and third remain.
+    const get1 = await server.invoke('get_report', { report_id: 'report_1' }, ctx);
+    expect(get1.ok).toBe(false);
+    const get2 = await server.invoke('get_report', { report_id: 'report_2' }, ctx);
+    expect(get2.ok).toBe(true);
+    const get3 = await server.invoke('get_report', { report_id: 'report_3' }, ctx);
+    expect(get3.ok).toBe(true);
   });
 });
 

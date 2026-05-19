@@ -1,14 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 import {
   HeronMCPServer,
-  type AuditPipeline,
   type ReportStore,
   type ReportDiffer,
   type StoredReport,
 } from '../../src/server/mcp-server.js';
 import type {
-  AuditAgentInput,
   CompareReportsInput,
   GetReportInput,
   ProgressNotification,
@@ -20,63 +18,10 @@ import type {
  *
  * These tests do NOT spin up an MCP transport. They construct
  * `HeronMCPServer` with fake dependencies and call `invoke()` directly
- * with a mocked `RequestContext`. The goal is to exercise the handler
- * logic in isolation — schema validation, error mapping, progress
- * emission, cancellation propagation — without paying the cost of a
- * real stdio subprocess or HTTP listener.
+ * with a mocked `RequestContext`. The audit_agent block was removed
+ * under AAP-52 along with the tool itself; start_audit_session
+ * coverage lives in `start-audit-session.test.ts`.
  */
-
-// ─── Fakes ────────────────────────────────────────────────────────────────
-
-class FakeAuditPipeline implements AuditPipeline {
-  private behavior: 'happy' | 'error' = 'happy';
-  private slow = false;
-
-  setBehavior(behavior: 'happy' | 'error'): void {
-    this.behavior = behavior;
-  }
-  setSlow(slow: boolean): void {
-    this.slow = slow;
-  }
-
-  async run(
-    input: { targetEndpoint: string; options?: Record<string, unknown> },
-    ctx: { progress: (p: ProgressNotification) => void; signal: AbortSignal; sessionId: string },
-  ): Promise<{ report: string; reportId: string; summary: { riskLevel: string; findingsCount: number; recommendation?: string }; target: string }>{
-    ctx.progress({ stage: 'interrogating', pct: 10 });
-    if (this.slow) {
-      // Wait until the abort signal fires (or 5s ceiling).
-      await new Promise<void>((resolve) => {
-        const onAbort = (): void => {
-          ctx.signal.removeEventListener('abort', onAbort);
-          resolve();
-        };
-        if (ctx.signal.aborted) return resolve();
-        ctx.signal.addEventListener('abort', onAbort);
-        setTimeout(resolve, 5_000);
-      });
-    }
-    ctx.progress({ stage: 'analyzing', pct: 40 });
-    if (this.behavior === 'error') {
-      throw new Error('pipeline blew up');
-    }
-    if (ctx.signal.aborted) {
-      throw new DOMException('aborted', 'AbortError');
-    }
-    ctx.progress({ stage: 'mapping', pct: 70 });
-    ctx.progress({ stage: 'rendering', pct: 95 });
-    return {
-      report: `# Audit\n\nTarget: ${input.targetEndpoint}\nSession: ${ctx.sessionId}`,
-      reportId: 'report_fake_123',
-      target: input.targetEndpoint,
-      summary: {
-        riskLevel: 'medium',
-        findingsCount: 1,
-        recommendation: 'APPROVE WITH CONDITIONS',
-      },
-    };
-  }
-}
 
 class FakeReportStore implements ReportStore {
   private byId = new Map<string, StoredReport>();
@@ -113,148 +58,14 @@ function makeContext(overrides: Partial<RequestContext> = {}): {
 
 function makeServer(): {
   server: HeronMCPServer;
-  pipeline: FakeAuditPipeline;
   store: FakeReportStore;
   differ: FakeDiffer;
 } {
-  const pipeline = new FakeAuditPipeline();
   const store = new FakeReportStore();
   const differ = new FakeDiffer();
-  const server = new HeronMCPServer({ auditPipeline: pipeline, reportStore: store, differ });
-  return { server, pipeline, store, differ };
+  const server = new HeronMCPServer({ reportStore: store, differ });
+  return { server, store, differ };
 }
-
-// ─── audit_agent ──────────────────────────────────────────────────────────
-
-describe('HeronMCPServer.audit_agent', () => {
-  let server: HeronMCPServer;
-  let pipeline: FakeAuditPipeline;
-  let store: FakeReportStore;
-  let prevAllowPrivate: string | undefined;
-
-  beforeEach(() => {
-    // These tests use placeholder hostnames like `https://agent.example.com`
-    // and `http://x` that intentionally bypass real DNS resolution. The
-    // SSRF guard (F-1) blocks unresolvable hosts; flip the documented
-    // escape hatch on for the duration of this suite so the unit tests
-    // can keep exercising the wrapper's branching without launching a
-    // mock DNS server. Real SSRF coverage lives in
-    // `tests/connectors/url-policy.test.ts` and
-    // `tests/server/audit-agent-ssrf.test.ts`.
-    prevAllowPrivate = process.env.HERON_ALLOW_PRIVATE_TARGETS;
-    process.env.HERON_ALLOW_PRIVATE_TARGETS = '1';
-    const s = makeServer();
-    server = s.server;
-    pipeline = s.pipeline;
-    store = s.store;
-  });
-
-  afterEach(() => {
-    if (prevAllowPrivate === undefined) delete process.env.HERON_ALLOW_PRIVATE_TARGETS;
-    else process.env.HERON_ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
-  });
-
-  it('happy path: returns report markdown, id, and summary', async () => {
-    const { ctx } = makeContext();
-    const input: AuditAgentInput = { target_endpoint: 'https://agent.example.com/v1' };
-    const result = await server.invoke('audit_agent', input, ctx);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.report_markdown).toContain('Target: https://agent.example.com/v1');
-    expect(result.value.report_id).toBe('report_fake_123');
-    expect(result.value.summary).toEqual({
-      risk_level: 'medium',
-      findings_count: 1,
-      recommendation: 'APPROVE WITH CONDITIONS',
-    });
-    // Pipeline output should also be stored so get_report can find it.
-    expect(store.get('report_fake_123')?.target).toBe('https://agent.example.com/v1');
-  });
-
-  it('emits progress at each pipeline stage', async () => {
-    const { ctx, notifications } = makeContext();
-    await server.invoke('audit_agent', { target_endpoint: 'http://x' }, ctx);
-    const stages = notifications.map((n) => n.stage);
-    // The fake pipeline emits 4 stages; wrapper may add bookend stages.
-    expect(stages).toEqual(expect.arrayContaining(['interrogating', 'analyzing', 'mapping', 'rendering']));
-    // At least one notification carries a percentage.
-    expect(notifications.some((n) => typeof n.pct === 'number')).toBe(true);
-  });
-
-  it('respects abort signal and returns cancelled error', async () => {
-    pipeline.setSlow(true);
-    const { ctx, controller } = makeContext();
-    const promise = server.invoke('audit_agent', { target_endpoint: 'http://x' }, ctx);
-    // Cancel before pipeline finishes.
-    setTimeout(() => controller.abort(), 10);
-    const result = await promise;
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe('cancelled');
-  });
-
-  it('returns invalid_input on missing target_endpoint', async () => {
-    const { ctx } = makeContext();
-    // Cast through unknown to fabricate a malformed input the way an
-    // upstream JSON-RPC payload could.
-    const result = await server.invoke('audit_agent', {} as unknown as AuditAgentInput, ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe('invalid_input');
-    if (result.error.kind === 'invalid_input') {
-      expect(result.error.field).toBe('target_endpoint');
-    }
-  });
-
-  it('returns invalid_input when target_endpoint is not a string', async () => {
-    const { ctx } = makeContext();
-    const result = await server.invoke(
-      'audit_agent',
-      { target_endpoint: 42 } as unknown as AuditAgentInput,
-      ctx,
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe('invalid_input');
-  });
-
-  it('returns tool_failure when the pipeline throws', async () => {
-    pipeline.setBehavior('error');
-    const { ctx } = makeContext();
-    const result = await server.invoke('audit_agent', { target_endpoint: 'http://x' }, ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe('tool_failure');
-    if (result.error.kind === 'tool_failure') {
-      expect(result.error.message).toContain('pipeline blew up');
-    }
-  });
-
-  it('does not touch process.stdin/stdout while handling a request', async () => {
-    // Wrap process.stdin/stdout in proxies so any property access throws.
-    // We only guard for the duration of invoke() — otherwise vitest's own
-    // logging would trip the trap.
-    const origStdin = Object.getOwnPropertyDescriptor(process, 'stdin');
-    const origStdout = Object.getOwnPropertyDescriptor(process, 'stdout');
-    let tripped = false;
-    const trap = new Proxy({}, {
-      get() {
-        tripped = true;
-        return undefined;
-      },
-    });
-    Object.defineProperty(process, 'stdin', { value: trap, configurable: true });
-    Object.defineProperty(process, 'stdout', { value: trap, configurable: true });
-    try {
-      const { ctx } = makeContext();
-      await server.invoke('audit_agent', { target_endpoint: 'http://x' }, ctx);
-    } finally {
-      if (origStdin) Object.defineProperty(process, 'stdin', origStdin);
-      if (origStdout) Object.defineProperty(process, 'stdout', origStdout);
-    }
-    expect(tripped).toBe(false);
-  });
-});
 
 // ─── get_report ──────────────────────────────────────────────────────────
 
