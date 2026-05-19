@@ -41,7 +41,7 @@ describe('heron mcp-serve — stdio CLI', () => {
     try {
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report']);
+      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report', 'start_audit_session']);
 
       // get_report against an unknown id should round-trip and report
       // tool_failure — that proves the handler is wired, the LLM

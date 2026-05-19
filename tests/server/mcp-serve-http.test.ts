@@ -64,7 +64,7 @@ describe('runMcpServe — HTTP transport (direct integration)', () => {
     try {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report']);
+      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report', 'start_audit_session']);
     } finally {
       await client.close();
     }

@@ -48,7 +48,7 @@ describe('HeronMCPServer — stdio transport', () => {
     try {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report']);
+      expect(names).toEqual(['audit_agent', 'compare_reports', 'get_report', 'start_audit_session']);
     } finally {
       await client.close();
     }
@@ -216,7 +216,7 @@ describe('HeronMCPServer — HTTP transport', () => {
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools.map((t) => t.name).sort()).toEqual(['audit_agent', 'compare_reports', 'get_report']);
+      expect(tools.tools.map((t) => t.name).sort()).toEqual(['audit_agent', 'compare_reports', 'get_report', 'start_audit_session']);
 
       const result = await client.callTool({
         name: 'audit_agent',

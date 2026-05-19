@@ -151,3 +151,31 @@ export interface CompareReportsInput {
 export interface CompareReportsOutput {
   diff_markdown: string;
 }
+
+// ─── start_audit_session (AAP-52) ─────────────────────────────────────────
+
+/**
+ * Input for the `start_audit_session` MCP tool.
+ *
+ * No `target_endpoint`: under AAP-52 the audited agent IS the MCP client
+ * that just called this tool. Answers flow back over the same JSON-RPC
+ * session via `sampling/createMessage`.
+ */
+export interface StartAuditSessionInput {
+  /** Optional human label for the agent under audit. */
+  agent_name?: string;
+}
+
+/** Output for the `start_audit_session` MCP tool. */
+export interface StartAuditSessionOutput {
+  /** ~/.heron/sessions/ id — pasteable into the dashboard URL. */
+  session_id: string;
+  /** Final session status (typically `complete`; `error` if the run failed). */
+  status: string;
+  /** Number of Q/A pairs captured. */
+  questions_asked: number;
+  /** Overall risk level — when the analyzer surfaced one. */
+  risk_level?: string;
+  /** Final rendered report (markdown). */
+  report_markdown?: string;
+}

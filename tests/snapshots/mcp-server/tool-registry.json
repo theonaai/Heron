@@ -1,5 +1,20 @@
 [
   {
+    "name": "start_audit_session",
+    "description": "Heron audits the calling agent over MCP sampling. The agent under audit is the MCP client that invokes this tool; Heron asks 9+ compliance questions back through sampling/createMessage and returns the rendered report markdown plus a session id for the dashboard.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "agent_name": {
+          "type": "string",
+          "description": "Optional human-readable name for the audited agent."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "audit_agent",
     "description": "Run a Heron audit against a target agent endpoint. Interrogates the agent, analyzes the transcript, maps findings to compliance frameworks, and returns a markdown audit report plus a report id you can pass to get_report or compare_reports.",
     "inputSchema": {

@@ -38,7 +38,19 @@ import type {
   MCPServerResult,
   ProgressNotification,
   RequestContext,
+  StartAuditSessionInput,
+  StartAuditSessionOutput,
 } from './mcp-types.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { QAPair } from '../report/types.js';
+import {
+  appendTranscriptEntry,
+  createSession,
+  updateSessionMeta,
+  writeReport,
+} from '../storage/sessions.js';
+import { publishSessionEvent } from '../storage/session-events.js';
+import { SamplingConnector } from '../connectors/sampling-connector.js';
 
 const SERVER_NAME = 'heron';
 const SERVER_VERSION = '0.4.0';
@@ -89,12 +101,48 @@ export interface ReportDiffer {
   diff(a: StoredReport, b: StoredReport): Promise<string>;
 }
 
+/**
+ * Sampling-driven interview runner (AAP-52). Injected so unit tests can
+ * stub the heavy interview loop. Production wiring lives in
+ * `src/interview/sampling-interview.ts`.
+ */
+export interface SamplingInterviewRunner {
+  (params: {
+    sessionId: string;
+    sampler: Pick<Server, 'createMessage'>;
+    signal: AbortSignal;
+  }): Promise<{
+    transcript: QAPair[];
+    questionsAsked: number;
+  }>;
+}
+
+/**
+ * Render an audit report from a captured transcript (AAP-52). Injected
+ * for the same reason — keep unit tests out of the LLM hot path.
+ */
+export interface AnalyzeAndRenderReport {
+  (params: {
+    sessionId: string;
+    transcript: QAPair[];
+    agentName?: string;
+  }): Promise<{
+    markdown: string;
+    json: unknown;
+    riskLevel?: string;
+  }>;
+}
+
 /** Dependency bag for `HeronMCPServer`. */
 export interface HeronMCPServerDeps {
   auditPipeline: AuditPipeline;
   /** Optional — defaults to an in-memory store. */
   reportStore?: ReportStore;
   differ: ReportDiffer;
+  /** AAP-52 — sampling-driven interview runner. Default wired from `src/interview/sampling-interview.ts`. */
+  runSamplingInterview?: SamplingInterviewRunner;
+  /** AAP-52 — transcript → report renderer. Default wired from `src/interview/sampling-render.ts`. */
+  analyzeAndRenderReport?: AnalyzeAndRenderReport;
 }
 
 /**
@@ -218,7 +266,36 @@ const COMPARE_REPORTS_DEF: ToolDefinition = {
   },
 };
 
-const TOOL_DEFINITIONS: ToolDefinition[] = [AUDIT_AGENT_DEF, GET_REPORT_DEF, COMPARE_REPORTS_DEF];
+const START_AUDIT_SESSION_DEF: ToolDefinition = {
+  name: 'start_audit_session',
+  description:
+    'Heron audits the calling agent over MCP sampling. The agent under audit ' +
+    'is the MCP client that invokes this tool; Heron asks 9+ compliance ' +
+    'questions back through sampling/createMessage and returns the rendered ' +
+    'report markdown plus a session id for the dashboard.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      agent_name: {
+        type: 'string',
+        description: 'Optional human-readable name for the audited agent.',
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+const TOOL_DEFINITIONS: ToolDefinition[] = [
+  START_AUDIT_SESSION_DEF,
+  AUDIT_AGENT_DEF,
+  GET_REPORT_DEF,
+  COMPARE_REPORTS_DEF,
+];
+
+const startAuditSessionInputSchema = z.object({
+  agent_name: z.string().optional(),
+});
 
 // Zod schemas mirror the public JSON schemas. We keep both shapes —
 // JSON for the public registry (so the snapshot is human-readable and
@@ -252,23 +329,45 @@ const compareReportsInputSchema = z.object({
 
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
-export type ToolName = 'audit_agent' | 'get_report' | 'compare_reports';
+export type ToolName =
+  | 'audit_agent'
+  | 'get_report'
+  | 'compare_reports'
+  | 'start_audit_session';
 
 type InvokeMap = {
   audit_agent: { input: AuditAgentInput; output: AuditAgentOutput };
   get_report: { input: GetReportInput; output: GetReportOutput };
   compare_reports: { input: CompareReportsInput; output: CompareReportsOutput };
+  start_audit_session: { input: StartAuditSessionInput; output: StartAuditSessionOutput };
 };
 
 export class HeronMCPServer {
   private readonly auditPipeline: AuditPipeline;
   private readonly reportStore: ReportStore;
   private readonly differ: ReportDiffer;
+  private readonly runSamplingInterview?: SamplingInterviewRunner;
+  private readonly analyzeAndRenderReport?: AnalyzeAndRenderReport;
+  /** Captured SDK Server for sampling/createMessage. Set by buildMcpServer or attachSamplingServer. */
+  private samplingServer: Pick<Server, 'createMessage'> | null = null;
 
   constructor(deps: HeronMCPServerDeps) {
     this.auditPipeline = deps.auditPipeline;
     this.reportStore = deps.reportStore ?? new InMemoryReportStore();
     this.differ = deps.differ;
+    this.runSamplingInterview = deps.runSamplingInterview;
+    this.analyzeAndRenderReport = deps.analyzeAndRenderReport;
+  }
+
+  /**
+   * Attach an SDK Server so `start_audit_session` can drive sampling.
+   *
+   * `buildMcpServer()` calls this automatically with the McpServer's
+   * underlying low-level Server. Unit tests inject a stub Server
+   * directly via this method.
+   */
+  attachSamplingServer(server: Pick<Server, 'createMessage'>): void {
+    this.samplingServer = server;
   }
 
   /**
@@ -295,6 +394,11 @@ export class HeronMCPServer {
         case 'compare_reports':
           return (await this.handleCompareReports(
             input as CompareReportsInput,
+          )) as MCPServerResult<InvokeMap[N]['output']>;
+        case 'start_audit_session':
+          return (await this.handleStartAuditSession(
+            input as StartAuditSessionInput,
+            ctx,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
           return {
@@ -338,6 +442,30 @@ export class HeronMCPServer {
    */
   buildMcpServer(): McpServer {
     const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+    // start_audit_session needs to call server.createMessage() to sample
+    // answers out of the audited client. Capture the underlying SDK
+    // Server so the handler can find it without reaching into per-call
+    // SDK internals.
+    this.attachSamplingServer(server.server);
+
+    // start_audit_session (AAP-52)
+    server.registerTool(
+      START_AUDIT_SESSION_DEF.name,
+      {
+        description: START_AUDIT_SESSION_DEF.description,
+        inputSchema: { agent_name: z.string().optional() },
+      },
+      async (args, extra) => {
+        const bridge = contextFromExtra(extra);
+        const result = await this.invoke(
+          'start_audit_session',
+          args as StartAuditSessionInput,
+          bridge.ctx,
+        );
+        await bridge.flush();
+        return toolResultFromMcp(result);
+      },
+    );
 
     // audit_agent
     server.registerTool(
@@ -494,6 +622,111 @@ export class HeronMCPServer {
           kind: 'tool_failure',
           cause: 'audit_pipeline',
           message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  }
+
+  // ─── start_audit_session (AAP-52) ────────────────────────────────────
+
+  private async handleStartAuditSession(
+    rawInput: StartAuditSessionInput,
+    ctx: RequestContext,
+  ): Promise<MCPServerResult<StartAuditSessionOutput>> {
+    const parsed = startAuditSessionInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return {
+        ok: false,
+        error: {
+          kind: 'invalid_input',
+          field: issue?.path?.[0]?.toString() ?? 'unknown',
+          message: issue?.message ?? 'invalid input',
+        },
+      };
+    }
+
+    if (!this.samplingServer) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_sampling_server',
+          message:
+            'No MCP sampling server attached — call HeronMCPServer.buildMcpServer() ' +
+            'or HeronMCPServer.attachSamplingServer() before invoking start_audit_session.',
+        },
+      };
+    }
+    if (!this.runSamplingInterview || !this.analyzeAndRenderReport) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_interview_runner',
+          message:
+            'start_audit_session requires runSamplingInterview + analyzeAndRenderReport ' +
+            'deps. Wire them via HeronMCPServerDeps when constructing the wrapper.',
+        },
+      };
+    }
+
+    const { agent_name } = parsed.data;
+    const { id: sessionId } = await createSession(agent_name ? { agentName: agent_name } : {});
+
+    // Emit a status-change event so the SSE listeners pick up the new session
+    publishSessionEvent(sessionId, { type: 'status-change', status: 'interviewing' });
+
+    try {
+      const interviewResult = await this.runSamplingInterview({
+        sessionId,
+        sampler: this.samplingServer,
+        signal: ctx.signal,
+      });
+
+      await updateSessionMeta(sessionId, { status: 'analyzing' });
+      publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
+
+      const rendered = await this.analyzeAndRenderReport({
+        sessionId,
+        transcript: interviewResult.transcript,
+        ...(agent_name !== undefined ? { agentName: agent_name } : {}),
+      });
+
+      await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+      if (rendered.riskLevel) {
+        await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+      }
+      publishSessionEvent(sessionId, {
+        type: 'status-change',
+        status: 'complete',
+        ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+      });
+
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          status: 'complete',
+          questions_asked: interviewResult.questionsAsked,
+          ...(rendered.riskLevel !== undefined ? { risk_level: rendered.riskLevel } : {}),
+          report_markdown: rendered.markdown,
+        },
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await updateSessionMeta(sessionId, { status: 'error' });
+      } catch {
+        // Best-effort — meta might already be broken.
+      }
+      publishSessionEvent(sessionId, { type: 'error', message });
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'interview_or_analysis',
+          message,
         },
       };
     }

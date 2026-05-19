@@ -9,7 +9,7 @@ import type {
   ReportDiffer,
 } from '../../src/server/mcp-server.js';
 import type { ProgressNotification, RequestContext } from '../../src/server/mcp-types.js';
-import { getSession } from '../../src/storage/sessions.js';
+import { appendTranscriptEntry, getSession } from '../../src/storage/sessions.js';
 
 /**
  * Unit tests for the start_audit_session tool (AAP-52).
@@ -80,6 +80,8 @@ describe('HeronMCPServer.start_audit_session', () => {
 
   it('runs the sampling interview and writes a report to storage', async () => {
     // Fake interview runner: short transcript of 3 entries.
+    // The production runner persists each Q/A via appendTranscriptEntry
+    // as it goes; the fake mirrors that contract.
     const fakeRunInterview = vi.fn(async (params: {
       sessionId: string;
       sampler: { createMessage: (args: unknown) => Promise<unknown> };
@@ -89,14 +91,15 @@ describe('HeronMCPServer.start_audit_session', () => {
         messages: [{ role: 'user', content: { type: 'text', text: 'probe' } }],
         maxTokens: 16,
       });
-      return {
-        transcript: [
-          { category: 'identity', question: 'Q1', answer: 'A1' },
-          { category: 'systems', question: 'Q2', answer: 'A2' },
-          { category: 'data', question: 'Q3', answer: 'A3' },
-        ],
-        questionsAsked: 3,
-      };
+      const transcript = [
+        { category: 'identity', question: 'Q1', answer: 'A1' },
+        { category: 'systems', question: 'Q2', answer: 'A2' },
+        { category: 'data', question: 'Q3', answer: 'A3' },
+      ];
+      for (const entry of transcript) {
+        await appendTranscriptEntry(params.sessionId, entry);
+      }
+      return { transcript, questionsAsked: 3 };
     });
 
     const fakeAnalyze = vi.fn(async () => ({
