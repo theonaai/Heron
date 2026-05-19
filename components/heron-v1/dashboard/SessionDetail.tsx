@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { GitCompare, Loader2, Download } from 'lucide-react';
 import {
   type AuditSessionDetail,
@@ -13,6 +13,17 @@ import DiffView from './DiffView';
 import { useSessions } from './DashboardChrome';
 
 import './report.css';
+
+interface TranscriptAppendPayload {
+  entry: { category: string; question: string; answer: string };
+}
+interface StatusChangePayload {
+  status: string;
+  riskLevel?: string;
+}
+
+// AAP-52: poll fallback when EventSource is unavailable / disconnected.
+const POLL_INTERVAL_MS = 3000;
 
 // ────────────────────────────────────────────────────────────────
 // Session detail view — Report / Transcript / Compare tabs.
@@ -33,24 +44,109 @@ import './report.css';
 type Tab = 'report' | 'transcript' | 'diff';
 
 export default function SessionDetail({ session }: { session: AuditSessionDetail }) {
-  const hasReport = !!session.report;
-  const isComplete = session.status === 'complete';
+  // AAP-52: live state. The initial value is the SSR snapshot; while the
+  // session is still 'interviewing' or 'analyzing' we replace it from the
+  // SSE stream (or polling fallback) so the user watches the transcript
+  // grow without manual refresh.
+  const [liveSession, setLiveSession] = useState<AuditSessionDetail>(session);
+  // Whenever the SSR-routed session changes (browser navigation between
+  // sessions) reset the local copy.
+  useEffect(() => {
+    setLiveSession(session);
+  }, [session]);
+
+  const hasReport = !!liveSession.report;
+  const isComplete = liveSession.status === 'complete';
+  const isLive = liveSession.status === 'interviewing' || liveSession.status === 'analyzing';
   const [tab, setTab] = useState<Tab>(hasReport ? 'report' : 'transcript');
   const [diff, setDiff] = useState<VersionDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { sessions: allSessions } = useSessions();
+
+  // AAP-52: subscribe to /api/audit/sessions/:id/stream while the
+  // audit is still running. EventSource handles reconnect; the
+  // polling fallback below covers environments where SSE is blocked
+  // (e.g. some corp proxies).
+  useEffect(() => {
+    if (!isLive) return;
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+
+    let cancelled = false;
+    const url = `/api/audit/sessions/${liveSession.id}/stream`;
+    const es = new EventSource(url);
+
+    es.addEventListener('transcript-append', (ev) => {
+      if (cancelled) return;
+      try {
+        const payload = JSON.parse((ev as MessageEvent).data) as TranscriptAppendPayload;
+        setLiveSession((prev) => ({
+          ...prev,
+          transcript: [...prev.transcript, payload.entry],
+          questionsAsked: prev.questionsAsked + 1,
+        }));
+      } catch {
+        // Malformed payload — ignore.
+      }
+    });
+    es.addEventListener('status-change', (ev) => {
+      if (cancelled) return;
+      try {
+        const payload = JSON.parse((ev as MessageEvent).data) as StatusChangePayload;
+        setLiveSession((prev) => ({
+          ...prev,
+          status: payload.status as typeof prev.status,
+          ...(payload.riskLevel ? { riskLevel: payload.riskLevel } : {}),
+        }));
+        if (payload.status === 'complete') {
+          // Fetch the rendered report blob once the run is done.
+          fetch(`/api/audit/sessions/${liveSession.id}`)
+            .then((r) => r.json())
+            .then((detail: AuditSessionDetail) => {
+              if (!cancelled) setLiveSession(detail);
+            })
+            .catch(() => undefined);
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      es.close();
+    };
+  }, [liveSession.id, isLive]);
+
+  // Polling fallback. Fires every POLL_INTERVAL_MS while the run is live;
+  // refreshes the entire session blob.
+  useEffect(() => {
+    if (!isLive) return;
+    pollRef.current = setInterval(() => {
+      fetch(`/api/audit/sessions/${liveSession.id}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((detail: AuditSessionDetail | null) => {
+          if (detail) setLiveSession(detail);
+        })
+        .catch(() => undefined);
+    }, POLL_INTERVAL_MS);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+    };
+  }, [liveSession.id, isLive]);
 
   useEffect(() => {
     if (!isComplete) return;
     let cancelled = false;
-    fetchVersionDiff(session.id).then((d) => {
+    fetchVersionDiff(liveSession.id).then((d) => {
       if (!cancelled) setDiff(d);
     });
     return () => {
       cancelled = true;
     };
-  }, [session.id, isComplete]);
+  }, [liveSession.id, isComplete]);
 
   const handleViewDiff = async () => {
     if (diff) {
@@ -58,43 +154,43 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
       return;
     }
     setDiffLoading(true);
-    const d = await fetchVersionDiff(session.id);
+    const d = await fetchVersionDiff(liveSession.id);
     setDiff(d);
     setDiffLoading(false);
     if (d) setTab('diff');
   };
 
   const handleDownload = () => {
-    if (!session.report) return;
-    const blob = new Blob([session.report], { type: 'text/markdown' });
+    if (!liveSession.report) return;
+    const blob = new Blob([liveSession.report], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `audit-${session.id}.md`;
+    a.download = `audit-${liveSession.id}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   // Title prefers the audit's agent name. Live name from SessionsContext
   // (kept fresh by Sidebar rename) wins over the local detail blob.
-  const sessionShort = session.id.startsWith('sess_')
-    ? session.id.slice(5, 17)
-    : session.id.slice(0, 12);
-  const liveAgentName = (allSessions || []).find((s) => s.id === session.id)?.agentName;
-  const effectiveAgentName = liveAgentName?.trim() || session.agentName?.trim() || '';
+  const sessionShort = liveSession.id.startsWith('sess_')
+    ? liveSession.id.slice(5, 17)
+    : liveSession.id.slice(0, 12);
+  const liveAgentName = (allSessions || []).find((s) => s.id === liveSession.id)?.agentName;
+  const effectiveAgentName = liveAgentName?.trim() || liveSession.agentName?.trim() || '';
   const displayName = effectiveAgentName || sessionShort;
   const showIdSuffix = !!effectiveAgentName;
 
   const statusSev =
-    session.status === 'complete'
+    liveSession.status === 'complete'
       ? 'sev-ok'
-      : session.status === 'error'
+      : liveSession.status === 'error'
         ? 'sev-critical'
-        : session.status === 'analyzing'
+        : liveSession.status === 'analyzing'
           ? 'sev-info'
           : 'sev-medium';
 
-  const riskRaw = (session.riskLevel || '').toLowerCase();
+  const riskRaw = (liveSession.riskLevel || '').toLowerCase();
   const riskSev =
     riskRaw === 'critical'
       ? 'sev-critical'
@@ -110,18 +206,19 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
     <div className="report-shell" style={{ height: '100%' }}>
       <div className="topbar">
         <div className="topbar-left">
-          <span className="session-id" title={displayName || session.id}>
+          <span className="session-id" title={displayName || liveSession.id}>
             {displayName}
             {showIdSuffix && (
               <span className="session-id-suffix"> ({sessionShort})</span>
             )}
           </span>
-          <span className={`sev ${statusSev}`}>{session.status}</span>
-          {session.riskLevel && (
-            <span className={`sev ${riskSev}`}>{session.riskLevel} risk</span>
+          <span className={`sev ${statusSev}`}>{liveSession.status}</span>
+          {isLive && <span className="sev sev-info">live</span>}
+          {liveSession.riskLevel && (
+            <span className={`sev ${riskSev}`}>{liveSession.riskLevel} risk</span>
           )}
           <span className="topbar-meta">
-            {session.questionsAsked} questions · {new Date(session.createdAt).toLocaleDateString()}
+            {liveSession.questionsAsked} questions · {new Date(liveSession.createdAt).toLocaleDateString()}
           </span>
         </div>
 
@@ -177,7 +274,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
           className={`tab ${tab === 'transcript' ? 'active' : ''}`}
           onClick={() => setTab('transcript')}
         >
-          Transcript ({session.transcript.length})
+          Transcript ({liveSession.transcript.length})
         </button>
         {diff && (
           <button
@@ -191,19 +288,19 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
       </div>
 
       <div className="body">
-        {tab === 'report' && session.report ? (
+        {tab === 'report' && liveSession.report ? (
           <ReportView
-            report={session.report}
-            reportJson={session.reportJson}
-            riskLevel={session.riskLevel}
+            report={liveSession.report}
+            reportJson={liveSession.reportJson}
+            riskLevel={liveSession.riskLevel}
           />
         ) : tab === 'diff' && diff ? (
           <DiffView diff={diff} />
         ) : (
           <TranscriptView
-            transcript={session.transcript}
+            transcript={liveSession.transcript}
             durationMs={
-              ((session.reportJson as { metadata?: { interviewDuration?: number } } | undefined)
+              ((liveSession.reportJson as { metadata?: { interviewDuration?: number } } | undefined)
                 ?.metadata?.interviewDuration) ?? undefined
             }
           />
