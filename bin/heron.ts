@@ -89,6 +89,15 @@ program
   .option('--approvals-dir <dir>', 'Directory for approval chains (AAP-52 browser view)')
   .action(async (opts) => {
     try {
+      // AAP-64 / #33-C deprecation: `heron serve` (vanilla Node server) is
+      // superseded by the Next.js dashboard (`heron` / `heron setup`). We
+      // keep the command functional for CI / scripts that depend on it
+      // but surface a yellow warning so operators migrate.
+      logger.raw('');
+      logger.raw('  \x1b[33m⚠ DEPRECATED:\x1b[0m `heron serve` (vanilla server) is superseded by the Next.js dashboard.');
+      logger.raw('    Run \x1b[1mheron\x1b[0m (no args) for the browser UI, or \x1b[1mheron mcp-serve\x1b[0m for MCP exposure.');
+      logger.raw('    This command will be removed in a future release.');
+      logger.raw('');
       await startServer({
         port: parseInt(opts.port, 10),
         host: opts.host,
