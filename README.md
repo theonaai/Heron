@@ -633,6 +633,39 @@ Follow-ups are generated when answers are vague or compliance fields are missing
 
 A real audit of an educational content pipeline agent &mdash; reads lessons from Google Sheets, generates Russian content with Gemini, creates Google Docs and slide decks, publishes to an LMS. The report covers 9 connected systems, 1 critical and 4 high-severity findings, per-system access cards, regulatory flags (GDPR, SOC 2, EU AI Act), and a verdict with actionable recommendations.
 
+## How Heron verifies agent configurations
+
+The interview is a self-report. Useful, but every claim is whatever the agent's LLM decided to say. Heron closes that gap with a **deterministic filesystem-discovery pass** that reads the agent runtime's actual config files and diffs them against the interview transcript.
+
+**Consent model.** Discovery is opt-in per audit session. After the interview completes, the dashboard shows a callout: "Run deterministic verification?" Clicking it opens a modal that lists every path Heron may read, what it extracts, and what it explicitly never reads. The user picks one of:
+
+- **Allow once** &mdash; single scan, then revert to deny.
+- **Allow for this workspace** &mdash; persists in `~/.heron/discovery-consent.json` (file 0600, dir 0700) keyed by workspace path until removed.
+- **Cancel** &mdash; no network call, no read.
+
+**Paths read (when present).**
+
+- `~/.claude.json`, `~/.claude/settings.json`, project `.mcp.json` &mdash; Claude Code
+- `~/.codex/config.toml`, project `.codex/config.toml` &mdash; Codex
+- `~/.cursor/mcp.json`, project `.cursor/mcp.json` &mdash; Cursor
+- `~/.continue/config.yaml` &mdash; Continue
+- `~/.codeium/windsurf/mcp_config.json` &mdash; Windsurf
+- `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) &mdash; Claude Desktop
+
+Missing files are silently skipped. Malformed files are skipped with the attempt still recorded for transparency.
+
+**Whitelist projection.** Only schema fields land in memory: MCP server names, transport (stdio / http / sse / streamable-http), URLs and commands, tool allow/deny lists, model selections. Every other field encountered while parsing is dropped after the projection.
+
+**Heron never reads, logs, or transmits** API keys, OAuth tokens, environment variable values, header values, or connection-string passwords. For any env / header key matching a secret pattern (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, `*_CREDENTIAL`, or one of `GITHUB_PERSONAL_ACCESS_TOKEN` / `SLACK_BOT_TOKEN` / `BRAVE_API_KEY` / `POSTGRES_CONNECTION_STRING` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), only the **key name** is retained &mdash; the value is discarded entirely, not stored under a placeholder. For HTTP MCP servers, all header values are stripped regardless of header content.
+
+**Findings.** The discovered inventory is diffed against the interview transcript:
+
+- **EXTRA** &mdash; server discovered on disk, not mentioned in the interview. HIGH if it has credentials, MEDIUM otherwise.
+- **MISSING** &mdash; server mentioned in the interview, not discovered on disk. MEDIUM.
+- **HIDDEN-CREDENTIALS** &mdash; server discovered with credentials configured, mentioned in the interview, but the interview never discussed credentials / tokens / authentication. HIGH.
+
+The result lands in `report.json` under `localAgentDiscovery`. The dashboard's ReportView renders a new "Local agent discovery &mdash; deterministic evidence" section with the discovered-servers table (including the redacted env-key names) and the findings table.
+
 ## Two Modes
 
 | Mode | Command | Direction | Use Case |

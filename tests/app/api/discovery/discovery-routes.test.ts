@@ -1,0 +1,214 @@
+/**
+ * Discovery API route tests — AAP-53.
+ *
+ * Covers:
+ *   - GET  /api/discovery/consent
+ *   - POST /api/discovery/consent
+ *   - POST /api/discovery/scan
+ *
+ * Uses temp HOME (HERON_DISCOVERY_HOME) and temp sessions dir
+ * (HERON_SESSIONS_DIR). Same-origin POSTs include Sec-Fetch-Site.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { GET as consentGET, POST as consentPOST } from '@/app/api/discovery/consent/route';
+import { POST as scanPOST } from '@/app/api/discovery/scan/route';
+import { POST as listPOST } from '@/app/api/audit/sessions/route';
+import { POST as reportPOST } from '@/app/api/audit/sessions/[id]/report/route';
+
+const ORIGIN = 'http://127.0.0.1:3700';
+
+function jsonRequest(
+  url: string,
+  init: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
+): Request {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    host: '127.0.0.1:3700',
+    'Sec-Fetch-Site': 'same-origin',
+    ...(init.headers ?? {}),
+  };
+  return new Request(url, {
+    method: init.method ?? 'GET',
+    headers,
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+}
+
+async function readJson(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
+describe('discovery API routes', () => {
+  let sessionsDir: string;
+  let homeDir: string;
+  let workspaceDir: string;
+
+  beforeEach(async () => {
+    sessionsDir = await mkdtemp(join(tmpdir(), 'heron-discovery-sessions-'));
+    homeDir = await mkdtemp(join(tmpdir(), 'heron-discovery-home-'));
+    workspaceDir = await mkdtemp(join(tmpdir(), 'heron-discovery-workspace-'));
+    process.env.HERON_SESSIONS_DIR = sessionsDir;
+    process.env.HERON_DISCOVERY_HOME = homeDir;
+  });
+
+  afterEach(async () => {
+    delete process.env.HERON_SESSIONS_DIR;
+    delete process.env.HERON_DISCOVERY_HOME;
+    await rm(sessionsDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  });
+
+  describe('GET /api/discovery/consent', () => {
+    it('returns { decision: "deny" } when nothing is stored', async () => {
+      const res = await consentGET(
+        jsonRequest(`${ORIGIN}/api/discovery/consent?workspace=${encodeURIComponent(workspaceDir)}`),
+      );
+      expect(res.status).toBe(200);
+      const body = (await readJson(res)) as { decision: string };
+      expect(body.decision).toBe('deny');
+    });
+  });
+
+  describe('POST /api/discovery/consent', () => {
+    it('persists allow-for-workspace and GET returns it', async () => {
+      const res = await consentPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/consent`, {
+          method: 'POST',
+          body: { workspace: workspaceDir, decision: 'allow-for-workspace' },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const get = await consentGET(
+        jsonRequest(`${ORIGIN}/api/discovery/consent?workspace=${encodeURIComponent(workspaceDir)}`),
+      );
+      const body = (await readJson(get)) as { decision: string };
+      expect(body.decision).toBe('allow-for-workspace');
+    });
+
+    it('rejects non-same-origin POST (403)', async () => {
+      const req = new Request(`${ORIGIN}/api/discovery/consent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          host: '127.0.0.1:3700',
+          'Sec-Fetch-Site': 'cross-site',
+        },
+        body: JSON.stringify({ workspace: workspaceDir, decision: 'allow-for-workspace' }),
+      });
+      const res = await consentPOST(req);
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects invalid decision (400)', async () => {
+      const res = await consentPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/consent`, {
+          method: 'POST',
+          body: { workspace: workspaceDir, decision: 'maybe' },
+        }),
+      );
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /api/discovery/scan', () => {
+    it('returns 403 when consent absent', async () => {
+      // Create a session first.
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, { method: 'POST', body: { agentName: 'x' } }),
+      );
+      const { id } = (await readJson(created)) as { id: string };
+
+      const res = await scanPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+          method: 'POST',
+          body: { sessionId: id, workspaceRoot: workspaceDir },
+        }),
+      );
+      expect(res.status).toBe(403);
+      const body = (await readJson(res)) as { error: string };
+      expect(body.error).toBe('consent_required');
+    });
+
+    it('reads configs + applies redaction + writes localAgentDiscovery into report.json', async () => {
+      // Create session + finalize a stub report.
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, { method: 'POST', body: { agentName: 'x' } }),
+      );
+      const { id } = (await readJson(created)) as { id: string };
+      await reportPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}/report`, {
+          method: 'POST',
+          body: {
+            markdown: '# x',
+            json: {
+              summary: 's',
+              agentPurpose: 'p',
+              systems: [],
+              risks: [],
+              recommendations: [],
+              overallRiskLevel: 'low',
+            },
+          },
+        }),
+        { params: Promise.resolve({ id }) } as never,
+      );
+
+      // Write a fixture config inside the fake HOME.
+      await mkdir(join(homeDir, '.codex'), { recursive: true });
+      await writeFile(
+        join(homeDir, '.codex/config.toml'),
+        `[mcp_servers.slack]\nurl = "https://slack-mcp.example.com"\n[mcp_servers.slack.env]\nSLACK_BOT_TOKEN = "xoxb-secret-DO-NOT-LEAK"\n`,
+      );
+
+      // Grant consent.
+      await consentPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/consent`, {
+          method: 'POST',
+          body: { workspace: workspaceDir, decision: 'allow-for-workspace' },
+        }),
+      );
+
+      const res = await scanPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+          method: 'POST',
+          body: { sessionId: id, workspaceRoot: workspaceDir },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const result = (await readJson(res)) as {
+        agents: Array<{ runtime: string; mcpServers: Array<{ name: string }> }>;
+        findings: Array<{ kind: string }>;
+      };
+      expect(result.agents.length).toBe(1);
+      expect(result.agents[0].runtime).toBe('codex');
+      expect(result.agents[0].mcpServers[0].name).toBe('slack');
+
+      // Secret value never appears anywhere in the response.
+      expect(JSON.stringify(result)).not.toContain('xoxb-secret-DO-NOT-LEAK');
+    });
+
+    it('rejects when sessionId is invalid (400)', async () => {
+      await consentPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/consent`, {
+          method: 'POST',
+          body: { workspace: workspaceDir, decision: 'allow-for-workspace' },
+        }),
+      );
+      const res = await scanPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+          method: 'POST',
+          body: { sessionId: 'bogus', workspaceRoot: workspaceDir },
+        }),
+      );
+      expect(res.status).toBe(400);
+    });
+  });
+});

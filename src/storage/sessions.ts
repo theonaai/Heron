@@ -347,6 +347,42 @@ export async function writeReport(
   await writeMeta(id, next);
 }
 
+/**
+ * Merge a partial payload into the session's existing report.json. Used by
+ * the discovery scan route to append `localAgentDiscovery` without
+ * touching markdown or other top-level fields. Returns the merged JSON.
+ *
+ * If report.json doesn't exist yet, the patch becomes the new file
+ * verbatim. Callers should consider whether that's the intended
+ * semantics (discovery scan refuses to run without a finalized report).
+ */
+export async function patchReportJson(
+  id: string,
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const dir = await ensureSessionsDir();
+  await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
+  const path = join(dir, id, 'report.json');
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ENOENT or malformed — treat as empty.
+  }
+  const merged = { ...existing, ...patch };
+  await atomicWriteFile(path, JSON.stringify(merged, null, 2));
+  const next: StoredMeta = { ...meta, updatedAt: nowIso() };
+  await writeMeta(id, next);
+  return merged;
+}
+
 export async function softDeleteSession(id: string): Promise<void> {
   assertValidId(id);
   const meta = await readMeta(id);

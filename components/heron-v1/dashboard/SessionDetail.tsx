@@ -10,6 +10,7 @@ import {
 import TranscriptView from './TranscriptView';
 import ReportView from './ReportView';
 import DiffView from './DiffView';
+import DiscoveryConsentDialog from './DiscoveryConsentDialog';
 import { useSessions } from './DashboardChrome';
 
 import './report.css';
@@ -64,6 +65,14 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { sessions: allSessions } = useSessions();
+  const [consentOpen, setConsentOpen] = useState(false);
+
+  // AAP-53: callout appears only when the audit is complete AND no
+  // discovery scan has run yet. Once localAgentDiscovery is present on
+  // the report blob, the discovery section renders inside ReportView
+  // and the callout disappears.
+  const reportJson = liveSession.reportJson as { localAgentDiscovery?: unknown } | undefined;
+  const hasDiscovery = !!reportJson?.localAgentDiscovery;
 
   // AAP-52: subscribe to /api/audit/sessions/:id/stream while the
   // audit is still running. EventSource handles reconnect; the
@@ -289,11 +298,48 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
 
       <div className="body">
         {tab === 'report' && liveSession.report ? (
-          <ReportView
-            report={liveSession.report}
-            reportJson={liveSession.reportJson}
-            riskLevel={liveSession.riskLevel}
-          />
+          <>
+            {isComplete && !hasDiscovery && (
+              <div
+                style={{
+                  margin: '0 0 16px',
+                  padding: '14px 18px',
+                  background: '#fefce8',
+                  border: '1px solid #fde68a',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                  color: '#78350f',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <strong style={{ fontWeight: 600 }}>
+                    This audit is based on the agent&apos;s self-report.
+                  </strong>{' '}
+                  Run deterministic verification to read your agent&apos;s actual MCP config files
+                  and surface inconsistencies.
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ fontWeight: 600 }}
+                    onClick={() => setConsentOpen(true)}
+                  >
+                    Run verification
+                  </button>
+                </div>
+              </div>
+            )}
+            <ReportView
+              report={liveSession.report}
+              reportJson={liveSession.reportJson}
+              riskLevel={liveSession.riskLevel}
+            />
+          </>
         ) : tab === 'diff' && diff ? (
           <DiffView diff={diff} />
         ) : (
@@ -306,6 +352,37 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
           />
         )}
       </div>
+
+      <DiscoveryConsentDialog
+        sessionId={liveSession.id}
+        workspaceRoot={typeof window === 'undefined' ? '' : window.location.pathname}
+        open={consentOpen}
+        onClose={() => setConsentOpen(false)}
+        onComplete={() => {
+          // Poll briefly until localAgentDiscovery appears on the
+          // server-side blob, then re-render. ~3s window via 6 × 500ms.
+          let attempts = 0;
+          const tick = () => {
+            attempts += 1;
+            fetch(`/api/audit/sessions/${liveSession.id}`)
+              .then((r) => (r.ok ? r.json() : null))
+              .then((detail: AuditSessionDetail | null) => {
+                if (detail) {
+                  setLiveSession(detail);
+                  const reportJson = (detail.reportJson ?? {}) as {
+                    localAgentDiscovery?: unknown;
+                  };
+                  if (reportJson.localAgentDiscovery) return;
+                }
+                if (attempts < 6) setTimeout(tick, 500);
+              })
+              .catch(() => {
+                if (attempts < 6) setTimeout(tick, 500);
+              });
+          };
+          tick();
+        }}
+      />
     </div>
   );
 }
