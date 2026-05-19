@@ -785,6 +785,28 @@ npx heron-ai serve
 npm test
 ```
 
+### Browser UI (in progress)
+
+PR #33-A scaffolds a Next.js 15 + React 19 + Tailwind 3 frontend that will replace the vanilla-Node `heron serve` dashboard in PR #33-C. Today, the skeleton ships:
+
+- A loopback-only Next.js app router under `app/`, serving a placeholder landing page at `/`.
+- A local-files audit-session store under `~/.heron/sessions/` (override with `HERON_SESSIONS_DIR`).
+- Route handlers under `app/api/audit/sessions/...` matching the API surface the dashboard will consume.
+
+```bash
+# Dev server (Next.js, 127.0.0.1:3700)
+npm run dev
+
+# Build both CLI and frontend
+npm run build
+
+# Build only one or the other
+npm run build:cli
+npm run build:web
+```
+
+The CLI workflow (`heron scan`, `heron serve`, `heron diff`, ...) is unchanged in this stage.
+
 ## Contributing
 
 Issues and PRs welcome.
