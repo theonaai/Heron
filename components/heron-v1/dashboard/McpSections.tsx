@@ -24,6 +24,8 @@ import type {
   DeclaredDiffSection as DeclaredDiffData,
   OAuthScopesSection as OAuthScopesData,
   McpFindingSeverity,
+  LocalAgentDiscoverySection as LocalDiscoveryData,
+  LocalDiscoveryFinding,
 } from '@/lib/report-json';
 
 function severityToCssClass(s: McpFindingSeverity): string {
@@ -281,6 +283,206 @@ export function OAuthScopesSection({ scopes }: { scopes: OAuthScopesData }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Local discovery section (AAP-53) ────────────────────────────────────
+   Deterministic agent inventory: every MCP server Heron found on disk
+   with the user's consent, plus diff findings against the interview
+   transcript. Severity pills reuse the existing palette so the section
+   reads consistently with MCP-scan findings above. */
+function severityForKind(f: LocalDiscoveryFinding): McpFindingSeverity {
+  return f.severity;
+}
+
+export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscoveryData }) {
+  // Filter scannedPaths to those that actually produced an entry so the
+  // subtitle stays useful — listing 30 attempted-but-missing paths
+  // drowns out the few that mattered.
+  const readPaths = new Set<string>(discovery.agents.map((a) => a.configPath));
+
+  return (
+    <div id="sec-discovery">
+      <div className="h-section">
+        <span className="num">D1</span>
+        <span className="label">Local agent discovery — deterministic evidence</span>
+        <span className="meta">
+          {discovery.agents.length} {discovery.agents.length === 1 ? 'agent' : 'agents'} ·{' '}
+          {discovery.findings.length} {discovery.findings.length === 1 ? 'finding' : 'findings'}
+        </span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--r-ink-3)', margin: '0 0 14px', lineHeight: 1.55 }}>
+        Read from the following files with your consent:
+      </p>
+      {readPaths.size === 0 ? (
+        <p className="muted" style={{ fontSize: 12.5, fontStyle: 'italic', marginBottom: 14 }}>
+          No agent config files found on this machine.
+        </p>
+      ) : (
+        <ul style={{ margin: '0 0 14px 18px', padding: 0, fontSize: 12 }}>
+          {Array.from(readPaths).map((p) => (
+            <li key={p} className="mono" style={{ color: 'var(--r-ink-2)' }}>
+              {p}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Servers table */}
+      <div className="tier-label">
+        <span>Discovered MCP servers</span>
+        <span className="tier-count">
+          {discovery.agents.reduce((n, a) => n + a.mcpServers.length, 0)}
+        </span>
+      </div>
+      <div className="tbl-wrap" style={{ marginBottom: 18 }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 110 }}>Runtime</th>
+              <th style={{ width: 200 }}>Config path</th>
+              <th style={{ width: 140 }}>Server</th>
+              <th style={{ width: 90 }}>Transport</th>
+              <th>URL / command</th>
+              <th style={{ width: 140 }}>Tools allowed</th>
+              <th style={{ width: 90 }}>Credentials</th>
+              <th style={{ width: 180 }}>Redacted env keys</th>
+            </tr>
+          </thead>
+          <tbody>
+            {discovery.agents.flatMap((agent) =>
+              agent.mcpServers.map((s, idx) => (
+                <tr key={`${agent.configPath}::${s.name}::${idx}`}>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {agent.runtime}
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ fontSize: 11, color: 'var(--r-ink-3)', wordBreak: 'break-all' }}
+                    title={agent.configPath}
+                    onClick={() => {
+                      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                        navigator.clipboard.writeText(agent.configPath).catch(() => undefined);
+                      }
+                    }}
+                  >
+                    {agent.configPath}
+                  </td>
+                  <td style={{ fontWeight: 500, fontSize: 12.5 }}>{s.name}</td>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {s.transport}
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ fontSize: 11.5, color: 'var(--r-ink-2)', wordBreak: 'break-all' }}
+                  >
+                    {s.url
+                      ? s.url
+                      : [s.command, ...(s.args ?? [])].filter(Boolean).join(' ') || (
+                          <span className="muted">—</span>
+                        )}
+                  </td>
+                  <td>
+                    {s.toolsAllowed && s.toolsAllowed.length > 0 ? (
+                      <div className="row-tight" style={{ gap: 4, flexWrap: 'wrap' }}>
+                        {s.toolsAllowed.map((t) => (
+                          <span key={t} className="scope-chip" style={{ fontSize: 11 }}>
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`sev ${s.hasCredentials ? 'sev-high' : 'sev-info'}`}>
+                      {s.hasCredentials ? 'yes' : 'no'}
+                    </span>
+                  </td>
+                  <td>
+                    {s.redactedEnvKeys.length === 0 ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <div className="row-tight" style={{ gap: 4, flexWrap: 'wrap' }}>
+                        {s.redactedEnvKeys.map((k) => (
+                          <span
+                            key={k}
+                            className="mono"
+                            style={{
+                              fontSize: 10.5,
+                              padding: '2px 6px',
+                              background: 'var(--r-panel-muted, #f1f5f9)',
+                              borderRadius: 3,
+                            }}
+                            title="Key name only — value never read"
+                          >
+                            {k}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )),
+            )}
+            {discovery.agents.length === 0 && (
+              <tr>
+                <td colSpan={8} className="muted" style={{ fontStyle: 'italic' }}>
+                  No MCP servers discovered.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Findings table */}
+      <div className="tier-label">
+        <span>Findings — interview vs filesystem</span>
+        <span className="tier-count">{discovery.findings.length}</span>
+      </div>
+      {discovery.findings.length === 0 ? (
+        <p className="muted" style={{ fontSize: 12.5, fontStyle: 'italic' }}>
+          The interview transcript matched what was discovered on disk.
+        </p>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th style={{ width: 100 }}>Severity</th>
+                <th style={{ width: 170 }}>Kind</th>
+                <th style={{ width: 160 }}>Server</th>
+                <th style={{ width: 120 }}>Runtime</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {discovery.findings.map((f, idx) => (
+                <tr key={`${f.kind}-${f.serverName}-${idx}`}>
+                  <td>
+                    <span className={`sev ${severityToCssClass(severityForKind(f))}`}>
+                      {f.severity}
+                    </span>
+                  </td>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {f.kind}
+                  </td>
+                  <td style={{ fontWeight: 500 }}>{f.serverName}</td>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {f.runtime}
+                  </td>
+                  <td style={{ color: 'var(--r-ink-2)', fontSize: 12.5, lineHeight: 1.55 }}>
+                    {f.description}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
