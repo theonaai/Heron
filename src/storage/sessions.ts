@@ -36,7 +36,32 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export type AuditSessionStatus = 'interviewing' | 'analyzing' | 'complete' | 'error';
+export type AuditSessionStatus =
+  | 'interviewing'
+  | 'analyzing'
+  | 'complete'
+  | 'error'
+  /**
+   * AAP-55 — tool-call interview mode. The session is alive but waiting
+   * for the caller to invoke the `submit_answer` MCP tool with the next
+   * answer. Different from `interviewing` (which means an MCP sampling
+   * background loop is driving the questions).
+   */
+  | 'awaiting_answer';
+
+/** Which interview path is driving the session. Optional for legacy rows. */
+export type AuditSessionMode = 'sampling' | 'tool-call';
+
+/**
+ * AAP-55 — the question the planner is currently waiting on. Persisted
+ * so the tool-call path survives a process restart between
+ * `start_audit_session` and the first `submit_answer` call.
+ */
+export interface PendingQuestion {
+  text: string;
+  category: string;
+  index: number;
+}
 
 export interface AuditSession {
   id: string;
@@ -46,6 +71,10 @@ export interface AuditSession {
   agentName?: string;
   createdAt: string;
   updatedAt: string;
+  /** AAP-55 — undefined for legacy sampling rows persisted before this field existed. */
+  mode?: AuditSessionMode;
+  /** AAP-55 — non-null while the tool-call path is waiting for an answer. */
+  pendingQuestion?: PendingQuestion | null;
 }
 
 export interface TranscriptEntry {
@@ -59,6 +88,8 @@ export interface AuditSessionDetail extends AuditSession {
   report?: string;
   reportJson?: unknown;
   viewerRole?: 'owner' | 'grantee';
+  mode?: AuditSessionMode;
+  pendingQuestion?: PendingQuestion | null;
 }
 
 /**
@@ -74,6 +105,8 @@ export interface SessionMetaPatch {
 
 interface StoredMeta extends AuditSession {
   deletedAt?: string;
+  mode?: AuditSessionMode;
+  pendingQuestion?: PendingQuestion | null;
 }
 
 export const SESSION_ID_REGEX = /^sess-\d{8}-\d{6}-[a-z0-9]{6}$/;
@@ -199,20 +232,25 @@ async function readTranscript(id: string): Promise<TranscriptEntry[]> {
 // ─── Public API ───────────────────────────────────────────────────────────
 
 export async function createSession(
-  input: { agentName?: string } = {},
+  input: { agentName?: string; mode?: AuditSessionMode } = {},
 ): Promise<{ id: string }> {
   await ensureSessionsDir();
   const id = generateSessionId();
   const now = nowIso();
+  const initialStatus: AuditSessionStatus =
+    input.mode === 'tool-call' ? 'awaiting_answer' : 'interviewing';
   const meta: StoredMeta = {
     id,
-    status: 'interviewing',
+    status: initialStatus,
     questionsAsked: 0,
     createdAt: now,
     updatedAt: now,
   };
   if (input.agentName && input.agentName.length > 0) {
     meta.agentName = input.agentName;
+  }
+  if (input.mode !== undefined) {
+    meta.mode = input.mode;
   }
   await writeMeta(id, meta);
   return { id };
@@ -236,6 +274,8 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
   };
   if (meta.agentName !== undefined) detail.agentName = meta.agentName;
   if (meta.riskLevel !== undefined) detail.riskLevel = meta.riskLevel;
+  if (meta.mode !== undefined) detail.mode = meta.mode;
+  if (meta.pendingQuestion !== undefined) detail.pendingQuestion = meta.pendingQuestion;
   if (reportMd !== undefined) detail.report = reportMd;
   if (reportJson !== null) detail.reportJson = reportJson;
   return detail;
@@ -381,6 +421,74 @@ export async function patchReportJson(
   const next: StoredMeta = { ...meta, updatedAt: nowIso() };
   await writeMeta(id, next);
   return merged;
+}
+
+/**
+ * AAP-55 — record the question the tool-call planner is currently
+ * waiting on. The matching `submit_answer` MCP call consumes it via
+ * {@link submitToolCallAnswer}. No status flip — the session is already
+ * in `awaiting_answer` (or `interviewing` if a sampling path mid-flight
+ * decides to fall through, though we don't ship that combination today).
+ */
+export async function setPendingQuestion(
+  id: string,
+  question: PendingQuestion,
+): Promise<void> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const next: StoredMeta = {
+    ...meta,
+    pendingQuestion: question,
+    updatedAt: nowIso(),
+  };
+  await writeMeta(id, next);
+}
+
+/** Drop any pending tool-call question without otherwise altering meta. */
+export async function clearPendingQuestion(id: string): Promise<void> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const next: StoredMeta = {
+    ...meta,
+    pendingQuestion: null,
+    updatedAt: nowIso(),
+  };
+  await writeMeta(id, next);
+}
+
+/**
+ * AAP-55 — atomic "answer the currently-pending question" helper.
+ *
+ * Reads pendingQuestion off meta, appends a {category, question, answer}
+ * row to the transcript, clears pendingQuestion. Throws if there is no
+ * pending question — callers (i.e. the `submit_answer` MCP tool) must
+ * branch on that to return a clean "wrong state" error rather than
+ * silently dropping the answer.
+ */
+export async function submitToolCallAnswer(
+  id: string,
+  answer: string,
+): Promise<TranscriptEntry> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const pending = meta.pendingQuestion;
+  if (!pending) {
+    throw new Error(`No pending question for session ${id} — cannot submit answer.`);
+  }
+  const entry: TranscriptEntry = {
+    category: pending.category,
+    question: pending.text,
+    answer,
+  };
+  // appendTranscriptEntry handles transcript.jsonl write + bumps
+  // questionsAsked/updatedAt. We chain clearPendingQuestion after so
+  // the cursor is observably consistent on the next getSession read.
+  await appendTranscriptEntry(id, entry);
+  await clearPendingQuestion(id);
+  return entry;
 }
 
 export async function softDeleteSession(id: string): Promise<void> {
