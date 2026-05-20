@@ -321,13 +321,11 @@ function renderSystemCard(sys: SystemAssessment): string {
     rows.push(`| **Scopes needed** | ${needed.join(', ')} |`);
   }
 
-  // AAP-62 round-3 — strip repetitive lead-ins the analyzer LLM tends
-  // to prepend to each excessive-scope entry ("Unused in this audit
-  // task so far:", "Unused in this task:") and trailing source refs
-  // ("(A11)."). Same cleanup applied in the dashboard's React
-  // rendering at components/heron-v1/dashboard/ReportView.tsx
-  // (excessiveBySystem builder); the duplication is intentional —
-  // markdown export and dashboard render share schema, not code path.
+  // AAP-65 — the analyzer now produces clean, bare permission tokens via
+  // sanitizeAnalyzerOutput. We keep the regex strip below as defense-in-depth
+  // for old report.json blobs that were persisted BEFORE AAP-65 landed and
+  // still carry the "Unused in this audit task so far:" lead-in. New
+  // reports go through the analyzer's sanitization pass and arrive clean.
   const cleanScope = (s: string): string =>
     s
       .replace(/^\s*Unused in this(?:\s+(?:audit\s+task|task))?\s+so\s+far\s*:?\s*/i, '')
@@ -349,8 +347,20 @@ function renderSystemCard(sys: SystemAssessment): string {
   // Blast radius
   rows.push(`| **Blast radius** | ${sys.blastRadius} |`);
 
-  // Frequency
-  if (isProvided(sys.frequencyAndVolume)) {
+  // AAP-65: prefer the structured `frequency` object — render as key/value
+  // rows instead of a single prose paragraph. Fall back to the legacy
+  // `frequencyAndVolume` string for sessions persisted before AAP-65.
+  const freq = sys.frequency;
+  if (freq && (freq.runsLastWeek !== undefined || freq.callsPerRun || freq.batchSize !== undefined || freq.concurrency || freq.notes)) {
+    if (freq.runsLastWeek !== undefined) {
+      const label = freq.runsLastWeek === null ? '*not observable*' : String(freq.runsLastWeek);
+      rows.push(`| **Runs / week** | ${label} |`);
+    }
+    if (freq.callsPerRun) rows.push(`| **Calls / run** | ${freq.callsPerRun} |`);
+    if (freq.batchSize !== undefined) rows.push(`| **Batch size** | ${freq.batchSize} |`);
+    if (freq.concurrency) rows.push(`| **Concurrency** | ${freq.concurrency} |`);
+    if (freq.notes) rows.push(`| **Frequency notes** | ${freq.notes} |`);
+  } else if (isProvided(sys.frequencyAndVolume)) {
     rows.push(`| **Frequency** | ${sys.frequencyAndVolume} |`);
   } else {
     rows.push(`| **Frequency** | *${UNKNOWN_PLACEHOLDER}* |`);
@@ -365,7 +375,18 @@ function renderSystemCard(sys: SystemAssessment): string {
     rows.push(`| **Writes** | ${writesSummary} |`);
   }
 
-  return `### ${sys.systemId} — Risk: ${risk}
+  // AAP-65: source refs (extracted from inline (A3, A4) markers) get
+  // rendered as a footnote-style row.
+  if (sys.sources && sys.sources.length > 0) {
+    rows.push(`| **Sources** | ${sys.sources.join(', ')} |`);
+  }
+
+  // AAP-65: optional descriptive paragraph under the short title.
+  const descriptionLine = sys.systemDescription && sys.systemDescription.trim().length > 0
+    ? `\n\n_${sys.systemDescription.trim()}_`
+    : '';
+
+  return `### ${sys.systemId} — Risk: ${risk}${descriptionLine}
 
 | | |
 |---|---|

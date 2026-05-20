@@ -104,13 +104,31 @@ interface WriteOperation {
   volumePerDay: string;
 }
 
+/** AAP-65: structured frequency object replaces the prose
+ *  `frequencyAndVolume` string. Old field kept for back-compat with
+ *  sessions persisted before AAP-65. */
+interface FrequencyShape {
+  runsLastWeek?: number | null;
+  callsPerRun?: string;
+  batchSize?: number | string;
+  concurrency?: 'sequential' | 'parallel' | 'mixed' | 'unknown';
+  notes?: string;
+}
+
 interface SystemAssessment {
   systemId: string;
+  /** AAP-65: long descriptive prose moved out of systemId. */
+  systemDescription?: string;
+  /** AAP-65: extracted (A3, A4) source refs. */
+  sources?: string[];
   scopesRequested: string[];
   scopesNeeded: string[];
   scopesDelta: string[];
   dataSensitivity: string;
   blastRadius: string;
+  /** AAP-65: structured frequency object (preferred). */
+  frequency?: FrequencyShape;
+  /** Legacy prose string; kept for pre-AAP-65 sessions. */
   frequencyAndVolume: string;
   writeOperations: WriteOperation[];
 }
@@ -750,6 +768,15 @@ function SystemCard({ system }: { system: SystemAssessment }) {
             <span className="sys-name">{system.systemId}</span>
             {hasExcess && <span className="sev sev-high">excess scopes</span>}
           </div>
+          {/* AAP-65: long descriptive prose lives here, NOT in the title. */}
+          {system.systemDescription && system.systemDescription.trim().length > 0 && (
+            <div
+              className="sys-sub"
+              style={{ marginTop: 2, fontStyle: 'italic', color: 'var(--r-ink-3)' }}
+            >
+              {system.systemDescription}
+            </div>
+          )}
           <div className="sys-sub">
             {blastRadiusLabel[system.blastRadius] ?? system.blastRadius} ·{' '}
             {system.dataSensitivity || '—'}
@@ -758,12 +785,55 @@ function SystemCard({ system }: { system: SystemAssessment }) {
       </div>
 
       <div className="sys-card-body stack-md" style={{ fontSize: 12.5 }}>
-        {system.frequencyAndVolume && system.frequencyAndVolume !== 'NOT PROVIDED' && (
+        {/* AAP-65: prefer structured frequency table over prose paragraph.
+            Falls back to legacy prose for pre-AAP-65 sessions on disk. */}
+        {system.frequency &&
+        (system.frequency.runsLastWeek !== undefined ||
+          system.frequency.callsPerRun ||
+          system.frequency.batchSize !== undefined ||
+          system.frequency.concurrency ||
+          system.frequency.notes) ? (
+          <div>
+            <span className="field-label">Frequency</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', color: 'var(--r-ink-2)' }}>
+              {system.frequency.runsLastWeek !== undefined && (
+                <>
+                  <span style={{ color: 'var(--r-ink-4)' }}>Runs / week</span>
+                  <span>{system.frequency.runsLastWeek === null ? 'not observable' : system.frequency.runsLastWeek}</span>
+                </>
+              )}
+              {system.frequency.callsPerRun && (
+                <>
+                  <span style={{ color: 'var(--r-ink-4)' }}>Calls / run</span>
+                  <span>{system.frequency.callsPerRun}</span>
+                </>
+              )}
+              {system.frequency.batchSize !== undefined && (
+                <>
+                  <span style={{ color: 'var(--r-ink-4)' }}>Batch size</span>
+                  <span>{String(system.frequency.batchSize)}</span>
+                </>
+              )}
+              {system.frequency.concurrency && (
+                <>
+                  <span style={{ color: 'var(--r-ink-4)' }}>Concurrency</span>
+                  <span>{system.frequency.concurrency}</span>
+                </>
+              )}
+              {system.frequency.notes && (
+                <>
+                  <span style={{ color: 'var(--r-ink-4)' }}>Notes</span>
+                  <span>{system.frequency.notes}</span>
+                </>
+              )}
+            </div>
+          </div>
+        ) : system.frequencyAndVolume && system.frequencyAndVolume !== 'NOT PROVIDED' ? (
           <div>
             <span className="field-label">Frequency</span>
             <span style={{ color: 'var(--r-ink-2)' }}>{system.frequencyAndVolume}</span>
           </div>
-        )}
+        ) : null}
 
         {system.scopesRequested.length > 0 && (
           <div>
@@ -818,6 +888,17 @@ function SystemCard({ system }: { system: SystemAssessment }) {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* AAP-65: source refs extracted from inline (A3, A4) markers
+            render as a footnote-style row at the bottom of the card. */}
+        {system.sources && system.sources.length > 0 && (
+          <div style={{ marginTop: 4 }}>
+            <span className="field-label">Sources</span>
+            <span className="mono" style={{ color: 'var(--r-ink-4)', fontSize: 11.5 }}>
+              {system.sources.join(', ')}
+            </span>
           </div>
         )}
       </div>
@@ -1371,14 +1452,12 @@ export default function ReportView({
     for (const scope of sys.scopesDelta) {
       if (scope !== 'NOT PROVIDED') {
         if (!excessiveBySystem.has(sys.systemId)) excessiveBySystem.set(sys.systemId, []);
-        // AAP-62 round-3 — strip the repetitive "Unused in this audit
-        // task so far:" / "Unused in this task:" lead-in the analyzer
-        // LLM tends to prepend to every excessive-scope entry. The
-        // section header above already says "Permissions delta —
-        // excessive (revokable)"; repeating the same lead-in 7 times
-        // below it is pure noise. Also drop trailing source refs like
-        // " (A11)." that don't add information at this level of
-        // summary.
+        // AAP-65 — defense-in-depth. The analyzer's sanitizeAnalyzerOutput
+        // already strips this prefix at parse time, so new sessions arrive
+        // with clean bare scope tokens. But pre-AAP-65 sessions persisted
+        // on disk still carry "Unused in this audit task so far:" — we
+        // keep the regex strip here so old reports render cleanly too.
+        // Also drop trailing source refs like " (A11)." for the same reason.
         const cleaned = scope
           .replace(/^\s*Unused in this(?:\s+(?:audit\s+task|task))?\s+so\s+far\s*:?\s*/i, '')
           .replace(/^\s*Unused (?:in this )?(?:audit )?task(?:\s+so\s+far)?\s*:?\s*/i, '')
