@@ -121,7 +121,9 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     if (!r.ok) return;
     expect(r.value.status).toBe('complete');
     expect(r.value.report_markdown).toBe('# Final Report');
-    expect(r.value.risk_level).toBe('low');
+    // AAP-63 — without a Surface 2 discovery scan the verdict is
+    // 'unverified' regardless of the analyzer's self-reported risk.
+    expect(r.value.risk_level).toBe('unverified');
     expect(r.value.questions_asked).toBe(1);
     expect(analyze).toHaveBeenCalledTimes(1);
 
@@ -129,6 +131,12 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     expect(stored!.status).toBe('complete');
     expect(stored!.report).toBe('# Final Report');
     expect(stored!.pendingQuestion ?? null).toBeNull();
+    // AAP-63 — verdict fields persisted.
+    expect(stored!.verificationStatus).toBe('unverified');
+    expect(stored!.riskLevel).toBe('unverified');
+    // The analyzer JSON did not include `risks`, so interviewRiskLevel
+    // stays undefined here.
+    expect(stored!.deterministicRiskLevel).toBeUndefined();
   });
 
   it('errors when the session id is unknown', async () => {

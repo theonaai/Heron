@@ -39,6 +39,10 @@ import { runDiscovery } from '@/src/discovery/index';
 import { secretlintScrub } from '@/src/discovery/secretlint-scrub';
 import { getSession, patchReportJson } from '@/src/storage/sessions';
 import { publishSessionEvent } from '@/src/storage/session-events';
+import {
+  computeVerdictFromArtifacts,
+  persistVerdict,
+} from '@/src/verification/verdict-pipeline';
 
 export const dynamic = 'force-dynamic';
 
@@ -156,11 +160,30 @@ export async function POST(request: Request): Promise<Response> {
   const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
   const finalResult = { ...result, agents: scrubbedAgents, findings };
 
-  await patchReportJson(body.data.sessionId, { localAgentDiscovery: finalResult });
+  const merged = await patchReportJson(body.data.sessionId, {
+    localAgentDiscovery: finalResult,
+  });
+
+  // AAP-63 — Surface 2 evidence just landed. Re-run computeVerdict
+  // with the fresh discovery findings so the session meta flips from
+  // 'unverified' to 'partial' (or 'verified') and the dashboard pill
+  // moves from the yellow "VERIFICATION REQUIRED" to the deterministic
+  // risk level. `discoveryOverride` avoids the brief race window where
+  // patchReportJson has fsync'd but a stale getSession() snapshot is
+  // still in-flight.
+  const verdict = computeVerdictFromArtifacts({
+    reportJson: merged,
+    transcript: session.transcript,
+    discoveryOverride: finalResult,
+  });
+  await persistVerdict(body.data.sessionId, verdict);
 
   publishSessionEvent(body.data.sessionId, {
     type: 'status-change',
     status: 'complete',
+    ...(verdict.primaryRiskLevel
+      ? { riskLevel: verdict.primaryRiskLevel }
+      : {}),
   });
 
   await consumeAllowOnce(workspaceRoot);
