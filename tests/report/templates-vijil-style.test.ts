@@ -174,7 +174,9 @@ describe('AAP-64 — Verdict & Recommendations as cards (not numbered list)', ()
   it('does not emit any moss/copper/sage accent class names', () => {
     const md = renderMarkdownReport(baseReport());
     // Markdown carries no class names; this guard is informational.
-    expect(md).not.toMatch(/moss|copper|sage/i);
+    // Use word boundaries so legitimate words like "manage" (contains
+    // "sage" as a substring) don't trip the check.
+    expect(md).not.toMatch(/\b(moss|copper|sage)\b/i);
   });
 });
 
