@@ -23,6 +23,27 @@ _(none)_
 _(none)_
 `;
 
+/**
+ * AAP-56: the analyzer no longer fabricates a clean-looking fallback when
+ * the LLM returns garbage. These compare tests used to lean on that fallback
+ * because their mock LLM always returned MOCK_DIFF, which JSON.parse never
+ * accepted — the old code persisted a "medium / APPROVE WITH CONDITIONS"
+ * report anyway and the session reached `complete`. With the new explicit
+ * failure semantics the session would land on `analysis_failed`, so we now
+ * dispatch the mock by prompt content: analyzer prompt → valid JSON,
+ * everything else (diff renderer) → MOCK_DIFF.
+ */
+const MOCK_ANALYSIS_JSON = JSON.stringify({
+  summary: 'Mock audit summary',
+  agentPurpose: 'Test agent',
+  agentTrigger: 'manual',
+  systems: [],
+  risks: [],
+  recommendations: [],
+  recommendation: 'APPROVE',
+  overallRiskLevel: 'low',
+});
+
 describe('compare endpoints', () => {
   let tempDir: string;
   let baseUrl: string;
@@ -32,7 +53,15 @@ describe('compare endpoints', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'heron-compare-test-'));
 
     const mockLLM: LLMClient = {
-      chat: vi.fn().mockResolvedValue(MOCK_DIFF),
+      chat: vi.fn(async (systemPrompt: string) => {
+        // AAP-56: dispatch by prompt — analyzer needs JSON, diff renderer
+        // wants markdown. The old all-MOCK_DIFF mock relied on the analyzer
+        // silently masking parse failures with a fake-clean report.
+        if (systemPrompt.includes('AI security analyst')) {
+          return MOCK_ANALYSIS_JSON;
+        }
+        return MOCK_DIFF;
+      }),
     };
     vi.spyOn(llmModule, 'createLLMClient').mockResolvedValue(mockLLM);
 

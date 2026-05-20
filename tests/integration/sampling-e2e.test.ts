@@ -94,8 +94,12 @@ describe('start_audit_session — MCP sampling E2E', () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     // ── 2. Build the server with stub LLM-backed runners ──────────────
+    // AAP-56: analyzeAndRenderReport now returns a discriminated outcome.
+    // Always return the success branch here — the failure branch is
+    // exercised by tests/server/start-audit-session.test.ts.
     const fakeAnalyze = async (params: { transcript: QAPair[]; sessionId: string; agentName?: string }) => {
       return {
+        ok: true as const,
         markdown: `# Audit Report\n\nSession: ${params.sessionId}\nAgent: ${params.agentName ?? 'unknown'}\nQuestions: ${params.transcript.length}\n`,
         json: {
           overallRiskLevel: 'medium',

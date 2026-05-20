@@ -20,7 +20,7 @@ import {
   createQuestionPlanner,
   type QuestionPlanner,
 } from '../interview/question-planner.js';
-import { generateReport } from '../report/generator.js';
+import { generateReportOutcome } from '../report/generator.js';
 import type {
   SamplingInterviewRunner,
   AnalyzeAndRenderReport,
@@ -84,14 +84,27 @@ export async function buildSamplingDeps(
       id: sessionId,
     };
     const target = agentName ?? 'mcp-sampling-client';
-    const { report, reportJson } = await generateReport(interviewSession, llmClient, {
+    // AAP-56: branch on outcome rather than fall through to a fake-clean
+    // report. The MCP server handler (start_audit_session) consumes both
+    // branches: success path → writeReport, failure path → writeAnalysisFailure.
+    const outcome = await generateReportOutcome(interviewSession, llmClient, {
       target,
       format: 'markdown',
     });
+    if (!outcome.ok) {
+      return {
+        ok: false,
+        markdown: outcome.report,
+        analysisError: outcome.analysisError,
+      };
+    }
     return {
-      markdown: report,
-      json: reportJson,
-      ...(reportJson.overallRiskLevel ? { riskLevel: reportJson.overallRiskLevel } : {}),
+      ok: true,
+      markdown: outcome.report,
+      json: outcome.reportJson,
+      ...(outcome.reportJson.overallRiskLevel
+        ? { riskLevel: outcome.reportJson.overallRiskLevel }
+        : {}),
     };
   };
 

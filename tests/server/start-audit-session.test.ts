@@ -103,6 +103,7 @@ describe('HeronMCPServer.start_audit_session', () => {
     });
 
     const fakeAnalyze = vi.fn(async () => ({
+      ok: true as const,
       markdown: '# Fake Report\nrisk: medium',
       json: { overallRiskLevel: 'medium', risks: [], dataQuality: { score: 80 } },
       riskLevel: 'medium' as string,
@@ -177,6 +178,84 @@ describe('HeronMCPServer.start_audit_session', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe('tool_failure');
+  });
+
+  // ─── AAP-56 — failure-mode propagation ──────────────────────────────────
+  it('persists analysis_failed when analyzeAndRenderReport returns { ok: false }', async () => {
+    const fakeRunInterview = vi.fn(async (params: {
+      sessionId: string;
+      sampler: { createMessage: (args: unknown) => Promise<unknown> };
+    }) => {
+      await params.sampler.createMessage({
+        messages: [{ role: 'user', content: { type: 'text', text: 'probe' } }],
+        maxTokens: 16,
+      });
+      const transcript = [
+        { category: 'identity', question: 'Q1', answer: 'A1' },
+      ];
+      for (const entry of transcript) {
+        await appendTranscriptEntry(params.sessionId, entry);
+      }
+      return { transcript, questionsAsked: 1 };
+    });
+
+    const occurredAt = '2026-05-20T03:34:03.123Z';
+    const fakeAnalyze = vi.fn(async () => ({
+      ok: false as const,
+      markdown:
+        '# Agent Access Audit — REPORT GENERATION FAILED\n\nverbatim transcript',
+      analysisError: {
+        reason: 'llm_unreachable' as const,
+        message: '502 status code (no body)',
+        attemptCount: 2,
+        occurredAt,
+      },
+    }));
+
+    const server = new HeronMCPServer({
+      auditPipeline: noopPipeline,
+      differ: noopDiffer,
+      runSamplingInterview: fakeRunInterview,
+      analyzeAndRenderReport: fakeAnalyze,
+    });
+    const fakeMcpServer = {
+      createMessage: vi.fn(async () => ({
+        role: 'assistant',
+        content: { type: 'text', text: 'ok' },
+        model: 'fake',
+        stopReason: 'endTurn',
+      })),
+    };
+    server.attachSamplingServer(fakeMcpServer as never);
+
+    const { ctx } = makeCtx();
+    const result = await server.invoke('start_audit_session', { agent_name: 'codex.app' }, ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const sessionId = result.value.session_id;
+    let stored = await getSession(sessionId);
+    const start = Date.now();
+    while ((stored?.status !== 'analysis_failed') && Date.now() - start < 5000) {
+      await new Promise((r) => setTimeout(r, 10));
+      stored = await getSession(sessionId);
+    }
+
+    expect(fakeAnalyze).toHaveBeenCalledTimes(1);
+    expect(stored).not.toBeNull();
+    expect(stored!.status).toBe('analysis_failed');
+    expect(stored!.report).toMatch(/REPORT GENERATION FAILED/);
+    expect(stored!.analysisError).toBeDefined();
+    expect(stored!.analysisError!.reason).toBe('llm_unreachable');
+    expect(stored!.analysisError!.message).toContain('502');
+    expect(stored!.analysisError!.attemptCount).toBe(2);
+    expect(stored!.analysisError!.occurredAt).toBe(occurredAt);
+    // Critically: no riskLevel + no fake-clean report.json contents.
+    expect(stored!.riskLevel).toBeUndefined();
+    expect(stored!.reportJson).toBeUndefined();
+    // The misleading copy from the old buildFallbackAnalysis must NOT appear.
+    expect(stored!.report).not.toContain('APPROVE WITH CONDITIONS');
+    expect(stored!.report).not.toContain('LOW RISK');
   });
 
   it('rejects invalid input shapes', async () => {
