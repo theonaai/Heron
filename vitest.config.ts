@@ -18,5 +18,10 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
     globals: true,
+    // §7.4 / AAP-59 — point HERON_SESSIONS_DIR, HERON_CREDENTIALS_PATH,
+    // HERON_DISCOVERY_HOME at per-process mktemp paths so tests never
+    // touch the user's real ~/.heron/ dashboard data. Per-test
+    // overrides still win.
+    setupFiles: ['./tests/setup.ts'],
   },
 });
