@@ -26,6 +26,7 @@ import type {
   McpFindingSeverity,
   LocalAgentDiscoverySection as LocalDiscoveryData,
   LocalDiscoveryFinding,
+  LocalDiscoveredCapability,
 } from '@/lib/report-json';
 
 function severityToCssClass(s: McpFindingSeverity): string {
@@ -438,6 +439,12 @@ export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscovery
         </table>
       </div>
 
+      {/* AAP-58 — Plugins / skills table */}
+      <PluginsSkillsTable discovery={discovery} />
+
+      {/* AAP-58 — Detected credential keys table */}
+      <AuthCredentialsTable discovery={discovery} />
+
       {/* Findings table */}
       <div className="tier-label">
         <span>Findings — interview vs filesystem</span>
@@ -484,5 +491,137 @@ export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscovery
         </div>
       )}
     </div>
+  );
+}
+
+/* ── AAP-58 — Plugins / skills + auth-credential sub-tables ─────────────────
+   Rendered as siblings of the existing MCP servers table inside
+   LocalDiscoverySection. Empty when the capability list is empty so
+   sessions with only MCP servers (or no discovery at all) render
+   unchanged from the AAP-53 baseline. */
+function collectCapabilities(
+  discovery: LocalDiscoveryData,
+): LocalDiscoveredCapability[] {
+  const out: LocalDiscoveredCapability[] = [];
+  for (const a of discovery.agents) {
+    if (!a.capabilities) continue;
+    for (const c of a.capabilities) out.push(c);
+  }
+  return out;
+}
+
+function PluginsSkillsTable({ discovery }: { discovery: LocalDiscoveryData }) {
+  const caps = collectCapabilities(discovery).filter(
+    (c) => c.kind === 'plugin' || c.kind === 'skill',
+  );
+  if (caps.length === 0) return null;
+  return (
+    <>
+      <div className="tier-label">
+        <span>Discovered plugins / skills</span>
+        <span className="tier-count">{caps.length}</span>
+      </div>
+      <div className="tbl-wrap" style={{ marginBottom: 18 }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 110 }}>Runtime</th>
+              <th style={{ width: 220 }}>Config path</th>
+              <th style={{ width: 80 }}>Type</th>
+              <th>Name</th>
+              <th style={{ width: 90 }}>Enabled</th>
+            </tr>
+          </thead>
+          <tbody>
+            {caps.map((c, idx) => {
+              const display = c.kind === 'plugin' ? c.name : c.path;
+              return (
+                <tr key={`${c.kind}-${c.configPath}-${idx}`}>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {c.runtime}
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ fontSize: 11, color: 'var(--r-ink-3)', wordBreak: 'break-all' }}
+                    title={c.configPath}
+                  >
+                    {c.configPath}
+                  </td>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {c.kind}
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ fontSize: 12, wordBreak: 'break-all' }}
+                    title={display}
+                  >
+                    {display}
+                  </td>
+                  <td>
+                    <span className={`sev ${c.enabled ? 'sev-info' : 'sev-low'}`}>
+                      {c.enabled ? 'yes' : 'no'}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function AuthCredentialsTable({ discovery }: { discovery: LocalDiscoveryData }) {
+  const creds = collectCapabilities(discovery).filter(
+    (c): c is Extract<LocalDiscoveredCapability, { kind: 'auth_credential' }> =>
+      c.kind === 'auth_credential',
+  );
+  if (creds.length === 0) return null;
+  return (
+    <>
+      <div className="tier-label">
+        <span>Detected credential keys — names only, never values</span>
+        <span className="tier-count">{creds.length}</span>
+      </div>
+      <div className="tbl-wrap" style={{ marginBottom: 18 }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 110 }}>Runtime</th>
+              <th style={{ width: 220 }}>Config path</th>
+              <th>Key name</th>
+              <th style={{ width: 110 }}>Shape</th>
+            </tr>
+          </thead>
+          <tbody>
+            {creds.map((c, idx) => (
+              <tr key={`auth-${c.configPath}-${c.provider}-${idx}`}>
+                <td className="mono" style={{ fontSize: 11.5 }}>
+                  {c.runtime}
+                </td>
+                <td
+                  className="mono"
+                  style={{ fontSize: 11, color: 'var(--r-ink-3)', wordBreak: 'break-all' }}
+                  title={c.configPath}
+                >
+                  {c.configPath}
+                </td>
+                <td
+                  className="mono"
+                  style={{ fontSize: 12, wordBreak: 'break-all' }}
+                  title={c.provider}
+                >
+                  {c.provider}
+                </td>
+                <td className="mono" style={{ fontSize: 11.5 }}>
+                  {c.valueShape ?? (c.hasValue ? 'unknown' : '—')}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
