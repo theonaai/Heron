@@ -218,6 +218,7 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
       sessionId: string;
       agentName?: string;
     }) => ({
+      ok: true as const,
       markdown: `# Report\n${params.sessionId}\n${params.transcript.length} entries\n`,
       json: { overallRiskLevel: 'low', risks: [], summary: 'stub' },
       riskLevel: 'low' as string,
