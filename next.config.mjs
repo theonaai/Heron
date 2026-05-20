@@ -21,7 +21,34 @@ const nextConfig = {
   // The CLI re-uses some `src/` modules that import Node-only APIs (fs,
   // crypto, child_process). Mark them as external so Next.js does not try
   // to bundle them into the edge runtime when route handlers import them.
-  serverExternalPackages: ['@modelcontextprotocol/sdk'],
+  //
+  // The @secretlint/* entries (AAP-57) fix a standalone-build regression:
+  // `src/discovery/secretlint-scrub.ts` only statically imports
+  // `@secretlint/node`, which then dynamically loads its rule modules
+  // (preset-recommend + secretlint-rule-pattern) by name via
+  // `require.resolve(...)` at runtime. Next.js's static tracer can't
+  // follow those dynamic requires, so the rule packages were not
+  // copied into `.next/standalone/node_modules/@secretlint/`. Listing
+  // them as serverExternalPackages keeps them out of the webpack
+  // bundle (correct — they must be required from node_modules at
+  // runtime) AND triggers Next to include them in the standalone
+  // node_modules tree. Without this fix, the discovery
+  // `/api/discovery/scan` route throws
+  // `Cannot find module 'file:///.../module/index.js'` and returns 500
+  // to the dashboard "Run verification" button.
+  serverExternalPackages: [
+    '@modelcontextprotocol/sdk',
+    '@secretlint/node',
+    '@secretlint/secretlint-rule-preset-recommend',
+    '@secretlint/secretlint-rule-pattern',
+  ],
+  // Safety net: even with serverExternalPackages declared, dynamic
+  // resolve patterns can still escape Next's tracer. Glob-include the
+  // entire @secretlint scope for the discovery scan route so every
+  // sub-package on disk is copied verbatim into standalone.
+  outputFileTracingIncludes: {
+    '/api/discovery/scan': ['./node_modules/@secretlint/**/*'],
+  },
   // The src/ tree compiles to ESM under the CLI tsconfig (NodeNext, which
   // requires explicit .js suffixes on relative imports). Next.js's webpack
   // resolver doesn't know about that convention, so we wire an alias so
