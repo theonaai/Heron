@@ -38,15 +38,43 @@ export interface AnalysisErrorRecord {
   occurredAt: string;
 }
 
+/**
+ * AAP-63 — per-session Surface 2 verification status.
+ *
+ *   - `unverified`: only the LLM interview ran.
+ *   - `partial`:    at least one Surface 2 source ran (e.g. filesystem
+ *                   discovery) but not all of them.
+ *   - `verified`:   every applicable Surface 2 source ran cleanly.
+ *
+ * Legacy sessions persisted before AAP-63 lack this field; UI consumers
+ * MUST tolerate `undefined` and render the legacy `riskLevel` as
+ * "self-reported risk" alongside a "verification status: unknown" badge.
+ */
+export type VerificationStatus = 'unverified' | 'partial' | 'verified';
+
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
 export interface AuditSession {
   id: string;
   status: AuditSessionStatus;
   questionsAsked: number;
+  /**
+   * AAP-63: legacy alias of `primaryRiskLevel` — kept for back-compat
+   * with the markdown report download and comparison export paths.
+   * May be the new sentinel `'unverified'` for post-AAP-63 sessions
+   * that haven't had a Surface 2 scan yet.
+   */
   riskLevel?: string;
   agentName?: string;
   createdAt: string;
   updatedAt: string;
   analysisError?: AnalysisErrorRecord | null;
+  /** AAP-63 — Surface 2 status. */
+  verificationStatus?: VerificationStatus;
+  /** AAP-63 — Surface 2 risk level. */
+  deterministicRiskLevel?: RiskLevel;
+  /** AAP-63 — Surface 1 (LLM interview) risk level. */
+  interviewRiskLevel?: RiskLevel;
 }
 
 export interface AuditSessionDetail extends AuditSession {

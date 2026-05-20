@@ -15,6 +15,8 @@ import type {
   VerificationVerdict,
 } from '../verification/types.js';
 import { renderFrameworkMappingSection } from '../verification/frameworks/render.js';
+import type { Verdict } from '../verification/verdict.js';
+import type { DiscoveryFinding } from '../discovery/types.js';
 
 // ─── AAP-43 P1 #5: overall regulatory status ──────────────────────────────
 
@@ -50,13 +52,52 @@ function summarizeOverallStatus(c: StructuredCompliance): string {
 
 // isBusinessSystem lives in src/util/systems.ts (shared with analyzer + mapper).
 
-export function renderMarkdownReport(report: AuditReport): string {
+/**
+ * AAP-63 — optional Surface 2 context for `renderMarkdownReport`.
+ *
+ * When the caller has a computed `Verdict` and the discovery scan
+ * artefacts on hand, the renderer emits two extra sections — a
+ * "Verification Status" block at the top and a "Discrepancies" block
+ * after it — and splits the Findings section into
+ * "Deterministic Findings (Surface 2)" + "Self-Reported Findings
+ * (Surface 1)". When this context is absent (the initial markdown
+ * write happens BEFORE the user-gated discovery scan), the renderer
+ * keeps the legacy single-section layout for back-compat AND emits a
+ * minimal "verification not yet run" callout so a downstream reader
+ * still sees the Surface 2 gap.
+ */
+export interface RenderMarkdownReportContext {
+  verdict?: Verdict;
+  discoveryFindings?: DiscoveryFinding[];
+  /** Optional per-source verification status for the report header. */
+  discoveryStatus?: 'ran' | 'skipped' | 'failed';
+  oauthIntrospectionStatus?: Array<{ provider: string; status: 'ran' | 'skipped' | 'failed' }>;
+}
+
+export function renderMarkdownReport(
+  report: AuditReport,
+  context: RenderMarkdownReportContext = {},
+): string {
+  const verdict = context.verdict;
+  const discoveryFindings = context.discoveryFindings ?? [];
+
   const sections = [
-    renderHeader(report),
+    renderHeader(report, verdict),
+    // AAP-63 — Verification Status sits near the top so an auditor sees
+    // "deterministic or not?" before reading any findings.
+    renderVerificationStatusSection(verdict, context),
     renderScopeAndMethodology(report),
-    renderSummary(report),
+    renderSummary(report, verdict),
     renderAgentProfile(report),
-    renderFindings(report.risks, report.compliance as StructuredCompliance | undefined),
+    // AAP-63 — discrepancies between Surface 1 claims and Surface 2
+    // evidence appear above the findings tables so the reviewer is
+    // primed to read findings critically.
+    renderDiscrepanciesSection(verdict),
+    renderFindingsSplit(
+      report.risks,
+      report.compliance as StructuredCompliance | undefined,
+      discoveryFindings,
+    ),
     renderSystems(report.systems),
     renderPositiveFindings(report),
     renderVerdict(report),
@@ -71,13 +112,28 @@ export function renderMarkdownReport(report: AuditReport): string {
 
 // ─── Header ──────────────────────────────────────────────────────────────────
 
-function renderHeader(report: AuditReport): string {
+function renderHeader(report: AuditReport, verdict?: Verdict): string {
   // Reviewer feedback (2026-04-25): the prior `!!` exclamation marker on
   // HIGH/CRITICAL headers ("Risk Level: HIGH !!") was called out as
   // "not a serious-document tone" — CISOs do not want excitement in audit
   // headers. The `**Risk Level**: HIGH` label itself is already strong;
   // the riskIcon adds nothing and undercuts credibility. Dropped.
   const dqPart = report.dataQuality ? ` | **Data Quality**: ${report.dataQuality.score}/100` : '';
+
+  // AAP-63 — the header risk level now comes from the verdict's
+  // primaryRiskLevel when supplied. When no verdict is attached we
+  // fall back to the legacy `overallRiskLevel` from the analyzer for
+  // back-compat (e.g. the existing report golden tests that don't
+  // thread a verdict in). The label is hedged with "self-reported"
+  // when the primary verdict is `'unverified'`.
+  const primaryRisk =
+    verdict?.primaryRiskLevel ?? report.overallRiskLevel;
+  const riskLine =
+    verdict && verdict.primaryRiskSource !== 'no-evidence'
+      ? `**Risk Level (Verified)**: ${primaryRisk.toUpperCase()}`
+      : verdict
+        ? `**Risk Level**: UNVERIFIED (self-reported only — run discovery to verify)`
+        : `**Risk Level**: ${report.overallRiskLevel.toUpperCase()}`;
 
   // AAP-43 P1 #5: single overall regulatory status label (replaces
   // EU/US/UK matrix). The matrix implied we'd analyzed each jurisdiction,
@@ -92,7 +148,7 @@ function renderHeader(report: AuditReport): string {
 
   return `# Agent Access Audit Report
 
-**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | **Risk Level**: ${report.overallRiskLevel.toUpperCase()}${dqPart}${regLine}`;
+**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${riskLine}${dqPart}${regLine}`;
 }
 
 // ─── Scope & Methodology ────────────────────────────────────────────────────
@@ -143,7 +199,7 @@ ${rows.join('\n')}`;
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
-function renderSummary(report: AuditReport): string {
+function renderSummary(report: AuditReport, verdict?: Verdict): string {
   // Dashboard: finding counts by severity
   const allRisks = report.risks;
   const countBySeverity = (sev: string) => allRisks.filter(r => r.severity === sev).length;
@@ -161,9 +217,27 @@ function renderSummary(report: AuditReport): string {
 
   const systemCount = report.systems.filter(isBusinessSystem).length;
 
-  const dashboard = `| Risk | Systems | Findings |
+  // AAP-63 — the executive-summary dashboard now carries TWO risk
+  // columns: "Verified Risk" (deterministic Surface 2) and
+  // "Self-reported Risk" (LLM Surface 1, italicised). When no verdict
+  // is attached we fall back to the legacy single-column layout.
+  let dashboard: string;
+  if (verdict) {
+    const verifiedCell =
+      verdict.primaryRiskSource === 'deterministic'
+        ? `**${(verdict.deterministicRiskLevel ?? 'unknown').toUpperCase()}**`
+        : '**UNVERIFIED**';
+    const selfReportedCell = verdict.interviewRiskLevel
+      ? `_${verdict.interviewRiskLevel.toUpperCase()} (self-report only)_`
+      : '_n/a_';
+    dashboard = `| Verified Risk | Self-reported Risk | Systems | Findings |
+|------|------|---------|----------|
+| ${verifiedCell} | ${selfReportedCell} | ${systemCount} | ${findingsParts.join(', ')} |`;
+  } else {
+    dashboard = `| Risk | Systems | Findings |
 |------|---------|----------|
 | **${report.overallRiskLevel.toUpperCase()}** | ${systemCount} | ${findingsParts.join(', ')} |`;
+  }
 
   let methodology = '';
   if (report.compliance) {
@@ -388,6 +462,111 @@ ${tableHeader}
 ${rest}
 
 </details>`;
+}
+
+// ─── AAP-63 — Verification Status, Discrepancies, Split Findings ────────────
+
+/**
+ * Render the Verification Status section explaining which Surface 2
+ * sources ran on this audit. Always emitted: when no verdict / discovery
+ * context is attached we render a minimal "not yet run" stub so the
+ * report makes the gap explicit instead of hiding it.
+ */
+function renderVerificationStatusSection(
+  verdict: Verdict | undefined,
+  context: RenderMarkdownReportContext,
+): string {
+  const status = verdict?.status ?? 'unverified';
+  const lines: string[] = ['## Verification Status', ''];
+  if (status === 'unverified') {
+    lines.push(
+      '**Verification status:** _UNVERIFIED — Surface 2 deterministic sources have not run yet._',
+    );
+    lines.push('');
+    lines.push(
+      'The risk verdict above is the agent\'s **self-report only**. Heron strategy v3.0 §3 requires every claim to be verifiable from a deterministic source of truth. Run the discovery scan from the dashboard to read the agent\'s actual config files and re-derive the verdict.',
+    );
+  } else {
+    lines.push(`**Verification status:** ${status.toUpperCase()}`);
+    lines.push('');
+    lines.push('| Source | Status |');
+    lines.push('| --- | --- |');
+    const discoveryStatus = context.discoveryStatus ?? 'ran';
+    lines.push(`| Filesystem discovery (Surface 2) | ${discoveryStatus} |`);
+    const oauthRows = context.oauthIntrospectionStatus ?? [];
+    if (oauthRows.length === 0) {
+      lines.push(`| OAuth introspection (Surface 2) | skipped |`);
+    } else {
+      for (const r of oauthRows) {
+        lines.push(`| OAuth introspection — ${escapeCell(r.provider)} | ${r.status} |`);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Render the Discrepancies block. Returns the empty string when there
+ * is no verdict or no discrepancies — the upstream `sections.filter`
+ * drops empties so the section disappears entirely in that case.
+ */
+function renderDiscrepanciesSection(verdict: Verdict | undefined): string {
+  if (!verdict || verdict.discrepancies.length === 0) return '';
+  const lines: string[] = ['## Discrepancies', ''];
+  lines.push(
+    'Surface 2 evidence contradicts a self-reported claim from the interview. Each row pairs the interview claim with the deterministic finding so a reviewer can decide whether the agent was misconfigured, misunderstood, or misrepresenting its own behaviour.',
+  );
+  lines.push('');
+  lines.push('| Severity | Interview claim | Surface 2 evidence |');
+  lines.push('| --- | --- | --- |');
+  for (const d of verdict.discrepancies) {
+    lines.push(
+      `| ${d.severity.toUpperCase()} | ${escapeCell(d.claim)} | ${escapeCell(d.evidence)} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Split Findings section: Deterministic (Surface 2) above
+ * Self-Reported (Surface 1). When no Surface 2 findings are supplied
+ * the deterministic subsection still appears with an empty-state line
+ * so the structural promise of the report ("deterministic comes
+ * first") remains visible.
+ */
+function renderFindingsSplit(
+  risks: Risk[],
+  compliance: StructuredCompliance | undefined,
+  discoveryFindings: DiscoveryFinding[],
+): string {
+  const lines: string[] = ['## Findings', ''];
+
+  // ── Deterministic (Surface 2) ────────────────────────────────────
+  lines.push('### Deterministic Findings (Surface 2)');
+  lines.push('');
+  if (discoveryFindings.length === 0) {
+    lines.push('_No deterministic findings — either the discovery scan has not run yet, or it ran and found no inconsistencies. Re-run discovery if the agent configuration has changed._');
+  } else {
+    lines.push('| Kind | Severity | Server / Runtime | Description |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const f of discoveryFindings) {
+      lines.push(
+        `| ${escapeCell(f.kind)} | ${f.severity} | ${escapeCell(f.serverName)} / ${escapeCell(f.runtime)} | ${escapeCell(f.description)} |`,
+      );
+    }
+  }
+  lines.push('');
+
+  // ── Self-Reported (Surface 1) ────────────────────────────────────
+  lines.push('### Self-Reported Findings (Surface 1)');
+  lines.push('');
+  lines.push(
+    '_These findings are derived from the agent\'s interview answers and should be verified against Surface 2 evidence. They are supplementary narrative, not the primary verdict._',
+  );
+  lines.push('');
+  lines.push(renderFindings(risks, compliance).replace(/^## Findings\n\n/, ''));
+
+  return lines.join('\n');
 }
 
 // ─── Positive Findings ─────────────────────────────────────────────────────
