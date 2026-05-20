@@ -42,13 +42,20 @@ import type {
   RequestContext,
   StartAuditSessionInput,
   StartAuditSessionOutput,
+  SubmitAnswerInput,
+  SubmitAnswerOutput,
 } from './mcp-types.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { QAPair } from '../report/types.js';
+import type { QuestionPlanner } from '../interview/question-planner.js';
 import {
   createSession,
+  getSession,
+  setPendingQuestion,
+  submitToolCallAnswer,
   updateSessionMeta,
   writeReport,
+  type AuditSessionStatus,
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
 
@@ -78,6 +85,17 @@ export interface ReportStore {
 /** Diff two reports and return markdown. Backed by `src/diff/differ.ts`. */
 export interface ReportDiffer {
   diff(a: StoredReport, b: StoredReport): Promise<string>;
+}
+
+/**
+ * Subset of the SDK `Server` we actually depend on. We need
+ * `createMessage` for sampling and `getClientCapabilities` for AAP-55
+ * capability-driven branching. Both are optional at the type level so
+ * tests can supply minimal stubs.
+ */
+export interface SamplingServerLike {
+  createMessage: Server['createMessage'];
+  getClientCapabilities?: Server['getClientCapabilities'];
 }
 
 /**
@@ -129,6 +147,12 @@ export interface HeronMCPServerDeps {
   runSamplingInterview?: SamplingInterviewRunner;
   /** AAP-52 — transcript → report renderer. Default wired from `src/server/sampling-factory.ts`. */
   analyzeAndRenderReport?: AnalyzeAndRenderReport;
+  /**
+   * AAP-55 — question planner for the tool-call interview path. Default
+   * wired from `src/server/sampling-factory.ts`. Required when the
+   * server expects to serve non-sampling clients (Codex CLI / Codex.app).
+   */
+  questionPlanner?: QuestionPlanner;
 }
 
 /**
@@ -230,10 +254,17 @@ const COMPARE_REPORTS_DEF: ToolDefinition = {
 const START_AUDIT_SESSION_DEF: ToolDefinition = {
   name: 'start_audit_session',
   description:
-    'Heron audits the calling agent over MCP sampling. The agent under audit ' +
-    'is the MCP client that invokes this tool; Heron asks 9+ compliance ' +
-    'questions back through sampling/createMessage and returns the rendered ' +
-    'report markdown plus a session id for the dashboard.',
+    'Audit the calling MCP agent. Heron asks 9+ compliance questions about what the agent ' +
+    'does, what data it touches, and what permissions it holds. The response includes a ' +
+    '`status` field that tells the caller which interview mode is active:\n' +
+    '- `interviewing`: the client declared MCP sampling capability. Heron will ask each ' +
+    'question via sampling/createMessage in the background. The caller can poll progress ' +
+    'via get_report or watch the dashboard at http://127.0.0.1:3700/dashboard/sessions/<id>.\n' +
+    '- `awaiting_answer`: the client does not support sampling (e.g. Codex CLI / Codex.app). ' +
+    'The response includes the first question under `next_question`. The caller MUST reply ' +
+    'by calling submit_answer with the returned session_id plus an answer string. Each ' +
+    'submit_answer returns either the next question (status=awaiting_answer) or the final ' +
+    'report (status=complete).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -247,8 +278,34 @@ const START_AUDIT_SESSION_DEF: ToolDefinition = {
   },
 };
 
+const SUBMIT_ANSWER_DEF: ToolDefinition = {
+  name: 'submit_answer',
+  description:
+    'Provide the next answer to an in-progress Heron audit interview started via ' +
+    'start_audit_session. Returns either the next question (status=awaiting_answer) or the ' +
+    'final report (status=complete) once all questions have been answered. Always pair with ' +
+    'start_audit_session — this tool is only callable when an audit session is in the ' +
+    "'awaiting_answer' state (non-sampling clients, AAP-55).",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description: 'The session id returned by a prior start_audit_session call.',
+      },
+      answer: {
+        type: 'string',
+        description: 'The agent’s answer to the most recently asked question.',
+      },
+    },
+    required: ['session_id', 'answer'],
+    additionalProperties: false,
+  },
+};
+
 const TOOL_DEFINITIONS: ToolDefinition[] = [
   START_AUDIT_SESSION_DEF,
+  SUBMIT_ANSWER_DEF,
   GET_REPORT_DEF,
   COMPARE_REPORTS_DEF,
 ];
@@ -283,17 +340,31 @@ const compareReportsInputSchema = z.object({
   report_id_b: reportIdField.describe('report_id_b'),
 });
 
+/**
+ * AAP-55 — Zod schema for the submit_answer tool. session_id must match
+ * the on-disk session id pattern so a path-traversal class of input
+ * cannot reach the storage layer through the public surface.
+ */
+const submitAnswerInputSchema = z.object({
+  session_id: z
+    .string({ required_error: 'session_id is required' })
+    .regex(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/, 'invalid session_id format'),
+  answer: z.string({ required_error: 'answer is required' }),
+});
+
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
 export type ToolName =
   | 'get_report'
   | 'compare_reports'
-  | 'start_audit_session';
+  | 'start_audit_session'
+  | 'submit_answer';
 
 type InvokeMap = {
   get_report: { input: GetReportInput; output: GetReportOutput };
   compare_reports: { input: CompareReportsInput; output: CompareReportsOutput };
   start_audit_session: { input: StartAuditSessionInput; output: StartAuditSessionOutput };
+  submit_answer: { input: SubmitAnswerInput; output: SubmitAnswerOutput };
 };
 
 export class HeronMCPServer {
@@ -301,14 +372,24 @@ export class HeronMCPServer {
   private readonly differ: ReportDiffer;
   private readonly runSamplingInterview?: SamplingInterviewRunner;
   private readonly analyzeAndRenderReport?: AnalyzeAndRenderReport;
-  /** Captured SDK Server for sampling/createMessage. Set by buildMcpServer or attachSamplingServer. */
-  private samplingServer: Pick<Server, 'createMessage'> | null = null;
+  /** AAP-55 — planner used for the tool-call interview path. */
+  private readonly questionPlanner?: QuestionPlanner;
+  /**
+   * Captured SDK Server for sampling/createMessage + client-capability
+   * detection. Set by buildMcpServer or attachSamplingServer.
+   *
+   * The interface widens beyond `createMessage` so we can also call
+   * `getClientCapabilities()` to branch between the sampling and
+   * tool-call paths. Tests inject a stub that implements both.
+   */
+  private samplingServer: SamplingServerLike | null = null;
 
   constructor(deps: HeronMCPServerDeps) {
     this.reportStore = deps.reportStore ?? new InMemoryReportStore();
     this.differ = deps.differ;
     this.runSamplingInterview = deps.runSamplingInterview;
     this.analyzeAndRenderReport = deps.analyzeAndRenderReport;
+    this.questionPlanner = deps.questionPlanner;
   }
 
   /**
@@ -318,7 +399,7 @@ export class HeronMCPServer {
    * underlying low-level Server. Unit tests inject a stub Server
    * directly via this method.
    */
-  attachSamplingServer(server: Pick<Server, 'createMessage'>): void {
+  attachSamplingServer(server: SamplingServerLike): void {
     this.samplingServer = server;
   }
 
@@ -346,6 +427,10 @@ export class HeronMCPServer {
           return (await this.handleStartAuditSession(
             input as StartAuditSessionInput,
             ctx,
+          )) as MCPServerResult<InvokeMap[N]['output']>;
+        case 'submit_answer':
+          return (await this.handleSubmitAnswer(
+            input as SubmitAnswerInput,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
           return {
@@ -407,6 +492,25 @@ export class HeronMCPServer {
         const result = await this.invoke(
           'start_audit_session',
           args as StartAuditSessionInput,
+          bridge.ctx,
+        );
+        await bridge.flush();
+        return toolResultFromMcp(result);
+      },
+    );
+
+    // submit_answer (AAP-55) — tool-call interview loop
+    server.registerTool(
+      SUBMIT_ANSWER_DEF.name,
+      {
+        description: SUBMIT_ANSWER_DEF.description,
+        inputSchema: { session_id: z.string(), answer: z.string() },
+      },
+      async (args, extra) => {
+        const bridge = contextFromExtra(extra);
+        const result = await this.invoke(
+          'submit_answer',
+          args as SubmitAnswerInput,
           bridge.ctx,
         );
         await bridge.flush();
@@ -487,6 +591,22 @@ export class HeronMCPServer {
         },
       };
     }
+
+    // AAP-55 — branch on client capability. MCP clients that declare
+    // `sampling/createMessage` (Claude Desktop, Cursor, …) keep using
+    // the background sampling interview loop. Clients that don't
+    // (Codex CLI 0.125.0, Codex.app 0.128.0-alpha.1 — both declare only
+    // `elicitation.form`) use the new tool-call loop driven by
+    // start_audit_session + submit_answer.
+    const clientCaps = this.samplingServer.getClientCapabilities?.();
+    const supportsSampling = Boolean(clientCaps?.sampling);
+
+    const { agent_name } = parsed.data;
+
+    if (!supportsSampling) {
+      return this.startToolCallAudit(agent_name);
+    }
+
     if (!this.runSamplingInterview || !this.analyzeAndRenderReport) {
       return {
         ok: false,
@@ -500,7 +620,6 @@ export class HeronMCPServer {
       };
     }
 
-    const { agent_name } = parsed.data;
     const { id: sessionId } = await createSession(agent_name ? { agentName: agent_name } : {});
 
     // Emit a status-change event so the SSE listeners pick up the new session
@@ -597,6 +716,246 @@ export class HeronMCPServer {
           `live as each question is answered. Once the status flips to ` +
           `'complete', call \`get_report\` with this session id to retrieve ` +
           `the final markdown report.`,
+      },
+    };
+  }
+
+  // ─── start_audit_session — AAP-55 tool-call mode ─────────────────────
+
+  /**
+   * AAP-55 entry point. Reached when the connecting MCP client does NOT
+   * declare `sampling/createMessage` (e.g. Codex CLI 0.125.0, Codex.app
+   * 0.128.0-alpha.1). Creates a `mode: 'tool-call'` session, primes the
+   * planner's first question into `pendingQuestion`, and hands the
+   * caller back the question text so the caller can echo it to its
+   * LLM and reply via submit_answer.
+   */
+  private async startToolCallAudit(
+    agentName?: string,
+  ): Promise<MCPServerResult<StartAuditSessionOutput>> {
+    if (!this.questionPlanner) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_question_planner',
+          message:
+            'start_audit_session (tool-call mode) requires a questionPlanner dep. ' +
+            'Wire one via HeronMCPServerDeps.questionPlanner when constructing the wrapper.',
+        },
+      };
+    }
+    if (!this.analyzeAndRenderReport) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_analyzer',
+          message:
+            'start_audit_session (tool-call mode) requires an analyzeAndRenderReport dep ' +
+            'so submit_answer can render the final report once the planner is exhausted.',
+        },
+      };
+    }
+
+    const { id: sessionId } = await createSession({
+      mode: 'tool-call',
+      ...(agentName ? { agentName } : {}),
+    });
+    publishSessionEvent(sessionId, { type: 'status-change', status: 'awaiting_answer' });
+
+    const first = this.questionPlanner.initial(agentName ? { agentName } : {});
+    await setPendingQuestion(sessionId, {
+      text: first.text,
+      category: first.category,
+      index: first.index,
+    });
+
+    return {
+      ok: true,
+      value: {
+        session_id: sessionId,
+        status: 'awaiting_answer',
+        questions_asked: 0,
+        next_question: first.text,
+        instructions:
+          'Reply by calling submit_answer with this session_id and your answer to the ' +
+          'question in `next_question`. Heron will return the next question, or the final ' +
+          'audit report once all questions are answered.',
+      },
+    };
+  }
+
+  // ─── submit_answer (AAP-55) ──────────────────────────────────────────
+
+  private async handleSubmitAnswer(
+    rawInput: SubmitAnswerInput,
+  ): Promise<MCPServerResult<SubmitAnswerOutput>> {
+    const parsed = submitAnswerInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return {
+        ok: false,
+        error: {
+          kind: 'invalid_input',
+          field: issue?.path?.[0]?.toString() ?? 'unknown',
+          message: issue?.message ?? 'invalid input',
+        },
+      };
+    }
+
+    if (!this.questionPlanner) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_question_planner',
+          message:
+            'submit_answer requires a questionPlanner dep. Wire one via ' +
+            'HeronMCPServerDeps.questionPlanner when constructing the wrapper.',
+        },
+      };
+    }
+    if (!this.analyzeAndRenderReport) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_analyzer',
+          message:
+            'submit_answer requires an analyzeAndRenderReport dep so it can render the ' +
+            'final report once the planner is exhausted.',
+        },
+      };
+    }
+
+    const { session_id: sessionId, answer } = parsed.data;
+    const session = await getSession(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'session_not_found',
+          message: `Session not found: ${sessionId}`,
+        },
+      };
+    }
+
+    // Reject if the session is not in a tool-call awaiting_answer state.
+    const terminal: AuditSessionStatus[] = ['complete', 'error'];
+    if (terminal.includes(session.status)) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'session_terminal',
+          message: `Session ${sessionId} is already in terminal state '${session.status}'.`,
+        },
+      };
+    }
+    if (session.mode !== 'tool-call' || session.status !== 'awaiting_answer') {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'wrong_mode',
+          message:
+            `Session ${sessionId} is not in tool-call awaiting_answer state ` +
+            `(mode=${session.mode ?? 'sampling'}, status=${session.status}). ` +
+            `submit_answer is only valid for non-sampling clients driving the AAP-55 loop.`,
+        },
+      };
+    }
+    if (!session.pendingQuestion) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'no_pending_question',
+          message: `Session ${sessionId} has no pending question to answer.`,
+        },
+      };
+    }
+
+    // 1. Record the answer + clear pending.
+    const recordedCategory = session.pendingQuestion.category;
+    await submitToolCallAnswer(sessionId, answer);
+    publishSessionEvent(sessionId, {
+      type: 'transcript-append',
+      entry: {
+        category: recordedCategory,
+        question: session.pendingQuestion.text,
+        answer,
+      },
+    });
+
+    // 2. Re-load the freshly-extended transcript and ask the planner for
+    //    the next question.
+    const updated = await getSession(sessionId);
+    if (!updated) {
+      return {
+        ok: false,
+        error: {
+          kind: 'internal',
+          message: `Session ${sessionId} disappeared mid-answer.`,
+        },
+      };
+    }
+    const transcriptAsQA: QAPair[] = updated.transcript.map((t) => ({
+      category: t.category as QAPair['category'],
+      question: t.question,
+      answer: t.answer,
+    }));
+    const next = await this.questionPlanner.next(transcriptAsQA);
+
+    if (next) {
+      await setPendingQuestion(sessionId, {
+        text: next.text,
+        category: next.category,
+        index: next.index,
+      });
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          status: 'awaiting_answer',
+          questions_asked: updated.questionsAsked,
+          next_question: next.text,
+        },
+      };
+    }
+
+    // 3. Planner exhausted — render report synchronously. Analyze
+    //    takes a few seconds total once the transcript is built,
+    //    comfortably under any reasonable client tool-call timeout.
+    await updateSessionMeta(sessionId, { status: 'analyzing' });
+    publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
+
+    const rendered = await this.analyzeAndRenderReport({
+      sessionId,
+      transcript: transcriptAsQA,
+      ...(updated.agentName !== undefined ? { agentName: updated.agentName } : {}),
+    });
+
+    await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+    if (rendered.riskLevel) {
+      await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+    }
+    publishSessionEvent(sessionId, {
+      type: 'status-change',
+      status: 'complete',
+      ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+    });
+
+    return {
+      ok: true,
+      value: {
+        session_id: sessionId,
+        status: 'complete',
+        questions_asked: updated.questionsAsked,
+        report_markdown: rendered.markdown,
+        ...(rendered.riskLevel ? { risk_level: rendered.riskLevel } : {}),
       },
     };
   }

@@ -195,7 +195,12 @@ describe('startHttpServer — HTTP-level prototype-pollution resistance (CodeQL)
     try {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['compare_reports', 'get_report', 'start_audit_session']);
+      expect(names).toEqual([
+        'compare_reports',
+        'get_report',
+        'start_audit_session',
+        'submit_answer',
+      ]);
     } finally {
       await client.close();
     }

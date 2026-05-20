@@ -12,6 +12,9 @@ import {
   softDeleteSession,
   getSessionsDir,
   SESSION_ID_REGEX,
+  setPendingQuestion,
+  clearPendingQuestion,
+  submitToolCallAnswer,
 } from '../../src/storage/sessions.js';
 
 // All tests run with HERON_SESSIONS_DIR pointed at a fresh tmp dir to avoid
@@ -211,5 +214,61 @@ describe('local-files audit-session store', () => {
     const raw = await readFile(join(getSessionsDir(), id, 'meta.json'), 'utf8');
     expect(raw).not.toContain('hackerField');
     expect(raw).not.toContain('evil');
+  });
+
+  // ─── AAP-55 — tool-call interview mode ──────────────────────────────────
+
+  it('createSession with mode="tool-call" persists the mode flag', async () => {
+    const { id } = await createSession({ agentName: 'x', mode: 'tool-call' });
+    const detail = await getSession(id);
+    expect(detail).not.toBeNull();
+    expect(detail!.mode).toBe('tool-call');
+  });
+
+  it('createSession default mode is undefined (back-compat for sampling rows)', async () => {
+    const { id } = await createSession({ agentName: 'x' });
+    const detail = await getSession(id);
+    expect(detail!.mode).toBeUndefined();
+  });
+
+  it('setPendingQuestion / clearPendingQuestion round-trip through getSession', async () => {
+    const { id } = await createSession({ agentName: 'x', mode: 'tool-call' });
+
+    await setPendingQuestion(id, { text: 'What do you do?', category: 'purpose', index: 0 });
+    let detail = await getSession(id);
+    expect(detail!.pendingQuestion).toEqual({
+      text: 'What do you do?',
+      category: 'purpose',
+      index: 0,
+    });
+
+    await clearPendingQuestion(id);
+    detail = await getSession(id);
+    expect(detail!.pendingQuestion ?? null).toBeNull();
+  });
+
+  it('submitToolCallAnswer appends to transcript and clears pendingQuestion', async () => {
+    const { id } = await createSession({ agentName: 'x', mode: 'tool-call' });
+    await setPendingQuestion(id, { text: 'Q1', category: 'purpose', index: 0 });
+
+    await submitToolCallAnswer(id, 'A1');
+
+    const detail = await getSession(id);
+    expect(detail!.transcript).toEqual([
+      { category: 'purpose', question: 'Q1', answer: 'A1' },
+    ]);
+    expect(detail!.questionsAsked).toBe(1);
+    expect(detail!.pendingQuestion ?? null).toBeNull();
+  });
+
+  it('submitToolCallAnswer throws when there is no pendingQuestion', async () => {
+    const { id } = await createSession({ agentName: 'x', mode: 'tool-call' });
+    await expect(submitToolCallAnswer(id, 'A1')).rejects.toThrow(/pending/i);
+  });
+
+  it('setPendingQuestion rejects an invalid session id without writing', async () => {
+    await expect(
+      setPendingQuestion('not-a-valid-id', { text: 'Q', category: 'purpose', index: 0 }),
+    ).rejects.toThrow();
   });
 });

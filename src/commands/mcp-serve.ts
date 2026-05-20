@@ -75,9 +75,16 @@ export async function runMcpServe(opts: MCPServeOptions): Promise<MCPServeHandle
 
   const reportStore = new FileSystemReportStore(reportDir);
   const differ: ReportDiffer = new HeronReportDiffer(llmClient);
-  const { runSamplingInterview, analyzeAndRenderReport } = await buildSamplingDeps({ llmClient });
+  const { runSamplingInterview, analyzeAndRenderReport, questionPlanner } =
+    await buildSamplingDeps({ llmClient });
 
-  const deps = { reportStore, differ, runSamplingInterview, analyzeAndRenderReport };
+  const deps = {
+    reportStore,
+    differ,
+    runSamplingInterview,
+    analyzeAndRenderReport,
+    questionPlanner,
+  };
 
   if (opts.port !== undefined) {
     return startHttpServer({ port: opts.port, deps });
