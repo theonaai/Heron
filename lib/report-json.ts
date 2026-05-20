@@ -143,10 +143,41 @@ export type LocalDiscoveryRuntime =
   | 'windsurf'
   | 'claude-desktop';
 
+/** AAP-58 — non-MCP capability rows surfaced alongside `mcpServers`. */
+export type LocalDiscoveryAuthShape = 'token' | 'apiKey' | 'oauth' | 'unknown';
+
+export type LocalDiscoveredCapability =
+  | ({ kind: 'mcp_server' } & LocalDiscoveredMcpServer)
+  | {
+      kind: 'plugin';
+      runtime: LocalDiscoveryRuntime;
+      configPath: string;
+      name: string;
+      enabled: boolean;
+      raw?: Record<string, unknown>;
+    }
+  | {
+      kind: 'skill';
+      runtime: LocalDiscoveryRuntime;
+      configPath: string;
+      path: string;
+      enabled: boolean;
+    }
+  | {
+      kind: 'auth_credential';
+      runtime: LocalDiscoveryRuntime;
+      configPath: string;
+      provider: string;
+      hasValue: boolean;
+      valueShape?: LocalDiscoveryAuthShape;
+    };
+
 export interface LocalDiscoveredAgent {
   runtime: LocalDiscoveryRuntime;
   configPath: string;
   mcpServers: LocalDiscoveredMcpServer[];
+  /** AAP-58 — unified capability list (plugins, skills, auth keys, + mcp_servers mirror). */
+  capabilities?: LocalDiscoveredCapability[];
   model?: string;
 }
 

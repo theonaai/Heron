@@ -75,6 +75,15 @@ export interface AuditSession {
   mode?: AuditSessionMode;
   /** AAP-55 — non-null while the tool-call path is waiting for an answer. */
   pendingQuestion?: PendingQuestion | null;
+  /**
+   * AAP-58 — absolute workspace paths the calling MCP client advertised
+   * via `_meta['x-codex-turn-metadata'].workspaces`. The dashboard's
+   * "Run verification" path consults this list when no explicit
+   * workspaceRoot is sent from the browser, so we no longer fall through
+   * to `process.cwd()` (Heron's own checkout) for the scan target.
+   * Idempotent merge — duplicate entries are deduped before write.
+   */
+  workspaceHints?: string[];
 }
 
 export interface TranscriptEntry {
@@ -90,6 +99,7 @@ export interface AuditSessionDetail extends AuditSession {
   viewerRole?: 'owner' | 'grantee';
   mode?: AuditSessionMode;
   pendingQuestion?: PendingQuestion | null;
+  workspaceHints?: string[];
 }
 
 /**
@@ -107,6 +117,7 @@ interface StoredMeta extends AuditSession {
   deletedAt?: string;
   mode?: AuditSessionMode;
   pendingQuestion?: PendingQuestion | null;
+  workspaceHints?: string[];
 }
 
 export const SESSION_ID_REGEX = /^sess-\d{8}-\d{6}-[a-z0-9]{6}$/;
@@ -232,7 +243,12 @@ async function readTranscript(id: string): Promise<TranscriptEntry[]> {
 // ─── Public API ───────────────────────────────────────────────────────────
 
 export async function createSession(
-  input: { agentName?: string; mode?: AuditSessionMode } = {},
+  input: {
+    agentName?: string;
+    mode?: AuditSessionMode;
+    /** AAP-58 — absolute workspace paths the calling MCP client advertised. */
+    workspaceHints?: string[];
+  } = {},
 ): Promise<{ id: string }> {
   await ensureSessionsDir();
   const id = generateSessionId();
@@ -252,8 +268,71 @@ export async function createSession(
   if (input.mode !== undefined) {
     meta.mode = input.mode;
   }
+  const hints = sanitizeWorkspaceHints(input.workspaceHints);
+  if (hints.length > 0) {
+    meta.workspaceHints = hints;
+  }
   await writeMeta(id, meta);
   return { id };
+}
+
+/**
+ * AAP-58 — strip invalid entries and dedupe the workspace-hints list.
+ *
+ * Only absolute paths survive: anything that doesn't start with `/`,
+ * contains `..`, or looks like a URL path is dropped on the floor.
+ * Validation is intentionally permissive here — the scan API does the
+ * final fs.stat existence check, and we don't want to lose a hint just
+ * because the directory disappeared between session-start and scan.
+ */
+function sanitizeWorkspaceHints(input: string[] | undefined): string[] {
+  if (!input) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    if (!trimmed.startsWith('/')) continue;
+    if (trimmed.includes('..')) continue;
+    if (trimmed.includes('/dashboard/')) continue;
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * AAP-58 — idempotent merge of new workspace hints into an existing
+ * session. Called by `submit_answer` so subsequent MCP turns can keep
+ * advertising the workspaces they're operating against. Existing hints
+ * are preserved; new ones are appended in order; duplicates are skipped.
+ */
+export async function mergeWorkspaceHints(
+  id: string,
+  hints: string[],
+): Promise<void> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const sanitised = sanitizeWorkspaceHints(hints);
+  if (sanitised.length === 0) return;
+  const existing = sanitizeWorkspaceHints(meta.workspaceHints ?? []);
+  const merged = sanitizeWorkspaceHints([...existing, ...sanitised]);
+  // Skip the write if nothing changed.
+  if (
+    merged.length === existing.length &&
+    merged.every((v, i) => v === existing[i])
+  ) {
+    return;
+  }
+  const next: StoredMeta = {
+    ...meta,
+    workspaceHints: merged,
+    updatedAt: nowIso(),
+  };
+  await writeMeta(id, next);
 }
 
 export async function getSession(id: string): Promise<AuditSessionDetail | null> {
@@ -276,6 +355,7 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
   if (meta.riskLevel !== undefined) detail.riskLevel = meta.riskLevel;
   if (meta.mode !== undefined) detail.mode = meta.mode;
   if (meta.pendingQuestion !== undefined) detail.pendingQuestion = meta.pendingQuestion;
+  if (meta.workspaceHints !== undefined) detail.workspaceHints = meta.workspaceHints;
   if (reportMd !== undefined) detail.report = reportMd;
   if (reportJson !== null) detail.reportJson = reportJson;
   return detail;

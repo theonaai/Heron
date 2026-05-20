@@ -355,7 +355,13 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
 
       <DiscoveryConsentDialog
         sessionId={liveSession.id}
-        workspaceRoot={typeof window === 'undefined' ? '' : window.location.pathname}
+        // AAP-58 — prefer the workspace path the MCP client advertised
+        // when the session was created. Falls back to '' so the server
+        // resolves to session.workspaceHints[0] → process.cwd(). The
+        // pre-AAP-58 code passed `window.location.pathname` here, which
+        // sent garbage like "/dashboard/sessions/sess-…" to the scan
+        // route and broke discovery.
+        workspaceRoot={liveSession.workspaceHints?.[0] ?? ''}
         open={consentOpen}
         onClose={() => setConsentOpen(false)}
         onComplete={() => {

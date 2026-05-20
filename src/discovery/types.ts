@@ -44,11 +44,73 @@ export type DiscoveredRuntime =
   | 'windsurf'
   | 'claude-desktop';
 
+/**
+ * AAP-58 — discovered capability union.
+ *
+ * The original AAP-53 discovery layer only surfaced MCP servers. Codex
+ * (and progressively other runtimes) also ship first-class plugins,
+ * skills, and auth-credential files in the SAME config blob — these
+ * are real capabilities the agent has access to, and missing them
+ * undercuts Heron's "deterministic source of truth" claim.
+ *
+ * Each variant carries `kind` so downstream code can pattern-match
+ * cleanly; `runtime` + `configPath` are present on every variant so
+ * findings always have a file-level provenance trail. Auth credentials
+ * record only the top-level KEY NAME (`provider`) plus a coarse SHAPE
+ * heuristic — values are never read, never logged, never returned.
+ */
+export type PluginCapability = {
+  kind: 'plugin';
+  runtime: DiscoveredRuntime;
+  configPath: string;
+  /** Plugin identifier from the config (e.g. `documents@openai-primary-runtime`). */
+  name: string;
+  enabled: boolean;
+  /** Optional raw fields beyond `enabled` — kept narrow on purpose. */
+  raw?: Record<string, unknown>;
+};
+
+export type SkillCapability = {
+  kind: 'skill';
+  runtime: DiscoveredRuntime;
+  configPath: string;
+  /** Absolute path to the SKILL.md (or analogous) file. */
+  path: string;
+  enabled: boolean;
+};
+
+export type AuthCredentialShape = 'token' | 'apiKey' | 'oauth' | 'unknown';
+
+export type AuthCredentialCapability = {
+  kind: 'auth_credential';
+  runtime: DiscoveredRuntime;
+  configPath: string;
+  /** Top-level key NAME (e.g. `openai_api_key`). Values are NEVER stored. */
+  provider: string;
+  hasValue: boolean;
+  valueShape?: AuthCredentialShape;
+};
+
+export type McpServerCapability = { kind: 'mcp_server' } & DiscoveredMcpServer;
+
+export type DiscoveredCapability =
+  | McpServerCapability
+  | PluginCapability
+  | SkillCapability
+  | AuthCredentialCapability;
+
 export interface DiscoveredAgent {
   runtime: DiscoveredRuntime;
   /** Absolute path of the config file that produced this entry. */
   configPath: string;
   mcpServers: DiscoveredMcpServer[];
+  /**
+   * AAP-58 — unified capability list. Includes every `mcpServers`
+   * entry (re-emitted with `kind: 'mcp_server'`) plus plugins, skills,
+   * and auth-credential key names. Optional so legacy report.json blobs
+   * persisted before AAP-58 keep deserialising cleanly.
+   */
+  capabilities?: DiscoveredCapability[];
   model?: string;
 }
 
@@ -85,4 +147,28 @@ export interface AgentReader {
    * decides whether to surface that or skip silently.
    */
   parse(content: string, path: string): Promise<DiscoveredMcpServer[]>;
+  /**
+   * AAP-58 — optional non-MCP capabilities (plugins, skills) parsed
+   * from the same config file. Readers that don't surface non-MCP
+   * capabilities omit this field; the aggregator treats absence as an
+   * empty list. Auth-credential capabilities are produced by sibling
+   * `*-auth` readers (see `codex-auth.ts`, `claude-code-auth.ts`).
+   */
+  parseCapabilities?(
+    content: string,
+    path: string,
+  ): Promise<Array<PluginCapability | SkillCapability>>;
+}
+
+/**
+ * AAP-58 — dedicated reader for credential files (e.g. `~/.codex/auth.json`).
+ * Same shape as `AgentReader` but the parse method emits only
+ * `AuthCredentialCapability` rows. Keeping it separate from `AgentReader`
+ * documents the "we read different files for different purposes" intent
+ * and forces each call site to opt in.
+ */
+export interface AuthReader {
+  runtime: DiscoveredRuntime;
+  paths(homeDir: string, workspaceDir?: string): string[];
+  parse(content: string, path: string): Promise<AuthCredentialCapability[]>;
 }

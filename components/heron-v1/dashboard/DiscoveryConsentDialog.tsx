@@ -50,19 +50,32 @@ export default function DiscoveryConsentDialog({
     setBusy(true);
     setError(null);
     try {
+      // AAP-58 — submit the session id for consent. The server resolves
+      // the workspace via the same fallback chain the scan route uses
+      // (session.workspaceHints[0] → process.cwd()) so consent and scan
+      // are guaranteed to be keyed on the same string. The pre-AAP-58
+      // dashboard passed `window.location.pathname` (a URL path) as
+      // workspaceRoot, which the scan route now rejects as a 400.
       const consentRes = await fetch('/api/discovery/consent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace: workspaceRoot, decision }),
+        body: JSON.stringify({ sessionId, decision }),
       });
       if (!consentRes.ok) {
         const body = (await consentRes.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `consent failed (${consentRes.status})`);
       }
+      // Only forward workspaceRoot when it's an absolute path. When it's
+      // empty (no hint surfaced yet), let the scan route fall through to
+      // session.workspaceHints[0] / process.cwd() — see route.ts.
+      const scanBody: { sessionId: string; workspaceRoot?: string } = { sessionId };
+      if (workspaceRoot && workspaceRoot.startsWith('/')) {
+        scanBody.workspaceRoot = workspaceRoot;
+      }
       const scanRes = await fetch('/api/discovery/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, workspaceRoot }),
+        body: JSON.stringify(scanBody),
       });
       if (!scanRes.ok) {
         const body = (await scanRes.json().catch(() => ({}))) as { error?: string };

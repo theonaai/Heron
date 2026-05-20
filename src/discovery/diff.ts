@@ -131,8 +131,56 @@ export function diffAgainstTranscript(
     }
   }
 
+  // AAP-58 — EXTRA pass for plugins surfaced by the new capability
+  // readers. Skills and auth credentials are intentionally NOT diffed
+  // against the transcript: skills are abundant per-config noise and
+  // auth keys would just duplicate HIDDEN-CREDENTIALS messages.
+  for (const agent of agents) {
+    for (const cap of agent.capabilities ?? []) {
+      if (cap.kind !== 'plugin') continue;
+      if (!cap.enabled) continue; // disabled plugins are not active capabilities
+      const lowered = cap.name.toLowerCase();
+      // Plugin names look like `documents@openai-primary-runtime`. Strip
+      // the registry suffix for the user-facing surface.
+      const bareName = lowered.split('@')[0]!;
+      if (body.includes(lowered) || (bareName && body.includes(bareName))) continue;
+      // Also tolerate canonical keyword hits — "google drive" in the
+      // transcript should silence a `documents@...` plugin finding when
+      // documents/drive synonymy is obvious.
+      let matchedKeyword = false;
+      for (const kw of CANONICAL_KEYWORDS) {
+        if (bareName.includes(kw) && body.includes(kw)) {
+          matchedKeyword = true;
+          break;
+        }
+      }
+      if (matchedKeyword) continue;
+      findings.push({
+        kind: 'EXTRA',
+        severity: 'MEDIUM',
+        serverName: cap.name,
+        runtime: agent.runtime,
+        description:
+          `Discovered Codex/host plugin "${cap.name}" (${agent.runtime}) was not mentioned in the interview.`,
+      });
+    }
+  }
+
+  // Build a set of all bare plugin names discovered, used by the MISSING
+  // pass below so a transcript mention of "drive" is silenced when a
+  // `documents@openai-primary-runtime` plugin already covers it.
+  const discoveredPluginBare = new Set<string>();
+  for (const agent of agents) {
+    for (const cap of agent.capabilities ?? []) {
+      if (cap.kind === 'plugin') {
+        const bare = cap.name.toLowerCase().split('@')[0] ?? '';
+        if (bare) discoveredPluginBare.add(bare);
+      }
+    }
+  }
+
   // MISSING pass — transcript mentions a canonical keyword that no
-  // discovered server name contains.
+  // discovered server OR plugin name contains.
   for (const kw of CANONICAL_KEYWORDS) {
     if (!transcriptMentionsKeyword(body, kw)) continue;
     let matched = false;
@@ -143,12 +191,20 @@ export function diffAgainstTranscript(
       }
     }
     if (!matched) {
+      for (const bare of discoveredPluginBare) {
+        if (bare.includes(kw)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (!matched) {
       findings.push({
         kind: 'MISSING',
         severity: 'MEDIUM',
         serverName: kw,
         runtime: '—',
-        description: `The interview mentioned "${kw}" but no MCP server with that name was discovered on disk.`,
+        description: `The interview mentioned "${kw}" but no MCP server or plugin with that name was discovered on disk.`,
       });
     }
   }
