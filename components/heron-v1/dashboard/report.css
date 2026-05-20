@@ -36,15 +36,28 @@
   --r-info:    #1e40af; --r-info-bg:    #eff6ff; --r-info-bd:    #bfdbfe;
   --r-review:  #92400e; --r-review-bg:  #fffbeb; --r-review-bd:  #fde68a;
 
-  /* Type — match project's global stack from globals.css */
-  --r-font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --r-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Type — match project's global stack from globals.css. AAP-62
+     switched the global body to Inter + JetBrains Mono; the CSS
+     variable names (--font-jakarta / --font-plex-mono) were kept
+     to avoid a global rename, but they now point at Inter / JetBrains
+     Mono. The literal font names here are belt-and-braces fallbacks
+     for the case where the variable isn't applied (e.g. server-
+     rendered markdown export opened outside the dashboard). */
+  --r-font-sans: var(--font-jakarta), "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --r-font-mono: var(--font-plex-mono), "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   --r-radius: 6px;
 
   font-family: var(--r-font-sans);
-  font-size: 14px;
-  line-height: 1.55;
+  /* AAP-62 round-2 readability bump: 14/1.55 → 15/1.65. Ilya read
+     the first pass and called the report "нагромождено" — densely
+     packed. A single type-scale step up plus more vertical breathing
+     room is the cheapest large-impact legibility win without
+     redesigning the dashboard. Sub-element absolute pixel sizes
+     (10-12px badges, mono numbers) stay where they are so the
+     layout grid doesn't shift. */
+  font-size: 15px;
+  line-height: 1.65;
   letter-spacing: -0.005em;
   color: var(--r-ink);
   background: var(--r-bg);
@@ -91,9 +104,11 @@
   align-items: baseline;
   gap: 12px;
   border-top: 1px solid var(--r-border);
-  padding-top: 24px;
-  margin-top: 32px;
-  margin-bottom: 16px;
+  /* AAP-62 round-2 — more vertical separation between sections so the
+     report doesn't feel like one continuous wall of text. */
+  padding-top: 32px;
+  margin-top: 44px;
+  margin-bottom: 20px;
   scroll-margin-top: 16px;
 }
 .report .h-section .num {
@@ -186,7 +201,9 @@
   padding: 10px 14px;
 }
 .report .tbl td {
-  padding: 14px;
+  /* AAP-62 round-2 — more cell padding for breathing room inside
+     dense findings/systems tables. */
+  padding: 18px 16px;
   border-bottom: 1px solid var(--r-border);
   vertical-align: top;
   color: var(--r-ink);
@@ -222,7 +239,7 @@
   border-radius: var(--r-radius);
   background: var(--r-bg);
 }
-.report .panel-pad   { padding: 16px 18px; }
+.report .panel-pad   { padding: 20px 22px; }  /* AAP-62 round-2 — was 16/18 */
 .report .panel-muted { background: var(--r-bg-muted); }
 
 /* ─── Key-value definition list ───────────────────────────────── */
