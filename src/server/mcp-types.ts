@@ -66,6 +66,18 @@ export interface RequestContext {
   progress: (notification: ProgressNotification) => void;
   /** Cancellation signal from the caller. Handlers should check it. */
   signal: AbortSignal;
+  /**
+   * AAP-58 — absolute workspace paths the MCP client advertised via
+   * `_meta['x-codex-turn-metadata'].workspaces` (or any future
+   * equivalent). Undefined or empty array when the client did not
+   * provide any. Handlers that persist sessions pass this through to
+   * `createSession`/`mergeWorkspaceHints` so the dashboard scan API
+   * can resolve `workspaceHints[0]` instead of falling back to
+   * `process.cwd()` (Heron's own checkout). Optional so existing
+   * RequestContext literals (in tests + downstream forks) keep
+   * compiling.
+   */
+  workspaceHints?: string[];
 }
 
 /**

@@ -51,6 +51,7 @@ import type { QuestionPlanner } from '../interview/question-planner.js';
 import {
   createSession,
   getSession,
+  mergeWorkspaceHints,
   setPendingQuestion,
   submitToolCallAnswer,
   updateSessionMeta,
@@ -431,6 +432,7 @@ export class HeronMCPServer {
         case 'submit_answer':
           return (await this.handleSubmitAnswer(
             input as SubmitAnswerInput,
+            ctx,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
           return {
@@ -604,7 +606,7 @@ export class HeronMCPServer {
     const { agent_name } = parsed.data;
 
     if (!supportsSampling) {
-      return this.startToolCallAudit(agent_name);
+      return this.startToolCallAudit(agent_name, ctx.workspaceHints ?? []);
     }
 
     if (!this.runSamplingInterview || !this.analyzeAndRenderReport) {
@@ -620,7 +622,11 @@ export class HeronMCPServer {
       };
     }
 
-    const { id: sessionId } = await createSession(agent_name ? { agentName: agent_name } : {});
+    const ctxHints = ctx.workspaceHints ?? [];
+    const { id: sessionId } = await createSession({
+      ...(agent_name ? { agentName: agent_name } : {}),
+      ...(ctxHints.length > 0 ? { workspaceHints: ctxHints } : {}),
+    });
 
     // Emit a status-change event so the SSE listeners pick up the new session
     publishSessionEvent(sessionId, { type: 'status-change', status: 'interviewing' });
@@ -732,6 +738,7 @@ export class HeronMCPServer {
    */
   private async startToolCallAudit(
     agentName?: string,
+    workspaceHints: string[] = [],
   ): Promise<MCPServerResult<StartAuditSessionOutput>> {
     if (!this.questionPlanner) {
       return {
@@ -761,6 +768,7 @@ export class HeronMCPServer {
     const { id: sessionId } = await createSession({
       mode: 'tool-call',
       ...(agentName ? { agentName } : {}),
+      ...(workspaceHints.length > 0 ? { workspaceHints } : {}),
     });
     publishSessionEvent(sessionId, { type: 'status-change', status: 'awaiting_answer' });
 
@@ -790,6 +798,7 @@ export class HeronMCPServer {
 
   private async handleSubmitAnswer(
     rawInput: SubmitAnswerInput,
+    ctx: RequestContext,
   ): Promise<MCPServerResult<SubmitAnswerOutput>> {
     const parsed = submitAnswerInputSchema.safeParse(rawInput);
     if (!parsed.success) {
@@ -840,6 +849,19 @@ export class HeronMCPServer {
           message: `Session not found: ${sessionId}`,
         },
       };
+    }
+
+    // AAP-58 — merge any new workspace hints the caller advertised on
+    // this turn. Idempotent against duplicates. Best-effort: failures
+    // are logged-but-tolerated so the audit loop keeps running.
+    const submitHints = ctx.workspaceHints ?? [];
+    if (submitHints.length > 0) {
+      try {
+        await mergeWorkspaceHints(sessionId, submitHints);
+      } catch {
+        // Session-not-found can't fire here (we just read it); any other
+        // fs error is non-fatal — the dashboard fallback still works.
+      }
     }
 
     // Reject if the session is not in a tool-call awaiting_answer state.
@@ -1121,6 +1143,13 @@ export function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush
     : null;
   const sessionId = extra.sessionId ?? generateId('sess');
   const progressToken = extra._meta?.progressToken;
+  // AAP-58 — Codex CLI 0.125+ ships an `x-codex-turn-metadata` shape in
+  // `_meta` that records absolute workspace paths the user opened. The
+  // dashboard's "Run verification" path consumes these (via persisted
+  // `session.workspaceHints`) so the scan no longer falls through to
+  // Heron's own checkout. Extraction is best-effort — unknown shapes
+  // produce an empty array rather than throwing.
+  const workspaceHints = extractWorkspaceHints(extra._meta);
 
   // Bridge: each ProgressNotification becomes an MCP
   // notifications/progress sent on the per-request stream when the
@@ -1187,6 +1216,7 @@ export function contextFromExtra(extra: ExtraLike): { ctx: RequestContext; flush
     sessionId,
     progress,
     signal: extra.signal,
+    workspaceHints,
   };
   const flush = async (): Promise<void> => {
     await sendTail;
@@ -1206,12 +1236,65 @@ export interface ExtraLike {
   signal: AbortSignal;
   authInfo?: { token: string; clientId?: string; scopes?: string[]; extra?: Record<string, unknown> };
   sessionId?: string;
-  _meta?: { progressToken?: string | number };
+  /**
+   * `progressToken` is the SDK-defined field. The remaining fields are
+   * forward-compatible client extras — most notably Codex CLI's
+   * `x-codex-turn-metadata.workspaces` shape, which carries absolute
+   * paths the user opened in the current turn (AAP-58). We accept the
+   * field via index access so other clients can layer their own
+   * metadata without us having to know about it.
+   */
+  _meta?: { progressToken?: string | number } & Record<string, unknown>;
   // SDK type: (notification: ServerNotification) => Promise<void>. We use
   // `unknown` to side-step the strict discriminated union — see comment
   // above. Reviewers: this is intentional and bounded to one call site.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendNotification: (notification: any) => Promise<void>;
+}
+
+/**
+ * AAP-58 — pull absolute workspace paths out of `_meta`.
+ *
+ * Two shapes we tolerate (Codex CLI has shipped both during the alpha):
+ *   1. `_meta['x-codex-turn-metadata'].workspaces`  is a record
+ *      `{ "/abs/path": {...} }` — keys are the workspaces.
+ *   2. `_meta['x-codex-turn-metadata'].workspaces`  is an array of
+ *      `{ path: "/abs/path" }` rows.
+ *
+ * Anything else returns `[]`. Validation is loose: we drop non-string,
+ * non-absolute, or `..`-containing entries here so they never reach
+ * `createSession`. The scan API does the existence check later.
+ */
+export function extractWorkspaceHints(
+  meta: ExtraLike['_meta'] | undefined,
+): string[] {
+  if (!meta) return [];
+  const codex = (meta as Record<string, unknown>)['x-codex-turn-metadata'];
+  if (!codex || typeof codex !== 'object') return [];
+  const workspaces = (codex as Record<string, unknown>).workspaces;
+  if (!workspaces) return [];
+  const out: string[] = [];
+  const push = (raw: unknown): void => {
+    if (typeof raw !== 'string') return;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return;
+    if (!trimmed.startsWith('/')) return;
+    if (trimmed.includes('..')) return;
+    if (trimmed.includes('/dashboard/')) return;
+    if (!out.includes(trimmed)) out.push(trimmed);
+  };
+  if (Array.isArray(workspaces)) {
+    for (const row of workspaces) {
+      if (typeof row === 'string') {
+        push(row);
+      } else if (row && typeof row === 'object') {
+        push((row as Record<string, unknown>).path);
+      }
+    }
+  } else if (typeof workspaces === 'object') {
+    for (const key of Object.keys(workspaces as Record<string, unknown>)) push(key);
+  }
+  return out;
 }
 
 /**

@@ -34,6 +34,13 @@ export interface AuditSessionDetail extends AuditSession {
   transcript: Array<{ category: string; question: string; answer: string }>;
   report?: string;
   reportJson?: unknown;
+  /**
+   * AAP-58 — absolute workspace paths the MCP client advertised when it
+   * created or updated this session. Used by the dashboard's discovery
+   * consent dialog as the workspace key (so consent is recorded against
+   * the real workspace, not the dashboard URL pathname).
+   */
+  workspaceHints?: string[];
 }
 
 // ── Fetch wrappers ─────────────────────────────────────────────────
