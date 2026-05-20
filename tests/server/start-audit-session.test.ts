@@ -116,6 +116,8 @@ describe('HeronMCPServer.start_audit_session', () => {
     });
 
     // Inject a fake sampling Server so the connector has something to talk to.
+    // The stub declares sampling capability so the AAP-55 capability branch
+    // routes to the sampling path (the original behaviour this test covers).
     const fakeMcpServer = {
       createMessage: vi.fn(async () => ({
         role: 'assistant',
@@ -123,6 +125,7 @@ describe('HeronMCPServer.start_audit_session', () => {
         model: 'fake',
         stopReason: 'endTurn',
       })),
+      getClientCapabilities: () => ({ sampling: {} }),
     };
     server.attachSamplingServer(fakeMcpServer as never);
 
@@ -189,5 +192,109 @@ describe('HeronMCPServer.start_audit_session', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe('invalid_input');
+  });
+
+  // ─── AAP-55 — capability-driven branching ──────────────────────────────
+
+  it('returns awaiting_answer + first question when the client does NOT declare sampling capability', async () => {
+    const fakeRunInterview = vi.fn(async () => ({ transcript: [], questionsAsked: 0 }));
+    const fakeAnalyze = vi.fn(async () => ({ markdown: '', json: {} }));
+    const planner = {
+      initial: vi.fn(() => ({ text: 'first-question', category: 'purpose' as const, index: 0 })),
+      next: vi.fn(async () => null),
+      totalCoreQuestions: 9,
+    };
+
+    const server = new HeronMCPServer({
+      auditPipeline: noopPipeline,
+      differ: noopDiffer,
+      runSamplingInterview: fakeRunInterview,
+      analyzeAndRenderReport: fakeAnalyze,
+      questionPlanner: planner,
+    });
+    // A "server" whose getClientCapabilities reports an empty bag — i.e. no sampling.
+    server.attachSamplingServer({
+      createMessage: async () => ({
+        role: 'assistant',
+        content: { type: 'text', text: '' },
+        model: 'fake',
+        stopReason: 'endTurn',
+      }),
+      getClientCapabilities: () => ({}),
+    } as never);
+
+    const { ctx } = makeCtx();
+    const result = await server.invoke(
+      'start_audit_session',
+      { agent_name: 'codex-cli-fixture' },
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.status).toBe('awaiting_answer');
+    expect(result.value.next_question).toBe('first-question');
+    expect(result.value.questions_asked).toBe(0);
+    expect(result.value.session_id).toMatch(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/);
+
+    // Background sampling loop must NOT have been spawned.
+    expect(fakeRunInterview).not.toHaveBeenCalled();
+    expect(planner.initial).toHaveBeenCalledTimes(1);
+
+    // Session row records mode='tool-call' and the pending question.
+    const stored = await getSession(result.value.session_id);
+    expect(stored).not.toBeNull();
+    expect(stored!.mode).toBe('tool-call');
+    expect(stored!.status).toBe('awaiting_answer');
+    expect(stored!.pendingQuestion).toEqual({
+      text: 'first-question',
+      category: 'purpose',
+      index: 0,
+    });
+  });
+
+  it('keeps the sampling fire-and-forget path when the client DOES declare sampling', async () => {
+    const fakeRunInterview = vi.fn(async (params: {
+      sessionId: string;
+      sampler: { createMessage: (args: unknown) => Promise<unknown> };
+    }) => {
+      void params;
+      return { transcript: [], questionsAsked: 0 };
+    });
+    const fakeAnalyze = vi.fn(async () => ({
+      markdown: '# r',
+      json: {},
+      riskLevel: 'low' as string,
+    }));
+    const planner = {
+      initial: vi.fn(() => ({ text: 'should-not-run', category: 'purpose' as const, index: 0 })),
+      next: vi.fn(async () => null),
+      totalCoreQuestions: 9,
+    };
+
+    const server = new HeronMCPServer({
+      auditPipeline: noopPipeline,
+      differ: noopDiffer,
+      runSamplingInterview: fakeRunInterview,
+      analyzeAndRenderReport: fakeAnalyze,
+      questionPlanner: planner,
+    });
+    server.attachSamplingServer({
+      createMessage: async () => ({
+        role: 'assistant',
+        content: { type: 'text', text: '' },
+        model: 'fake',
+        stopReason: 'endTurn',
+      }),
+      getClientCapabilities: () => ({ sampling: {} }),
+    } as never);
+
+    const { ctx } = makeCtx();
+    const result = await server.invoke('start_audit_session', { agent_name: 'sampling-client' }, ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.status).toBe('interviewing');
+    // Planner must NOT be primed for tool-call mode.
+    expect(planner.initial).not.toHaveBeenCalled();
   });
 });

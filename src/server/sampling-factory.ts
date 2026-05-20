@@ -16,6 +16,10 @@ import type { LLMClient } from '../llm/client.js';
 import { createLLMClient } from '../llm/client.js';
 import { SamplingConnector } from '../connectors/sampling-connector.js';
 import { runSamplingInterview as runInterviewLoop } from '../interview/sampling-interview.js';
+import {
+  createQuestionPlanner,
+  type QuestionPlanner,
+} from '../interview/question-planner.js';
 import { generateReport } from '../report/generator.js';
 import type {
   SamplingInterviewRunner,
@@ -32,6 +36,12 @@ export interface SamplingFactoryOptions {
 export interface SamplingFactoryResult {
   runSamplingInterview: SamplingInterviewRunner;
   analyzeAndRenderReport: AnalyzeAndRenderReport;
+  /**
+   * AAP-55 — question planner for the tool-call interview path. Shares
+   * the same LLM client + maxFollowUps as the sampling runner so both
+   * paths surface the same audit surface on identical transcripts.
+   */
+  questionPlanner: QuestionPlanner;
 }
 
 /**
@@ -85,5 +95,7 @@ export async function buildSamplingDeps(
     };
   };
 
-  return { runSamplingInterview, analyzeAndRenderReport };
+  const questionPlanner = createQuestionPlanner({ llmClient, maxFollowUps });
+
+  return { runSamplingInterview, analyzeAndRenderReport, questionPlanner };
 }

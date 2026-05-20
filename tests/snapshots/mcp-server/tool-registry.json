@@ -1,7 +1,7 @@
 [
   {
     "name": "start_audit_session",
-    "description": "Heron audits the calling agent over MCP sampling. The agent under audit is the MCP client that invokes this tool; Heron asks 9+ compliance questions back through sampling/createMessage and returns the rendered report markdown plus a session id for the dashboard.",
+    "description": "Audit the calling MCP agent. Heron asks 9+ compliance questions about what the agent does, what data it touches, and what permissions it holds. The response includes a `status` field that tells the caller which interview mode is active:\n- `interviewing`: the client declared MCP sampling capability. Heron will ask each question via sampling/createMessage in the background. The caller can poll progress via get_report or watch the dashboard at http://127.0.0.1:3700/dashboard/sessions/<id>.\n- `awaiting_answer`: the client does not support sampling (e.g. Codex CLI / Codex.app). The response includes the first question under `next_question`. The caller MUST reply by calling submit_answer with the returned session_id plus an answer string. Each submit_answer returns either the next question (status=awaiting_answer) or the final report (status=complete).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11,6 +11,28 @@
         }
       },
       "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "submit_answer",
+    "description": "Provide the next answer to an in-progress Heron audit interview started via start_audit_session. Returns either the next question (status=awaiting_answer) or the final report (status=complete) once all questions have been answered. Always pair with start_audit_session — this tool is only callable when an audit session is in the 'awaiting_answer' state (non-sampling clients, AAP-55).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session id returned by a prior start_audit_session call."
+        },
+        "answer": {
+          "type": "string",
+          "description": "The agent’s answer to the most recently asked question."
+        }
+      },
+      "required": [
+        "session_id",
+        "answer"
+      ],
       "additionalProperties": false
     }
   },

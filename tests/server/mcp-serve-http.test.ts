@@ -52,7 +52,7 @@ describe('runMcpServe — HTTP transport (direct integration)', () => {
     expect(port).toBeLessThan(65_536);
   });
 
-  it('lists all three tools through the streamable HTTP transport', async () => {
+  it('lists all four tools through the streamable HTTP transport', async () => {
     const client = new Client(
       { name: 'heron-http-direct-test', version: '0.0.1' },
       { capabilities: {} },
@@ -64,7 +64,12 @@ describe('runMcpServe — HTTP transport (direct integration)', () => {
     try {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['compare_reports', 'get_report', 'start_audit_session']);
+      expect(names).toEqual([
+        'compare_reports',
+        'get_report',
+        'start_audit_session',
+        'submit_answer',
+      ]);
     } finally {
       await client.close();
     }

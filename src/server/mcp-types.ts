@@ -142,7 +142,12 @@ export interface StartAuditSessionInput {
 export interface StartAuditSessionOutput {
   /** ~/.heron/sessions/ id — pasteable into the dashboard URL. */
   session_id: string;
-  /** Final session status (typically `complete`; `error` if the run failed). */
+  /**
+   * Session status at hand-off time. Values:
+   *   - `interviewing`: sampling mode. Background loop is running; caller polls get_report.
+   *   - `awaiting_answer`: tool-call mode (AAP-55). Caller MUST reply with submit_answer.
+   *   - `complete` / `error`: terminal states (not normally observed at start_audit_session).
+   */
   status: string;
   /** Number of Q/A pairs captured. */
   questions_asked: number;
@@ -150,4 +155,35 @@ export interface StartAuditSessionOutput {
   risk_level?: string;
   /** Final rendered report (markdown). */
   report_markdown?: string;
+  /** AAP-55 — present when `status === 'awaiting_answer'`. */
+  next_question?: string;
+  /** AAP-55 — caller-facing instructions for the tool-call loop. */
+  instructions?: string;
+}
+
+// ─── submit_answer (AAP-55) ───────────────────────────────────────────────
+
+/** Input for the `submit_answer` MCP tool. */
+export interface SubmitAnswerInput {
+  session_id: string;
+  answer: string;
+}
+
+/**
+ * Output for the `submit_answer` MCP tool.
+ *
+ * Same shape as the second-and-onwards turns of a tool-call interview.
+ * `status` is either `awaiting_answer` (continue the loop) or `complete`
+ * (terminal — report fields are set).
+ */
+export interface SubmitAnswerOutput {
+  session_id: string;
+  status: 'awaiting_answer' | 'complete';
+  questions_asked: number;
+  /** Present when status === 'awaiting_answer'. */
+  next_question?: string;
+  /** Present when status === 'complete'. */
+  report_markdown?: string;
+  /** Present when status === 'complete' and the analyzer surfaced one. */
+  risk_level?: string;
 }

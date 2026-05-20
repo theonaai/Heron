@@ -90,11 +90,13 @@ async function dispatch(req: Request): Promise<Response> {
       },
     });
 
-    const { runSamplingInterview, analyzeAndRenderReport } = await getSamplingDeps();
+    const { runSamplingInterview, analyzeAndRenderReport, questionPlanner } =
+      await getSamplingDeps();
     const wrapper = new HeronMCPServer({
       differ: stubDiffer,
       runSamplingInterview,
       analyzeAndRenderReport,
+      questionPlanner,
     });
     const mcp = wrapper.buildMcpServer();
     await mcp.connect(transport);
