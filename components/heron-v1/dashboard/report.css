@@ -98,17 +98,27 @@
 .report .muted   { color: var(--r-ink-3); }
 .report .muted-2 { color: var(--r-ink-4); }
 
+/* AAP-64 — Vijil-style deep blue accent for primary section headers.
+   The dashboard's left sidebar still uses its own (chrome) palette;
+   this token is for the report body itself. */
+.report {
+  --r-accent: #0a3b6b;
+}
+
 /* ─── Section header ────────────────────────────────────────────── */
 .report .h-section {
   display: flex;
   align-items: baseline;
   gap: 12px;
   border-top: 1px solid var(--r-border);
-  /* AAP-62 round-2 — more vertical separation between sections so the
-     report doesn't feel like one continuous wall of text. */
-  padding-top: 32px;
-  margin-top: 44px;
-  margin-bottom: 20px;
+  /* AAP-64 — generous Vijil-style vertical spacing. 56/40 (was 44/32
+     after AAP-62 round 2) gives each section room to breathe without
+     anchoring the eye to dense blocks of prose. The numlist that used
+     to follow the section header is gone (replaced by verdict cards);
+     pre-section break needs to be felt clearly. */
+  padding-top: 40px;
+  margin-top: 56px;
+  margin-bottom: 24px;
   scroll-margin-top: 16px;
 }
 .report .h-section .num {
@@ -126,9 +136,13 @@
   text-transform: uppercase;
 }
 .report .h-section .title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
-  color: var(--r-ink);
+  /* AAP-64 — Vijil-style deep blue for primary section titles. The
+     report stays a near-monochrome document; this single accent
+     gives the eye an anchor point per section without resorting to
+     coloured chrome elsewhere. */
+  color: var(--r-accent);
   letter-spacing: -0.01em;
 }
 .report .h-section .meta {
@@ -231,6 +245,64 @@
 .report .tbl-findings td {
   word-break: normal;
   overflow-wrap: anywhere;
+}
+
+/* AAP-64 — Vijil-style Property | Value 2-column table.
+   - Property column is small uppercase label, gray, fixed width.
+   - Value column reads as body prose; identifiers (URLs, IDs, model
+     names) opt into mono via a nested `.mono` span, not the whole cell.
+   - Cell padding generous (16/18) so the table doesn't feel like a
+     spec-sheet dump.
+*/
+.report .tbl-keyvalue {
+  table-layout: fixed;
+}
+.report .tbl-keyvalue th,
+.report .tbl-keyvalue td {
+  padding: 14px 18px;
+  vertical-align: top;
+}
+.report .tbl-keyvalue th.kv-prop,
+.report .tbl-keyvalue td.kv-prop {
+  width: 200px;
+  font-family: var(--r-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--r-ink-3);
+}
+.report .tbl-keyvalue td.kv-val {
+  font-family: var(--r-font-sans);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--r-ink);
+  word-break: break-word;
+}
+.report .tbl-keyvalue td.kv-val .mono {
+  font-family: var(--r-font-mono);
+  font-size: 12.5px;
+  color: var(--r-ink-2);
+  word-break: break-all;
+}
+.report .tbl-keyvalue td.kv-val.muted {
+  color: var(--r-ink-4);
+  font-style: italic;
+}
+/* The legacy-shape pill sits in the Value cell, small + neutral. */
+.report .tbl-keyvalue .legacy-tag {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--r-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--r-ink-4);
+  border: 1px solid var(--r-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  vertical-align: middle;
+  background: var(--r-bg-muted);
 }
 
 /* ─── Panel / card ─────────────────────────────────────────────── */
@@ -506,7 +578,9 @@
   font-weight: 500;
 }
 
-/* System card — always expanded, no inner collapse */
+/* System card — always expanded, no inner collapse.
+   AAP-64: more breathing room (was 14px) so the per-system Property/
+   Value table doesn't feel cramped against the card chrome. */
 .report .sys-card {
   overflow: hidden;
 }
@@ -514,12 +588,12 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 20px 22px;
   border-bottom: 1px solid var(--r-border);
 }
 .report .sys-card .sys-card-body {
-  padding: 14px 16px 16px;
-  background: var(--r-bg-muted);
+  padding: 20px 22px 24px;
+  background: var(--r-bg);
 }
 .report .sys-card .sys-name {
   /* AAP-62 round-3 — was var(--r-font-mono) 12.5px. The LLM-generated
@@ -576,6 +650,46 @@
 }
 .report .numlist { counter-reset: nl; }
 
+/* ─── AAP-64 — Verdict & Recommendations cards ─────────────────────
+   Replaces .numlist for the Verdict section. Each card is its own
+   bordered panel with a bold lead-in title, a body line, and an
+   optional small severity pill on the right. No leading number; the
+   eye reads the title first, body second.
+*/
+.report .verdict-card {
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  background: var(--r-bg);
+  padding: 20px 22px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  column-gap: 16px;
+  row-gap: 8px;
+}
+.report .verdict-card + .verdict-card { margin-top: 12px; }
+.report .verdict-card .vc-title {
+  grid-column: 1 / 2;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--r-ink);
+  line-height: 1.45;
+  margin: 0;
+}
+.report .verdict-card .vc-body {
+  grid-column: 1 / 3;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--r-ink-2);
+  margin: 0;
+}
+.report .verdict-card .vc-pill {
+  grid-column: 2 / 3;
+  grid-row: 1 / 2;
+  align-self: start;
+  justify-self: end;
+}
+
 /* ─── Bar (data quality) ─────────────────────────────────── */
 .report .bar-track {
   height: 5px;
@@ -617,29 +731,37 @@
   margin-bottom: 12px;
 }
 
-/* Working-controls panel: green-tinted */
+/* Working-controls panel — AAP-64: muted, no green wash.
+   Previously a full green-tinted panel ("moss" accent). Kept as a
+   neutral panel with a single-color check glyph so "what's working
+   well" still reads clearly without the heavy chrome. */
 .report .working {
-  border: 1px solid var(--r-low-bd);
-  background: var(--r-low-bg);
+  border: 1px solid var(--r-border);
+  background: var(--r-bg);
   border-radius: var(--r-radius);
-  padding: 14px 16px;
+  padding: 20px 22px;
 }
 .report .working .working-label {
   font-family: var(--r-font-mono);
   font-size: 10.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--r-low);
-  margin-bottom: 10px;
+  color: var(--r-ink-3);
+  margin-bottom: 12px;
 }
 .report .working li {
   display: flex;
-  gap: 8px;
-  font-size: 13px;
+  gap: 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
   color: var(--r-ink-2);
-  padding: 3px 0;
+  padding: 4px 0;
 }
-.report .working li .check { color: var(--r-low); flex-shrink: 0; }
+.report .working li .check {
+  color: var(--r-low);
+  flex-shrink: 0;
+  font-weight: 600;
+}
 
 /* ─── Concern card (compliance) ─────────────────────────── */
 .report .concern {

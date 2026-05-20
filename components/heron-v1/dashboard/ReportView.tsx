@@ -396,6 +396,31 @@ function severityOrder(severity: string): number {
   }
 }
 
+/**
+ * AAP-64 — derive a short bold lead-in title (≤60 chars) from a
+ * recommendation body. Mirrors `recommendationTitle` in
+ * src/report/templates.ts so the dashboard and the markdown export agree
+ * on what the card lead-in reads as. Picks the first short sentence; if
+ * no sentence boundary falls inside 60 chars, falls back to the first
+ * phrase clipped at the last space before 50 chars.
+ */
+function recommendationTitleFromBody(body: string): string {
+  const trimmed = body.trim();
+  const sentenceMatch = trimmed.match(/^(.{1,60}?[.;:])\s/);
+  if (sentenceMatch) {
+    let t = sentenceMatch[1].trim();
+    if (!/[.;:]$/.test(t)) t += '.';
+    return t;
+  }
+  if (trimmed.length <= 60) {
+    return /[.;:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+  const cut = trimmed.slice(0, 50);
+  const lastSpace = cut.lastIndexOf(' ');
+  const head = lastSpace > 20 ? cut.slice(0, lastSpace) : cut;
+  return `${head.trim()}.`;
+}
+
 function inferDomain(risk: Risk): string {
   const t = `${risk.title} ${risk.description}`.toLowerCase();
   if (/scope|permission|least.privilege|over.broad|excessive/.test(t)) return 'Scope & Permissions';
@@ -756,150 +781,232 @@ function SystemsGrouped({ systems }: { systems: SystemAssessment[] }) {
   );
 }
 
+/* AAP-64 — Vijil-style per-system card. The dense field-label/value
+   stack is replaced by a Property | Value 2-column table mirroring the
+   markdown shape; the structured `frequency` object renders as its own
+   "Frequency dimension | Value" nested table below the main one.
+   Identifiers (systemId) render in mono inside the Value cell; prose
+   values stay sans. */
 function SystemCard({ system }: { system: SystemAssessment }) {
   const hasExcess =
     system.scopesDelta.length > 0 && !system.scopesDelta.every((s) => s === 'NOT PROVIDED');
+
+  const hasStructuredFreq =
+    !!system.frequency &&
+    (system.frequency.runsLastWeek !== undefined ||
+      !!system.frequency.callsPerRun ||
+      system.frequency.batchSize !== undefined ||
+      !!system.frequency.concurrency ||
+      !!system.frequency.notes);
+
+  const scopesGranted = system.scopesRequested.filter((s) => s && s !== 'NOT PROVIDED');
+  const scopesNeeded = system.scopesNeeded.filter((s) => s && s !== 'NOT PROVIDED');
+  const excessive = system.scopesDelta.filter((s) => s && s !== 'NOT PROVIDED');
 
   return (
     <div className="panel sys-card">
       <div className="sys-card-head">
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="row-tight" style={{ marginBottom: 4 }}>
-            <span className="sys-name">{system.systemId}</span>
+            <span className="sys-name mono">{system.systemId}</span>
             {hasExcess && <span className="sev sev-high">excess scopes</span>}
           </div>
-          {/* AAP-65: long descriptive prose lives here, NOT in the title. */}
+          {/* AAP-65: long descriptive prose lives above the table, NOT in
+              the title. AAP-64: italicised body text, not a mono caption. */}
           {system.systemDescription && system.systemDescription.trim().length > 0 && (
             <div
               className="sys-sub"
-              style={{ marginTop: 2, fontStyle: 'italic', color: 'var(--r-ink-3)' }}
+              style={{ marginTop: 4, fontStyle: 'italic', color: 'var(--r-ink-3)', maxWidth: 760 }}
             >
               {system.systemDescription}
             </div>
           )}
-          <div className="sys-sub">
-            {blastRadiusLabel[system.blastRadius] ?? system.blastRadius} ·{' '}
-            {system.dataSensitivity || '—'}
-          </div>
         </div>
       </div>
 
-      <div className="sys-card-body stack-md" style={{ fontSize: 12.5 }}>
-        {/* AAP-65: prefer structured frequency table over prose paragraph.
-            Falls back to legacy prose for pre-AAP-65 sessions on disk. */}
-        {system.frequency &&
-        (system.frequency.runsLastWeek !== undefined ||
-          system.frequency.callsPerRun ||
-          system.frequency.batchSize !== undefined ||
-          system.frequency.concurrency ||
-          system.frequency.notes) ? (
-          <div>
-            <span className="field-label">Frequency</span>
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', color: 'var(--r-ink-2)' }}>
+      <div className="sys-card-body">
+        {/* AAP-64 — Vijil-style Property | Value table. */}
+        <table className="tbl tbl-keyvalue" aria-label={`Properties for ${system.systemId}`}>
+          <tbody>
+            <tr>
+              <td className="kv-prop">System ID</td>
+              <td className="kv-val">
+                <span className="mono">{system.systemId}</span>
+              </td>
+            </tr>
+            <tr>
+              <td className="kv-prop">Data sensitivity</td>
+              <td className={`kv-val ${system.dataSensitivity ? '' : 'muted'}`}>
+                {system.dataSensitivity || 'Unknown'}
+              </td>
+            </tr>
+            <tr>
+              <td className="kv-prop">Blast radius</td>
+              <td className="kv-val">{blastRadiusLabel[system.blastRadius] ?? system.blastRadius}</td>
+            </tr>
+            <tr>
+              <td className="kv-prop">Scopes granted</td>
+              <td className={`kv-val ${scopesGranted.length === 0 ? 'muted' : ''}`}>
+                {scopesGranted.length === 0 ? (
+                  'Unknown'
+                ) : (
+                  <div className="row-tight" style={{ gap: 6 }}>
+                    {scopesGranted.map((s) => {
+                      const isExcessive = system.scopesDelta.includes(s);
+                      return (
+                        <span key={s} className={`scope-chip ${isExcessive ? 'excess' : ''}`}>
+                          {s}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </td>
+            </tr>
+            {scopesNeeded.length > 0 && (
+              <tr>
+                <td className="kv-prop">Scopes needed</td>
+                <td className="kv-val">
+                  <div className="row-tight" style={{ gap: 6 }}>
+                    {scopesNeeded.map((s) => (
+                      <span key={s} className="scope-chip required">
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+              </tr>
+            )}
+            {excessive.length > 0 && (
+              <tr>
+                <td className="kv-prop">Excessive</td>
+                <td className="kv-val">
+                  <div className="row-tight" style={{ gap: 6 }}>
+                    {excessive.map((s, i) => (
+                      <span key={i} className="scope-chip excess">
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+              </tr>
+            )}
+            {!hasStructuredFreq && (
+              <tr>
+                <td className="kv-prop">Frequency</td>
+                <td
+                  className={`kv-val ${
+                    system.frequencyAndVolume && system.frequencyAndVolume !== 'NOT PROVIDED'
+                      ? ''
+                      : 'muted'
+                  }`}
+                >
+                  {system.frequencyAndVolume && system.frequencyAndVolume !== 'NOT PROVIDED' ? (
+                    <>
+                      {system.frequencyAndVolume}
+                      <span className="legacy-tag">legacy shape</span>
+                    </>
+                  ) : (
+                    'Unknown'
+                  )}
+                </td>
+              </tr>
+            )}
+            {system.writeOperations.length > 0 && (
+              <tr>
+                <td className="kv-prop">Writes</td>
+                <td className="kv-val">
+                  <ul className="stack" style={{ gap: 6 }}>
+                    {system.writeOperations.map((w, i) => (
+                      <li
+                        key={i}
+                        className="row-tight"
+                        style={{ color: 'var(--r-ink)', fontSize: 13 }}
+                      >
+                        <span style={{ fontWeight: 500 }}>{w.operation}</span>
+                        <span style={{ color: 'var(--r-ink-4)' }}>→</span>
+                        <span>{w.target}</span>
+                        <span className={`sev ${w.reversible ? 'sev-low' : 'sev-high'}`}>
+                          {w.reversible ? 'reversible' : 'irreversible'}
+                        </span>
+                        {w.volumePerDay && w.volumePerDay !== 'NOT PROVIDED' && (
+                          <span className="mono" style={{ color: 'var(--r-ink-4)', fontSize: 11.5 }}>
+                            {w.volumePerDay}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </td>
+              </tr>
+            )}
+            {system.sources && system.sources.length > 0 && (
+              <tr>
+                <td className="kv-prop">Sources</td>
+                <td className="kv-val">
+                  <span className="mono" style={{ fontSize: 11.5, color: 'var(--r-ink-4)' }}>
+                    {system.sources.join(', ')}
+                  </span>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+
+        {/* AAP-64 — structured frequency sub-table sits below the main
+            Property | Value block so the dense numbers don't crowd the
+            scope chips above. */}
+        {hasStructuredFreq && system.frequency && (
+          <table
+            className="tbl tbl-keyvalue"
+            aria-label="Frequency dimensions"
+            style={{ marginTop: 14 }}
+          >
+            <thead>
+              <tr>
+                <th className="kv-prop">Frequency dimension</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
               {system.frequency.runsLastWeek !== undefined && (
-                <>
-                  <span style={{ color: 'var(--r-ink-4)' }}>Runs / week</span>
-                  <span>{system.frequency.runsLastWeek === null ? 'not observable' : system.frequency.runsLastWeek}</span>
-                </>
+                <tr>
+                  <td className="kv-prop">Runs last week</td>
+                  <td
+                    className={`kv-val ${system.frequency.runsLastWeek === null ? 'muted' : ''}`}
+                  >
+                    {system.frequency.runsLastWeek === null
+                      ? 'not observable'
+                      : system.frequency.runsLastWeek}
+                  </td>
+                </tr>
               )}
               {system.frequency.callsPerRun && (
-                <>
-                  <span style={{ color: 'var(--r-ink-4)' }}>Calls / run</span>
-                  <span>{system.frequency.callsPerRun}</span>
-                </>
+                <tr>
+                  <td className="kv-prop">Calls per run</td>
+                  <td className="kv-val">{system.frequency.callsPerRun}</td>
+                </tr>
               )}
               {system.frequency.batchSize !== undefined && (
-                <>
-                  <span style={{ color: 'var(--r-ink-4)' }}>Batch size</span>
-                  <span>{String(system.frequency.batchSize)}</span>
-                </>
+                <tr>
+                  <td className="kv-prop">Batch size</td>
+                  <td className="kv-val">{String(system.frequency.batchSize)}</td>
+                </tr>
               )}
               {system.frequency.concurrency && (
-                <>
-                  <span style={{ color: 'var(--r-ink-4)' }}>Concurrency</span>
-                  <span>{system.frequency.concurrency}</span>
-                </>
+                <tr>
+                  <td className="kv-prop">Concurrency</td>
+                  <td className="kv-val">{system.frequency.concurrency}</td>
+                </tr>
               )}
               {system.frequency.notes && (
-                <>
-                  <span style={{ color: 'var(--r-ink-4)' }}>Notes</span>
-                  <span>{system.frequency.notes}</span>
-                </>
+                <tr>
+                  <td className="kv-prop">Notes</td>
+                  <td className="kv-val">{system.frequency.notes}</td>
+                </tr>
               )}
-            </div>
-          </div>
-        ) : system.frequencyAndVolume && system.frequencyAndVolume !== 'NOT PROVIDED' ? (
-          <div>
-            <span className="field-label">Frequency</span>
-            <span style={{ color: 'var(--r-ink-2)' }}>{system.frequencyAndVolume}</span>
-          </div>
-        ) : null}
-
-        {system.scopesRequested.length > 0 && (
-          <div>
-            <span className="field-label">Scopes granted</span>
-            <div className="row-tight" style={{ gap: 6 }}>
-              {system.scopesRequested.map((s) => {
-                const isExcessive = system.scopesDelta.includes(s);
-                return (
-                  <span key={s} className={`scope-chip ${isExcessive ? 'excess' : ''}`}>
-                    {s}
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {system.scopesNeeded.length > 0 && (
-          <div>
-            <span className="field-label">Minimum required</span>
-            <div className="row-tight" style={{ gap: 6 }}>
-              {system.scopesNeeded.map((s) => (
-                <span key={s} className="scope-chip required">
-                  {s}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {system.writeOperations.length > 0 && (
-          <div>
-            <span className="field-label">Write operations</span>
-            <ul className="stack" style={{ gap: 4 }}>
-              {system.writeOperations.map((w, i) => (
-                <li
-                  key={i}
-                  className="row-tight"
-                  style={{ color: 'var(--r-ink-2)', fontSize: 12.5 }}
-                >
-                  <span style={{ fontWeight: 500 }}>{w.operation}</span>
-                  <span style={{ color: 'var(--r-ink-4)' }}>→</span>
-                  <span>{w.target}</span>
-                  <span className={`sev ${w.reversible ? 'sev-low' : 'sev-high'}`}>
-                    {w.reversible ? 'reversible' : 'irreversible'}
-                  </span>
-                  {w.volumePerDay && w.volumePerDay !== 'NOT PROVIDED' && (
-                    <span className="mono" style={{ color: 'var(--r-ink-4)', fontSize: 11.5 }}>
-                      {w.volumePerDay}
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* AAP-65: source refs extracted from inline (A3, A4) markers
-            render as a footnote-style row at the bottom of the card. */}
-        {system.sources && system.sources.length > 0 && (
-          <div style={{ marginTop: 4 }}>
-            <span className="field-label">Sources</span>
-            <span className="mono" style={{ color: 'var(--r-ink-4)', fontSize: 11.5 }}>
-              {system.sources.join(', ')}
-            </span>
-          </div>
+            </tbody>
+          </table>
         )}
       </div>
     </div>
@@ -1619,31 +1726,56 @@ export default function ReportView({
         {json.summary}
       </p>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: 12,
-        }}
+      {/* AAP-64 — Agent Profile Property/Value table (Vijil-style).
+          Replaces the side-by-side Purpose/Trigger/Owner mini-panels
+          with a single clean 2-column table — agent name + system head
+          up top, then prose values below. */}
+      <table
+        className="tbl tbl-keyvalue"
+        aria-label="Agent profile"
+        style={{ marginBottom: 8 }}
       >
-        {[
-          { label: 'Purpose', body: json.agentPurpose },
-          { label: 'Trigger', body: json.agentTrigger },
-          {
-            label: 'Owner',
-            body: json.agentOwner === 'NOT PROVIDED' ? undefined : json.agentOwner,
-          },
-        ].map((b) =>
-          b.body ? (
-            <div key={b.label} className="panel panel-pad panel-muted">
-              <div className="field-label">{b.label}</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.55, color: 'var(--r-ink-2)' }}>
-                {b.body}
-              </div>
-            </div>
-          ) : null,
-        )}
-      </div>
+        <tbody>
+          {json.metadata?.target && (
+            <tr>
+              <td className="kv-prop">Agent name</td>
+              <td className="kv-val">
+                <span className="mono">{json.metadata.target}</span>
+              </td>
+            </tr>
+          )}
+          {businessSystems[0]?.systemDescription &&
+            businessSystems[0].systemDescription.trim().length > 0 && (
+              <tr>
+                <td className="kv-prop">System</td>
+                <td className="kv-val">
+                  {businessSystems[0].systemDescription
+                    .trim()
+                    .split(/\.(\s|$)/)[0]
+                    .trim()}
+                </td>
+              </tr>
+            )}
+          {json.agentOwner && json.agentOwner !== 'NOT PROVIDED' && (
+            <tr>
+              <td className="kv-prop">Owner</td>
+              <td className="kv-val">{json.agentOwner}</td>
+            </tr>
+          )}
+          {json.agentTrigger && (
+            <tr>
+              <td className="kv-prop">Trigger</td>
+              <td className="kv-val">{json.agentTrigger}</td>
+            </tr>
+          )}
+          {json.agentPurpose && (
+            <tr>
+              <td className="kv-prop">Purpose</td>
+              <td className="kv-val">{json.agentPurpose}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
 
       {/* 03 Findings */}
       <SectionHead
@@ -1695,12 +1827,25 @@ export default function ReportView({
         <VerdictBanner verdict={verdict} />
       </div>
 
+      {/* AAP-64 — recommendation cards (replaces .numlist).
+          Each card has a derived bold lead-in title + body sentence.
+          Severity pill placeholder is intentionally omitted for now:
+          we don't have a per-recommendation severity in report.json
+          (it lives on the related risk, not the rec); a neutral
+          card without a pill reads cleaner than a fabricated one. */}
       {json.recommendations.length > 0 && (
-        <ol className="numlist">
-          {json.recommendations.map((r, i) => (
-            <li key={i}>{r}</li>
-          ))}
-        </ol>
+        <div className="stack-md">
+          {json.recommendations.map((r, i) => {
+            const title = recommendationTitleFromBody(r);
+            const sameTitle = title === r.trim() || title === `${r.trim()}.`;
+            return (
+              <div key={i} className="verdict-card">
+                <p className="vc-title">{title}</p>
+                {!sameTitle && <p className="vc-body">{r.trim()}</p>}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {excessiveBySystem.size > 0 && (

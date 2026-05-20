@@ -257,20 +257,46 @@ ${report.summary}`;
 
 // ─── Agent Profile ───────────────────────────────────────────────────────────
 
+/**
+ * AAP-64 — Property/Value 2-column table (Vijil-style), replacing the
+ * earlier bullet list. The Property column is the small uppercase label;
+ * the Value column carries the readable value. Identifiers (URLs, IDs)
+ * are wrapped in backticks so markdown renderers render them in mono;
+ * prose values are plain text.
+ *
+ * Rows are emitted in a stable order so a reader scanning multiple
+ * reports finds the same fields in the same place.
+ */
 function renderAgentProfile(report: AuditReport): string {
-  const lines = [`- **Purpose**: ${report.agentPurpose}`];
-  if (report.agentTrigger) lines.push(`- **Trigger**: ${report.agentTrigger}`);
-  if (isProvided(report.agentOwner)) {
-    lines.push(`- **Owner**: ${report.agentOwner}`);
-  }
+  // Agent name — best-effort: metadata.target is the canonical handle the
+  // CLI / dashboard surface. Fall back to first systemId, then to a stub.
+  const agentName =
+    report.metadata?.target ||
+    report.systems[0]?.systemId ||
+    'unknown-agent';
 
-  // Frequency from first system if available
-  const freq = report.systems[0]?.frequencyAndVolume;
-  if (isProvided(freq)) lines.push(`- **Frequency**: ${freq}`);
+  // First business system summary string — short identifier + truncated
+  // description if present (description is also rendered on the per-system
+  // block below; the agent profile only carries a one-line summary).
+  const firstSys = report.systems[0];
+  const systemSummary = firstSys
+    ? firstSys.systemDescription && firstSys.systemDescription.trim().length > 0
+      ? firstSys.systemDescription.trim().split(/\.(\s|$)/)[0].trim()
+      : firstSys.systemId
+    : undefined;
+
+  const rows: Array<[string, string]> = [];
+  rows.push(['Agent name', `\`${agentName}\``]);
+  if (systemSummary) rows.push(['System', systemSummary]);
+  if (isProvided(report.agentOwner)) rows.push(['Owner', report.agentOwner]);
+  if (report.agentTrigger) rows.push(['Trigger', report.agentTrigger]);
+  rows.push(['Purpose', report.agentPurpose]);
 
   return `## Agent Profile
 
-${lines.join('\n')}`;
+| Property | Value |
+|----------|-------|
+${rows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
 }
 
 // ─── Per-System Cards ────────────────────────────────────────────────────────
@@ -308,24 +334,49 @@ function computeSystemRisk(sys: SystemAssessment): string {
   return 'LOW';
 }
 
+/**
+ * AAP-64 — per-system Property/Value table (Vijil-style). Replaces the
+ * anonymous `| | |` 2-column shape with a named header so a markdown
+ * reader (and downstream PDF exporters) can render it as a real table.
+ *
+ * The structured `frequency` object expands into its own
+ * "Frequency dimension | Value" sub-table BELOW the main table when
+ * present; pre-AAP-65 sessions that only carry the prose
+ * `frequencyAndVolume` string get a single Frequency row in the main
+ * table, tagged "(legacy shape)" so a reviewer knows it isn't the
+ * canonical structured form.
+ */
 function renderSystemCard(sys: SystemAssessment): string {
-  const rows: string[] = [];
+  const rows: Array<[string, string]> = [];
   const risk = computeSystemRisk(sys);
+
+  // System short-id (mono, identifier) — separate from the long
+  // systemDescription that lives in the main "System" row.
+  rows.push(['System ID', `\`${sys.systemId}\``]);
+
+  if (isProvided(sys.dataSensitivity)) {
+    rows.push(['Data sensitivity', sys.dataSensitivity]);
+  } else {
+    rows.push(['Data sensitivity', `_${UNKNOWN_PLACEHOLDER}_`]);
+  }
+
+  rows.push(['Blast radius', sys.blastRadius]);
 
   // Scopes
   const scopes = sys.scopesRequested.filter(isProvided);
-  rows.push(`| **Scopes granted** | ${scopes.length > 0 ? scopes.join(', ') : `*${UNKNOWN_PLACEHOLDER}*`} |`);
+  rows.push([
+    'Scopes granted',
+    scopes.length > 0 ? scopes.join(', ') : `_${UNKNOWN_PLACEHOLDER}_`,
+  ]);
 
   const needed = sys.scopesNeeded.filter(isProvided);
   if (needed.length > 0) {
-    rows.push(`| **Scopes needed** | ${needed.join(', ')} |`);
+    rows.push(['Scopes needed', needed.join(', ')]);
   }
 
-  // AAP-65 — the analyzer now produces clean, bare permission tokens via
-  // sanitizeAnalyzerOutput. We keep the regex strip below as defense-in-depth
-  // for old report.json blobs that were persisted BEFORE AAP-65 landed and
-  // still carry the "Unused in this audit task so far:" lead-in. New
-  // reports go through the analyzer's sanitization pass and arrive clean.
+  // AAP-65 — clean defense-in-depth strip for old persisted shapes (the
+  // analyzer's sanitizeAnalyzerOutput already removes these prefixes on
+  // ingest for new sessions).
   const cleanScope = (s: string): string =>
     s
       .replace(/^\s*Unused in this(?:\s+(?:audit\s+task|task))?\s+so\s+far\s*:?\s*/i, '')
@@ -334,63 +385,75 @@ function renderSystemCard(sys: SystemAssessment): string {
       .trim() || s;
   const excessive = sys.scopesDelta.filter(isProvided).map(cleanScope);
   if (excessive.length > 0) {
-    rows.push(`| **Excessive** | ${excessive.join(', ')} |`);
+    rows.push(['Excessive', excessive.join(', ')]);
   }
 
-  // Data sensitivity
-  if (isProvided(sys.dataSensitivity)) {
-    rows.push(`| **Data** | ${sys.dataSensitivity} |`);
-  } else {
-    rows.push(`| **Data** | *${UNKNOWN_PLACEHOLDER}* |`);
-  }
-
-  // Blast radius
-  rows.push(`| **Blast radius** | ${sys.blastRadius} |`);
-
-  // AAP-65: prefer the structured `frequency` object — render as key/value
-  // rows instead of a single prose paragraph. Fall back to the legacy
-  // `frequencyAndVolume` string for sessions persisted before AAP-65.
+  // Frequency — legacy fallback only. Structured frequency renders below.
   const freq = sys.frequency;
-  if (freq && (freq.runsLastWeek !== undefined || freq.callsPerRun || freq.batchSize !== undefined || freq.concurrency || freq.notes)) {
-    if (freq.runsLastWeek !== undefined) {
-      const label = freq.runsLastWeek === null ? '*not observable*' : String(freq.runsLastWeek);
-      rows.push(`| **Runs / week** | ${label} |`);
+  const hasStructuredFreq =
+    !!freq &&
+    (freq.runsLastWeek !== undefined ||
+      !!freq.callsPerRun ||
+      freq.batchSize !== undefined ||
+      !!freq.concurrency ||
+      !!freq.notes);
+  if (!hasStructuredFreq) {
+    if (isProvided(sys.frequencyAndVolume)) {
+      rows.push(['Frequency', `${sys.frequencyAndVolume} _(legacy shape)_`]);
+    } else {
+      rows.push(['Frequency', `_${UNKNOWN_PLACEHOLDER}_`]);
     }
-    if (freq.callsPerRun) rows.push(`| **Calls / run** | ${freq.callsPerRun} |`);
-    if (freq.batchSize !== undefined) rows.push(`| **Batch size** | ${freq.batchSize} |`);
-    if (freq.concurrency) rows.push(`| **Concurrency** | ${freq.concurrency} |`);
-    if (freq.notes) rows.push(`| **Frequency notes** | ${freq.notes} |`);
-  } else if (isProvided(sys.frequencyAndVolume)) {
-    rows.push(`| **Frequency** | ${sys.frequencyAndVolume} |`);
-  } else {
-    rows.push(`| **Frequency** | *${UNKNOWN_PLACEHOLDER}* |`);
   }
 
-  // Write operations — inline in card
+  // Write operations — keep the per-write summary inline.
   if (sys.writeOperations.length > 0) {
-    const writesSummary = sys.writeOperations.map(w => {
-      const rev = w.reversible ? 'reversible' : '**irreversible**';
-      return `${w.operation} → ${w.target} (${rev}, ${w.volumePerDay})`;
-    }).join('; ');
-    rows.push(`| **Writes** | ${writesSummary} |`);
+    const writesSummary = sys.writeOperations
+      .map(w => {
+        const rev = w.reversible ? 'reversible' : '**irreversible**';
+        return `${w.operation} → ${w.target} (${rev}, ${w.volumePerDay})`;
+      })
+      .join('; ');
+    rows.push(['Writes', writesSummary]);
   }
 
-  // AAP-65: source refs (extracted from inline (A3, A4) markers) get
-  // rendered as a footnote-style row.
   if (sys.sources && sys.sources.length > 0) {
-    rows.push(`| **Sources** | ${sys.sources.join(', ')} |`);
+    rows.push(['Sources', sys.sources.join(', ')]);
   }
 
-  // AAP-65: optional descriptive paragraph under the short title.
-  const descriptionLine = sys.systemDescription && sys.systemDescription.trim().length > 0
-    ? `\n\n_${sys.systemDescription.trim()}_`
-    : '';
+  // Optional descriptive paragraph above the table — italicised body text.
+  const descriptionLine =
+    sys.systemDescription && sys.systemDescription.trim().length > 0
+      ? `\n\n_${sys.systemDescription.trim()}_\n`
+      : '';
+
+  // Build the main Property | Value table.
+  const mainTable = `| Property | Value |
+|----------|-------|
+${rows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
+
+  // Optional structured-frequency sub-table.
+  let freqTable = '';
+  if (hasStructuredFreq && freq) {
+    const freqRows: Array<[string, string]> = [];
+    if (freq.runsLastWeek !== undefined) {
+      freqRows.push([
+        'Runs last week',
+        freq.runsLastWeek === null ? 'not observable' : String(freq.runsLastWeek),
+      ]);
+    }
+    if (freq.callsPerRun) freqRows.push(['Calls per run', freq.callsPerRun]);
+    if (freq.batchSize !== undefined) freqRows.push(['Batch size', String(freq.batchSize)]);
+    if (freq.concurrency) freqRows.push(['Concurrency', freq.concurrency]);
+    if (freq.notes) freqRows.push(['Notes', freq.notes]);
+
+    freqTable = `\n\n| Frequency dimension | Value |
+|---------------------|-------|
+${freqRows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
+  }
 
   return `### ${sys.systemId} — Risk: ${risk}${descriptionLine}
 
-| | |
-|---|---|
-${rows.join('\n')}`;
+${mainTable}${freqTable}`;
 }
 
 // ─── Findings ───────────────────────────────────────────────────────────────
@@ -652,6 +715,33 @@ ${positives.map(p => `- ✓ ${p}`).join('\n')}`;
 
 // ─── Verdict (merged Recommendation + Recommendations) ───────────────────────
 
+/**
+ * AAP-64 — derive a short bold lead-in title (≤60 chars) from a
+ * recommendation body. Picks the first short sentence; if no sentence
+ * boundary falls inside 60 chars, falls back to the first phrase clipped
+ * at the last space before 50 chars. Always ends with a period so the
+ * bold lead-in reads as a title in markdown.
+ */
+function recommendationTitle(body: string): string {
+  const trimmed = body.trim();
+  // First sentence — split on period/colon/semicolon.
+  const sentenceMatch = trimmed.match(/^(.{1,60}?[.;:])\s/);
+  if (sentenceMatch) {
+    let t = sentenceMatch[1].trim();
+    if (!/[.;:]$/.test(t)) t += '.';
+    return t;
+  }
+  // Short body that fits in 60 chars: title IS the body.
+  if (trimmed.length <= 60) {
+    return /[.;:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+  // Long body with no early sentence break: clip at last space ≤50 chars.
+  const cut = trimmed.slice(0, 50);
+  const lastSpace = cut.lastIndexOf(' ');
+  const head = lastSpace > 20 ? cut.slice(0, lastSpace) : cut;
+  return `${head.trim()}.`;
+}
+
 function renderVerdict(report: AuditReport): string {
   // Never allow bare APPROVE for self-reported interview — always at least "WITH CONDITIONS"
   let verdict = report.recommendation ?? 'APPROVE WITH CONDITIONS';
@@ -669,7 +759,24 @@ function renderVerdict(report: AuditReport): string {
   let body = `**${verdict}**`;
 
   if (allRecs.length > 0) {
-    body += '\n\n' + allRecs.map((r, i) => `${i + 1}. ${r}`).join('\n');
+    // AAP-64 — each recommendation becomes a markdown blockquote card.
+    // Lead-in is the inferred short title, bolded; body follows on the
+    // same line. A blank line between cards keeps each card visually
+    // distinct in any markdown renderer.
+    body +=
+      '\n\n' +
+      allRecs
+        .map(r => {
+          const title = recommendationTitle(r);
+          // Strip the title prefix from the body if it's the same span
+          // (avoid "Foo. Foo. ..." duplication when title IS the body).
+          const sameTitle = title === r.trim() || title === `${r.trim()}.`;
+          if (sameTitle) {
+            return `> **${title}**`;
+          }
+          return `> **${title}** ${r.trim()}`;
+        })
+        .join('\n>\n');
   }
 
   // Permissions delta — grouped by system
