@@ -6,6 +6,7 @@ import { ANALYSIS_SYSTEM_PROMPT, buildAnalysisPrompt } from '../llm/prompts.js';
 import * as logger from '../util/logger.js';
 import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
 import { isBusinessSystem } from '../util/systems.js';
+import { sanitizeAnalyzerOutput } from './sanitize.js';
 
 // Extended result that includes both new per-system data and legacy flat fields
 export interface FullAnalysisResult extends AnalysisResult {
@@ -226,8 +227,19 @@ async function tryParse(
     // default substitution. This distinguishes "LLM explicitly wrote NOT
     // PROVIDED" from "field was absent" — both are normalized to undefined so
     // Zod's .default() applies uniformly and the renderer can surface an
-    // explicit "Unknown — ask deployer" marker instead of leaking the string.
+    // explicit "Unknown — ask deployer" placeholder instead of leaking the
+    // string.
     scrubNotProvidedInPlace(raw);
+
+    // AAP-65: reshape LLM output to fit the tightened schema:
+    //   - prose-shaped `systemId` → short kebab-case + `systemDescription`
+    //   - `scopesDelta` lead-ins stripped ("Unused in this audit task so far:")
+    //   - inline source refs `(A3, A4)` pulled out into `sources[]`
+    //   - `frequencyAndVolume` prose → structured `frequency` object
+    //   - near-duplicate risks merged
+    // This runs BEFORE Zod parse so the schema's `.max()` + `.regex()`
+    // constraints see clean input instead of failing on LLM prose.
+    sanitizeAnalyzerOutput(raw);
 
     // Zod validation — parse with defaults and coercion
     const result = analysisResultSchema.parse(raw);

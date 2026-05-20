@@ -412,7 +412,13 @@ function computeDataQuality(
     let gaps = 0;
     for (const s of systems) {
       if (!isProvided(s.dataSensitivity)) gaps++;
-      if (!isProvided(s.frequencyAndVolume)) gaps++;
+      // AAP-65: count the new structured `frequency` object as "provided"
+      // when it has any content; fall back to legacy `frequencyAndVolume`
+      // for pre-AAP-65 sessions on disk.
+      const hasFrequency = (s.frequency && Object.keys(s.frequency).some(
+        (k) => (s.frequency as Record<string, unknown>)[k] !== undefined,
+      )) || isProvided(s.frequencyAndVolume);
+      if (!hasFrequency) gaps++;
       if (s.scopesRequested.length === 0 || !s.scopesRequested.some(isProvided)) gaps++;
       for (const w of s.writeOperations) {
         if (!isProvided(w.volumePerDay)) gaps++;

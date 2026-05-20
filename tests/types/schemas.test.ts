@@ -81,7 +81,9 @@ describe('Zod schemas', () => {
   describe('systemAssessmentSchema', () => {
     it('validates a complete system assessment', () => {
       const result = systemAssessmentSchema.parse({
-        systemId: 'Gmail API via OAuth2',
+        // AAP-65: kebab-case short identifier required by tightened schema.
+        systemId: 'gmail-api',
+        systemDescription: 'Gmail API via OAuth2',
         scopesRequested: ['gmail.readonly', 'gmail.send'],
         scopesNeeded: ['gmail.readonly'],
         scopesDelta: ['gmail.send'],
@@ -96,13 +98,14 @@ describe('Zod schemas', () => {
           volumePerDay: '10',
         }],
       });
-      expect(result.systemId).toContain('Gmail');
+      expect(result.systemId).toBe('gmail-api');
+      expect(result.systemDescription).toContain('Gmail');
       expect(result.scopesDelta).toEqual(['gmail.send']);
     });
 
     it('accepts empty arrays', () => {
       const result = systemAssessmentSchema.parse({
-        systemId: 'Read-only API',
+        systemId: 'read-only-api',
         scopesRequested: [],
         scopesNeeded: [],
         scopesDelta: [],
@@ -124,6 +127,47 @@ describe('Zod schemas', () => {
         frequencyAndVolume: 'Rarely',
         writeOperations: [],
       })).toThrow();
+    });
+
+    // AAP-65: tightened systemId shape.
+    it('rejects prose-shaped systemId (sentence)', () => {
+      expect(() => systemAssessmentSchema.parse({
+        systemId: 'Codex desktop app local agent session -> OpenAI-hosted backend; not visible (A3, A4).',
+        scopesRequested: [],
+        scopesNeeded: [],
+        scopesDelta: [],
+        dataSensitivity: '',
+        blastRadius: 'single-user',
+        frequencyAndVolume: '',
+        writeOperations: [],
+      })).toThrow();
+    });
+
+    it('rejects systemId with capital letters or spaces', () => {
+      expect(() => systemAssessmentSchema.parse({
+        systemId: 'Gmail API via OAuth2',
+        scopesRequested: [],
+        scopesNeeded: [],
+        scopesDelta: [],
+        dataSensitivity: '',
+        blastRadius: 'single-user',
+        frequencyAndVolume: '',
+        writeOperations: [],
+      })).toThrow();
+    });
+
+    it('accepts kebab-case systemId', () => {
+      const result = systemAssessmentSchema.parse({
+        systemId: 'openai-codex-backend',
+        scopesRequested: [],
+        scopesNeeded: [],
+        scopesDelta: [],
+        dataSensitivity: '',
+        blastRadius: 'single-user',
+        frequencyAndVolume: '',
+        writeOperations: [],
+      });
+      expect(result.systemId).toBe('openai-codex-backend');
     });
   });
 
@@ -154,7 +198,8 @@ describe('Zod schemas', () => {
         summary: 'Test summary',
         agentPurpose: 'Process invoices',
         systems: [{
-          systemId: 'SAP',
+          // AAP-65: kebab-case short identifier required.
+          systemId: 'sap',
           scopesRequested: ['read'],
           scopesNeeded: ['read'],
           scopesDelta: [],
