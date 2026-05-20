@@ -58,7 +58,11 @@ describe('analyzer', () => {
 
     expect(outcome.result.agentPurpose).toBe('Process invoices and update CRM');
     expect(outcome.result.systems.length).toBe(2);
-    expect(outcome.result.systems[0].systemId).toContain('SAP');
+    // AAP-65: prose systemId ("SAP ERP, REST API via service account") is
+    // reshaped by the sanitization pass into a kebab-case short identifier.
+    // The full prose is preserved on `systemDescription`.
+    expect(outcome.result.systems[0].systemId).toContain('sap');
+    expect(outcome.result.systems[0].systemDescription).toContain('SAP ERP');
     expect(outcome.result.systems[1].blastRadius).toBe('org-wide');
     expect(outcome.result.risks.length).toBe(1);
     // AAP-63 — `overallRiskLevel` remains the analyzer's self-reported
@@ -178,8 +182,9 @@ describe('analyzer', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
 
-    expect(outcome.result.dataNeeds.some(d => d.system.includes('SAP'))).toBe(true);
-    expect(outcome.result.dataNeeds.some(d => d.system.includes('HubSpot'))).toBe(true);
+    // AAP-65: system identifiers are now kebab-case post-sanitization.
+    expect(outcome.result.dataNeeds.some(d => d.system.includes('sap'))).toBe(true);
+    expect(outcome.result.dataNeeds.some(d => d.system.includes('hubspot'))).toBe(true);
   });
 
   // AAP-43 post-merge regression (2026-04-25):
