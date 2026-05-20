@@ -103,6 +103,16 @@ export function createQuestionPlanner(
    * text matches a core question (skipping over LLM follow-ups), and
    * for follow-up entries it generates a placeholder follow-up question
    * to drain the queue.
+   *
+   * AAP-60 — after replaying answers, we walk the transcript a SECOND
+   * time to reconstruct the follow-up cap counters (global +
+   * per-question) and prime the protocol with them. `recordAnswer`
+   * doesn't bump those counters — only `generateFollowUp` does — so
+   * without this step the fresh protocol's `globalFollowUpCount`
+   * stays at zero and the cap check inside `generateFollowUp` never
+   * fires across `submit_answer` calls. Symptom: planner yields
+   * follow-ups indefinitely in one category (see
+   * sess-20260520-070938-2cc40f: 67 turns, all 'purpose').
    */
   async function rehydrate(transcript: QAPair[]): Promise<ReturnType<typeof createProtocol>> {
     const protocol = createProtocol(llmClient, maxFollowUps);
@@ -137,6 +147,29 @@ export function createQuestionPlanner(
         protocol.recordAnswer(synthetic, entry.answer);
       }
     }
+
+    // AAP-60 — reconstruct follow-up counters from the transcript and
+    // prime the protocol. A transcript entry is a follow-up iff its
+    // question text does NOT match any core question text exactly.
+    // Each follow-up is attributed to the most recent preceding core
+    // question (mirrors protocol.ts:291-293, which finds `lastCoreQ`
+    // by matching category against transcript entries).
+    let global = 0;
+    const perQuestion = new Map<string, number>();
+    let lastCore: InterviewQuestion | null = null;
+    for (const entry of transcript) {
+      const coreMatch = byText.get(entry.question);
+      if (coreMatch) {
+        lastCore = coreMatch;
+        continue;
+      }
+      // Follow-up entry.
+      global += 1;
+      if (lastCore) {
+        perQuestion.set(lastCore.id, (perQuestion.get(lastCore.id) ?? 0) + 1);
+      }
+    }
+    protocol.primeFollowUpCounts({ global, perQuestion });
 
     return protocol;
   }
