@@ -40,14 +40,15 @@ export type QAPair = z.infer<typeof qaPairSchema>;
 // ─── Per-system SystemAssessment (7 compliance fields) ──────────────────────
 
 export const writeOperationSchema = z.object({
-  operation: z.string(),
-  target: z.string(),
+  // AAP-65: cap each field at a short structured value.
+  operation: z.string().max(80),
+  target: z.string().max(80),
   reversible: z.boolean().default(false),
   approvalRequired: z.boolean().default(false),
   // AAP-43 P0 #2: default to empty string (not "NOT PROVIDED" sentinel).
   // Callers use isProvided() to detect missing fields, which now renders
   // an explicit "Unknown — ask deployer" placeholder in customer-facing output.
-  volumePerDay: z.string().default(''),
+  volumePerDay: z.string().max(40).default(''),
 });
 export type WriteOperation = z.infer<typeof writeOperationSchema>;
 
@@ -64,14 +65,44 @@ function normalizeBlastRadius(val: string): string {
   return 'single-user'; // safe default
 }
 
+// AAP-65: structured frequency object replaces the prose
+// `frequencyAndVolume` string. The old field is preserved as a fallback so
+// pre-AAP-65 reports on disk still load — the analyzer's sanitization pass
+// parses the prose into this object on the way in. The renderer prefers
+// `frequency` and falls back to `frequencyAndVolume` for back-compat.
+export const frequencyShapeSchema = z.object({
+  runsLastWeek: z.union([z.number().int().nonnegative(), z.null()]).optional(),
+  callsPerRun: z.string().max(40).optional(),
+  batchSize: z.union([z.number().int().positive(), z.string().max(20)]).optional(),
+  concurrency: z.enum(['sequential', 'parallel', 'mixed', 'unknown']).optional(),
+  notes: z.string().max(400).optional(),
+});
+export type FrequencyShape = z.infer<typeof frequencyShapeSchema>;
+
 export const systemAssessmentSchema = z.object({
-  systemId: z.string(),             // e.g. "Google Workspace, Gmail API via OAuth2"
-  scopesRequested: z.array(z.string()).default([]),
-  scopesNeeded: z.array(z.string()).default([]),
-  scopesDelta: z.array(z.string()).default([]),
+  // AAP-65: short kebab-case identifier (≤50 chars). Long descriptive text
+  // belongs in `systemDescription`. The analyzer's sanitization pass reshapes
+  // pre-AAP-65 prose-style systemId into this form before Zod validation.
+  systemId: z.string().min(1).max(50).regex(
+    /^[a-z][a-z0-9_-]*$/,
+    'systemId must be a short kebab-case identifier (e.g. "openai-codex-backend"), not a sentence',
+  ),
+  // AAP-65: optional long descriptive text — the full prose description of
+  // what this system is and how it's accessed. Lives here, NOT in systemId.
+  systemDescription: z.string().max(800).optional(),
+  // AAP-65: pulled-out source refs (e.g. "A3", "A4"). The LLM tends to inline
+  // these like "... (A3, A4)." — sanitization extracts them into this array.
+  sources: z.array(z.string().regex(/^A\d+$/)).max(20).default([]),
+
+  scopesRequested: z.array(z.string().max(80)).default([]),
+  scopesNeeded: z.array(z.string().max(80)).default([]),
+  scopesDelta: z.array(z.string().max(80)).default([]),
   // AAP-43 P0 #2: empty-string defaults (see volumePerDay note above)
   dataSensitivity: z.string().default(''),
   blastRadius: z.string().transform(normalizeBlastRadius).pipe(blastRadiusSchema).or(blastRadiusSchema).default('single-user'),
+  // AAP-65: structured frequency object (preferred). `frequencyAndVolume`
+  // kept for back-compat with pre-AAP-65 sessions on disk.
+  frequency: frequencyShapeSchema.optional(),
   frequencyAndVolume: z.string().default(''),
   writeOperations: z.array(writeOperationSchema).default([]),
 });
@@ -143,17 +174,18 @@ export type Recommendation = z.infer<typeof recommendationSchema>;
 // ─── Analysis Result (LLM output schema) ────────────────────────────────────
 
 export const analysisResultSchema = z.object({
-  summary: z.string(),
-  agentPurpose: z.string(),
-  agentTrigger: z.string().optional(),
-  agentOwner: z.string().optional(),
+  // AAP-65: cap top-level prose fields at short structured limits.
+  summary: z.string().max(800),
+  agentPurpose: z.string().max(600),
+  agentTrigger: z.string().max(200).optional(),
+  agentOwner: z.string().max(200).optional(),
   systems: z.array(systemAssessmentSchema),
   risks: z.array(riskSchema),
-  recommendations: z.array(z.string()),
+  recommendations: z.array(z.string().max(400)).max(20),
   recommendation: recommendationSchema.optional(),
   overallRiskLevel: severitySchema,
   makesDecisionsAboutPeople: z.boolean().optional(),
-  decisionMakingDetails: z.string().optional(),
+  decisionMakingDetails: z.string().max(800).optional(),
 });
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;
 
@@ -201,22 +233,26 @@ export type StructuredCompliance = CategorizedCompliance;
 // ─── Audit Report ───────────────────────────────────────────────────────────
 
 export const auditReportSchema = z.object({
-  summary: z.string(),
-  agentPurpose: z.string(),
-  agentTrigger: z.string().optional(),
-  agentOwner: z.string().optional(),
+  // AAP-65: same length caps as analysisResultSchema. Note: the auditReport
+  // is mostly read FROM disk, not validated TO disk — for pre-AAP-65
+  // sessions, the analyzer sanitization pass shapes the data into the
+  // tightened schema before it ever hits this validator.
+  summary: z.string().max(800),
+  agentPurpose: z.string().max(600),
+  agentTrigger: z.string().max(200).optional(),
+  agentOwner: z.string().max(200).optional(),
   systems: z.array(systemAssessmentSchema),
   // Legacy flat fields for backward compat
   dataNeeds: z.array(dataNeedSchema),
   accessAssessment: accessAssessmentSchema,
   risks: z.array(riskSchema),
-  recommendations: z.array(z.string()),
+  recommendations: z.array(z.string().max(400)).max(20),
   recommendation: recommendationSchema.optional(),
   overallRiskLevel: severitySchema,
   transcript: z.array(qaPairSchema),
   dataQuality: dataQualitySchema.optional(),
   makesDecisionsAboutPeople: z.boolean().optional(),
-  decisionMakingDetails: z.string().optional(),
+  decisionMakingDetails: z.string().max(800).optional(),
   compliance: z.any().optional(), // StructuredCompliance (CategorizedCompliance, not Zod-validated)
   metadata: z.object({
     date: z.string(),
