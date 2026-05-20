@@ -187,4 +187,105 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
       await mcp.close().catch(() => undefined);
     }
   }, 30_000);
+
+  it('terminates within CORE_QUESTIONS.length + maxFollowUps + 2 turns even with a permissive LLM (AAP-60)', async () => {
+    // AAP-60 — regression: pre-fix, the planner rebuilt its protocol on
+    // every submit_answer with counters starting at zero, so the
+    // follow-up cap never fired in tool-call mode. A permissive LLM
+    // stub (one that returns a follow-up every time it's asked) would
+    // keep the planner producing follow-ups in a single category until
+    // the client gave up. The fix primes the rehydrated protocol's
+    // follow-up counters from the transcript. This test exercises the
+    // full MCP path with a permissive LLM and asserts the loop
+    // terminates within CORE_QUESTIONS.length + maxFollowUps + 2.
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    let followUpsServed = 0;
+    const permissiveLLM = {
+      chat: async () => {
+        followUpsServed += 1;
+        return `Follow-up #${followUpsServed}: tell me more about that.`;
+      },
+    };
+    const MAX_FOLLOW_UPS = 3;
+    const planner = createQuestionPlanner({
+      llmClient: permissiveLLM,
+      maxFollowUps: MAX_FOLLOW_UPS,
+    });
+
+    const fakeAnalyze = vi.fn(async (params: {
+      transcript: QAPair[];
+      sessionId: string;
+      agentName?: string;
+    }) => ({
+      markdown: `# Report\n${params.sessionId}\n${params.transcript.length} entries\n`,
+      json: { overallRiskLevel: 'low', risks: [], summary: 'stub' },
+      riskLevel: 'low' as string,
+    }));
+    const differ: ReportDiffer = { async diff() { return ''; } };
+
+    const wrapper = new HeronMCPServer({
+      differ,
+      analyzeAndRenderReport: fakeAnalyze,
+      questionPlanner: planner,
+    });
+    const mcp = wrapper.buildMcpServer();
+    const client = new Client(
+      { name: 'aap-60-e2e-client', version: '0.0.1' },
+      { capabilities: {} },
+    );
+    await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
+
+    try {
+      const startResult = await client.callTool({
+        name: 'start_audit_session',
+        arguments: { agent_name: 'aap60-fixture' },
+      });
+      const sessionId = (startResult as {
+        structuredContent?: { session_id?: string };
+      }).structuredContent!.session_id!;
+
+      // Vague + unique answer per turn so:
+      //   - the vagueness detector keeps firing (would generate follow-ups)
+      //   - the repeat-answer guard does not short-circuit
+      // The only thing that can stop the loop is the cap.
+      const vagueUniqueAnswer = (n: number) =>
+        `Turn ${n}: I may also access ${n} services, depending on the task. ` +
+        `Connectors are enabled when needed. Workflow ${n} runs as needed. ` +
+        `Suffix ${n}-${n * 13}.`;
+
+      // The planner has CORE_QUESTIONS.length (15) core questions +
+      // MAX_FOLLOW_UPS follow-ups budget; the loop must terminate
+      // inside that envelope + a small slack for the planner's
+      // bookkeeping turns.
+      const ceiling = 15 + MAX_FOLLOW_UPS + 2;
+      const HARD_STOP = ceiling + 30;
+      let turns = 0;
+      let status: string | undefined = 'awaiting_answer';
+      while (status === 'awaiting_answer' && turns < HARD_STOP) {
+        const r = await client.callTool({
+          name: 'submit_answer',
+          arguments: { session_id: sessionId, answer: vagueUniqueAnswer(turns) },
+        });
+        turns += 1;
+        status = (r as { structuredContent?: { status?: string } })
+          .structuredContent?.status;
+      }
+
+      expect(status).toBe('complete');
+      expect(turns).toBeLessThanOrEqual(ceiling);
+
+      const stored = await getSession(sessionId);
+      expect(stored).not.toBeNull();
+      expect(stored!.status).toBe('complete');
+      // Follow-up total in the persisted transcript is bounded by the cap.
+      const followUpEntries = stored!.transcript.filter(
+        (e) => e.question.startsWith('Follow-up #'),
+      );
+      expect(followUpEntries.length).toBeLessThanOrEqual(MAX_FOLLOW_UPS);
+    } finally {
+      await client.close().catch(() => undefined);
+      await mcp.close().catch(() => undefined);
+    }
+  }, 30_000);
 });
