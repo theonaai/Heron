@@ -216,17 +216,65 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
           ? 'sev-info'
           : 'sev-medium';
 
-  const riskRaw = (liveSession.riskLevel || '').toLowerCase();
-  const riskSev =
-    riskRaw === 'critical'
+  // AAP-63 — the legacy `riskLevel` field is now driven by
+  // primaryRiskLevel (which may be 'unverified'); the dual-pill logic
+  // below reads `deterministicRiskLevel` / `interviewRiskLevel`
+  // separately, so we no longer compute a single severity class off
+  // `riskLevel` here.
+
+  // ─── AAP-63 — dual pill (primary = Surface 2, secondary = Surface 1) ──
+  //
+  // Heron strategy v3.0 §3: deterministic findings (filesystem discovery,
+  // OAuth introspection) drive the verdict; the LLM analyzer's risk is
+  // supplementary narrative. The primary pill therefore renders
+  // `deterministicRiskLevel` when Surface 2 evidence exists, and falls
+  // through to a yellow "VERIFICATION REQUIRED" sentinel pill otherwise.
+  // Legacy sessions persisted before AAP-63 lack `verificationStatus`
+  // entirely — we treat that as `'unverified'` and surface the legacy
+  // `riskLevel` on the secondary "self-reported" pill so the operator
+  // can still see the LLM's separate take.
+  const verificationStatus = liveSession.verificationStatus;
+  const isUnverified =
+    verificationStatus === undefined || verificationStatus === 'unverified';
+  const deterministicRaw = (liveSession.deterministicRiskLevel || '').toLowerCase();
+  const deterministicSev =
+    deterministicRaw === 'critical'
       ? 'sev-critical'
-      : riskRaw === 'high'
+      : deterministicRaw === 'high'
         ? 'sev-high'
-        : riskRaw === 'medium'
+        : deterministicRaw === 'medium'
           ? 'sev-medium'
-          : riskRaw === 'low'
+          : deterministicRaw === 'low'
             ? 'sev-low'
             : 'sev-neutral';
+  // Secondary pill uses the explicit interviewRiskLevel when present;
+  // legacy sessions only have the old `riskLevel` field — fall through
+  // to it so they keep rendering a meaningful self-report indicator.
+  const interviewRaw = (
+    liveSession.interviewRiskLevel ||
+    (isUnverified ? liveSession.riskLevel : '') ||
+    ''
+  ).toLowerCase();
+  const interviewSev =
+    interviewRaw === 'critical'
+      ? 'sev-critical'
+      : interviewRaw === 'high'
+        ? 'sev-high'
+        : interviewRaw === 'medium'
+          ? 'sev-medium'
+          : interviewRaw === 'low'
+            ? 'sev-low'
+            : 'sev-neutral';
+  // Avoid showing a meaningless self-report pill when the legacy field
+  // is itself the 'unverified' sentinel.
+  const hasInterviewPill = interviewRaw && interviewRaw !== 'unverified';
+  const primaryRiskSource = isUnverified
+    ? 'no-evidence'
+    : 'deterministic';
+  const primaryTooltip =
+    primaryRiskSource === 'deterministic'
+      ? 'Risk derived from deterministic Surface 2 evidence (discovery / OAuth introspection).'
+      : 'No deterministic evidence yet — run discovery from below to verify the agent against actual config files.';
 
   const analysisError: AnalysisErrorRecord | null | undefined = liveSession.analysisError;
   const analysisErrorReason = analysisError?.reason;
@@ -258,8 +306,41 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             <>
               <span className={`sev ${statusSev}`}>{liveSession.status}</span>
               {isLive && <span className="sev sev-info">live</span>}
-              {liveSession.riskLevel && (
-                <span className={`sev ${riskSev}`}>{liveSession.riskLevel} risk</span>
+              {/* AAP-63 — primary pill (Surface 2 verdict). Yellow
+                  "VERIFICATION REQUIRED" sentinel when no deterministic
+                  evidence exists; otherwise the deterministic risk
+                  level. Reference: strategy v3.0 §3. */}
+              {liveSession.status === 'complete' && (
+                isUnverified ? (
+                  <span
+                    className="sev sev-medium"
+                    title={primaryTooltip}
+                    style={{ fontWeight: 600 }}
+                  >
+                    verification required
+                  </span>
+                ) : (
+                  <span
+                    className={`sev ${deterministicSev}`}
+                    title={primaryTooltip}
+                    style={{ fontWeight: 600 }}
+                  >
+                    {deterministicRaw || 'unknown'} risk
+                  </span>
+                )
+              )}
+              {/* AAP-63 — secondary pill: the LLM's self-reported risk.
+                  Smaller, lower-emphasis, labeled "self-report" so the
+                  reviewer knows it is supplementary narrative, not the
+                  primary verdict. */}
+              {liveSession.status === 'complete' && hasInterviewPill && (
+                <span
+                  className={`sev ${interviewSev}`}
+                  title="Risk inferred from the agent's interview answers (Surface 1). Supplementary — the primary verdict above is the deterministic source of truth."
+                  style={{ fontSize: 10, opacity: 0.85 }}
+                >
+                  self-report: {interviewRaw}
+                </span>
               )}
             </>
           )}

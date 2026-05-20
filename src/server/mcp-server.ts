@@ -60,6 +60,10 @@ import {
   type AuditSessionStatus,
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
+import {
+  computeVerdictFromArtifacts,
+  persistVerdict,
+} from '../verification/verdict-pipeline.js';
 
 const SERVER_NAME = 'heron';
 const SERVER_VERSION = '0.4.0';
@@ -717,13 +721,28 @@ export class HeronMCPServer {
 
         if (rendered.ok) {
           await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-          if (rendered.riskLevel) {
-            await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
-          }
+          // AAP-63 — compute the Surface-2-anchored verdict.
+          // Discovery has not yet run for a fresh session (it is gated on
+          // user consent from the dashboard), so the verdict here always
+          // lands on `verificationStatus: 'unverified'` with
+          // `primaryRiskLevel: 'unverified'`. The dashboard pill becomes
+          // "VERIFICATION REQUIRED" until the discovery scan completes
+          // and the scan route re-runs the verdict computation.
+          const verdict = computeVerdictFromArtifacts({
+            reportJson: rendered.json,
+            transcript: interviewResult.transcript.map((t) => ({
+              category: t.category,
+              question: t.question,
+              answer: t.answer,
+            })),
+          });
+          await persistVerdict(sessionId, verdict);
           publishSessionEvent(sessionId, {
             type: 'status-change',
             status: 'complete',
-            ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+            ...(verdict.primaryRiskLevel
+              ? { riskLevel: verdict.primaryRiskLevel }
+              : {}),
           });
         } else {
           // AAP-56: analyzer failed. Persist the failure-mode markdown and
@@ -1001,13 +1020,25 @@ export class HeronMCPServer {
 
     if (rendered.ok) {
       await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-      if (rendered.riskLevel) {
-        await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
-      }
+      // AAP-63 — compute the Surface-2-anchored verdict (see sampling-
+      // path comment above for the rationale). Tool-call mode shares the
+      // same gate: discovery has not yet run, so we land on
+      // `verificationStatus: 'unverified'`.
+      const verdict = computeVerdictFromArtifacts({
+        reportJson: rendered.json,
+        transcript: updated.transcript.map((t) => ({
+          category: t.category,
+          question: t.question,
+          answer: t.answer,
+        })),
+      });
+      await persistVerdict(sessionId, verdict);
       publishSessionEvent(sessionId, {
         type: 'status-change',
         status: 'complete',
-        ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+        ...(verdict.primaryRiskLevel
+          ? { riskLevel: verdict.primaryRiskLevel }
+          : {}),
       });
 
       return {
@@ -1017,7 +1048,11 @@ export class HeronMCPServer {
           status: 'complete',
           questions_asked: updated.questionsAsked,
           report_markdown: rendered.markdown,
-          ...(rendered.riskLevel ? { risk_level: rendered.riskLevel } : {}),
+          // AAP-63: the response's `risk_level` field is now the
+          // primary verdict (deterministic when Surface 2 ran, else
+          // 'unverified'). External callers that previously assumed
+          // a 'low'/'medium'/'high' string MUST tolerate 'unverified'.
+          risk_level: verdict.primaryRiskLevel,
         },
       };
     }

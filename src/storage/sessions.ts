@@ -84,14 +84,53 @@ export interface AnalysisErrorRecord {
   occurredAt: string;
 }
 
+/**
+ * AAP-63 — per-session deterministic verification status.
+ *
+ *   - `unverified`: only the LLM interview ran. Risk is self-report only.
+ *   - `partial`:    at least one Surface 2 source ran (e.g. filesystem
+ *                   discovery) but not all of them (OAuth introspection
+ *                   is not wired into the dashboard flow yet — AAP-64).
+ *   - `verified`:   every applicable Surface 2 source ran successfully
+ *                   and produced clean evidence.
+ *
+ * Strategy v3.0 §3 anchor: "Every claim about an AI agent should be
+ * verifiable from a deterministic source of truth." The dashboard
+ * pill renders `deterministicRiskLevel` whenever `verificationStatus
+ * !== 'unverified'`; `interviewRiskLevel` is a secondary signal.
+ */
+export type VerificationStatus = 'unverified' | 'partial' | 'verified';
+
+/** Risk-level vocabulary shared with the verdict module + report renderer. */
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
 export interface AuditSession {
   id: string;
   status: AuditSessionStatus;
   questionsAsked: number;
+  /**
+   * Legacy dashboard-facing risk level. AAP-63: this field is now an
+   * alias of `primaryRiskLevel` — kept so external consumers (markdown
+   * report download, comparison exports) keep working unchanged. New
+   * code should consume `deterministicRiskLevel` / `interviewRiskLevel`
+   * directly. Removal is a phase-2 cleanup tracked separately.
+   */
   riskLevel?: string;
   agentName?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * AAP-63 — per-session Surface 2 status. Defaults to `undefined`
+   * (treated as `'unverified'` by the dashboard) on session create;
+   * set by the audit pipeline after `runDiscovery` / OAuth
+   * introspection runs. Older sessions persisted before AAP-63 lack
+   * this field; readers must tolerate `undefined`.
+   */
+  verificationStatus?: VerificationStatus;
+  /** AAP-63 — risk level derived purely from Surface 2 evidence. */
+  deterministicRiskLevel?: RiskLevel;
+  /** AAP-63 — risk level derived purely from Surface 1 (LLM analyzer). */
+  interviewRiskLevel?: RiskLevel;
   /** AAP-55 — undefined for legacy sampling rows persisted before this field existed. */
   mode?: AuditSessionMode;
   /** AAP-55 — non-null while the tool-call path is waiting for an answer. */
@@ -138,6 +177,12 @@ export interface SessionMetaPatch {
   status?: AuditSessionStatus;
   riskLevel?: string;
   agentName?: string;
+  /** AAP-63 — Surface 2 verification status. */
+  verificationStatus?: VerificationStatus;
+  /** AAP-63 — Surface 2 risk level. */
+  deterministicRiskLevel?: RiskLevel;
+  /** AAP-63 — Surface 1 (interview LLM) risk level. */
+  interviewRiskLevel?: RiskLevel;
 }
 
 interface StoredMeta extends AuditSession {
@@ -152,7 +197,15 @@ interface StoredMeta extends AuditSession {
 }
 
 export const SESSION_ID_REGEX = /^sess-\d{8}-\d{6}-[a-z0-9]{6}$/;
-const META_PATCH_FIELDS: Array<keyof SessionMetaPatch> = ['status', 'riskLevel', 'agentName'];
+const META_PATCH_FIELDS: Array<keyof SessionMetaPatch> = [
+  'status',
+  'riskLevel',
+  'agentName',
+  // AAP-63 — surface-2 verdict fields.
+  'verificationStatus',
+  'deterministicRiskLevel',
+  'interviewRiskLevel',
+];
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -388,6 +441,12 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
   if (meta.pendingQuestion !== undefined) detail.pendingQuestion = meta.pendingQuestion;
   if (meta.workspaceHints !== undefined) detail.workspaceHints = meta.workspaceHints;
   if (meta.analysisError !== undefined) detail.analysisError = meta.analysisError;
+  // AAP-63 — surface 2 verdict fields.
+  if (meta.verificationStatus !== undefined) detail.verificationStatus = meta.verificationStatus;
+  if (meta.deterministicRiskLevel !== undefined) {
+    detail.deterministicRiskLevel = meta.deterministicRiskLevel;
+  }
+  if (meta.interviewRiskLevel !== undefined) detail.interviewRiskLevel = meta.interviewRiskLevel;
   if (reportMd !== undefined) detail.report = reportMd;
   if (reportJson !== null) detail.reportJson = reportJson;
   return detail;
@@ -425,6 +484,17 @@ export async function listSessions(): Promise<AuditSession[]> {
     if (meta.agentName !== undefined) summary.agentName = meta.agentName;
     if (meta.riskLevel !== undefined) summary.riskLevel = meta.riskLevel;
     if (meta.analysisError !== undefined) summary.analysisError = meta.analysisError;
+    // AAP-63 — list rows surface verification status so the sidebar can
+    // render the new dual-pill / "VERIFICATION REQUIRED" badge.
+    if (meta.verificationStatus !== undefined) {
+      summary.verificationStatus = meta.verificationStatus;
+    }
+    if (meta.deterministicRiskLevel !== undefined) {
+      summary.deterministicRiskLevel = meta.deterministicRiskLevel;
+    }
+    if (meta.interviewRiskLevel !== undefined) {
+      summary.interviewRiskLevel = meta.interviewRiskLevel;
+    }
     out.push(summary);
   }
   // Newest first by updatedAt; fall back to createdAt for ties.

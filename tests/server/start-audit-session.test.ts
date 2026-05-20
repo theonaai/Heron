@@ -147,11 +147,11 @@ describe('HeronMCPServer.start_audit_session', () => {
     const sessionId = result.value.session_id;
     let stored = await getSession(sessionId);
     const start = Date.now();
-    // Wait for both status=complete AND riskLevel set — there's an
-    // ordering race where writeReport flips status before
-    // updateSessionMeta sets riskLevel.
+    // Wait for both status=complete AND verificationStatus set — there's an
+    // ordering race where writeReport flips status before persistVerdict
+    // sets the AAP-63 verdict fields.
     while (
-      (stored?.status !== 'complete' || stored?.riskLevel === undefined) &&
+      (stored?.status !== 'complete' || stored?.verificationStatus === undefined) &&
       Date.now() - start < 5000
     ) {
       await new Promise((r) => setTimeout(r, 10));
@@ -164,7 +164,15 @@ describe('HeronMCPServer.start_audit_session', () => {
     expect(stored!.transcript.length).toBe(3);
     expect(stored!.agentName).toBe('fixture-agent');
     expect(stored!.report).toMatch(/Fake Report/);
-    expect(stored!.riskLevel).toBe('medium');
+    // AAP-63 — post-completion sessions land on 'unverified' until a
+    // Surface 2 discovery scan runs from the dashboard. The fixture
+    // analyzer JSON has `risks: []`, so interviewRiskLevel is undefined
+    // (no risks → no interview risk). The legacy `riskLevel` field is
+    // the dashboard-facing primary verdict, which is 'unverified' here.
+    expect(stored!.verificationStatus).toBe('unverified');
+    expect(stored!.riskLevel).toBe('unverified');
+    expect(stored!.interviewRiskLevel).toBeUndefined();
+    expect(stored!.deterministicRiskLevel).toBeUndefined();
   });
 
   it('errors cleanly when no MCP sampling server is attached', async () => {

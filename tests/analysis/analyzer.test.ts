@@ -61,6 +61,12 @@ describe('analyzer', () => {
     expect(outcome.result.systems[0].systemId).toContain('SAP');
     expect(outcome.result.systems[1].blastRadius).toBe('org-wide');
     expect(outcome.result.risks.length).toBe(1);
+    // AAP-63 — `overallRiskLevel` remains the analyzer's self-reported
+    // risk-level output. It is NO LONGER used directly as the session's
+    // `riskLevel` field — the verdict pipeline (computeVerdict) consumes
+    // the underlying `risks[]` to derive `interviewRiskLevel`, while
+    // Surface 2 evidence drives the primary risk badge. The analyzer
+    // itself is unaffected by AAP-63; only its downstream consumers are.
     expect(outcome.result.overallRiskLevel).toBe('high');
   });
 

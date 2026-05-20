@@ -170,7 +170,11 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
 
       expect(status).toBe('complete');
       expect(finalReport).toMatch(/Tool-Call Audit Report/);
-      expect(finalRiskLevel).toBe('medium');
+      // AAP-63 — without a Surface 2 discovery scan the primary verdict
+      // is 'unverified' regardless of the analyzer's self-reported risk
+      // level. The dashboard's secondary "self-report" pill carries the
+      // interview risk separately.
+      expect(finalRiskLevel).toBe('unverified');
       expect(fakeAnalyze).toHaveBeenCalledTimes(1);
 
       // ── 7. Inspect persisted session ─────────────────────────────────
@@ -181,7 +185,8 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
       expect(stored!.agentName).toBe('tool-call-fixture');
       expect(stored!.transcript.length).toBeGreaterThanOrEqual(9);
       expect(stored!.report).toMatch(/Tool-Call Audit Report/);
-      expect(stored!.riskLevel).toBe('medium');
+      expect(stored!.riskLevel).toBe('unverified');
+      expect(stored!.verificationStatus).toBe('unverified');
       expect(stored!.pendingQuestion ?? null).toBeNull();
     } finally {
       await client.close().catch(() => undefined);

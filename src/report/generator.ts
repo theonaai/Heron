@@ -7,6 +7,7 @@ import {
 } from '../analysis/analyzer.js';
 import { computeRiskScore, applySeverityOverrides } from '../analysis/risk-scorer.js';
 import { renderMarkdownReport, renderAnalysisFailedReport } from './templates.js';
+import { computeVerdict } from '../verification/verdict.js';
 import type { LLMClient } from '../llm/client.js';
 import * as logger from '../util/logger.js';
 import { isProvided } from '../util/provided.js';
@@ -142,10 +143,21 @@ async function buildSuccessReport(
     },
   };
 
-  // 5. Format output
+  // 5. Compute the AAP-63 verdict from the Surface-1-only evidence
+  //    available at generation time. Surface 2 (discovery / OAuth) has
+  //    not run yet — the scan route re-renders the markdown after a
+  //    discovery scan completes.
+  const initialVerdict = computeVerdict({
+    interviewFindings: analysis.risks,
+    interviewTranscriptText: session.transcript
+      .map((qa) => `${qa.question}\n${qa.answer}`)
+      .join('\n'),
+  });
+
+  // 6. Format output
   const formatted = options.format === 'json'
     ? JSON.stringify(report, null, 2)
-    : renderMarkdownReport(report);
+    : renderMarkdownReport(report, { verdict: initialVerdict });
 
   return { report: formatted, reportJson: report };
 }
