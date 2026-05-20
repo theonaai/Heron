@@ -70,6 +70,18 @@ Also assess:
 - Final recommendation: APPROVE / APPROVE WITH CONDITIONS / DENY
 - Whether the agent makes or influences decisions about people (hiring, scoring, access, moderation)
 
+OUTPUT FIELD CONSTRAINTS — fields below have strict shape requirements. Violations cause re-prompts.
+
+- systemId: short kebab-case identifier, ≤50 chars, matches /^[a-z][a-z0-9_-]*$/. Examples: "openai-codex-backend", "greenhouse-prod", "slack-workspace". NOT a sentence. Long descriptive text goes into systemDescription.
+- systemDescription: optional, ≤800 chars. The full prose description of what this system is and how it's accessed.
+- sources: array of source refs like ["A3", "A4", "A11"]. Source references MUST go here, NOT inline in body text. Each ref MUST correspond to an actual Q/A in the transcript.
+- scopesRequested / scopesNeeded / scopesDelta: arrays of BARE permission tokens, each ≤80 chars. Examples: "drive.readonly", "candidates.read", "shell-execution". NOT prose. NOT prefixed with phrases like "Unused in this task:". The semantic meaning comes from which array the entry is in, not from per-item lead-ins.
+- frequency: structured object with fields runsLastWeek (number | null), callsPerRun (short string like "10-15"), batchSize (number | string), concurrency (one of "sequential" | "parallel" | "mixed" | "unknown"), notes (short paragraph for caveats). NOT a single wall-of-text string.
+- recommendation: one of "APPROVE" | "APPROVE WITH CONDITIONS" | "DENY".
+- summary ≤800 chars, agentPurpose ≤600 chars, recommendations[] each ≤400 chars.
+
+Findings (risks) must be deduplicated by topic — if two risks describe the same underlying issue, MERGE them into one with combined recommendation and the higher severity. Do not emit near-duplicates.
+
 Respond with valid JSON matching the required schema. Be specific and actionable, not generic.`;
 
 export function buildAnalysisPrompt(transcript: { question: string; answer: string }[]): string {
@@ -110,20 +122,28 @@ ${formatted}
   "agentOwner": "Team or person responsible — ONLY if stated, otherwise 'NOT PROVIDED'",
   "systems": [
     {
-      "systemId": "System name, API type, auth method — ONLY what was explicitly stated. Write 'NOT PROVIDED' for parts not mentioned.",
-      "scopesRequested": ["specific scopes — ONLY if agent listed them, otherwise ['NOT PROVIDED']"],
-      "scopesNeeded": ["minimum scopes — ONLY if agent assessed this, otherwise ['NOT PROVIDED']"],
-      "scopesDelta": ["excessive scopes — ONLY if agent identified unused permissions"],
+      "systemId": "short-kebab-case-id (e.g. 'openai-codex-backend', 'greenhouse-prod') — NOT a sentence, ≤50 chars, /^[a-z][a-z0-9_-]*$/",
+      "systemDescription": "Optional ≤800-char prose: full description of the system, API type, auth method — ONLY what was explicitly stated. Write 'NOT PROVIDED' for parts not mentioned.",
+      "sources": ["A3", "A4"],
+      "scopesRequested": ["bare-permission-token (e.g. 'drive.readonly', 'candidates.read') — ONLY if agent listed them, ≤80 chars each, no lead-ins"],
+      "scopesNeeded": ["bare-permission-token — minimum scopes, ONLY if agent assessed this"],
+      "scopesDelta": ["bare-permission-token — excessive/unused scopes only, NO 'Unused in this task:' prefix"],
       "dataSensitivity": "Data classification — ONLY based on agent's statements. If the agent reads names, emails, profile URLs, or job titles, classify as PII even if the agent calls it 'non-sensitive'. Apply the HIGHEST sensitivity across all data the system handles (read AND write).",
       "blastRadius": "single-record | single-user | team-scope | org-wide | cross-tenant — ONLY if agent specified",
-      "frequencyAndVolume": "Concrete numbers — ONLY from agent's answers",
+      "frequency": {
+        "runsLastWeek": 1,
+        "callsPerRun": "10-15",
+        "batchSize": 1,
+        "concurrency": "sequential",
+        "notes": "Short caveat paragraph if needed — NOT a wall of text"
+      },
       "writeOperations": [
         {
-          "operation": "what it does — from transcript",
-          "target": "what it affects — from transcript",
+          "operation": "≤80-char verb-phrase from transcript",
+          "target": "≤80-char target from transcript",
           "reversible": true,
           "approvalRequired": false,
-          "volumePerDay": "from transcript or 'NOT PROVIDED'"
+          "volumePerDay": "≤40 chars, from transcript or 'NOT PROVIDED'"
         }
       ]
     }
@@ -176,7 +196,10 @@ export const COMPLIANCE_FIELD_CHECKLIST = [
   'scopesNeeded',
   'dataSensitivity',
   'blastRadius',
-  'frequencyAndVolume',
+  // AAP-65: renamed from `frequencyAndVolume`. Follow-up surface is unchanged
+  // semantically — the structured object exists, but the prompt-side
+  // checklist still maps to the analyzer's frequency field.
+  'frequency',
   'writeOperations',
 ] as const;
 
