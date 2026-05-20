@@ -250,7 +250,7 @@ const GET_REPORT_DEF: ToolDefinition = {
     properties: {
       report_id: {
         type: 'string',
-        description: 'The report id returned by a prior audit_agent call.',
+        description: 'The session id returned by a prior start_audit_session call.',
       },
     },
     required: ['report_id'],

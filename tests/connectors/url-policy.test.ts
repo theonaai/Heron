@@ -1,21 +1,30 @@
 /**
- * Tests for the SSRF guard around `audit_agent`'s `target_endpoint`.
+ * Tests for the SSRF guard `validateTargetEndpoint`.
  *
- * The MCP `audit_agent` tool forwards `target_endpoint` straight into
- * `HttpConnector → fetch(...)`. Without a host-policy check, a hostile
- * MCP client can drive Heron to:
+ * Originally introduced in PR #14 (security audit round 3, finding F-1)
+ * to protect the `audit_agent` MCP tool's `target_endpoint` argument
+ * from being driven against internal infrastructure. AAP-52 removed
+ * `audit_agent` itself when Heron pivoted to MCP-sampling-driven audits,
+ * but the guard is STILL active and STILL needed — it now protects every
+ * URL-typed input that flows into a Heron outbound fetch, including:
+ *
+ *  - `src/verification/sources/oauth-scopes/*` (Google Workspace tokeninfo,
+ *    BambooHR / Greenhouse / Slack / Microsoft Graph endpoints) reads
+ *    OAuth introspection from caller-supplied base URLs (AAP-48 surface).
+ *  - `src/verification/sources/agent-declaration/theona-mcp.ts` reads
+ *    Theona agent declarations from caller-supplied URLs.
+ *
+ * Without the guard a hostile MCP client could still drive Heron to:
  *  - read AWS / GCP / Azure metadata (169.254.169.254)
  *  - probe internal services on localhost/RFC1918
  *  - chase non-HTTP schemes (file:, gopher:, javascript:, …)
  *
- * `validateTargetEndpoint(input)` is the single chokepoint. It must
- * reject all of those and accept ordinary public HTTPS endpoints.
+ * `validateTargetEndpoint(input)` remains the single chokepoint. It
+ * must reject all of those and accept ordinary public HTTPS endpoints.
  *
  * The strict default has an escape hatch — `HERON_ALLOW_PRIVATE_TARGETS=1`
  * — for local testing against agents reachable only on a private network.
  * Default behaviour stays strict.
- *
- * Tracking: PR #14 security audit round 3, finding F-1.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
