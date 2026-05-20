@@ -247,7 +247,20 @@ function renderSystemCard(sys: SystemAssessment): string {
     rows.push(`| **Scopes needed** | ${needed.join(', ')} |`);
   }
 
-  const excessive = sys.scopesDelta.filter(isProvided);
+  // AAP-62 round-3 — strip repetitive lead-ins the analyzer LLM tends
+  // to prepend to each excessive-scope entry ("Unused in this audit
+  // task so far:", "Unused in this task:") and trailing source refs
+  // ("(A11)."). Same cleanup applied in the dashboard's React
+  // rendering at components/heron-v1/dashboard/ReportView.tsx
+  // (excessiveBySystem builder); the duplication is intentional —
+  // markdown export and dashboard render share schema, not code path.
+  const cleanScope = (s: string): string =>
+    s
+      .replace(/^\s*Unused in this(?:\s+(?:audit\s+task|task))?\s+so\s+far\s*:?\s*/i, '')
+      .replace(/^\s*Unused (?:in this )?(?:audit )?task(?:\s+so\s+far)?\s*:?\s*/i, '')
+      .replace(/\s*\(A\d+\)\s*\.?\s*$/i, '')
+      .trim() || s;
+  const excessive = sys.scopesDelta.filter(isProvided).map(cleanScope);
   if (excessive.length > 0) {
     rows.push(`| **Excessive** | ${excessive.join(', ')} |`);
   }
