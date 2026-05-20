@@ -1,3 +1,4 @@
+import type { AnalyzeFailureReason } from '../analysis/analyzer.js';
 import type { AuditReport, QAPair, DataQuality, Risk, SystemAssessment, WriteOperation, StructuredCompliance, RegulatoryFlag } from './types.js';
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
@@ -1020,3 +1021,103 @@ function renderSourceLine(s: SourceVerification): string {
 // Escape helpers — see `src/util/markdown-escape.ts`. Re-imported above as
 // `escapeText`, `escapeInlineCode`, and (under the local alias `escapeCell`)
 // `escapeTableCell` to keep the call sites in this file stable.
+
+// ─── AAP-56 — Analysis-failed report ─────────────────────────────────────────
+//
+// When `analyzeTranscript` fails (double-parse failure, LLM 502, network
+// timeout) we MUST NOT produce a normal-shaped report. The previous behaviour
+// fabricated a clean-looking "LOW RISK / APPROVE WITH CONDITIONS" report from
+// an empty fallback object, which a reviewer could mistake for a real clean
+// audit. Heron strategy v3.0 forbids self-attestation without verification.
+//
+// `renderAnalysisFailedReport` emits a dedicated markdown body that:
+//   • leads with "REPORT GENERATION FAILED"
+//   • explains why (reason + last error + timestamp + attempt count)
+//   • preserves the verbatim transcript for manual review
+//   • intentionally OMITS risk badges, findings, compliance, recommendations
+//
+// The renderer is stateless and side-effect-free. Wiring lives in
+// `src/server/sessions.ts` (storage) and `src/server/mcp-server.ts`
+// (transport).
+
+const FAILURE_REASON_LABELS: Record<AnalyzeFailureReason, string> = {
+  parse_failure: 'LLM response could not be parsed',
+  llm_unreachable: 'LLM gateway unreachable',
+  unknown: 'Unknown analyzer failure',
+};
+
+export interface AnalysisFailedReportMeta {
+  agentName?: string;
+  sessionId: string;
+  questionsAsked: number;
+  analysisError: {
+    reason: AnalyzeFailureReason;
+    message: string;
+    responsePreview?: string;
+    attemptCount: number;
+    occurredAt: string;
+  };
+}
+
+/**
+ * Render the AAP-56 "analysis failed" markdown report.
+ *
+ * No risk level, no verdict, no findings, no compliance section. Just an
+ * explicit failure banner + the transcript. Callers should write this to
+ * `report.md` and set the session status to `'analysis_failed'` — they must
+ * NOT also write `report.json`, since there is no analysis to serialize.
+ */
+export function renderAnalysisFailedReport(
+  transcript: QAPair[],
+  meta: AnalysisFailedReportMeta,
+): string {
+  const { analysisError } = meta;
+  const reasonLabel = FAILURE_REASON_LABELS[analysisError.reason];
+
+  // Header — also surfaces agentName + sessionId so a triage operator can
+  // find the right session from a copy/pasted report.
+  const headerLines = ['# Agent Access Audit — REPORT GENERATION FAILED', ''];
+  const subtitleParts: string[] = [];
+  if (meta.agentName && meta.agentName.length > 0) {
+    subtitleParts.push(`**Agent**: ${escapeText(meta.agentName)}`);
+  }
+  subtitleParts.push(`**Session**: \`${escapeInlineCode(meta.sessionId)}\``);
+  headerLines.push(subtitleParts.join(' · '));
+
+  // Failure banner — blockquote so it renders distinct from prose.
+  const bannerLines = [
+    '',
+    '> **This audit could not produce a verified report.**',
+    `> The LLM analysis step failed after ${analysisError.attemptCount} attempts.`,
+    `> Reason: **${reasonLabel}**`,
+    `> Last error: \`${escapeInlineCode(analysisError.message)}\``,
+    `> Occurred at: ${analysisError.occurredAt}`,
+    '> ',
+    '> Heron does not produce a risk verdict when the analysis cannot complete.',
+    '> No findings, no recommendations, and no framework mapping are surfaced below.',
+    '> The interview transcript is preserved verbatim for manual review.',
+    '> ',
+    '> **To retry:** Re-run the audit once the underlying LLM gateway is reachable.',
+  ];
+
+  // Transcript — same shape as the success-path transcript block (Q1/Q2/…).
+  const transcriptHeader = `## Interview transcript (${transcript.length} questions)`;
+  const transcriptBody = transcript
+    .map(
+      (qa, i) =>
+        `### Q${i + 1} [${escapeText(qa.category)}]\n\n**Q:** ${escapeText(qa.question)}\n\n**A:** ${escapeText(qa.answer)}`,
+    )
+    .join('\n\n');
+
+  const footer =
+    '_End of report. Findings, risk level, and compliance sections are intentionally omitted because no analysis was performed._';
+
+  const sections = [
+    headerLines.join('\n'),
+    bannerLines.join('\n'),
+    transcriptHeader + (transcript.length > 0 ? '\n\n' + transcriptBody : ''),
+    footer,
+  ];
+
+  return sections.join('\n\n---\n\n');
+}

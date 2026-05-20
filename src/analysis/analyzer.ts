@@ -1,7 +1,7 @@
 import type { LLMClient } from '../llm/client.js';
 import { seedFromSessionId } from '../llm/client.js';
-import type { QAPair, AccessAssessment, DataNeed, Risk, SystemAssessment } from '../report/types.js';
-import { analysisResultSchema, type AnalysisResult, type Recommendation } from '../report/types.js';
+import type { QAPair, AccessAssessment, DataNeed } from '../report/types.js';
+import { analysisResultSchema, type AnalysisResult } from '../report/types.js';
 import { ANALYSIS_SYSTEM_PROMPT, buildAnalysisPrompt } from '../llm/prompts.js';
 import * as logger from '../util/logger.js';
 import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
@@ -14,39 +14,96 @@ export interface FullAnalysisResult extends AnalysisResult {
 }
 
 /**
+ * Reason the analyzer returned a failure outcome.
+ *
+ * - `parse_failure`  — the LLM responded, but the body failed JSON.parse or
+ *                      Zod validation on both attempts (e.g. truncated JSON,
+ *                      schema drift, prose preface the regex couldn't strip).
+ * - `llm_unreachable`— `llmClient.chat` itself threw on both attempts
+ *                      (network / 502 / timeout / aborted gateway).
+ * - `unknown`        — defensive fallback. Should not happen in practice.
+ */
+export type AnalyzeFailureReason = 'parse_failure' | 'llm_unreachable' | 'unknown';
+
+/**
+ * Result of `analyzeTranscript`.
+ *
+ * AAP-56: previously this function always returned `FullAnalysisResult` and
+ * silently fabricated a clean-looking fallback on double failure (LOW risk,
+ * "APPROVE WITH CONDITIONS", empty risks, empty systems). That misled
+ * reviewers into mistaking a broken LLM gateway for a clean audit. Heron
+ * strategy v3.0 — no self-attestation without verification — requires the
+ * analyzer to fail loudly. The caller is now responsible for surfacing the
+ * failure (red banner, `status: 'analysis_failed'`).
+ */
+export type AnalyzeOutcome =
+  | { ok: true; result: FullAnalysisResult }
+  | {
+      ok: false;
+      reason: AnalyzeFailureReason;
+      /** Last error message captured across both attempts. */
+      lastErrorMessage?: string;
+      /** Bounded preview (≤400 chars) of the raw LLM response, when one was received. */
+      lastResponsePreview?: string;
+      /** Number of attempts the analyzer made before giving up. Always 2 on failure today. */
+      attemptCount: number;
+    };
+
+/**
  * Uses LLM to analyze the interview transcript and produce a structured audit.
- * Validates output with Zod schema. Retries once on parse failure.
- * Falls back to partial report on double failure.
+ *
+ * Returns an `AnalyzeOutcome`:
+ *   - On success: `{ ok: true, result }` — caller renders the normal report.
+ *   - On failure: `{ ok: false, reason, ... }` — caller renders the
+ *     analysis-failed report and flips the session status. No "best-effort"
+ *     fake-clean result is ever produced (AAP-56).
+ *
+ * Retries once on first attempt failure. Distinguishes between LLM-throw
+ * (network) and parse/validation errors via per-attempt failure kind.
  */
 export async function analyzeTranscript(
   llmClient: LLMClient,
   transcript: QAPair[],
   sessionId?: string,
-): Promise<FullAnalysisResult> {
+): Promise<AnalyzeOutcome> {
   // Note: caller shows "⏳ Analyzing transcript..." already
 
   const prompt = buildAnalysisPrompt(transcript);
   const seed = sessionId ? seedFromSessionId(sessionId) : undefined;
 
   // Attempt 1
-  let parsed = await tryParse(llmClient, prompt, seed);
+  let attempt = await tryParse(llmClient, prompt, seed);
 
   // Attempt 2 (retry) if first attempt failed
-  if (!parsed) {
+  if (!attempt.ok) {
     logger.warn('First analysis attempt failed, retrying...');
-    parsed = await tryParse(llmClient, prompt, seed);
+    attempt = await tryParse(llmClient, prompt, seed);
   }
 
-  // Double failure — partial report fallback
-  if (!parsed) {
-    logger.warn('Double parse failure, using partial report fallback');
-    return buildFallbackAnalysis(transcript);
+  // Double failure — surface as explicit AnalyzeOutcome failure. Do NOT
+  // fabricate a clean-looking report (AAP-56).
+  if (!attempt.ok) {
+    logger.warn(
+      `Analysis failed after 2 attempts (kind=${attempt.failureKind}): ${attempt.errorMessage}`,
+    );
+    const reason: AnalyzeFailureReason =
+      attempt.failureKind === 'llm_throw' ? 'llm_unreachable' : 'parse_failure';
+    const out: AnalyzeOutcome = {
+      ok: false,
+      reason,
+      lastErrorMessage: attempt.errorMessage,
+      attemptCount: 2,
+    };
+    if (attempt.responsePreview !== undefined) {
+      out.lastResponsePreview = attempt.responsePreview;
+    }
+    return out;
   }
 
   // Note: caller shows the final summary with computed risk level
 
   // Derive legacy flat fields from per-system data
-  return enrichWithLegacyFields(parsed);
+  return { ok: true, result: enrichWithLegacyFields(attempt.result) };
 }
 
 const ORCHESTRATION_ONLY_PATTERN =
@@ -121,12 +178,17 @@ function scrubNotProvidedInPlace(value: unknown): void {
   }
 }
 
+type TryParseResult =
+  | { ok: true; result: AnalysisResult }
+  | { ok: false; failureKind: 'llm_throw' | 'parse_error'; errorMessage: string; responsePreview?: string };
+
 async function tryParse(
   llmClient: LLMClient,
   prompt: string,
   deterministicSeed?: number,
-): Promise<AnalysisResult | null> {
+): Promise<TryParseResult> {
   let response: string | undefined;
+  let stage: 'llm' | 'parse' = 'llm';
   try {
     // AAP-43 regression fix (2026-04-24): request JSON-mode so OpenAI and
     // Gemini return a syntactically-valid JSON payload instead of a free-form
@@ -138,6 +200,11 @@ async function tryParse(
       deterministicSeed,
       jsonMode: true,
     });
+
+    // From this point on, any throw is a parse / Zod problem rather than an
+    // LLM-unreachable problem — we got a response, we just couldn't make
+    // sense of it.
+    stage = 'parse';
 
     // Strip markdown fences if present
     let jsonStr = response.trim();
@@ -185,7 +252,7 @@ async function tryParse(
       sys.scopesNeeded = sys.scopesNeeded.filter((s) => !isNegativeScope(s));
     }
 
-    return result;
+    return { ok: true, result };
   } catch (e) {
     // AAP-43 regression fix (2026-04-24): log a bounded preview of the raw
     // LLM response so the next operator can tell truncation apart from
@@ -197,7 +264,19 @@ async function tryParse(
       ? '(no response — LLM call threw)'
       : `${response.slice(0, 400)}${response.length > 400 ? `…[+${response.length - 400} chars]` : ''}`;
     logger.warn(`Parse attempt failed: ${errMsg} | response preview: ${preview}`);
-    return null;
+    // AAP-56: split the failure kind so the caller can surface
+    // "LLM unreachable" vs "parse failure" distinctly in the failure-mode
+    // report. `stage === 'llm'` means llmClient.chat itself threw before
+    // we ever had a response to parse.
+    const out: TryParseResult = {
+      ok: false,
+      failureKind: stage === 'llm' ? 'llm_throw' : 'parse_error',
+      errorMessage: errMsg,
+    };
+    if (response !== undefined) {
+      out.responsePreview = preview;
+    }
+    return out;
   }
 }
 
@@ -255,34 +334,11 @@ function enrichWithLegacyFields(parsed: AnalysisResult): FullAnalysisResult {
   };
 }
 
-function buildFallbackAnalysis(transcript: QAPair[]): FullAnalysisResult {
-  // Extract useful data directly from transcript
-  const nonRepeated = transcript.filter(qa => !qa.answer.startsWith('[REPEATED RESPONSE]'));
-  const purposeAnswers = nonRepeated
-    .filter(qa => qa.category === 'purpose')
-    .map(qa => qa.answer)
-    .join(' ');
-  const allAnswers = nonRepeated.map(qa => qa.answer).join(' ');
-
-  // Try to build a useful summary from actual answers
-  const summary = nonRepeated.length > 0
-    ? `Automated analysis failed. The agent provided ${nonRepeated.length} substantive answers out of ${transcript.length} questions. Review the transcript below for details.`
-    : 'Automated analysis failed and the agent did not provide substantive answers. Manual review required.';
-
-  return {
-    summary,
-    agentPurpose: purposeAnswers.slice(0, 500) || 'Could not determine — see transcript',
-    systems: [], // Don't show fake systems
-    risks: [],
-    recommendations: ['Automated analysis was unable to process the transcript. Review the interview answers manually.'],
-    recommendation: 'APPROVE WITH CONDITIONS',
-    overallRiskLevel: 'medium',
-    dataNeeds: [],
-    accessAssessment: {
-      claimed: [],
-      actuallyNeeded: [],
-      excessive: [],
-      missing: [],
-    },
-  };
-}
+// AAP-56: `buildFallbackAnalysis` was DELETED. It used to fabricate a
+// clean-looking FullAnalysisResult (`overallRiskLevel: 'medium'`,
+// `recommendation: 'APPROVE WITH CONDITIONS'`, empty findings) when both
+// LLM analysis attempts failed. That produced misleading reports where a
+// 502 from the LLM gateway rendered identically to a clean audit. The
+// transcript is preserved verbatim in `transcript.jsonl`; the failure
+// outcome is now surfaced via `AnalyzeOutcome { ok: false }` and the
+// caller emits a dedicated `renderAnalysisFailedReport` instead.

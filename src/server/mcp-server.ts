@@ -56,6 +56,7 @@ import {
   submitToolCallAnswer,
   updateSessionMeta,
   writeReport,
+  writeAnalysisFailure,
   type AuditSessionStatus,
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
@@ -126,17 +127,44 @@ export interface SamplingInterviewRunner {
 /**
  * Render an audit report from a captured transcript (AAP-52). Injected
  * for the same reason — keep unit tests out of the LLM hot path.
+ *
+ * AAP-56: now returns a discriminated outcome. On success the wrapper
+ * persists the report via `writeReport` + flips status to `'complete'`.
+ * On failure it persists the diagnostic envelope via `writeAnalysisFailure`
+ * + flips status to `'analysis_failed'`. The fake-clean fallback that
+ * earlier versions used is gone — no risk verdict is produced when the
+ * analyzer cannot complete.
  */
+export interface AnalyzeAndRenderReportSuccess {
+  ok: true;
+  markdown: string;
+  json: unknown;
+  riskLevel?: string;
+}
+
+export interface AnalyzeAndRenderReportFailure {
+  ok: false;
+  /** Failure-mode markdown — what `renderAnalysisFailedReport` produces. */
+  markdown: string;
+  analysisError: {
+    reason: 'parse_failure' | 'llm_unreachable' | 'unknown';
+    message: string;
+    responsePreview?: string;
+    attemptCount: number;
+    occurredAt: string;
+  };
+}
+
+export type AnalyzeAndRenderReportOutcome =
+  | AnalyzeAndRenderReportSuccess
+  | AnalyzeAndRenderReportFailure;
+
 export interface AnalyzeAndRenderReport {
   (params: {
     sessionId: string;
     transcript: QAPair[];
     agentName?: string;
-  }): Promise<{
-    markdown: string;
-    json: unknown;
-    riskLevel?: string;
-  }>;
+  }): Promise<AnalyzeAndRenderReportOutcome>;
 }
 
 /** Dependency bag for `HeronMCPServer`. */
@@ -687,15 +715,26 @@ export class HeronMCPServer {
           ...(agent_name !== undefined ? { agentName: agent_name } : {}),
         });
 
-        await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-        if (rendered.riskLevel) {
-          await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+        if (rendered.ok) {
+          await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+          if (rendered.riskLevel) {
+            await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+          }
+          publishSessionEvent(sessionId, {
+            type: 'status-change',
+            status: 'complete',
+            ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+          });
+        } else {
+          // AAP-56: analyzer failed. Persist the failure-mode markdown and
+          // diagnostic envelope; surface to dashboard via SSE. NO report.json
+          // is written — there is no analysis to serialize.
+          await writeAnalysisFailure(sessionId, rendered.analysisError, rendered.markdown);
+          publishSessionEvent(sessionId, {
+            type: 'status-change',
+            status: 'analysis_failed',
+          });
         }
-        publishSessionEvent(sessionId, {
-          type: 'status-change',
-          status: 'complete',
-          ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
-        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         try {
@@ -960,24 +999,50 @@ export class HeronMCPServer {
       ...(updated.agentName !== undefined ? { agentName: updated.agentName } : {}),
     });
 
-    await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-    if (rendered.riskLevel) {
-      await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+    if (rendered.ok) {
+      await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+      if (rendered.riskLevel) {
+        await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+      }
+      publishSessionEvent(sessionId, {
+        type: 'status-change',
+        status: 'complete',
+        ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+      });
+
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          status: 'complete',
+          questions_asked: updated.questionsAsked,
+          report_markdown: rendered.markdown,
+          ...(rendered.riskLevel ? { risk_level: rendered.riskLevel } : {}),
+        },
+      };
     }
+
+    // AAP-56 — tool-call path mirrors the sampling-mode handler: analyzer
+    // failed, no report.json, dashboard banner driven by status. Surface
+    // the failure to the tool caller with `status: 'analysis_failed'` so a
+    // smart agent can stop calling submit_answer / decide to retry.
+    await writeAnalysisFailure(sessionId, rendered.analysisError, rendered.markdown);
     publishSessionEvent(sessionId, {
       type: 'status-change',
-      status: 'complete',
-      ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+      status: 'analysis_failed',
     });
 
     return {
       ok: true,
       value: {
         session_id: sessionId,
-        status: 'complete',
+        status: 'analysis_failed',
         questions_asked: updated.questionsAsked,
         report_markdown: rendered.markdown,
-        ...(rendered.riskLevel ? { risk_level: rendered.riskLevel } : {}),
+        error: {
+          reason: rendered.analysisError.reason,
+          message: rendered.analysisError.message,
+        },
       },
     };
   }

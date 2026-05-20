@@ -18,7 +18,24 @@
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export type AuditSessionStatus = 'interviewing' | 'analyzing' | 'complete' | 'error';
+export type AuditSessionStatus =
+  | 'interviewing'
+  | 'analyzing'
+  | 'complete'
+  | 'analysis_failed'
+  | 'error';
+
+/**
+ * AAP-56: diagnostic envelope present when status === 'analysis_failed'.
+ * Surfaces in the dashboard's red "Analysis failed" banner.
+ */
+export interface AnalysisErrorRecord {
+  reason: 'parse_failure' | 'llm_unreachable' | 'unknown';
+  message: string;
+  responsePreview?: string;
+  attemptCount: number;
+  occurredAt: string;
+}
 
 export interface AuditSession {
   id: string;
@@ -28,6 +45,7 @@ export interface AuditSession {
   agentName?: string;
   createdAt: string;
   updatedAt: string;
+  analysisError?: AnalysisErrorRecord | null;
 }
 
 export interface AuditSessionDetail extends AuditSession {

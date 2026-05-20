@@ -36,17 +36,25 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+/**
+ * Persisted session lifecycle states.
+ *
+ * AAP-55 added `awaiting_answer`: the tool-call interview path is alive
+ * but waiting for the caller to invoke `submit_answer` with the next
+ * answer. Different from `interviewing`, which means an MCP sampling
+ * background loop is driving the questions itself.
+ *
+ * AAP-56 added `analysis_failed`: the interview completed but the analyzer
+ * could not produce a structured report (double-parse failure or unreachable
+ * LLM gateway). Surfaced loudly in the dashboard via a red banner / pill so
+ * a reviewer cannot mistake a broken run for a clean audit.
+ */
 export type AuditSessionStatus =
   | 'interviewing'
   | 'analyzing'
   | 'complete'
+  | 'analysis_failed'
   | 'error'
-  /**
-   * AAP-55 — tool-call interview mode. The session is alive but waiting
-   * for the caller to invoke the `submit_answer` MCP tool with the next
-   * answer. Different from `interviewing` (which means an MCP sampling
-   * background loop is driving the questions).
-   */
   | 'awaiting_answer';
 
 /** Which interview path is driving the session. Optional for legacy rows. */
@@ -61,6 +69,19 @@ export interface PendingQuestion {
   text: string;
   category: string;
   index: number;
+}
+
+/**
+ * AAP-56: diagnostic envelope persisted alongside a session whose analyzer
+ * step failed. Surfaced verbatim in the dashboard's "Analysis failed" banner
+ * and in the failure-mode markdown report.
+ */
+export interface AnalysisErrorRecord {
+  reason: 'parse_failure' | 'llm_unreachable' | 'unknown';
+  message: string;
+  responsePreview?: string;
+  attemptCount: number;
+  occurredAt: string;
 }
 
 export interface AuditSession {
@@ -84,6 +105,12 @@ export interface AuditSession {
    * Idempotent merge — duplicate entries are deduped before write.
    */
   workspaceHints?: string[];
+  /**
+   * AAP-56: present when `status === 'analysis_failed'`. Null/undefined
+   * otherwise. Carries the diagnostic envelope from `analyzeTranscript` so
+   * UI consumers can render reason + last error + occurredAt.
+   */
+  analysisError?: AnalysisErrorRecord | null;
 }
 
 export interface TranscriptEntry {
@@ -118,6 +145,10 @@ interface StoredMeta extends AuditSession {
   mode?: AuditSessionMode;
   pendingQuestion?: PendingQuestion | null;
   workspaceHints?: string[];
+  // riskLevel inherited from AuditSession is `string | undefined`. We
+  // intentionally allow re-assigning to `undefined` to wipe a stale value
+  // on a re-run (e.g. writeAnalysisFailure clears it). JSON.stringify drops
+  // `undefined` keys, so the field disappears from disk cleanly.
 }
 
 export const SESSION_ID_REGEX = /^sess-\d{8}-\d{6}-[a-z0-9]{6}$/;
@@ -356,6 +387,7 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
   if (meta.mode !== undefined) detail.mode = meta.mode;
   if (meta.pendingQuestion !== undefined) detail.pendingQuestion = meta.pendingQuestion;
   if (meta.workspaceHints !== undefined) detail.workspaceHints = meta.workspaceHints;
+  if (meta.analysisError !== undefined) detail.analysisError = meta.analysisError;
   if (reportMd !== undefined) detail.report = reportMd;
   if (reportJson !== null) detail.reportJson = reportJson;
   return detail;
@@ -392,6 +424,7 @@ export async function listSessions(): Promise<AuditSession[]> {
     };
     if (meta.agentName !== undefined) summary.agentName = meta.agentName;
     if (meta.riskLevel !== undefined) summary.riskLevel = meta.riskLevel;
+    if (meta.analysisError !== undefined) summary.analysisError = meta.analysisError;
     out.push(summary);
   }
   // Newest first by updatedAt; fall back to createdAt for ties.
@@ -462,6 +495,45 @@ export async function writeReport(
   const next: StoredMeta = {
     ...meta,
     status: 'complete',
+    // AAP-56: clear any prior analysisError on a successful re-run. Today's
+    // pipeline doesn't re-run a failed session, but writeReport's contract
+    // is "this run succeeded" — leave no stale failure envelope behind.
+    analysisError: null,
+    updatedAt: nowIso(),
+  };
+  await writeMeta(id, next);
+}
+
+/**
+ * AAP-56: persist an explicit analysis failure.
+ *
+ * Sets `session.status = 'analysis_failed'`, stores the diagnostic envelope
+ * on `analysisError`, writes the failure-mode markdown to `report.md`, and
+ * — critically — does NOT write `report.json`. The absence of report.json
+ * tells the dashboard "there is no analysis to render"; it falls through
+ * to the markdown-only path and surfaces the red "Analysis failed" banner.
+ *
+ * Atomic write semantics match `writeReport`: tmp-file + fsync + rename for
+ * meta.json and report.md.
+ */
+export async function writeAnalysisFailure(
+  id: string,
+  error: AnalysisErrorRecord,
+  failureMarkdown: string,
+): Promise<void> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const dir = await ensureSessionsDir();
+  await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
+  await atomicWriteFile(join(dir, id, 'report.md'), failureMarkdown);
+  const next: StoredMeta = {
+    ...meta,
+    status: 'analysis_failed',
+    analysisError: error,
+    // riskLevel is meaningless when analysis didn't run — strip any stale
+    // value left over from a prior partial run.
+    riskLevel: undefined,
     updatedAt: nowIso(),
   };
   await writeMeta(id, next);

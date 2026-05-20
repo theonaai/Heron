@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { GitCompare, Loader2, Download } from 'lucide-react';
 import {
+  type AnalysisErrorRecord,
   type AuditSessionDetail,
   fetchVersionDiff,
   type VersionDiff,
@@ -190,8 +191,13 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const displayName = effectiveAgentName || sessionShort;
   const showIdSuffix = !!effectiveAgentName;
 
-  const statusSev =
-    liveSession.status === 'complete'
+  // AAP-56: analysis_failed gets its own red pill set — no risk level
+  // shown, status pill is critical-red, banner explains why the verdict
+  // is intentionally absent.
+  const isAnalysisFailed = liveSession.status === 'analysis_failed';
+  const statusSev = isAnalysisFailed
+    ? 'sev-critical'
+    : liveSession.status === 'complete'
       ? 'sev-ok'
       : liveSession.status === 'error'
         ? 'sev-critical'
@@ -211,6 +217,16 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             ? 'sev-low'
             : 'sev-neutral';
 
+  const analysisError: AnalysisErrorRecord | null | undefined = liveSession.analysisError;
+  const analysisErrorReason = analysisError?.reason;
+  const analysisErrorMessage = analysisError?.message;
+  const failureReasonLabel =
+    analysisErrorReason === 'llm_unreachable'
+      ? 'LLM gateway unreachable'
+      : analysisErrorReason === 'parse_failure'
+        ? 'LLM response could not be parsed'
+        : 'Unknown analyzer failure';
+
   return (
     <div className="report-shell" style={{ height: '100%' }}>
       <div className="topbar">
@@ -221,10 +237,20 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
               <span className="session-id-suffix"> ({sessionShort})</span>
             )}
           </span>
-          <span className={`sev ${statusSev}`}>{liveSession.status}</span>
-          {isLive && <span className="sev sev-info">live</span>}
-          {liveSession.riskLevel && (
-            <span className={`sev ${riskSev}`}>{liveSession.riskLevel} risk</span>
+          {isAnalysisFailed ? (
+            // AAP-56: single red pill replaces both the status and the
+            // risk-level pill. There is no verified risk to display.
+            <span className="sev sev-critical" title={analysisErrorMessage ?? failureReasonLabel}>
+              analysis failed
+            </span>
+          ) : (
+            <>
+              <span className={`sev ${statusSev}`}>{liveSession.status}</span>
+              {isLive && <span className="sev sev-info">live</span>}
+              {liveSession.riskLevel && (
+                <span className={`sev ${riskSev}`}>{liveSession.riskLevel} risk</span>
+              )}
+            </>
           )}
           <span className="topbar-meta">
             {liveSession.questionsAsked} questions · {new Date(liveSession.createdAt).toLocaleDateString()}
@@ -299,7 +325,46 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
       <div className="body">
         {tab === 'report' && liveSession.report ? (
           <>
-            {isComplete && !hasDiscovery && (
+            {isAnalysisFailed && (
+              // AAP-56: prominent red banner sits at the top of the report
+              // body and explains the failure. Combined with the suppressed
+              // risk pill above, a reviewer cannot mistake this run for a
+              // clean audit. Re-running the audit is the only path forward.
+              <div
+                role="alert"
+                style={{
+                  margin: '0 0 16px',
+                  padding: '14px 18px',
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                  color: '#7f1d1d',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                <div>
+                  <strong style={{ fontWeight: 700 }}>Analysis failed</strong>
+                  {': '}
+                  {failureReasonLabel}
+                  {analysisErrorMessage ? (
+                    <>
+                      {' — '}
+                      <code style={{ fontSize: 12 }}>{analysisErrorMessage}</code>
+                    </>
+                  ) : null}
+                  .
+                </div>
+                <div>
+                  Heron does not produce a risk verdict, findings, or framework mapping
+                  when the analysis cannot complete. Re-run the audit to produce findings.
+                </div>
+              </div>
+            )}
+            {isComplete && !isAnalysisFailed && !hasDiscovery && (
               <div
                 style={{
                   margin: '0 0 16px',
@@ -341,7 +406,26 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             />
           </>
         ) : tab === 'diff' && diff ? (
-          <DiffView diff={diff} />
+          isAnalysisFailed ? (
+            // AAP-56: a failed-analysis session has no AuditReport to diff
+            // against. Render a guard rather than crashing inside DiffView.
+            <div
+              style={{
+                margin: '12px 0',
+                padding: '14px 18px',
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 6,
+                fontSize: 13,
+                color: '#7f1d1d',
+              }}
+            >
+              <strong style={{ fontWeight: 700 }}>Cannot compare</strong>: one session
+              failed analysis. Re-run the audit before attempting a comparison.
+            </div>
+          ) : (
+            <DiffView diff={diff} />
+          )
         ) : (
           <TranscriptView
             transcript={liveSession.transcript}

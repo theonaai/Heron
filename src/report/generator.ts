@@ -1,8 +1,12 @@
 import type { AuditReport, DataQuality, QAPair, SystemAssessment } from './types.js';
 import type { InterviewSession } from '../interview/interviewer.js';
-import { analyzeTranscript } from '../analysis/analyzer.js';
+import {
+  analyzeTranscript,
+  type AnalyzeFailureReason,
+  type FullAnalysisResult,
+} from '../analysis/analyzer.js';
 import { computeRiskScore, applySeverityOverrides } from '../analysis/risk-scorer.js';
-import { renderMarkdownReport } from './templates.js';
+import { renderMarkdownReport, renderAnalysisFailedReport } from './templates.js';
 import type { LLMClient } from '../llm/client.js';
 import * as logger from '../util/logger.js';
 import { isProvided } from '../util/provided.js';
@@ -24,14 +28,76 @@ export interface ReportResult {
   reportJson: AuditReport;
 }
 
-export async function generateReport(
+/** AAP-56: explicit failure-mode result surfaced when analyzeTranscript fails. */
+export interface ReportFailureResult {
+  ok: false;
+  analysisError: {
+    reason: AnalyzeFailureReason;
+    message: string;
+    responsePreview?: string;
+    attemptCount: number;
+    occurredAt: string;
+  };
+  /** Failure-mode markdown. No risk badge, no findings, no compliance, no recommendation. */
+  report: string;
+}
+
+export interface ReportSuccessResult extends ReportResult {
+  ok: true;
+}
+
+/** Discriminated union: success delivers AuditReport, failure delivers analysisError. */
+export type ReportOutcome = ReportSuccessResult | ReportFailureResult;
+
+/**
+ * AAP-56: analyzer-aware variant of `generateReport`. Returns a discriminated
+ * outcome so the caller can branch:
+ *   - `{ ok: true, report, reportJson }`  → write report + report.json,
+ *                                            status='complete'
+ *   - `{ ok: false, analysisError, report }` → writeAnalysisFailure,
+ *                                            status='analysis_failed'
+ *
+ * No fake-clean AuditReport is ever constructed on the failure path.
+ */
+export async function generateReportOutcome(
   session: InterviewSession,
   llmClient: LLMClient,
   options: GenerateReportOptions,
-): Promise<ReportResult> {
-  // 1. Analyze transcript with LLM
-  const analysis = await analyzeTranscript(llmClient, session.transcript, session.id);
+): Promise<ReportOutcome> {
+  const outcome = await analyzeTranscript(llmClient, session.transcript, session.id);
 
+  if (!outcome.ok) {
+    const occurredAt = new Date().toISOString();
+    const analysisError = {
+      reason: outcome.reason,
+      message: outcome.lastErrorMessage ?? 'Unknown analyzer failure',
+      ...(outcome.lastResponsePreview !== undefined
+        ? { responsePreview: outcome.lastResponsePreview }
+        : {}),
+      attemptCount: outcome.attemptCount,
+      occurredAt,
+    };
+    const report = renderAnalysisFailedReport(session.transcript, {
+      sessionId: session.id ?? 'unknown-session',
+      questionsAsked: session.questionsAsked,
+      ...(options.target ? { agentName: options.target } : {}),
+      analysisError,
+    });
+    return { ok: false, analysisError, report };
+  }
+
+  const analysis = outcome.result;
+  return {
+    ok: true,
+    ...(await buildSuccessReport(session, analysis, options)),
+  };
+}
+
+async function buildSuccessReport(
+  session: InterviewSession,
+  analysis: FullAnalysisResult,
+  options: GenerateReportOptions,
+): Promise<ReportResult> {
   // 1b. AAP-43: apply deterministic severity floor to LLM-assigned risk labels
   analysis.risks = applySeverityOverrides(
     analysis.risks,
@@ -82,6 +148,47 @@ export async function generateReport(
     : renderMarkdownReport(report);
 
   return { report: formatted, reportJson: report };
+}
+
+/**
+ * Backward-compatible success-path wrapper around `generateReportOutcome`.
+ *
+ * Existing callers (CLI batch report, integration tests) treat the analyzer
+ * as throw-on-failure. Preserve that contract: on analyzer failure, throw an
+ * `AnalysisFailedError` carrying the diagnostic envelope. Callers that need
+ * the explicit-outcome semantics — the MCP `start_audit_session` path — use
+ * `generateReportOutcome` directly.
+ */
+export async function generateReport(
+  session: InterviewSession,
+  llmClient: LLMClient,
+  options: GenerateReportOptions,
+): Promise<ReportResult> {
+  const outcome = await generateReportOutcome(session, llmClient, options);
+  if (!outcome.ok) {
+    throw new AnalysisFailedError(outcome.analysisError, outcome.report);
+  }
+  return { report: outcome.report, reportJson: outcome.reportJson };
+}
+
+/**
+ * Thrown by the legacy throw-on-failure `generateReport` wrapper when
+ * `analyzeTranscript` returns a failure outcome. Carries the diagnostic
+ * envelope and the rendered failure-mode markdown so callers that catch
+ * this can persist both without re-running the analyzer.
+ */
+export class AnalysisFailedError extends Error {
+  readonly analysisError: ReportFailureResult['analysisError'];
+  readonly failureMarkdown: string;
+  constructor(
+    analysisError: ReportFailureResult['analysisError'],
+    failureMarkdown: string,
+  ) {
+    super(`Analysis failed (${analysisError.reason}): ${analysisError.message}`);
+    this.name = 'AnalysisFailedError';
+    this.analysisError = analysisError;
+    this.failureMarkdown = failureMarkdown;
+  }
 }
 
 // AAP-31: computeRegulatoryFlags (legacy jurisdictional projection) removed.

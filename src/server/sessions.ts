@@ -247,7 +247,21 @@ export class SessionManager {
 
     try {
       const transcript = session.protocol.getTranscript();
-      const analysis = await analyzeTranscript(this.llmClient, transcript, session.id);
+      const analyzeOutcome = await analyzeTranscript(this.llmClient, transcript, session.id);
+      // AAP-56: when analysis fails we no longer fabricate a clean-looking
+      // report. Surface the failure on the session, log it, and stop here —
+      // the in-memory SessionManager is the legacy CLI path (heron run), and
+      // the operator can see `status === 'error'` in the dashboard. The
+      // explicit `analysis_failed` UX lives on the filesystem-backed
+      // `start_audit_session` path (writeAnalysisFailure).
+      if (!analyzeOutcome.ok) {
+        const msg = `Analysis failed (${analyzeOutcome.reason}): ${analyzeOutcome.lastErrorMessage ?? 'unknown'}`;
+        session.status = 'error';
+        session.error = msg;
+        this.logEvent(session, 'error', { message: msg, reason: analyzeOutcome.reason });
+        throw new Error(msg);
+      }
+      const analysis = analyzeOutcome.result;
       analysis.risks = applySeverityOverrides(
         analysis.risks,
         analysis.systems,
