@@ -4,14 +4,23 @@
 
 :root {
   color-scheme: light;
-  --color-ink: #121316;
-  --color-paper: #f7f3e8;
+  /*
+   * AAP-62 — palette refresh for higher contrast.
+   * Previous parchment/cream paper (#f7f3e8) made text feel washed
+   * out even though --color-ink was near-black. Switched paper to
+   * pure white for crisp dashboard surfaces; --color-fog tightened
+   * from a warm cream to a clean neutral so cards still feel
+   * distinct from the page bg. Border alpha bumped slightly to
+   * keep card edges visible against white.
+   */
+  --color-ink: #0a0b0d;
+  --color-paper: #ffffff;
   --color-sage: #dce5d4;
   --color-moss: #1e5a4d;
   --color-copper: #d46a3a;
-  --color-fog: #ece7dc;
-  --color-border: rgba(18, 19, 22, 0.12);
-  --grid-line: rgba(18, 19, 22, 0.08);
+  --color-fog: #f5f5f7;
+  --color-border: rgba(10, 11, 13, 0.14);
+  --grid-line: rgba(10, 11, 13, 0.08);
 }
 
 * {
@@ -32,7 +41,7 @@ body {
   min-height: 100vh;
   font-family: var(--font-jakarta), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   color: var(--color-ink);
-  background: #f8fafc;
+  background: #ffffff;
 }
 
 a {

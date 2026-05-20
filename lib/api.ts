@@ -21,6 +21,7 @@
 export type AuditSessionStatus =
   | 'interviewing'
   | 'analyzing'
+  | 'awaiting_answer'  // AAP-55 — tool-call interview is waiting for next submit_answer call
   | 'complete'
   | 'analysis_failed'
   | 'error';

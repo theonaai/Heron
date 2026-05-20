@@ -59,7 +59,18 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
 
   const hasReport = !!liveSession.report;
   const isComplete = liveSession.status === 'complete';
-  const isLive = liveSession.status === 'interviewing' || liveSession.status === 'analyzing';
+  // AAP-62 — `awaiting_answer` is the tool-call interview's live state
+  // (AAP-55 introduced it; clients without MCP sampling drive the loop
+  // via repeated `submit_answer` calls). Treating it as terminal caused
+  // the SSE listener AND the polling fallback to never attach, so the
+  // dashboard sat stale until the user manually hit refresh — the
+  // 2026-05-20 regression Ilya hit. Now both sampling-mode
+  // (`interviewing` → `analyzing`) and tool-call-mode (`awaiting_answer`
+  // → `analyzing`) paths animate live.
+  const isLive =
+    liveSession.status === 'interviewing' ||
+    liveSession.status === 'analyzing' ||
+    liveSession.status === 'awaiting_answer';
   const [tab, setTab] = useState<Tab>(hasReport ? 'report' : 'transcript');
   const [diff, setDiff] = useState<VersionDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
