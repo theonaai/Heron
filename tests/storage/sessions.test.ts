@@ -9,6 +9,7 @@ import {
   updateSessionMeta,
   appendTranscriptEntry,
   writeReport,
+  writeAnalysisFailure,
   softDeleteSession,
   getSessionsDir,
   SESSION_ID_REGEX,
@@ -201,6 +202,90 @@ describe('local-files audit-session store', () => {
     const detail = await getSession(id);
     expect(detail).not.toBeNull();
     expect(detail!.agentName).toBeUndefined();
+  });
+
+  // ─── AAP-56 — writeAnalysisFailure ──────────────────────────────────────
+
+  it('writeAnalysisFailure flips status to analysis_failed and stores analysisError + report.md', async () => {
+    const { id } = await createSession({ agentName: 'codex.app' });
+    await appendTranscriptEntry(id, { category: 'systems', question: 'Q1', answer: 'A1' });
+
+    const occurredAt = '2026-05-20T03:34:03.123Z';
+    await writeAnalysisFailure(
+      id,
+      {
+        reason: 'llm_unreachable',
+        message: '502 status code (no body)',
+        attemptCount: 2,
+        occurredAt,
+      },
+      '# Agent Access Audit — REPORT GENERATION FAILED\n\nverbatim transcript follows',
+    );
+
+    const detail = await getSession(id);
+    expect(detail).not.toBeNull();
+    expect(detail!.status).toBe('analysis_failed');
+    expect(detail!.report).toMatch(/REPORT GENERATION FAILED/);
+    expect(detail!.analysisError).toBeDefined();
+    expect(detail!.analysisError!.reason).toBe('llm_unreachable');
+    expect(detail!.analysisError!.message).toContain('502');
+    expect(detail!.analysisError!.attemptCount).toBe(2);
+    expect(detail!.analysisError!.occurredAt).toBe(occurredAt);
+  });
+
+  it('writeAnalysisFailure does NOT write report.json (no analysis to serialize)', async () => {
+    const { id } = await createSession({ agentName: 'codex.app' });
+    await writeAnalysisFailure(
+      id,
+      {
+        reason: 'parse_failure',
+        message: 'Unexpected token in JSON at position 0',
+        attemptCount: 2,
+        occurredAt: new Date().toISOString(),
+      },
+      '# REPORT GENERATION FAILED',
+    );
+
+    const files = await readdir(join(getSessionsDir(), id));
+    expect(files).toContain('meta.json');
+    expect(files).toContain('report.md');
+    // Critically: no report.json on disk after writeAnalysisFailure.
+    expect(files).not.toContain('report.json');
+  });
+
+  it('writeAnalysisFailure bumps updatedAt', async () => {
+    const { id } = await createSession({ agentName: 'codex.app' });
+    const before = await getSession(id);
+    await new Promise((r) => setTimeout(r, 10));
+    await writeAnalysisFailure(
+      id,
+      {
+        reason: 'parse_failure',
+        message: 'malformed JSON',
+        attemptCount: 2,
+        occurredAt: new Date().toISOString(),
+      },
+      '# REPORT GENERATION FAILED',
+    );
+    const after = await getSession(id);
+    expect(new Date(after!.updatedAt).getTime()).toBeGreaterThan(
+      new Date(before!.updatedAt).getTime(),
+    );
+  });
+
+  it('writeAnalysisFailure rejects malformed session ids', async () => {
+    await expect(
+      writeAnalysisFailure(
+        '../etc',
+        {
+          reason: 'parse_failure',
+          message: 'x',
+          attemptCount: 2,
+          occurredAt: new Date().toISOString(),
+        },
+        '# bad',
+      ),
+    ).rejects.toThrow();
   });
 
   it('updateSessionMeta rejects unknown fields silently (ignores them)', async () => {

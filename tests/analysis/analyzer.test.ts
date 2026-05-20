@@ -52,14 +52,16 @@ describe('analyzer', () => {
       chat: vi.fn().mockResolvedValue(validAnalysisJSON),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
 
-    expect(result.agentPurpose).toBe('Process invoices and update CRM');
-    expect(result.systems.length).toBe(2);
-    expect(result.systems[0].systemId).toContain('SAP');
-    expect(result.systems[1].blastRadius).toBe('org-wide');
-    expect(result.risks.length).toBe(1);
-    expect(result.overallRiskLevel).toBe('high');
+    expect(outcome.result.agentPurpose).toBe('Process invoices and update CRM');
+    expect(outcome.result.systems.length).toBe(2);
+    expect(outcome.result.systems[0].systemId).toContain('SAP');
+    expect(outcome.result.systems[1].blastRadius).toBe('org-wide');
+    expect(outcome.result.risks.length).toBe(1);
+    expect(outcome.result.overallRiskLevel).toBe('high');
   });
 
   it('strips markdown fences from LLM response', async () => {
@@ -67,8 +69,10 @@ describe('analyzer', () => {
       chat: vi.fn().mockResolvedValue('```json\n' + validAnalysisJSON + '\n```'),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
-    expect(result.agentPurpose).toBe('Process invoices and update CRM');
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.result.agentPurpose).toBe('Process invoices and update CRM');
   });
 
   it('retries on first parse failure', async () => {
@@ -81,24 +85,53 @@ describe('analyzer', () => {
       }),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
     expect(callCount).toBe(2);
-    expect(result.agentPurpose).toBe('Process invoices and update CRM');
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.result.agentPurpose).toBe('Process invoices and update CRM');
   });
 
-  it('returns partial fallback on double parse failure', async () => {
+  // AAP-56: previously returned a "clean-looking" fake report on double parse
+  // failure (LOW RISK badge, APPROVE WITH CONDITIONS, no findings). That was
+  // misleading — strategy v3.0 says no verdict without verification. We now
+  // return an explicit failure outcome and the caller surfaces a red banner.
+  it('returns failure outcome on double parse failure (no fake clean result)', async () => {
     const mockLLM: LLMClient = {
       chat: vi.fn().mockResolvedValue('not json at all'),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
 
-    expect(result.summary).toContain('analysis failed');
-    expect(result.systems.length).toBe(0); // no fake systems in fallback
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe('parse_failure');
+    expect(outcome.attemptCount).toBe(2);
+    expect(typeof outcome.lastErrorMessage).toBe('string');
+    expect((outcome.lastErrorMessage ?? '').length).toBeGreaterThan(0);
+
+    // Ensure NOTHING resembling a fake-clean FullAnalysisResult escapes.
+    const json = JSON.stringify(outcome);
+    expect(json).not.toMatch(/APPROVE WITH CONDITIONS/);
+    expect(json).not.toMatch(/No risks identified/);
   });
 
-  it('falls back when LLM returns Zod-invalid structure', async () => {
-    // Missing required fields
+  it('returns failure outcome when LLM throws (network / 502 / timeout)', async () => {
+    const mockLLM: LLMClient = {
+      chat: vi.fn().mockRejectedValue(new Error('502 status code (no body)')),
+    };
+
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe('llm_unreachable');
+    expect(outcome.attemptCount).toBe(2);
+    expect(outcome.lastErrorMessage).toContain('502');
+  });
+
+  it('returns failure outcome when LLM returns Zod-invalid structure', async () => {
+    // Missing required fields → JSON parses but Zod rejects → parse_failure.
     const invalid = JSON.stringify({
       summary: 'Test',
       agentPurpose: 'Test',
@@ -109,9 +142,10 @@ describe('analyzer', () => {
       chat: vi.fn().mockResolvedValue(invalid),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
-    // Should hit fallback since Zod validation fails
-    expect(result.summary).toContain('analysis failed');
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe('parse_failure');
   });
 
   it('derives legacy accessAssessment from per-system data', async () => {
@@ -119,13 +153,14 @@ describe('analyzer', () => {
       chat: vi.fn().mockResolvedValue(validAnalysisJSON),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
 
-    // Should have legacy flat fields derived from systems
-    expect(result.accessAssessment).toBeDefined();
-    expect(result.accessAssessment.claimed.length).toBeGreaterThan(0);
-    expect(result.accessAssessment.excessive.length).toBeGreaterThan(0);
-    expect(result.dataNeeds.length).toBeGreaterThan(0);
+    expect(outcome.result.accessAssessment).toBeDefined();
+    expect(outcome.result.accessAssessment.claimed.length).toBeGreaterThan(0);
+    expect(outcome.result.accessAssessment.excessive.length).toBeGreaterThan(0);
+    expect(outcome.result.dataNeeds.length).toBeGreaterThan(0);
   });
 
   it('enriches dataNeeds from systems dataSensitivity', async () => {
@@ -133,10 +168,12 @@ describe('analyzer', () => {
       chat: vi.fn().mockResolvedValue(validAnalysisJSON),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
 
-    expect(result.dataNeeds.some(d => d.system.includes('SAP'))).toBe(true);
-    expect(result.dataNeeds.some(d => d.system.includes('HubSpot'))).toBe(true);
+    expect(outcome.result.dataNeeds.some(d => d.system.includes('SAP'))).toBe(true);
+    expect(outcome.result.dataNeeds.some(d => d.system.includes('HubSpot'))).toBe(true);
   });
 
   // AAP-43 post-merge regression (2026-04-25):
@@ -185,10 +222,11 @@ describe('analyzer', () => {
       chat: vi.fn().mockResolvedValue(llmResponse),
     };
 
-    const result = await analyzeTranscript(mockLLM, sampleTranscript);
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const result = outcome.result;
 
-    // Must NOT fall back — analysis must succeed.
-    expect(result.summary).not.toContain('analysis failed');
     expect(result.systems.length).toBe(2);
 
     // Pure-NOT-PROVIDED arrays compact to empty.
