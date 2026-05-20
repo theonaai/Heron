@@ -522,10 +522,17 @@
   background: var(--r-bg-muted);
 }
 .report .sys-card .sys-name {
-  font-family: var(--r-font-mono);
-  font-size: 12.5px;
-  font-weight: 500;
+  /* AAP-62 round-3 — was var(--r-font-mono) 12.5px. The LLM-generated
+     systemIds are often LONG full sentences (e.g. "Codex desktop app
+     local agent session -> OpenAI-hosted Codex/ChatGPT backend …"),
+     which read as code-block / ASCII art in mono. Switch to sans +
+     bump size so the system header reads as a title, not as a code
+     dump. */
+  font-family: var(--r-font-sans);
+  font-size: 14px;
+  font-weight: 600;
   color: var(--r-ink);
+  line-height: 1.45;
   word-break: break-word;
 }
 .report .sys-card .sys-sub {

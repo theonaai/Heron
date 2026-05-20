@@ -1371,7 +1371,20 @@ export default function ReportView({
     for (const scope of sys.scopesDelta) {
       if (scope !== 'NOT PROVIDED') {
         if (!excessiveBySystem.has(sys.systemId)) excessiveBySystem.set(sys.systemId, []);
-        excessiveBySystem.get(sys.systemId)!.push(scope);
+        // AAP-62 round-3 — strip the repetitive "Unused in this audit
+        // task so far:" / "Unused in this task:" lead-in the analyzer
+        // LLM tends to prepend to every excessive-scope entry. The
+        // section header above already says "Permissions delta —
+        // excessive (revokable)"; repeating the same lead-in 7 times
+        // below it is pure noise. Also drop trailing source refs like
+        // " (A11)." that don't add information at this level of
+        // summary.
+        const cleaned = scope
+          .replace(/^\s*Unused in this(?:\s+(?:audit\s+task|task))?\s+so\s+far\s*:?\s*/i, '')
+          .replace(/^\s*Unused (?:in this )?(?:audit )?task(?:\s+so\s+far)?\s*:?\s*/i, '')
+          .replace(/\s*\(A\d+\)\s*\.?\s*$/i, '')
+          .trim();
+        excessiveBySystem.get(sys.systemId)!.push(cleaned || scope);
       }
     }
   }
