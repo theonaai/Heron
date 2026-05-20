@@ -64,6 +64,10 @@ export function StatusDot({ status }: { status: string }) {
     interviewing: { color: 'bg-sky-500', pulse: true },
     analyzing: { color: 'bg-violet-500', pulse: true },
     complete: { color: 'bg-emerald-500', pulse: false },
+    // AAP-56: analysis_failed surfaces with the same red signal as a hard
+    // error so a reviewer cannot mistake a broken analyzer run for a clean
+    // audit. Sidebar pairs this with a red "ANALYSIS FAILED" badge.
+    analysis_failed: { color: 'bg-red-500', pulse: false },
     error: { color: 'bg-red-500', pulse: false },
   };
   const s = map[status] ?? { color: 'bg-slate-300', pulse: false };

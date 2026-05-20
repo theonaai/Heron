@@ -94,7 +94,10 @@ export default function Sidebar({
   // Pick a single dot to show next to the session name. While the audit is
   // running we surface its status. Once it is complete, the risk level matters
   // more — so we replace status with risk.
+  // AAP-56: analysis_failed must NEVER promote to a risk dot — there is no
+  // verified risk level — keep it on the red status dot.
   const dotForSession = (s: AuditSession): React.ReactNode => {
+    if (s.status === 'analysis_failed') return <StatusDot status="analysis_failed" />;
     if (s.status === 'complete' && s.riskLevel) {
       return <RiskDot level={s.riskLevel} />;
     }
@@ -260,7 +263,17 @@ export default function Sidebar({
                             {displayName}
                           </span>
                         )}
-                        {!isEditing && s.riskLevel && (
+                        {!isEditing && s.status === 'analysis_failed' && (
+                          // AAP-56: explicit red badge — must out-rank any
+                          // stale riskLevel that might still be on the row.
+                          <span
+                            className="text-[10px] uppercase tracking-wide text-red-700 bg-red-50 border border-red-200 rounded px-1 py-px font-semibold group-hover:hidden"
+                            title="Analysis failed — no verified risk level"
+                          >
+                            FAILED
+                          </span>
+                        )}
+                        {!isEditing && s.status !== 'analysis_failed' && s.riskLevel && (
                           <span className="text-[10px] uppercase tracking-wide text-slate-400 group-hover:hidden">
                             {s.riskLevel}
                           </span>
