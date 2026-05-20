@@ -184,18 +184,27 @@ export interface SubmitAnswerInput {
 /**
  * Output for the `submit_answer` MCP tool.
  *
- * Same shape as the second-and-onwards turns of a tool-call interview.
- * `status` is either `awaiting_answer` (continue the loop) or `complete`
- * (terminal — report fields are set).
+ * `status` is one of:
+ *  - `awaiting_answer` — continue the loop, ask the agent for the next answer.
+ *  - `complete` — terminal, report fields set, analyzer produced a clean run.
+ *  - `analysis_failed` — terminal, AAP-56 path. Analyzer could not produce
+ *    a structured report (double-parse failure or unreachable LLM gateway).
+ *    `report_markdown` is the failure-mode markdown (no risk badge, no
+ *    findings, no recommendation); `error` carries the diagnostic envelope.
  */
 export interface SubmitAnswerOutput {
   session_id: string;
-  status: 'awaiting_answer' | 'complete';
+  status: 'awaiting_answer' | 'complete' | 'analysis_failed';
   questions_asked: number;
   /** Present when status === 'awaiting_answer'. */
   next_question?: string;
-  /** Present when status === 'complete'. */
+  /** Present when status === 'complete' or 'analysis_failed'. */
   report_markdown?: string;
   /** Present when status === 'complete' and the analyzer surfaced one. */
   risk_level?: string;
+  /** Present when status === 'analysis_failed'. */
+  error?: {
+    reason: 'parse_failure' | 'llm_unreachable' | 'unknown';
+    message: string;
+  };
 }

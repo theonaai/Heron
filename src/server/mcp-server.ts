@@ -999,24 +999,50 @@ export class HeronMCPServer {
       ...(updated.agentName !== undefined ? { agentName: updated.agentName } : {}),
     });
 
-    await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-    if (rendered.riskLevel) {
-      await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+    if (rendered.ok) {
+      await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
+      if (rendered.riskLevel) {
+        await updateSessionMeta(sessionId, { riskLevel: rendered.riskLevel });
+      }
+      publishSessionEvent(sessionId, {
+        type: 'status-change',
+        status: 'complete',
+        ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+      });
+
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          status: 'complete',
+          questions_asked: updated.questionsAsked,
+          report_markdown: rendered.markdown,
+          ...(rendered.riskLevel ? { risk_level: rendered.riskLevel } : {}),
+        },
+      };
     }
+
+    // AAP-56 — tool-call path mirrors the sampling-mode handler: analyzer
+    // failed, no report.json, dashboard banner driven by status. Surface
+    // the failure to the tool caller with `status: 'analysis_failed'` so a
+    // smart agent can stop calling submit_answer / decide to retry.
+    await writeAnalysisFailure(sessionId, rendered.analysisError, rendered.markdown);
     publishSessionEvent(sessionId, {
       type: 'status-change',
-      status: 'complete',
-      ...(rendered.riskLevel ? { riskLevel: rendered.riskLevel } : {}),
+      status: 'analysis_failed',
     });
 
     return {
       ok: true,
       value: {
         session_id: sessionId,
-        status: 'complete',
+        status: 'analysis_failed',
         questions_asked: updated.questionsAsked,
         report_markdown: rendered.markdown,
-        ...(rendered.riskLevel ? { risk_level: rendered.riskLevel } : {}),
+        error: {
+          reason: rendered.analysisError.reason,
+          message: rendered.analysisError.message,
+        },
       },
     };
   }

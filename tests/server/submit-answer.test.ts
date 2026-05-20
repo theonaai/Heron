@@ -75,7 +75,7 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     const server = new HeronMCPServer({
       differ: noopDiffer,
       questionPlanner: planner,
-      analyzeAndRenderReport: async () => ({ markdown: '# unused', json: {} }),
+      analyzeAndRenderReport: async () => ({ ok: true, markdown: '# unused', json: {} }),
     });
 
     const { id } = await createSession({ agentName: 'fixture', mode: 'tool-call' });
@@ -102,6 +102,7 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
       totalCoreQuestions: 1,
     };
     const analyze = vi.fn(async () => ({
+      ok: true as const,
       markdown: '# Final Report',
       json: { overallRiskLevel: 'low' },
       riskLevel: 'low',
@@ -138,7 +139,7 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
         next: async () => null,
         totalCoreQuestions: 0,
       },
-      analyzeAndRenderReport: async () => ({ markdown: '', json: {} }),
+      analyzeAndRenderReport: async () => ({ ok: true, markdown: '', json: {} }),
     });
 
     const r = await server.invoke(
@@ -160,7 +161,7 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     const server = new HeronMCPServer({
       differ: noopDiffer,
       questionPlanner: planner,
-      analyzeAndRenderReport: async () => ({ markdown: '', json: {} }),
+      analyzeAndRenderReport: async () => ({ ok: true, markdown: '', json: {} }),
     });
     const { id } = await createSession({ agentName: 'x', mode: 'tool-call' });
     await updateSessionMeta(id, { status: 'complete' });
@@ -180,7 +181,7 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     const server = new HeronMCPServer({
       differ: noopDiffer,
       questionPlanner: planner,
-      analyzeAndRenderReport: async () => ({ markdown: '', json: {} }),
+      analyzeAndRenderReport: async () => ({ ok: true, markdown: '', json: {} }),
     });
     // Sampling mode session — status starts at 'interviewing'.
     const { id } = await createSession({ agentName: 'x' /* no mode */ });
@@ -200,7 +201,7 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     const server = new HeronMCPServer({
       differ: noopDiffer,
       questionPlanner: planner,
-      analyzeAndRenderReport: async () => ({ markdown: '', json: {} }),
+      analyzeAndRenderReport: async () => ({ ok: true, markdown: '', json: {} }),
     });
 
     const r1 = await server.invoke(

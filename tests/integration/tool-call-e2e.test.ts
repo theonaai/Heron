@@ -54,6 +54,7 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
       agentName?: string;
     }) => {
       return {
+        ok: true as const,
         markdown:
           `# Tool-Call Audit Report\n\n` +
           `Session: ${params.sessionId}\n` +

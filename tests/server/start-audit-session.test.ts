@@ -225,6 +225,10 @@ describe('HeronMCPServer.start_audit_session', () => {
         model: 'fake',
         stopReason: 'endTurn',
       })),
+      // AAP-55 capability check: declare sampling so handleStartAuditSession
+      // routes to the sampling-mode background path (where this test
+      // exercises the AAP-56 analysis_failed branch).
+      getClientCapabilities: vi.fn(() => ({ sampling: {} })),
     };
     server.attachSamplingServer(fakeMcpServer as never);
 
@@ -277,7 +281,7 @@ describe('HeronMCPServer.start_audit_session', () => {
 
   it('returns awaiting_answer + first question when the client does NOT declare sampling capability', async () => {
     const fakeRunInterview = vi.fn(async () => ({ transcript: [], questionsAsked: 0 }));
-    const fakeAnalyze = vi.fn(async () => ({ markdown: '', json: {} }));
+    const fakeAnalyze = vi.fn(async () => ({ ok: true, markdown: '', json: {} }));
     const planner = {
       initial: vi.fn(() => ({ text: 'first-question', category: 'purpose' as const, index: 0 })),
       next: vi.fn(async () => null),
@@ -341,6 +345,7 @@ describe('HeronMCPServer.start_audit_session', () => {
       return { transcript: [], questionsAsked: 0 };
     });
     const fakeAnalyze = vi.fn(async () => ({
+      ok: true as const,
       markdown: '# r',
       json: {},
       riskLevel: 'low' as string,
