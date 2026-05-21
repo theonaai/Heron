@@ -294,6 +294,9 @@ export class SessionManager {
         makesDecisionsAboutPeople: analysis.makesDecisionsAboutPeople,
         decisionMakingDetails: analysis.decisionMakingDetails,
         compliance,
+        // AAP-69: writer-side alias — dashboard ReportView reads
+        // `regulatoryCompliance`. Keep `compliance` for markdown / CLI.
+        regulatoryCompliance: compliance,
         metadata: {
           date: session.createdAt.toISOString().split('T')[0],
           target: `session:${session.id}`,

@@ -216,9 +216,11 @@ describe('AuditReport shape — AAP-31 StructuredCompliance', () => {
     expect(typeof reportWithCompliance.compliance!.mappingVersion).toBe('string');
   });
 
-  it('report does NOT carry legacy regulatory field', () => {
+  it('report does NOT carry the legacy {eu, us, uk} regulatory field', () => {
+    // AAP-31: the old jurisdictional shape is gone. AAP-69: `regulatoryCompliance`
+    // is now intentionally populated as a writer-side alias of `compliance`,
+    // so it is NOT checked for absence here.
     expect((reportWithCompliance as Record<string, unknown>).regulatory).toBeUndefined();
-    expect((reportWithCompliance as Record<string, unknown>).regulatoryCompliance).toBeUndefined();
   });
 
   it('templates render compliance section when compliance is provided', () => {

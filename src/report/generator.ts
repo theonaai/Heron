@@ -135,6 +135,11 @@ async function buildSuccessReport(
     makesDecisionsAboutPeople: analysis.makesDecisionsAboutPeople,
     decisionMakingDetails: analysis.decisionMakingDetails,
     compliance,
+    // AAP-69: writer-side alias so the dashboard's ReportView (which reads
+    // `json.regulatoryCompliance`) renders the CategorizedComplianceView
+    // block. Markdown templates + CLI continue reading `compliance`.
+    // Both keys carry the exact same StructuredCompliance payload.
+    regulatoryCompliance: compliance,
     metadata: {
       date: session.startedAt.toISOString().split('T')[0],
       target: options.target,
