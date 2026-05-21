@@ -120,13 +120,25 @@ export default function DashboardOverview({
           </SectionLabel>
 
           <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
-            <table className="w-full text-[12.5px]">
+            {/* AAP-68 — `table-fixed` + explicit column widths so an in-progress
+                row (status `awaiting_answer`) doesn't blow up the Status column
+                and truncate `Updated`. Agent column stays elastic and truncates
+                on overflow (long stdio command names). */}
+            <table className="w-full text-[12.5px] table-fixed">
+              <colgroup>
+                <col />
+                <col className="w-[120px]" />
+                <col className="w-[110px]" />
+                <col className="w-[90px]" />
+                <col className="w-[100px]" />
+                <col className="w-[36px]" />
+              </colgroup>
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/60">
                   {['Agent', 'Status', 'Risk', 'Questions', 'Updated', ''].map((h, i) => (
                     <th
                       key={i}
-                      className="text-left px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-slate-500"
+                      className="text-left px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-slate-500 whitespace-nowrap"
                     >
                       {h}
                     </th>
@@ -149,7 +161,11 @@ export default function DashboardOverview({
                         </div>
                       </td>
                       <td className="px-3 py-2.5">
-                        <span className="text-[11.5px] capitalize text-slate-600">{s.status}</span>
+                        {/* AAP-68 — replace `_` with space so `awaiting_answer`
+                            renders as `Awaiting answer`, not `Awaiting_answer`. */}
+                        <span className="text-[11.5px] capitalize text-slate-600 whitespace-nowrap">
+                          {s.status.replace(/_/g, ' ')}
+                        </span>
                       </td>
                       <td className="px-3 py-2.5">
                         {s.riskLevel ? (

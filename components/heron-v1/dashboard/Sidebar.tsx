@@ -285,7 +285,8 @@ export default function Sidebar({
                         </span>
                         <span className="text-slate-300">·</span>
                         <span className="text-[10.5px] text-slate-400 capitalize">
-                          {s.status}
+                          {/* AAP-68 — `_`→' ' so `awaiting_answer` reads as `Awaiting answer`. */}
+                          {s.status.replace(/_/g, ' ')}
                         </span>
                       </div>
                     </button>
