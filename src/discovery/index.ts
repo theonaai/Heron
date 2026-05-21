@@ -32,6 +32,9 @@ import { codexAuthReader } from './readers/codex-auth.js';
 import { continueReader } from './readers/continue.js';
 import { cursorReader } from './readers/cursor.js';
 import { windsurfReader } from './readers/windsurf.js';
+import { readOsCredentials } from './readers/os-credentials.js';
+import { readWorkspaceEnv } from './readers/workspace-env.js';
+import { readKeychain, type KeychainSpawn } from './readers/keychain.js';
 import type {
   AgentReader,
   AuthReader,
@@ -61,6 +64,30 @@ export interface DiscoveryOptions {
   homeDir?: string;
   /** Optional workspace path scanned in addition to user-level paths. */
   workspaceDir?: string;
+  /**
+   * AAP-67 — additional workspace hints for L5 .env scanning. The primary
+   * `workspaceDir` is also scanned automatically; this lets the caller
+   * surface multiple `session.workspaceHints` (the MCP `_meta` channel)
+   * in one pass.
+   */
+  workspaceHints?: string[];
+  /**
+   * AAP-67 — override the host platform for L3 (Keychain). Tests inject
+   * `'darwin'` to exercise the macOS path on CI Linux runners.
+   */
+  platform?: NodeJS.Platform;
+  /**
+   * AAP-67 — override `child_process.spawn` for the L3 Keychain reader.
+   * Tests only; production always uses the default node spawn.
+   */
+  keychainSpawn?: KeychainSpawn;
+  /**
+   * AAP-67 — opt out of the L3 Keychain shell-out. The dashboard sets
+   * this to `false` for the v1 ship because the macOS `security` tool
+   * occasionally surfaces an auth prompt depending on the user's
+   * keychain ACL config; the e2e tests opt in explicitly.
+   */
+  enableKeychain?: boolean;
 }
 
 function defaultHomeDir(): string {
@@ -173,11 +200,72 @@ export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<Discove
     }
   }
 
+  // ── AAP-67 — L3 + L4 + L5 readers ──────────────────────────────────────
+  // These run independently of the per-runtime agent scan. They never
+  // attach to a DiscoveredAgent row; instead they populate dedicated
+  // top-level slots on the DiscoveryResult, so the dashboard / report
+  // can render them as their own sections.
+  const warnings: string[] = [];
+
+  // L4 — cross-cutting OS credentials.
+  let osCredentials: DiscoveryResult['osCredentials'];
+  try {
+    const result = await readOsCredentials({ home });
+    osCredentials = result.findings;
+    for (const p of result.scannedPaths) scannedPaths.push(p);
+  } catch (e) {
+    warnings.push(`os-credentials reader failed: ${(e as Error).message || String(e)}`);
+  }
+
+  // L5 — per-workspace .env*. Union of explicit `workspaceDir` (the
+  // AAP-58 primary) + any `workspaceHints` supplied by the caller.
+  const workspaceList: string[] = [];
+  if (opts.workspaceDir) workspaceList.push(opts.workspaceDir);
+  if (opts.workspaceHints) for (const h of opts.workspaceHints) workspaceList.push(h);
+  let workspaceEnv: DiscoveryResult['workspaceEnv'];
+  if (workspaceList.length > 0) {
+    try {
+      const result = await readWorkspaceEnv({ workspaces: workspaceList });
+      workspaceEnv = result.files;
+      for (const p of result.scannedPaths) scannedPaths.push(p);
+    } catch (e) {
+      warnings.push(`workspace-env reader failed: ${(e as Error).message || String(e)}`);
+    }
+  }
+
+  // L3 — macOS Keychain. Opt-in via `enableKeychain: true` so a default
+  // headless run never risks a `security` prompt. The dashboard surfaces
+  // it through the same consent flow the operator already accepted for
+  // local discovery (Linear ticket: "do NOT add a separate consent
+  // surface — reuse the existing dashboard consent flow").
+  //
+  // `HERON_DISCOVERY_KEYCHAIN_DISABLE=1` (env override) forces the
+  // Keychain layer off — used by the route tests so a darwin dev box
+  // running `npm test` doesn't shell out to `security` for real.
+  const keychainDisabledByEnv = process.env.HERON_DISCOVERY_KEYCHAIN_DISABLE === '1';
+  let keychainServices: DiscoveryResult['keychainServices'];
+  if (opts.enableKeychain && !keychainDisabledByEnv) {
+    try {
+      const result = await readKeychain({
+        platform: opts.platform,
+        spawn: opts.keychainSpawn,
+      });
+      keychainServices = result.services;
+      for (const w of result.warnings) warnings.push(w);
+    } catch (e) {
+      warnings.push(`keychain reader failed: ${(e as Error).message || String(e)}`);
+    }
+  }
+
   return {
     agents,
     findings: [],
     scannedAt: new Date().toISOString(),
     scannedPaths,
+    ...(osCredentials !== undefined ? { osCredentials } : {}),
+    ...(workspaceEnv !== undefined ? { workspaceEnv } : {}),
+    ...(keychainServices !== undefined ? { keychainServices } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

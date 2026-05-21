@@ -72,6 +72,19 @@ export interface RenderMarkdownReportContext {
   /** Optional per-source verification status for the report header. */
   discoveryStatus?: 'ran' | 'skipped' | 'failed';
   oauthIntrospectionStatus?: Array<{ provider: string; status: 'ran' | 'skipped' | 'failed' }>;
+  /**
+   * AAP-67 — L3/L4/L5 discovery sections to render alongside the
+   * existing Surface 2 findings. When absent, the section block is
+   * omitted entirely. The shape mirrors `DiscoveryResult`'s new fields
+   * (kept loose — `string[]` for tokens / keys / services — so the
+   * markdown template stays decoupled from the reader types).
+   */
+  localDiscoveryExtras?: {
+    osCredentials?: Array<{ kind: string; path: string; tokens: string[] }>;
+    workspaceEnv?: Array<{ path: string; workspace: string; keys: string[] }>;
+    keychainServices?: Array<{ service: string; category: string }>;
+    warnings?: string[];
+  };
 }
 
 export function renderMarkdownReport(
@@ -93,6 +106,7 @@ export function renderMarkdownReport(
     // evidence appear above the findings tables so the reviewer is
     // primed to read findings critically.
     renderDiscrepanciesSection(verdict),
+    renderLocalDiscoveryExtras(context),
     renderFindingsSplit(
       report.risks,
       report.compliance as StructuredCompliance | undefined,
@@ -609,6 +623,83 @@ function renderDiscrepanciesSection(verdict: Verdict | undefined): string {
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * AAP-67 — Local discovery extras (L3/L4/L5).
+ *
+ * Surfaces the macOS Keychain service names, cross-cutting OS
+ * credentials, and per-workspace env-variable names that the discovery
+ * scan picked up. Returns the empty string when there's nothing to
+ * render — `sections.filter(Boolean)` then drops the section so legacy
+ * reports stay byte-identical.
+ *
+ * Privacy contract: every row is a NAME, never a value. The renderer
+ * does not synthesise values from the data — it just lays out what the
+ * reader emitted.
+ */
+function renderLocalDiscoveryExtras(context: RenderMarkdownReportContext): string {
+  const extras = context.localDiscoveryExtras;
+  if (!extras) return '';
+  const hasOs = extras.osCredentials && extras.osCredentials.length > 0;
+  const hasEnv = extras.workspaceEnv && extras.workspaceEnv.length > 0;
+  const hasKc = extras.keychainServices && extras.keychainServices.length > 0;
+  const hasWarn = extras.warnings && extras.warnings.length > 0;
+  if (!hasOs && !hasEnv && !hasKc && !hasWarn) return '';
+
+  const lines: string[] = ['## Local Discovery — L3/L4/L5', ''];
+  lines.push(
+    '_Deterministic evidence beyond per-agent configs. Heron surfaces NAMES only — credential values are never read, logged, or transmitted._',
+  );
+  lines.push('');
+
+  if (hasKc) {
+    lines.push('### macOS Keychain services (L3)');
+    lines.push('');
+    lines.push('| Category | Service |');
+    lines.push('| --- | --- |');
+    for (const k of extras.keychainServices!) {
+      lines.push(`| ${escapeCell(k.category)} | ${escapeCell(k.service)} |`);
+    }
+    lines.push('');
+  }
+
+  if (hasOs) {
+    lines.push('### Cross-cutting OS credentials (L4)');
+    lines.push('');
+    lines.push('| Kind | Path | Identifying tokens |');
+    lines.push('| --- | --- | --- |');
+    for (const f of extras.osCredentials!) {
+      const tokenList = f.tokens.length === 0 ? '_(file present, no parseable tokens)_' : f.tokens.map(escapeCell).join(', ');
+      lines.push(
+        `| ${escapeCell(f.kind)} | ${escapeCell(f.path)} | ${tokenList} |`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (hasEnv) {
+    lines.push('### Per-workspace env vars (L5)');
+    lines.push('');
+    lines.push('| File | Variable names |');
+    lines.push('| --- | --- |');
+    for (const e of extras.workspaceEnv!) {
+      const keyList = e.keys.length === 0 ? '_(file present, no parseable keys)_' : e.keys.map(escapeCell).join(', ');
+      lines.push(`| ${escapeCell(e.path)} | ${keyList} |`);
+    }
+    lines.push('');
+  }
+
+  if (hasWarn) {
+    lines.push('### Reader warnings');
+    lines.push('');
+    for (const w of extras.warnings!) {
+      lines.push(`- ${escapeText(w)}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n').trimEnd();
 }
 
 /**

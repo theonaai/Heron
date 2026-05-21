@@ -152,13 +152,45 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse(403, 'consent_required', 'consent_required');
   }
 
-  const result = await runDiscovery({ workspaceDir: workspaceRoot });
+  // AAP-67 — L3 + L4 + L5. The dashboard consent the user just accepted
+  // covers "let Heron scan local discovery"; L3-L5 piggybacks on that
+  // same opt-in (no separate consent surface — see Linear ticket).
+  // `enableKeychain: true` is gated by the macOS-only platform check
+  // inside the reader, so non-macOS hosts cleanly emit a warning rather
+  // than attempting the spawn.
+  const additionalWorkspaceHints = (session.workspaceHints ?? []).filter(
+    (h) => h !== workspaceRoot,
+  );
+  const result = await runDiscovery({
+    workspaceDir: workspaceRoot,
+    workspaceHints: additionalWorkspaceHints,
+    enableKeychain: true,
+  });
   // Layer 4 — secretlint scan over the projected inventory. Catches
   // inline tokens that survived Layer 2/3 scrubbers (JWT in URL, GCP
   // service-account markers, private keys, Slack webhooks, etc.).
   const scrubbedAgents = await secretlintScrub(result.agents);
+  // AAP-67 — same defense-in-depth pass over L3-L5 sections. The
+  // individual readers already scrub each NAME/TOKEN they emit; this
+  // final pass catches anything that slipped through unioned arrays.
+  const scrubbedOsCredentials = result.osCredentials
+    ? await secretlintScrub(result.osCredentials)
+    : undefined;
+  const scrubbedWorkspaceEnv = result.workspaceEnv
+    ? await secretlintScrub(result.workspaceEnv)
+    : undefined;
+  const scrubbedKeychain = result.keychainServices
+    ? await secretlintScrub(result.keychainServices)
+    : undefined;
   const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
-  const finalResult = { ...result, agents: scrubbedAgents, findings };
+  const finalResult = {
+    ...result,
+    agents: scrubbedAgents,
+    findings,
+    ...(scrubbedOsCredentials !== undefined ? { osCredentials: scrubbedOsCredentials } : {}),
+    ...(scrubbedWorkspaceEnv !== undefined ? { workspaceEnv: scrubbedWorkspaceEnv } : {}),
+    ...(scrubbedKeychain !== undefined ? { keychainServices: scrubbedKeychain } : {}),
+  };
 
   const merged = await patchReportJson(body.data.sessionId, {
     localAgentDiscovery: finalResult,
