@@ -186,15 +186,27 @@ export interface SubmitAnswerInput {
  *
  * `status` is one of:
  *  - `awaiting_answer` — continue the loop, ask the agent for the next answer.
+ *  - `analyzing` — AAP-66 path. The planner is exhausted and Heron is running
+ *    the analyzer + verdict pipeline as a detached background promise. The
+ *    tool call returns immediately to dodge the client tool-call timeout
+ *    (Codex CLI = 120s, not user-configurable). Clients retrieve the final
+ *    report via `get_report` once the dashboard SSE stream publishes the
+ *    `status: 'complete'` (or `status: 'analysis_failed'`) event.
+ *    `report_markdown` and `risk_level` are intentionally NOT present here —
+ *    they only arrive over SSE and via the persisted session.
  *  - `complete` — terminal, report fields set, analyzer produced a clean run.
+ *    Kept in the union for forward/backward compatibility with older callers
+ *    and tests; `submit_answer` itself no longer returns this directly under
+ *    AAP-66. Reached via `get_report` or the dashboard SSE stream.
  *  - `analysis_failed` — terminal, AAP-56 path. Analyzer could not produce
  *    a structured report (double-parse failure or unreachable LLM gateway).
  *    `report_markdown` is the failure-mode markdown (no risk badge, no
  *    findings, no recommendation); `error` carries the diagnostic envelope.
+ *    Same SSE-only delivery story as `complete` under AAP-66.
  */
 export interface SubmitAnswerOutput {
   session_id: string;
-  status: 'awaiting_answer' | 'complete' | 'analysis_failed';
+  status: 'awaiting_answer' | 'analyzing' | 'complete' | 'analysis_failed';
   questions_asked: number;
   /** Present when status === 'awaiting_answer'. */
   next_question?: string;
