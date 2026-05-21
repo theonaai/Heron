@@ -33,7 +33,8 @@ function computeMcpEndpoint(): string {
 }
 
 function buildConnectPrompt(endpoint: string): string {
-  return `Please configure Heron as an MCP server at ${endpoint} and then call the start_audit_session tool to begin a compliance audit of yourself. Report what comes back.`;
+  const baseUrl = endpoint.replace(/\/mcp$/, '');
+  return `Please configure Heron as an MCP server at ${endpoint}, then call the start_audit_session tool. While status is \`awaiting_answer\`, answer pendingQuestion via submit_answer; repeat until status is \`complete\` or \`analysis_failed\` (3-5 min; if a tool call times out, the audit is still running, so fetch via GET ${baseUrl}/api/audit/sessions/<session_id> and continue). Report the result.`;
 }
 
 function CopyButton({ text, label = 'Copy to clipboard' }: { text: string; label?: string }) {
