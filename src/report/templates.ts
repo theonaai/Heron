@@ -378,15 +378,7 @@ function renderSystemCard(sys: SystemAssessment): string {
 
   // Scopes
   const scopes = sys.scopesRequested.filter(isProvided);
-  rows.push([
-    'Scopes granted',
-    scopes.length > 0 ? scopes.join(', ') : `_${UNKNOWN_PLACEHOLDER}_`,
-  ]);
-
   const needed = sys.scopesNeeded.filter(isProvided);
-  if (needed.length > 0) {
-    rows.push(['Scopes needed', needed.join(', ')]);
-  }
 
   // AAP-65 — clean defense-in-depth strip for old persisted shapes (the
   // analyzer's sanitizeAnalyzerOutput already removes these prefixes on
@@ -398,8 +390,27 @@ function renderSystemCard(sys: SystemAssessment): string {
       .replace(/\s*\(A\d+\)\s*\.?\s*$/i, '')
       .trim() || s;
   const excessive = sys.scopesDelta.filter(isProvided).map(cleanScope);
-  if (excessive.length > 0) {
-    rows.push(['Excessive', excessive.join(', ')]);
+
+  // AAP-69: non-OAuth systems (public web search, scraping, foundation-model
+  // calls, etc.) legitimately have no scopes to enumerate. Render an explicit
+  // "platform-mediated" row instead of three "Unknown" placeholders that
+  // read as "did Heron forget to analyze this?".
+  const isPlatformMediated =
+    scopes.length === 0 && needed.length === 0 && excessive.length === 0;
+
+  if (isPlatformMediated) {
+    rows.push(['Scopes granted', '_Platform-mediated access — no OAuth scopes_']);
+  } else {
+    rows.push([
+      'Scopes granted',
+      scopes.length > 0 ? scopes.join(', ') : `_${UNKNOWN_PLACEHOLDER}_`,
+    ]);
+    if (needed.length > 0) {
+      rows.push(['Scopes needed', needed.join(', ')]);
+    }
+    if (excessive.length > 0) {
+      rows.push(['Excessive', excessive.join(', ')]);
+    }
   }
 
   // Frequency — legacy fallback only. Structured frequency renders below.
