@@ -1,4 +1,4 @@
-import type { Risk, SystemAssessment, Severity, BlastRadius } from '../report/types.js';
+import type { Risk, SystemAssessment, Severity, BlastRadius, Recommendation } from '../report/types.js';
 
 export interface RiskScore {
   overall: Severity;
@@ -349,4 +349,42 @@ export function applySeverityOverrides(
     const floor = severityFloor(kind, signals);
     return { ...risk, severity: maxSeverity(risk.severity, floor) };
   });
+}
+
+// ─── Verdict ↔ overallRiskLevel calibration (AAP-69) ──────────────────────
+//
+// The HR-persona test (`sess-20260521-091414-7453aa`) surfaced an internal
+// contradiction in the published audit: `recommendation: DENY` paired with
+// `overallRiskLevel: medium`. The rubric-driven `computeRiskScore` and the
+// LLM-driven `recommendation` are computed independently — when the LLM
+// reaches DENY through holistic reasoning (e.g. autonomous decisions about
+// people with no human-in-the-loop) but the rubric only sees medium-grade
+// signals, the two fields disagree.
+//
+// "Medium overall risk, but we DENY" reads as either a copy-paste bug or
+// noise. Calibrate the two so they cannot contradict:
+//
+//   - DENY must coincide with HIGH or CRITICAL overall. Floor at HIGH.
+//   - bare APPROVE must NOT coincide with CRITICAL overall (self-contradictory).
+//     Cap at HIGH on this combination — the reviewer can still see HIGH and
+//     decide to escalate. "APPROVE WITH CONDITIONS" is the catch-all and
+//     does NOT get capped; "APPROVE" without conditions is the contradiction.
+//
+// The rubric score (numeric) is intentionally NOT mutated — it remains the
+// honest computed value. Only the categorical `overall` label is bumped /
+// clamped so the dashboard pill and the verdict pill stop arguing.
+export function calibrateOverallRiskLevel(
+  overall: Severity,
+  recommendation: Recommendation | undefined,
+): Severity {
+  if (recommendation === 'DENY') {
+    // Floor at HIGH. Preserve CRITICAL if the rubric reached it.
+    return SEVERITY_ORDER[overall] >= SEVERITY_ORDER.high ? overall : 'high';
+  }
+  if (recommendation === 'APPROVE' && overall === 'critical') {
+    // Cap at HIGH. APPROVE on a CRITICAL-rated agent is structurally
+    // self-contradictory — soften to HIGH and let the reviewer judge.
+    return 'high';
+  }
+  return overall;
 }

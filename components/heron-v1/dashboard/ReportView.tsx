@@ -803,6 +803,16 @@ function SystemCard({ system }: { system: SystemAssessment }) {
   const scopesNeeded = system.scopesNeeded.filter((s) => s && s !== 'NOT PROVIDED');
   const excessive = system.scopesDelta.filter((s) => s && s !== 'NOT PROVIDED');
 
+  // AAP-69: non-OAuth systems (public web search, scraping, foundation-model
+  // calls, etc.) legitimately have no scopes to enumerate. Surface that
+  // explicitly so an empty Scopes-granted row doesn't read as "did Heron
+  // forget to analyze this?" — the bug we hit on the HR-test run where 3 of
+  // 4 declared systems had silent empty scope arrays.
+  const isPlatformMediated =
+    scopesGranted.length === 0 &&
+    scopesNeeded.length === 0 &&
+    excessive.length === 0;
+
   return (
     <div className="panel sys-card">
       <div className="sys-card-head">
@@ -848,7 +858,9 @@ function SystemCard({ system }: { system: SystemAssessment }) {
               <td className="kv-prop">Scopes granted</td>
               <td className={`kv-val ${scopesGranted.length === 0 ? 'muted' : ''}`}>
                 {scopesGranted.length === 0 ? (
-                  'Unknown'
+                  isPlatformMediated
+                    ? 'Platform-mediated access — no OAuth scopes'
+                    : 'Unknown'
                 ) : (
                   <div className="row-tight" style={{ gap: 6 }}>
                     {scopesGranted.map((s) => {
@@ -1918,11 +1930,17 @@ export default function ReportView({
             title="What the agent reported"
           />
 
+          {/* AAP-69: bar tracks `score` (not field-count). Text now spells
+              out the two distinct dimensions — score vs interview-field
+              coverage — instead of conflating them. Previously the widget
+              showed "7 of 7 fields collected" next to "50/100" with no
+              hint that the two numbers measure different things. */}
           <div className="spread" style={{ marginBottom: 8, fontSize: 12.5 }}>
             <span className="muted">
+              Score {json.dataQuality.score}/100 ·{' '}
               {json.dataQuality.fieldsProvided.length} of{' '}
-              {json.dataQuality.fieldsProvided.length + json.dataQuality.fieldsMissing.length} fields
-              collected
+              {json.dataQuality.fieldsProvided.length + json.dataQuality.fieldsMissing.length}{' '}
+              interview fields collected
             </span>
             <span className="mono muted">{json.dataQuality.score}/100</span>
           </div>

@@ -254,6 +254,13 @@ export const auditReportSchema = z.object({
   makesDecisionsAboutPeople: z.boolean().optional(),
   decisionMakingDetails: z.string().max(800).optional(),
   compliance: z.any().optional(), // StructuredCompliance (CategorizedCompliance, not Zod-validated)
+  // AAP-69: writer-side alias for `compliance`. The dashboard's ReportView
+  // and the diff route both read `regulatoryCompliance`; the markdown
+  // template + CLI path both read `compliance`. Rather than rename the
+  // canonical field (and risk breaking every CLI / markdown reader),
+  // emit BOTH keys with the same payload from the report builder. The
+  // alias is populated in `src/report/generator.ts:buildSuccessReport`.
+  regulatoryCompliance: z.any().optional(), // alias of `compliance` — see AAP-69
   metadata: z.object({
     date: z.string(),
     target: z.string(),
@@ -263,4 +270,7 @@ export const auditReportSchema = z.object({
 });
 export type AuditReport = z.infer<typeof auditReportSchema> & {
   compliance?: StructuredCompliance;
+  /** AAP-69: writer-side alias of `compliance` so the dashboard
+   *  ReportView (which reads `json.regulatoryCompliance`) renders. */
+  regulatoryCompliance?: StructuredCompliance;
 };
