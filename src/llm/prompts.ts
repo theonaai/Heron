@@ -112,6 +112,7 @@ ${formatted}
 - Do NOT list internal/orchestration components (local filesystem, local SQLite, idempotency store, env vars, in-process cache) as systems with OAuth scopes or compliance findings — these have no external blast radius. If they hold secrets or PII, surface that via a separate operational recommendation, not a scope-exceeds-purpose risk
 - If data includes names, emails, profile URLs, or job titles, classify as PII regardless of what the agent says
 - Never recommend bare "APPROVE" — this is a self-reported interview, always use "APPROVE WITH CONDITIONS" at minimum
+- For EVERY declared system, populate scopesRequested / scopesNeeded / scopesDelta consistently. If the system uses OAuth or an API token, enumerate the actual scopes. If the system is "platform-mediated" — public web search, scraping, foundation-model inference, RSS, anonymous HTTPS to a public endpoint, etc. — leave all three arrays EMPTY ([]). Do NOT fill them with "NOT PROVIDED" placeholders and do NOT omit non-OAuth systems entirely: the dashboard renders empty arrays as "Platform-mediated access — no OAuth scopes". This keeps non-OAuth systems visible without polluting the scope-creep rubric.
 
 ## Required JSON Output Format
 
