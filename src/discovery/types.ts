@@ -135,6 +135,84 @@ export interface DiscoveryResult {
   scannedAt: string;
   /** Every absolute path attempted, in order — for UI transparency. */
   scannedPaths: string[];
+  /** AAP-67 — L4 cross-cutting OS credentials (file-presence only). */
+  osCredentials?: OsCredentialFinding[];
+  /** AAP-67 — L5 per-workspace `.env*` variable NAMES (never values). */
+  workspaceEnv?: WorkspaceEnvFile[];
+  /** AAP-67 — L3 macOS Keychain service NAMES (never passwords). */
+  keychainServices?: KeychainServiceFinding[];
+  /** AAP-67 — warnings emitted by L3-L5 readers (e.g. non-macOS host for Keychain). */
+  warnings?: string[];
+}
+
+// ─── AAP-67 — L3/L4/L5 finding shapes ────────────────────────────────────
+//
+// Three new layers extend the existing L1/L2 inventory. Every shape obeys
+// the same names-not-values contract: the reader returns identifying
+// tokens (profile names, registry hosts, variable names, service names)
+// and NEVER credential values. Tests assert this invariant by deep-grep
+// across the serialized output for known fixture secret patterns.
+
+/**
+ * L4 — cross-cutting OS credential file. `path` is the absolute path that
+ * was probed (e.g. `~/.aws/credentials`). `tokens` is the parsed
+ * identifying tokens: profile names for `.aws/credentials`, cluster +
+ * context names for `~/.kube/config`, registry hosts for
+ * `~/.docker/config.json` etc. Empty `tokens[]` means "file exists but
+ * we found nothing parseable" — still useful evidence.
+ */
+export type OsCredentialKind =
+  | 'aws-credentials'
+  | 'aws-config'
+  | 'gcloud-adc'
+  | 'kube-config'
+  | 'docker-config'
+  | 'npmrc'
+  | 'pypirc'
+  | 'netrc'
+  | 'gitconfig'
+  | 'ssh-config';
+
+export interface OsCredentialFinding {
+  kind: OsCredentialKind;
+  /** Absolute path of the file Heron read. */
+  path: string;
+  /**
+   * Identifying tokens parsed out of the file. NEVER credential values.
+   * Examples: AWS profile names, kube cluster names, Docker registry hosts,
+   * npm registry hosts, pypi index URLs, netrc machine names, gitconfig
+   * credential helpers, ssh Host names.
+   */
+  tokens: string[];
+}
+
+/**
+ * L5 — one workspace `.env*` file. `keys[]` is the variable NAMES only.
+ * Values are dropped at parse time; the file content is also passed
+ * through secretlint before the reader returns, so even a malformed line
+ * cannot leak a literal value.
+ */
+export interface WorkspaceEnvFile {
+  /** Absolute path of the env file Heron read. */
+  path: string;
+  /** Workspace directory the file lived inside. */
+  workspace: string;
+  /** Variable NAMES from the file. Values NEVER stored. */
+  keys: string[];
+}
+
+/**
+ * L3 — one macOS Keychain service entry. `service` is the Keychain item
+ * `svce` field (e.g. `com.slack.Slack`). NEVER includes the password.
+ * Heron only ever runs `security dump-keychain` (the listing form); it
+ * NEVER runs `security find-generic-password -w` (which would prompt
+ * the user for their Keychain password).
+ */
+export interface KeychainServiceFinding {
+  /** Keychain item service name. */
+  service: string;
+  /** Coarse category label inferred from the service-name allowlist match. */
+  category: string;
 }
 
 export interface AgentReader {
