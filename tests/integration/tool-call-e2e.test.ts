@@ -140,8 +140,6 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
       let answerIdx = 0;
       let status: string | undefined = 'awaiting_answer';
       let safety = 0;
-      let finalReport: string | undefined;
-      let finalRiskLevel: string | undefined;
       while (status === 'awaiting_answer' && safety++ < 30) {
         const next = await client.callTool({
           name: 'submit_answer',
@@ -162,29 +160,34 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
         };
         expect(n.isError).toBeFalsy();
         status = n.structuredContent?.status;
-        if (status === 'complete') {
-          finalReport = n.structuredContent?.report_markdown;
-          finalRiskLevel = n.structuredContent?.risk_level;
-        }
       }
 
-      expect(status).toBe('complete');
-      expect(finalReport).toMatch(/Tool-Call Audit Report/);
-      // AAP-63 — without a Surface 2 discovery scan the primary verdict
-      // is 'unverified' regardless of the analyzer's self-reported risk
-      // level. The dashboard's secondary "self-report" pill carries the
-      // interview risk separately.
-      expect(finalRiskLevel).toBe('unverified');
+      // AAP-66 — the final submit_answer now returns 'analyzing' instead
+      // of blocking on the analyzer. The session flips to 'complete'
+      // once the detached background promise lands on disk; verdict
+      // fields (verificationStatus, riskLevel) are persisted just after
+      // the status flip via persistVerdict, so wait on verificationStatus
+      // — that's the signal the full pipeline has settled.
+      expect(status).toBe('analyzing');
+
+      const startWait = Date.now();
+      let stored = await getSession(sessionId);
+      while (stored?.verificationStatus === undefined && Date.now() - startWait < 5_000) {
+        await new Promise((r) => setTimeout(r, 10));
+        stored = await getSession(sessionId);
+      }
+
       expect(fakeAnalyze).toHaveBeenCalledTimes(1);
 
       // ── 7. Inspect persisted session ─────────────────────────────────
-      const stored = await getSession(sessionId);
       expect(stored).not.toBeNull();
       expect(stored!.status).toBe('complete');
       expect(stored!.mode).toBe('tool-call');
       expect(stored!.agentName).toBe('tool-call-fixture');
       expect(stored!.transcript.length).toBeGreaterThanOrEqual(9);
       expect(stored!.report).toMatch(/Tool-Call Audit Report/);
+      // AAP-63 — without a Surface 2 discovery scan the primary verdict
+      // is 'unverified' regardless of the analyzer's self-reported risk.
       expect(stored!.riskLevel).toBe('unverified');
       expect(stored!.verificationStatus).toBe('unverified');
       expect(stored!.pendingQuestion ?? null).toBeNull();
@@ -279,10 +282,19 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
           .structuredContent?.status;
       }
 
-      expect(status).toBe('complete');
+      // AAP-66 — the final submit_answer returns 'analyzing'; the
+      // session lands on 'complete' once the detached background promise
+      // finishes the analyzer + verdict pipeline.
+      expect(status).toBe('analyzing');
       expect(turns).toBeLessThanOrEqual(ceiling);
 
-      const stored = await getSession(sessionId);
+      const startWait = Date.now();
+      let stored = await getSession(sessionId);
+      while ((stored?.status ?? 'analyzing') === 'analyzing' && Date.now() - startWait < 5_000) {
+        await new Promise((r) => setTimeout(r, 10));
+        stored = await getSession(sessionId);
+      }
+
       expect(stored).not.toBeNull();
       expect(stored!.status).toBe('complete');
       // Follow-up total in the persisted transcript is bounded by the cap.

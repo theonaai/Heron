@@ -95,7 +95,16 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     expect(stored!.pendingQuestion).toEqual({ text: 'Q1', category: 'data', index: 1 });
   });
 
-  it('runs analyzeAndRenderReport + returns status=complete when the planner is exhausted', async () => {
+  it('returns status=analyzing and analyzes/persists in the background when the planner is exhausted (AAP-66)', async () => {
+    // AAP-66 — what used to be a synchronous `status: 'complete'` reply
+    // is now an `analyzing` envelope returned immediately, with analyze
+    // + verdict computation running in a detached background promise.
+    // The tool call no longer carries report_markdown / risk_level
+    // (those are SSE-delivered now); see `submit-answer-async.test.ts`
+    // for the full async semantics. This test keeps the original happy-
+    // path shape locked: the analyzer still runs exactly once, the
+    // session still flips to `complete`, and the verdict is still
+    // persisted with `unverified` (Surface 2 hasn't run).
     const planner = {
       initial: vi.fn(() => ({ text: 'QA', category: 'purpose' as const, index: 0 })),
       next: vi.fn(async () => null),
@@ -119,15 +128,25 @@ describe('HeronMCPServer.submit_answer (AAP-55)', () => {
     const r = await server.invoke('submit_answer', { session_id: id, answer: 'AA' }, makeCtx());
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value.status).toBe('complete');
-    expect(r.value.report_markdown).toBe('# Final Report');
-    // AAP-63 — without a Surface 2 discovery scan the verdict is
-    // 'unverified' regardless of the analyzer's self-reported risk.
-    expect(r.value.risk_level).toBe('unverified');
+    expect(r.value.status).toBe('analyzing');
+    // AAP-66 — analysis output is no longer carried inline.
+    expect(r.value.report_markdown).toBeUndefined();
+    expect(r.value.risk_level).toBeUndefined();
     expect(r.value.questions_asked).toBe(1);
-    expect(analyze).toHaveBeenCalledTimes(1);
 
-    const stored = await getSession(id);
+    // Wait for the background promise to land. Status flips to
+    // 'complete' inside writeReport, but verdict fields (verificationStatus,
+    // riskLevel) are persisted via the subsequent persistVerdict call,
+    // so we wait for `verificationStatus` to be set — that's the signal
+    // that the full background pipeline has settled.
+    let stored = await getSession(id);
+    const start = Date.now();
+    while (stored?.verificationStatus === undefined && Date.now() - start < 2000) {
+      await new Promise((r) => setTimeout(r, 5));
+      stored = await getSession(id);
+    }
+
+    expect(analyze).toHaveBeenCalledTimes(1);
     expect(stored!.status).toBe('complete');
     expect(stored!.report).toBe('# Final Report');
     expect(stored!.pendingQuestion ?? null).toBeNull();

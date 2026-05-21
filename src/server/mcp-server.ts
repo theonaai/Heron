@@ -1006,78 +1006,110 @@ export class HeronMCPServer {
       };
     }
 
-    // 3. Planner exhausted — render report synchronously. Analyze
-    //    takes a few seconds total once the transcript is built,
-    //    comfortably under any reasonable client tool-call timeout.
+    // 3. Planner exhausted — kick off analyze + verdict computation as a
+    //    detached background promise and return immediately.
     await updateSessionMeta(sessionId, { status: 'analyzing' });
     publishSessionEvent(sessionId, { type: 'status-change', status: 'analyzing' });
 
-    const rendered = await this.analyzeAndRenderReport({
-      sessionId,
-      transcript: transcriptAsQA,
-      ...(updated.agentName !== undefined ? { agentName: updated.agentName } : {}),
-    });
+    // AAP-66 — async final submit_answer.
+    //
+    // The earlier implementation awaited `analyzeAndRenderReport(...)`
+    // here with a comment claiming the call ran "comfortably under any
+    // reasonable client tool-call timeout". The 2026-05-21 live Codex.app
+    // audit (session `sess-20260521-025238-e8f1b3`) disproved that:
+    // analyze took >120s and the run hit Codex CLI's tool-call client
+    // timeout (120s, not user-configurable). The audit completed
+    // server-side, but the client lost the response and the dashboard's
+    // auto-refresh missed the SSE event.
+    //
+    // The fix mirrors AAP-53.5's sampling-path resolution: return from
+    // the tool call immediately with `status: 'analyzing'`, and run
+    // analyze + verdict computation as a fire-and-forget background
+    // promise. Clients track completion via the dashboard SSE stream
+    // (`status: 'complete'` / `status: 'analysis_failed'`) or by polling
+    // `get_report`. MCP sessions are long-lived; only tool **calls** are
+    // bounded by the client timer.
+    const analyzeAndRenderReport = this.analyzeAndRenderReport;
+    const agentName = updated.agentName;
+    const transcriptForVerdict = updated.transcript.map((t) => ({
+      category: t.category,
+      question: t.question,
+      answer: t.answer,
+    }));
 
-    if (rendered.ok) {
-      await writeReport(sessionId, { markdown: rendered.markdown, json: rendered.json });
-      // AAP-63 — compute the Surface-2-anchored verdict (see sampling-
-      // path comment above for the rationale). Tool-call mode shares the
-      // same gate: discovery has not yet run, so we land on
-      // `verificationStatus: 'unverified'`.
-      const verdict = computeVerdictFromArtifacts({
-        reportJson: rendered.json,
-        transcript: updated.transcript.map((t) => ({
-          category: t.category,
-          question: t.question,
-          answer: t.answer,
-        })),
-      });
-      await persistVerdict(sessionId, verdict);
-      publishSessionEvent(sessionId, {
-        type: 'status-change',
-        status: 'complete',
-        ...(verdict.primaryRiskLevel
-          ? { riskLevel: verdict.primaryRiskLevel }
-          : {}),
-      });
+    // AAP-66 — ctx.signal belongs to the parent tool call. The MCP SDK
+    // aborts it the moment this handler returns, which would cascade
+    // into any pending analyzer work. Use a fresh AbortController that
+    // outlives the tool call. (We do not pass it into the analyzer
+    // contract today — there is no signal field on the dep — but we
+    // keep one here both as documentation and as a hook for a future
+    // shutdown path that wants to abort in-flight analyses.)
+    const bgController = new AbortController();
+    void bgController; // intentionally retained for future cancellation
 
-      return {
-        ok: true,
-        value: {
-          session_id: sessionId,
-          status: 'complete',
-          questions_asked: updated.questionsAsked,
-          report_markdown: rendered.markdown,
-          // AAP-63: the response's `risk_level` field is now the
-          // primary verdict (deterministic when Surface 2 ran, else
-          // 'unverified'). External callers that previously assumed
-          // a 'low'/'medium'/'high' string MUST tolerate 'unverified'.
-          risk_level: verdict.primaryRiskLevel,
-        },
-      };
-    }
+    // Best-effort fire-and-forget. `void` so we don't accidentally await.
+    void (async (): Promise<void> => {
+      try {
+        const rendered = await analyzeAndRenderReport({
+          sessionId,
+          transcript: transcriptAsQA,
+          ...(agentName !== undefined ? { agentName } : {}),
+        });
 
-    // AAP-56 — tool-call path mirrors the sampling-mode handler: analyzer
-    // failed, no report.json, dashboard banner driven by status. Surface
-    // the failure to the tool caller with `status: 'analysis_failed'` so a
-    // smart agent can stop calling submit_answer / decide to retry.
-    await writeAnalysisFailure(sessionId, rendered.analysisError, rendered.markdown);
-    publishSessionEvent(sessionId, {
-      type: 'status-change',
-      status: 'analysis_failed',
-    });
+        if (rendered.ok) {
+          await writeReport(sessionId, {
+            markdown: rendered.markdown,
+            json: rendered.json,
+          });
+          // AAP-63 — compute the Surface-2-anchored verdict (see
+          // sampling-path comment above for the rationale). Tool-call
+          // mode shares the same gate: discovery has not yet run, so
+          // we land on `verificationStatus: 'unverified'`.
+          const verdict = computeVerdictFromArtifacts({
+            reportJson: rendered.json,
+            transcript: transcriptForVerdict,
+          });
+          await persistVerdict(sessionId, verdict);
+          publishSessionEvent(sessionId, {
+            type: 'status-change',
+            status: 'complete',
+            ...(verdict.primaryRiskLevel
+              ? { riskLevel: verdict.primaryRiskLevel }
+              : {}),
+          });
+        } else {
+          // AAP-56 — analyzer failed. Persist the failure-mode markdown
+          // and diagnostic envelope; surface to dashboard via SSE. No
+          // report.json is written — there is no analysis to serialize.
+          await writeAnalysisFailure(
+            sessionId,
+            rendered.analysisError,
+            rendered.markdown,
+          );
+          publishSessionEvent(sessionId, {
+            type: 'status-change',
+            status: 'analysis_failed',
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        try {
+          await updateSessionMeta(sessionId, { status: 'error' });
+        } catch {
+          // Best-effort — meta might already be broken.
+        }
+        publishSessionEvent(sessionId, { type: 'error', message });
+      }
+    })();
 
+    // Return immediately. Status is 'analyzing' — the client polls
+    // get_report or watches the dashboard SSE stream to track progress.
     return {
       ok: true,
       value: {
         session_id: sessionId,
-        status: 'analysis_failed',
+        status: 'analyzing',
         questions_asked: updated.questionsAsked,
-        report_markdown: rendered.markdown,
-        error: {
-          reason: rendered.analysisError.reason,
-          message: rendered.analysisError.message,
-        },
       },
     };
   }

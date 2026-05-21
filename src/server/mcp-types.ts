@@ -186,7 +186,7 @@ export interface SubmitAnswerInput {
  *
  * `status` is one of:
  *  - `awaiting_answer` — continue the loop, ask the agent for the next answer.
- *  - `analyzing` — AAP-67 path. The planner is exhausted and Heron is running
+ *  - `analyzing` — AAP-66 path. The planner is exhausted and Heron is running
  *    the analyzer + verdict pipeline as a detached background promise. The
  *    tool call returns immediately to dodge the client tool-call timeout
  *    (Codex CLI = 120s, not user-configurable). Clients retrieve the final
@@ -197,12 +197,12 @@ export interface SubmitAnswerInput {
  *  - `complete` — terminal, report fields set, analyzer produced a clean run.
  *    Kept in the union for forward/backward compatibility with older callers
  *    and tests; `submit_answer` itself no longer returns this directly under
- *    AAP-67. Reached via `get_report` or the dashboard SSE stream.
+ *    AAP-66. Reached via `get_report` or the dashboard SSE stream.
  *  - `analysis_failed` — terminal, AAP-56 path. Analyzer could not produce
  *    a structured report (double-parse failure or unreachable LLM gateway).
  *    `report_markdown` is the failure-mode markdown (no risk badge, no
  *    findings, no recommendation); `error` carries the diagnostic envelope.
- *    Same SSE-only delivery story as `complete` under AAP-67.
+ *    Same SSE-only delivery story as `complete` under AAP-66.
  */
 export interface SubmitAnswerOutput {
   session_id: string;
