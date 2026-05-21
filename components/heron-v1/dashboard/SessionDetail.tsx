@@ -304,7 +304,8 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             </span>
           ) : (
             <>
-              <span className={`sev ${statusSev}`}>{liveSession.status}</span>
+              {/* AAP-68 — `_`→' ' so `awaiting_answer` reads as `awaiting answer`. */}
+              <span className={`sev ${statusSev}`}>{liveSession.status.replace(/_/g, ' ')}</span>
               {isLive && <span className="sev sev-info">live</span>}
               {/* AAP-63 — primary pill (Surface 2 verdict). Yellow
                   "VERIFICATION REQUIRED" sentinel when no deterministic
