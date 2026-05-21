@@ -5,7 +5,11 @@ import {
   type AnalyzeFailureReason,
   type FullAnalysisResult,
 } from '../analysis/analyzer.js';
-import { computeRiskScore, applySeverityOverrides } from '../analysis/risk-scorer.js';
+import {
+  computeRiskScore,
+  applySeverityOverrides,
+  calibrateOverallRiskLevel,
+} from '../analysis/risk-scorer.js';
 import { renderMarkdownReport, renderAnalysisFailedReport } from './templates.js';
 import { computeVerdict } from '../verification/verdict.js';
 import type { LLMClient } from '../llm/client.js';
@@ -109,6 +113,15 @@ async function buildSuccessReport(
   // 2. Compute risk score from structured per-system data
   const riskScore = computeRiskScore(analysis.systems, analysis.risks);
 
+  // AAP-69: calibrate the categorical overall label against the LLM-issued
+  // verdict so the two fields cannot contradict on the published report.
+  // The numeric `riskScore.score` is intentionally NOT mutated — it remains
+  // the rubric's honest output. Only the pill label is reconciled.
+  const calibratedOverall = calibrateOverallRiskLevel(
+    riskScore.overall,
+    analysis.recommendation,
+  );
+
   // 3. Compute structured compliance (AAP-31: CategorizedCompliance)
   const compliance = mapFindingsToRiskCategories({
     systems: analysis.systems,
@@ -129,7 +142,7 @@ async function buildSuccessReport(
     risks: analysis.risks,
     recommendations: analysis.recommendations,
     recommendation: analysis.recommendation,
-    overallRiskLevel: riskScore.overall,
+    overallRiskLevel: calibratedOverall,
     transcript: session.transcript,
     dataQuality: computeDataQualityFromTranscript(session.transcript, analysis.systems),
     makesDecisionsAboutPeople: analysis.makesDecisionsAboutPeople,

@@ -2,7 +2,11 @@ import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { generateId } from '../util/id.js';
 import { createProtocol, isStaleAnswer, type InterviewProtocol } from '../interview/protocol.js';
 import { analyzeTranscript } from '../analysis/analyzer.js';
-import { computeRiskScore, applySeverityOverrides } from '../analysis/risk-scorer.js';
+import {
+  computeRiskScore,
+  applySeverityOverrides,
+  calibrateOverallRiskLevel,
+} from '../analysis/risk-scorer.js';
 import { mapFindingsToRiskCategories } from '../compliance/mapper.js';
 import { renderMarkdownReport } from '../report/templates.js';
 import type { LLMClient } from '../llm/client.js';
@@ -270,6 +274,12 @@ export class SessionManager {
       // AAP-43 P1 #6: compute DQ AFTER analysis so we can penalize extracted NOT_PROVIDED
       const dataQuality = computeDataQuality(transcript, analysis.systems);
       const riskScore = computeRiskScore(analysis.systems, analysis.risks);
+      // AAP-69: reconcile overallRiskLevel pill with the verdict — DENY
+      // cannot ship as `medium`, bare APPROVE cannot ship as `critical`.
+      const calibratedOverall = calibrateOverallRiskLevel(
+        riskScore.overall,
+        analysis.recommendation,
+      );
       const compliance = mapFindingsToRiskCategories({
         systems: analysis.systems,
         transcript,
@@ -288,7 +298,7 @@ export class SessionManager {
         risks: analysis.risks,
         recommendations: analysis.recommendations,
         recommendation: analysis.recommendation,
-        overallRiskLevel: riskScore.overall,
+        overallRiskLevel: calibratedOverall,
         transcript,
         dataQuality,
         makesDecisionsAboutPeople: analysis.makesDecisionsAboutPeople,
@@ -325,13 +335,17 @@ export class SessionManager {
       session.status = 'complete';
       session.updatedAt = new Date();
 
-      this.logEvent(session, 'analysis_complete', { riskLevel: riskScore.overall, riskScore: riskScore.score });
-      const riskColor = riskScore.overall === 'high' ? '\x1b[31m'    // red
-        : riskScore.overall === 'medium' ? '\x1b[33m'                // yellow
-        : '\x1b[32m';                                                // green
+      // AAP-69: surface the calibrated label so the CLI banner matches
+      // the report's overallRiskLevel field. The numeric rubric score is
+      // still logged unchanged for ground-truth comparison.
+      this.logEvent(session, 'analysis_complete', { riskLevel: calibratedOverall, riskScore: riskScore.score });
+      const riskColor = calibratedOverall === 'critical' ? '\x1b[31m' // red
+        : calibratedOverall === 'high' ? '\x1b[31m'                    // red
+        : calibratedOverall === 'medium' ? '\x1b[33m'                  // yellow
+        : '\x1b[32m';                                                  // green
       logger.raw('');
       logger.raw(`  \x1b[1mAudit complete: ${session.id}\x1b[0m`);
-      logger.raw(`  Risk:         ${riskColor}${riskScore.overall.toUpperCase()}\x1b[0m`);
+      logger.raw(`  Risk:         ${riskColor}${calibratedOverall.toUpperCase()}\x1b[0m`);
       logger.raw(`  Data quality: ${dataQuality.score}/100`);
       logger.raw(`  Verdict:      ${reportJson.recommendation ?? 'APPROVE WITH CONDITIONS'}`);
       logger.raw(`  Findings:     ${reportJson.risks.length}`);
