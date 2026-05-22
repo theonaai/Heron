@@ -1,0 +1,156 @@
+{
+  "sessionId": "sess-20260521-091414-7453aa",
+  "makesDecisionsAboutPeople": true,
+  "decisionMakingDetails": "The agent stated it makes hiring-screening decisions: it scores job candidates against role criteria and automatically transitions them between Greenhouse application stages, including Rejected. Affected people are every candidate processed in configured Greenhouse jobs, approximately 40 candidates per run and 200 candidates per week per customer. The agent stated there is no human involved before the final rejection decision; the only approval is initial template installation.",
+  "systems": [
+    {
+      "systemId": "greenhouse-ats",
+      "systemDescription": "Greenhouse ATS accessed via Greenhouse Harvest REST API using OAuth2 with the customer's Greenhouse instance. Calls are attributed to the Theona integration user, not the recruiter. The agent reads jobs, job posts, applications, application stages, candidates, and scorecards, and writes candidate notes and application stage transitions including rejection.",
+      "sources": [
+        "A4",
+        "A6",
+        "A7",
+        "A8",
+        "A9",
+        "A10",
+        "A11",
+        "A14",
+        "A16"
+      ],
+      "scopesRequested": [
+        "jobs",
+        "job_posts",
+        "applications",
+        "application_stages",
+        "candidates",
+        "scorecards",
+        "applications.stage",
+        "candidates.notes"
+      ],
+      "scopesNeeded": [
+        "jobs",
+        "job_posts",
+        "applications",
+        "application_stages",
+        "candidates",
+        "scorecards",
+        "candidates.notes"
+      ],
+      "scopesDelta": [
+        "applications.stage"
+      ],
+      "dataSensitivity": "PII and confidential HR/employment-decision data, including name, email, phone, photo, work history, education, links, resume contents, application history, scorecards, cover letters, application free text, score/rationale notes, and demographic/EEO self-disclosure fields. The agent stated GDPR Art 9 special-category data may be ingested when self-disclosed.",
+      "blastRadius": "team-scope",
+      "frequency": {
+        "runsLastWeek": 5,
+        "callsPerRun": "~120 reads + ~80 writes",
+        "batchSize": "~40 candidates/run",
+        "concurrency": "sequential",
+        "notes": "The agent stated candidates are processed one at a time, no bulk-update API is used, and a run can process 20-100 candidates with typical average around 40."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "Move candidate to Rejected stage",
+          "target": "Greenhouse application",
+          "reversible": false,
+          "approvalRequired": false,
+          "volumePerDay": "~15-40/day"
+        },
+        {
+          "operation": "Move candidate forward to next stage",
+          "target": "Greenhouse application",
+          "reversible": false,
+          "approvalRequired": false,
+          "volumePerDay": "~10-25/day"
+        },
+        {
+          "operation": "Create score and rationale note",
+          "target": "Greenhouse candidate record",
+          "reversible": false,
+          "approvalRequired": false,
+          "volumePerDay": "~40/day"
+        }
+      ]
+    },
+    {
+      "systemId": "linkedin-scrape",
+      "systemDescription": "LinkedIn public profile scrape over HTML/unofficial access, not LinkedIn's partner API. The agent stated there is no per-user OAuth; the Theona platform brokers the scrape with its own credentials. Specific OAuth scopes: NOT PROVIDED.",
+      "sources": [
+        "A3",
+        "A4",
+        "A6",
+        "A7",
+        "A10",
+        "A11",
+        "A14",
+        "A16",
+        "A17"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "PII when joined to Greenhouse records. The agent reads public profile fields including name, headline, current and past roles, skills, education, public posts, photo, work history, and public activity. The agent stated potential GDPR Art 9 data may be ingested if self-published.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": 5,
+        "callsPerRun": "~60-80 reads",
+        "batchSize": "~40 candidates/run",
+        "concurrency": "mixed",
+        "notes": "The agent stated it performs 1-2 LinkedIn reads per candidate and candidates are processed sequentially, with possible per-candidate enrichment fan-out."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": []
+    },
+    {
+      "systemId": "public-web-search",
+      "systemDescription": "Public web search through a Theona-managed search-provider REST API using a platform-level API key, not user OAuth. The agent issues search queries and reads snippets or cached pages. Specific OAuth scopes: NOT PROVIDED.",
+      "sources": [
+        "A3",
+        "A4",
+        "A6",
+        "A7",
+        "A10",
+        "A11",
+        "A14",
+        "A16",
+        "A17",
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "PII when matched to a candidate, because queries and results may include candidate names, current company, role, GitHub presence, conference talks, social media, or other identifying mentions. The agent stated public web results may surface inferred or self-disclosed GDPR Art 9 categories.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": 5,
+        "callsPerRun": "~80-120 queries",
+        "batchSize": "~40 candidates/run",
+        "concurrency": "mixed",
+        "notes": "The agent stated it performs 1-3 public web searches per candidate, typically 2-3 per candidate in a representative run."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": []
+    },
+    {
+      "systemId": "anthropic-foundation-model",
+      "systemDescription": "Foundation model API via Theona's proxy. The agent stated the parent agent uses Theona's default reasoning model, described as a frontier model from Anthropic Claude class, and a smaller/cheaper model for the Per-Candidate Analysis sub-agent. Exact model identity per run is platform-controlled and recorded in Theona audit logs. Specific OAuth scopes: NOT PROVIDED.",
+      "sources": [
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "PII, possible GDPR Art 9 special-category data, and confidential business data. The agent stated prompts include candidate name, email, phone, work history, education, sometimes self-disclosed EEO fields, cover letter free text, LinkedIn scrape contents, web search snippets, role scorecard, and scoring rubric.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": 5,
+        "batchSize": "~40 candidates/run",
+        "concurrency": "mixed",
+        "notes": "The agent stated model use occurs for the parent agent and the Per-Candidate Analysis sub-agent, but did not provide exact foundation-model call counts per run."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": []
+    }
+  ]
+}

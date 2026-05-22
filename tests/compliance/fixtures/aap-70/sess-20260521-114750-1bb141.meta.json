@@ -1,0 +1,536 @@
+{
+  "sessionId": "sess-20260521-114750-1bb141",
+  "makesDecisionsAboutPeople": false,
+  "decisionMakingDetails": "The agent stated it does not make or influence regulated decisions about people such as hiring, credit, insurance, moderation, access, or performance evaluation. It disclosed adjacent activity: outreach prioritisation where it helps rank or score prospects and draft messages, with Ilya making the final contact decision; and internal Linear issue triage, which it stated does not affect compensation or employment.",
+  "systems": [
+    {
+      "systemId": "anthropic-claude-api",
+      "systemDescription": "Anthropic Claude API used for model inference through the Claude Code runtime. Authenticated via Ilya's Anthropic account credentials managed by the Claude Code app; the underlying API key is not exposed to the agent. The agent stated there is no separate admin/org/billing endpoint access and no separate per-agent Anthropic service account.",
+      "sources": [
+        "A4",
+        "A6",
+        "A14",
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "PII, credentials, and confidential business context. The agent stated every turn goes to Anthropic, including prompts, tool results, machine paths, MCP server IDs, teammate names, Heron strategy, and occasional credentials if pasted or included in context.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": null,
+        "callsPerRun": "30-150 model calls",
+        "batchSize": 1,
+        "concurrency": "mixed",
+        "notes": "The agent estimated 25-40 top-level sessions in the last week and 15-30 sub-agent invocations, with long sessions reaching about 200-300 turns."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": []
+    },
+    {
+      "systemId": "linear-theona",
+      "systemDescription": "Linear Theona workspace accessed via Linear GraphQL API through Linear's official MCP server. Auth method was described as an operator-owned Linear API key or OAuth token held by the MCP server. Exact OAuth scope strings were not visible to the agent; it described effective MCP tool permissions.",
+      "sources": [
+        "A2",
+        "A3",
+        "A4",
+        "A6",
+        "A7",
+        "A8",
+        "A9",
+        "A10",
+        "A11",
+        "A14",
+        "A16",
+        "A17",
+        "A18"
+      ],
+      "scopesRequested": [
+        "linear.list_issues",
+        "linear.get_issue",
+        "linear.save_issue",
+        "linear.list_comments",
+        "linear.save_comment",
+        "linear.save_document",
+        "linear.save_project",
+        "linear.save_milestone",
+        "linear.save_initiative",
+        "linear.save_status_update",
+        "linear.create_issue_label",
+        "linear.create_attachment",
+        "linear.create_attachment_from_upload",
+        "linear.delete_attachment",
+        "linear.delete_comment",
+        "linear.delete_status_update",
+        "linear.list_diffs",
+        "linear.get_diff_threads",
+        "linear.extract_images"
+      ],
+      "scopesNeeded": [
+        "linear.get_issue",
+        "linear.list_issues",
+        "linear.save_issue",
+        "linear.save_comment"
+      ],
+      "scopesDelta": [
+        "linear.create_issue_label",
+        "linear.delete_attachment",
+        "linear.extract_images",
+        "linear.get_diff_threads",
+        "linear.list_diffs",
+        "linear.prepare_attachment_upload",
+        "linear.delete_comment",
+        "linear.delete_status_update"
+      ],
+      "dataSensitivity": "PII and confidential business data. The agent stated Linear can contain engineering roadmaps, customer pilot notes, internal status updates, teammate emails/contact info, and issue threads with engineering plans and customer signals.",
+      "blastRadius": "team-scope",
+      "frequency": {
+        "runsLastWeek": null,
+        "callsPerRun": "20-50 writes",
+        "batchSize": 1,
+        "concurrency": "sequential",
+        "notes": "The agent gave this estimate for outreach-research sessions and stated Linear writes are one save_issue/save_comment per row, not a bulk endpoint."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "save_issue",
+          "target": "Linear issue",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "5-30"
+        },
+        {
+          "operation": "save_comment",
+          "target": "Linear comment",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "3-15"
+        },
+        {
+          "operation": "save_document",
+          "target": "Linear document",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-5"
+        },
+        {
+          "operation": "save_project",
+          "target": "Linear project",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-5"
+        },
+        {
+          "operation": "save_milestone",
+          "target": "Linear milestone",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-5"
+        },
+        {
+          "operation": "save_initiative",
+          "target": "Linear initiative",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-5"
+        },
+        {
+          "operation": "save_status_update",
+          "target": "Linear status update",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "~3"
+        },
+        {
+          "operation": "create_issue_label",
+          "target": "Linear issue label",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-2"
+        },
+        {
+          "operation": "create_attachment",
+          "target": "Linear attachment",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-2"
+        },
+        {
+          "operation": "delete_comment",
+          "target": "Linear comment",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        },
+        {
+          "operation": "delete_attachment",
+          "target": "Linear attachment",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        },
+        {
+          "operation": "delete_status_update",
+          "target": "Linear status update",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        }
+      ]
+    },
+    {
+      "systemId": "slack-theona",
+      "systemDescription": "Slack workspace accessed through the Slack Web API via the Slack MCP server. Auth was described as an operator-installed Slack app token, likely a user token because public-and-private search is available. Exact OAuth scope strings were not visible to the agent; it described effective MCP tool permissions.",
+      "sources": [
+        "A2",
+        "A4",
+        "A6",
+        "A7",
+        "A8",
+        "A9",
+        "A10",
+        "A11",
+        "A14",
+        "A16",
+        "A17",
+        "A18"
+      ],
+      "scopesRequested": [
+        "slack.send_message",
+        "slack.send_message_draft",
+        "slack.schedule_message",
+        "slack.add_reaction",
+        "slack.create_conversation",
+        "slack.create_canvas",
+        "slack.update_canvas",
+        "slack.read_canvas",
+        "slack.read_channel",
+        "slack.read_thread",
+        "slack.read_file",
+        "slack.read_user_profile",
+        "slack.get_reactions",
+        "slack.list_channel_members",
+        "slack.search_channels",
+        "slack.search_emojis",
+        "slack.search_public",
+        "slack.search_public_and_private",
+        "slack.search_users"
+      ],
+      "scopesNeeded": [
+        "slack-read-tools",
+        "slack-search-tools"
+      ],
+      "scopesDelta": [
+        "slack.search_emojis",
+        "slack.create_conversation",
+        "slack.create_canvas",
+        "slack.update_canvas",
+        "slack.schedule_message"
+      ],
+      "dataSensitivity": "PII and confidential business data. The agent stated Slack may include workspace messages, DMs with teammates, customer/prospect names, user profiles, files, reactions, member lists, and canvases containing strategy docs.",
+      "blastRadius": "org-wide",
+      "frequency": {
+        "runsLastWeek": null,
+        "callsPerRun": "10-30 reads",
+        "batchSize": 1,
+        "concurrency": "mixed",
+        "notes": "The agent gave 10-30 Slack reads for outreach-research sessions and described Slack writes as read-heavy with low daily volume."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "slack_send_message",
+          "target": "Slack channels and DMs",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-5"
+        },
+        {
+          "operation": "slack_send_message_draft",
+          "target": "Slack draft message",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-2"
+        },
+        {
+          "operation": "slack_schedule_message",
+          "target": "Slack scheduled message",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-2"
+        },
+        {
+          "operation": "slack_add_reaction",
+          "target": "Slack reaction",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-3"
+        },
+        {
+          "operation": "slack_create_conversation",
+          "target": "Slack conversation",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        },
+        {
+          "operation": "slack_create_canvas",
+          "target": "Slack canvas",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        },
+        {
+          "operation": "slack_update_canvas",
+          "target": "Slack canvas",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        }
+      ]
+    },
+    {
+      "systemId": "theona-platform",
+      "systemDescription": "Theona platform REST API accessed via Theona MCP using an OAuth bearer token for Ilya's Theona account. The agent stated the token was expired in this session, exposing only authenticate and complete_authentication, but when live it can list, run, create, and cancel agents, send input, and approve actions.",
+      "sources": [
+        "A4",
+        "A6",
+        "A7",
+        "A8",
+        "A9",
+        "A11",
+        "A12",
+        "A14",
+        "A16",
+        "A17",
+        "A18"
+      ],
+      "scopesRequested": [
+        "theona.authenticate",
+        "theona.complete_authentication",
+        "theona.list_agents",
+        "theona.run_agent",
+        "theona.get_run_status",
+        "theona.send_input",
+        "theona.cancel_run",
+        "theona.create_agent",
+        "theona.run_batch",
+        "theona.approve_action"
+      ],
+      "scopesNeeded": [
+        "theona.run_agent"
+      ],
+      "scopesDelta": [
+        "theona.run_batch",
+        "theona.create_agent"
+      ],
+      "dataSensitivity": "PII and confidential data. The agent stated Theona agent runs may contain outreach research, LinkedIn profile data, CRM data, exact prospect lists, drafted email content, and email content drafted for outreach.",
+      "blastRadius": "cross-tenant",
+      "frequency": {
+        "runsLastWeek": null,
+        "callsPerRun": "5-15 runs",
+        "batchSize": "5-50 contacts",
+        "notes": "The agent stated 5-15 Theona agent runs per active outreach day and described a normal day as 5-50 contacts queued, with a worst realistic failure of 200-2000 prospects."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "run_agent",
+          "target": "Theona agent run",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-5"
+        },
+        {
+          "operation": "create_agent",
+          "target": "Theona agent",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        },
+        {
+          "operation": "send_input",
+          "target": "Theona active run",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-10"
+        },
+        {
+          "operation": "approve_action",
+          "target": "Theona action",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-2"
+        },
+        {
+          "operation": "cancel_run",
+          "target": "Theona run",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-2"
+        }
+      ]
+    },
+    {
+      "systemId": "telegram-bot-api",
+      "systemDescription": "Telegram Bot API accessed via the Telegram MCP plugin. Auth method was described as an operator-supplied Telegram bot token, with a per-chat allowlist managed by the /telegram:access skill.",
+      "sources": [
+        "A4",
+        "A6",
+        "A7",
+        "A8",
+        "A14",
+        "A16",
+        "A17",
+        "A18"
+      ],
+      "scopesRequested": [
+        "telegram.reply",
+        "telegram.react",
+        "telegram.edit_message",
+        "telegram.download_attachment"
+      ],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "PII and user-provided content. The agent stated Telegram messages from allowlisted chats could include counterparties' PII or any content Ilya forwards, and attachments can be downloaded.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": null,
+        "batchSize": 1,
+        "notes": "The agent stated Telegram was not used in the audit and gave only daily write volume estimates depending on inbound traffic."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "reply",
+          "target": "Telegram allowlisted chat",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-10"
+        },
+        {
+          "operation": "react",
+          "target": "Telegram message",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-10"
+        },
+        {
+          "operation": "edit_message",
+          "target": "Telegram message",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "0-10"
+        }
+      ]
+    },
+    {
+      "systemId": "github",
+      "systemDescription": "GitHub accessed via the gh CLI and git over the local shell using Ilya's personal access token. The agent stated PRs, commits, merges and pushes are attributed to Ilya's GitHub identity rather than a separate bot. Exact GitHub PAT scopes were NOT PROVIDED.",
+      "sources": [
+        "A8",
+        "A9",
+        "A14",
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "Confidential source code and project metadata. The agent stated GitHub data includes code, commit messages, PR descriptions, and issue comments.",
+      "blastRadius": "team-scope",
+      "frequency": {
+        "runsLastWeek": null,
+        "batchSize": 1,
+        "concurrency": "sequential",
+        "notes": "The agent provided daily operation volumes but did not provide GitHub calls per run."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "git push",
+          "target": "GitHub remote",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "2-10"
+        },
+        {
+          "operation": "gh pr create",
+          "target": "GitHub pull request",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "2-8"
+        },
+        {
+          "operation": "gh pr edit",
+          "target": "GitHub pull request",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "2-8"
+        },
+        {
+          "operation": "gh pr comment",
+          "target": "GitHub pull request",
+          "reversible": true,
+          "approvalRequired": true,
+          "volumePerDay": "2-8"
+        },
+        {
+          "operation": "gh pr merge",
+          "target": "GitHub pull request",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-3"
+        },
+        {
+          "operation": "gh release create",
+          "target": "GitHub release",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "0-1"
+        }
+      ]
+    },
+    {
+      "systemId": "public-web",
+      "systemDescription": "Public web endpoints accessed through WebFetch and WebSearch when the operator asks the agent to look up external docs, pages, or search results. Auth method was not described; the agent stated servers receive standard HTTP from the user's IP and WebSearch receives the query.",
+      "sources": [
+        "A11",
+        "A16",
+        "A17",
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "Potentially PII and confidential data depending on URLs or queries. The agent stated WebFetch/WebSearch may send URL strings and queries, and fetched pages can affect reasoning.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": null,
+        "batchSize": 1,
+        "concurrency": "mixed",
+        "notes": "The agent stated WebFetch/WebSearch are used for research and verification but were not used in this audit."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": []
+    },
+    {
+      "systemId": "npm-registry",
+      "systemDescription": "NPM registry accessed during npm install operations. The agent described this as a third-party service that can pull packages, binaries, and scripts into the local filesystem. Auth method was NOT PROVIDED.",
+      "sources": [
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "Confidentiality impact NOT PROVIDED; the agent identified supply-chain compromise risk from dependencies but did not state specific data sent to npm beyond package installs.",
+      "blastRadius": "single-user",
+      "frequency": {
+        "runsLastWeek": null,
+        "notes": "The agent stated NPM was not invoked in this audit specifically."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": []
+    }
+  ]
+}
