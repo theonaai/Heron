@@ -334,11 +334,15 @@ function isAnnexIIIApplicableForFinding(
   findingType: FindingType,
   signals: ComplianceSignals,
 ): boolean {
+  // AAP-70: mirror the gating in `classifyEUAIAct`. Per-control flags must
+  // match the overall classification — otherwise the report shows
+  // "limited" up top but renders Annex III controls below.
   // §1 — biometrics: tied to sensitive-data
   if (
     findingType === 'sensitive-data' &&
     signals.hasSensitivePII &&
-    signals.hasBiometricSignal
+    signals.hasBiometricSignal &&
+    signals.hasDecisionsAboutPeople
   ) {
     return true;
   }
@@ -347,7 +351,8 @@ function isAnnexIIIApplicableForFinding(
   if (
     (findingType === 'decisions-about-people' ||
       findingType === 'regulatory-flags') &&
-    signals.isEducationAssessmentContext
+    signals.isEducationAssessmentContext &&
+    signals.hasDecisionsAboutPeople
   ) {
     return true;
   }
@@ -365,7 +370,8 @@ function isAnnexIIIApplicableForFinding(
   if (
     findingType === 'decisions-about-people' &&
     signals.hasEssentialServicesSignal &&
-    signals.decisionImpact === 'high'
+    signals.decisionImpact === 'high' &&
+    signals.hasDecisionsAboutPeople
   ) {
     return true;
   }
@@ -374,7 +380,9 @@ function isAnnexIIIApplicableForFinding(
   if (
     (findingType === 'decisions-about-people' ||
       findingType === 'regulatory-flags') &&
-    signals.isLawEnforcementContext
+    signals.isLawEnforcementContext &&
+    signals.hasDecisionsAboutPeople &&
+    signals.decisionImpact !== 'none'
   ) {
     return true;
   }
@@ -402,15 +410,47 @@ export interface EUAIActClassificationResult {
 export function classifyEUAIAct(
   signals: ComplianceSignals,
 ): EUAIActClassificationResult {
+  // AAP-70: every Annex III category requires `hasDecisionsAboutPeople` at
+  // minimum. §6 / §5 also require a non-trivial `decisionImpact`. §4 keeps
+  // its prior gate (employment decisions are implicitly decisions about
+  // people, so the existing impact gate is sufficient). §3 stays single-
+  // signal — the EDUCATION_ASSESSMENT_PATTERN is narrow enough not to fire
+  // on unrelated transcripts.
+  //
+  // Rationale: every Annex III category is fundamentally about automated
+  // decisions affecting natural persons. If an agent declares it makes no
+  // decisions about people AND has no decision-impact, it cannot be a
+  // high-risk Annex III deployer. The pre-AAP-70 single-signal trigger for
+  // §6 (and the loose gate on §1/§5) produced false positives on agents
+  // whose transcripts merely mentioned compliance categories in negations,
+  // skill names, or enumerated meta-lists. See AAP-70 ticket for the
+  // 2026-05-21 Claude Code self-audit repro.
   const categories: string[] = [];
-  if (signals.hasBiometricSignal && signals.hasSensitivePII)
+  if (
+    signals.hasBiometricSignal &&
+    signals.hasSensitivePII &&
+    signals.hasDecisionsAboutPeople
+  )
     categories.push('§1 biometric');
-  if (signals.isEducationAssessmentContext) categories.push('§3 education');
+  if (
+    signals.isEducationAssessmentContext &&
+    signals.hasDecisionsAboutPeople
+  )
+    categories.push('§3 education');
   if (signals.hasEmploymentDecisions && signals.decisionImpact !== 'none')
     categories.push('§4 employment');
-  if (signals.hasEssentialServicesSignal && signals.decisionImpact === 'high')
+  if (
+    signals.hasEssentialServicesSignal &&
+    signals.decisionImpact === 'high' &&
+    signals.hasDecisionsAboutPeople
+  )
     categories.push('§5 essential services');
-  if (signals.isLawEnforcementContext) categories.push('§6 law enforcement');
+  if (
+    signals.isLawEnforcementContext &&
+    signals.hasDecisionsAboutPeople &&
+    signals.decisionImpact !== 'none'
+  )
+    categories.push('§6 law enforcement');
 
   if (categories.length > 0) {
     return { classification: 'high-risk', annexIIICategories: categories };
