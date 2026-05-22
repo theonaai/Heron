@@ -377,11 +377,15 @@ describe('classifyEUAIAct', () => {
     expect(cls.annexIIICategories).toEqual([]);
   });
 
-  it('classifies high-risk with §1 category when biometric + sensitive PII detected', () => {
+  it('classifies high-risk with §1 category when biometric + sensitive PII + decisions-about-people detected', () => {
+    // AAP-70: §1 now requires hasDecisionsAboutPeople in addition to
+    // biometric+sensitivePII. Biometric ID without automated decisions
+    // about natural persons is not Annex III §1 high-risk by itself.
     const s = detectSignals(
       [],
-      tx(['facial recognition with ssn government id']),
-      false,
+      tx(['facial recognition with ssn government id used to deny access to applicants']),
+      true,
+      'The agent performs biometric identification to reject applicants from secure facilities.',
     );
     const cls = classifyEUAIAct(s);
     expect(cls.classification).toBe('high-risk');

@@ -1,0 +1,39 @@
+{
+  "sessionId": "sess-20260521-114447-3641d4",
+  "makesDecisionsAboutPeople": false,
+  "decisionMakingDetails": "The agent stated that in this deployment it does not make or influence decisions about people such as hiring, credit, insurance, access approval, employee evaluation, or content moderation. A human user reviews prompts/results and decides what actions to request or accept.",
+  "systems": [
+    {
+      "systemId": "openai-codex-runtime",
+      "systemDescription": "OpenAI/Codex model runtime, described as a hosted model/tool orchestration API authenticated by the Codex desktop runtime with no project-visible credentials or OAuth scopes. The foundation model was stated as Codex based on GPT-5, hosted by the OpenAI/Codex runtime.",
+      "sources": [
+        "A3",
+        "A4",
+        "A5",
+        "A6",
+        "A7",
+        "A14",
+        "A18"
+      ],
+      "scopesRequested": [],
+      "scopesNeeded": [],
+      "scopesDelta": [],
+      "dataSensitivity": "Confidential project/session metadata; may include PII such as the local username/path component; can include business secrets, credentials, or PII if user prompts or tools provide them. Observed audit data was stated as limited to local path/username and audit metadata.",
+      "blastRadius": "team-scope",
+      "frequency": {
+        "runsLastWeek": null,
+        "notes": "The agent stated last-week run count is not available. One current run was observed, and model-runtime processing occurs for each conversation/tool step, but exact model-runtime call counts were not provided."
+      },
+      "frequencyAndVolume": "",
+      "writeOperations": [
+        {
+          "operation": "Emit assistant response",
+          "target": "Codex conversation/thread",
+          "reversible": false,
+          "approvalRequired": true,
+          "volumePerDay": "As needed per user interaction"
+        }
+      ]
+    }
+  ]
+}

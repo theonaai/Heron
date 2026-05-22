@@ -156,6 +156,78 @@ const ESSENTIAL_SERVICES_PATTERN = new RegExp(
 
 // isBusinessSystem lives in src/util/systems.ts (shared across report, analyzer, mapper).
 
+// AAP-70 Part B — preprocess transcript text before running category regex.
+// Three classes of false-positive matches must be neutralised so that mere
+// mentions of Annex III keywords do not trigger high-risk classification:
+//   1. Negation windows — "I do not do biometric ID", "no law enforcement"
+//      use, "without facial recognition". Drop the keyword inside the window.
+//   2. Meta-mentions of three or more Annex III category names in a row —
+//      a sentence like "Annex III categories include biometric, education,
+//      employment, essential services, law enforcement" is the agent
+//      listing the categories, not declaring it uses them. Drop the list.
+//   3. Prefix tokens — `skill: investigate-deps`, `tool: web-fetch`,
+//      `mcp_server: github`, `connector: slack`, `framework: nist-ai-rmf`.
+//      The names live in a structured token, not a regulated activity.
+//
+// We replace each match with a single space so word boundaries downstream
+// stay correct. Apply only to the category-keyword passes (biometric, law
+// enforcement, education, essential services). Leave the broader PII /
+// write-op / employment regexes on the original text — they have their own
+// negation guards (employment) or aren't affected by category-list noise.
+const ANNEX_III_KEYWORDS_RE =
+  /\b(biometric|facial.?recognition|face.?recognit|voiceprint|fingerprint|iris|retina|gait|emotion.?recognition|liveness|education|grading|exam|admission|enrollment|academic|learning.?assessment|vocational|apprenticeship|employment|hiring|recruit|essential\s+services|public\s+assistance|benefit|credit\s*scor|creditworthiness|emergency|triage|dispatch|life\s*insur|health\s*insur|underwrit|law\s+enforcement|police|prosecut|forensic|criminal|border|immigration|asylum|parole|recidivism|sentenc|predictive.?policing)\b/gi;
+
+// Negation window: a negation cue, up to 80 chars of filler, then an Annex
+// III keyword. Then optionally up to 6 more keywords each within 40 chars of
+// the prior one (still inside the same sentence — `[^.!?]` stops at
+// sentence boundaries). This handles "I do not do biometric, law
+// enforcement, or essential services" — the trailing list shares the
+// negation scope and all three keywords are scrubbed.
+const NEGATION_HEAD =
+  '\\b(?:no|not|never|do(?:es)?\\s+not|don\'?t|doesn\'?t|won\'?t|without|cannot|can\'?t)\\b';
+const ANNEX_KEYWORDS_INNER = ANNEX_III_KEYWORDS_RE.source.replace(/\\b/g, '');
+const NEGATION_WINDOW_RE = new RegExp(
+  NEGATION_HEAD +
+    '[^.!?]{0,80}?' +
+    ANNEX_KEYWORDS_INNER +
+    '(?:[^.!?]{0,40}?' +
+    ANNEX_KEYWORDS_INNER +
+    '){0,6}',
+  'gi',
+);
+
+// Five Annex III category labels enumerated together → meta-list.
+const META_CATEGORY = '(?:biometric|education|employment|essential\\s+services|law\\s+enforcement)';
+const META_LIST_RE = new RegExp(
+  `\\b${META_CATEGORY}\\b(?:[\\s,;/]+(?:and|or|,)?\\s*\\b${META_CATEGORY}\\b){2,}`,
+  'gi',
+);
+
+// Structured prefix tokens — `skill: foo`, `tool: bar`, `mcp_server: baz`,
+// `connector: qux`, `framework: quux`. Drop the entire token (label + value
+// up to whitespace or punctuation).
+const STRUCTURED_TOKEN_RE =
+  /\b(?:skill|tool|mcp[_\s]?server|connector|framework|plugin|agent)s?\s*[:=]\s*[\w./-]+/gi;
+
+/**
+ * Strip Annex III keyword matches that appear inside negation windows,
+ * meta-category enumerations, or structured prefix tokens. Returns
+ * sanitised text suitable for the per-category regex passes.
+ *
+ * Replacement is a single space so surrounding word boundaries stay sane.
+ */
+export function dropMetaMentions(text: string): string {
+  let out = text;
+  // Order matters: structured tokens first (so `skill: investigate-foo`
+  // isn't accidentally read as a negation window), then meta-lists, then
+  // negation windows. Each pass returns a string with the offending matches
+  // replaced — the next pass operates on already-cleaned text.
+  out = out.replace(STRUCTURED_TOKEN_RE, ' ');
+  out = out.replace(META_LIST_RE, ' ');
+  out = out.replace(NEGATION_WINDOW_RE, ' ');
+  return out;
+}
+
 export function detectSignals(
   systems: SystemAssessment[],
   transcript: QAPair[],
@@ -242,10 +314,18 @@ export function detectSignals(
 
   const combinedText = (decisionMakingDetails ?? '') + ' ' + allText;
 
-  const hasBiometricSignal = BIOMETRIC_PATTERN.test(allText);
-  const isEducationAssessmentContext = EDUCATION_ASSESSMENT_PATTERN.test(combinedText);
-  const isLawEnforcementContext = LAW_ENFORCEMENT_PATTERN.test(combinedText);
-  const hasEssentialServicesSignal = ESSENTIAL_SERVICES_PATTERN.test(combinedText);
+  // AAP-70 Part B: sanitise the text used for Annex III category regex
+  // passes. Strip negation windows, meta-category enumerations, and
+  // structured prefix tokens (`skill: foo`). Apply to both `allText` (used
+  // by biometric) and `combinedText` (used by education / law / essential
+  // services so decisionMakingDetails also gets the treatment).
+  const sanitisedAllText = dropMetaMentions(allText);
+  const sanitisedCombinedText = dropMetaMentions(combinedText);
+
+  const hasBiometricSignal = BIOMETRIC_PATTERN.test(sanitisedAllText);
+  const isEducationAssessmentContext = EDUCATION_ASSESSMENT_PATTERN.test(sanitisedCombinedText);
+  const isLawEnforcementContext = LAW_ENFORCEMENT_PATTERN.test(sanitisedCombinedText);
+  const hasEssentialServicesSignal = ESSENTIAL_SERVICES_PATTERN.test(sanitisedCombinedText);
 
   // ── AIUC-1 architecture signals (AAP-44) ──────────────────────────────
   // Sourced from transcript text (answers to Q11–15). Used for per-control
@@ -334,11 +414,15 @@ function isAnnexIIIApplicableForFinding(
   findingType: FindingType,
   signals: ComplianceSignals,
 ): boolean {
+  // AAP-70: mirror the gating in `classifyEUAIAct`. Per-control flags must
+  // match the overall classification — otherwise the report shows
+  // "limited" up top but renders Annex III controls below.
   // §1 — biometrics: tied to sensitive-data
   if (
     findingType === 'sensitive-data' &&
     signals.hasSensitivePII &&
-    signals.hasBiometricSignal
+    signals.hasBiometricSignal &&
+    signals.hasDecisionsAboutPeople
   ) {
     return true;
   }
@@ -347,7 +431,8 @@ function isAnnexIIIApplicableForFinding(
   if (
     (findingType === 'decisions-about-people' ||
       findingType === 'regulatory-flags') &&
-    signals.isEducationAssessmentContext
+    signals.isEducationAssessmentContext &&
+    signals.hasDecisionsAboutPeople
   ) {
     return true;
   }
@@ -365,7 +450,8 @@ function isAnnexIIIApplicableForFinding(
   if (
     findingType === 'decisions-about-people' &&
     signals.hasEssentialServicesSignal &&
-    signals.decisionImpact === 'high'
+    signals.decisionImpact === 'high' &&
+    signals.hasDecisionsAboutPeople
   ) {
     return true;
   }
@@ -374,7 +460,9 @@ function isAnnexIIIApplicableForFinding(
   if (
     (findingType === 'decisions-about-people' ||
       findingType === 'regulatory-flags') &&
-    signals.isLawEnforcementContext
+    signals.isLawEnforcementContext &&
+    signals.hasDecisionsAboutPeople &&
+    signals.decisionImpact !== 'none'
   ) {
     return true;
   }
@@ -402,15 +490,47 @@ export interface EUAIActClassificationResult {
 export function classifyEUAIAct(
   signals: ComplianceSignals,
 ): EUAIActClassificationResult {
+  // AAP-70: every Annex III category requires `hasDecisionsAboutPeople` at
+  // minimum. §6 / §5 also require a non-trivial `decisionImpact`. §4 keeps
+  // its prior gate (employment decisions are implicitly decisions about
+  // people, so the existing impact gate is sufficient). §3 stays single-
+  // signal — the EDUCATION_ASSESSMENT_PATTERN is narrow enough not to fire
+  // on unrelated transcripts.
+  //
+  // Rationale: every Annex III category is fundamentally about automated
+  // decisions affecting natural persons. If an agent declares it makes no
+  // decisions about people AND has no decision-impact, it cannot be a
+  // high-risk Annex III deployer. The pre-AAP-70 single-signal trigger for
+  // §6 (and the loose gate on §1/§5) produced false positives on agents
+  // whose transcripts merely mentioned compliance categories in negations,
+  // skill names, or enumerated meta-lists. See AAP-70 ticket for the
+  // 2026-05-21 Claude Code self-audit repro.
   const categories: string[] = [];
-  if (signals.hasBiometricSignal && signals.hasSensitivePII)
+  if (
+    signals.hasBiometricSignal &&
+    signals.hasSensitivePII &&
+    signals.hasDecisionsAboutPeople
+  )
     categories.push('§1 biometric');
-  if (signals.isEducationAssessmentContext) categories.push('§3 education');
+  if (
+    signals.isEducationAssessmentContext &&
+    signals.hasDecisionsAboutPeople
+  )
+    categories.push('§3 education');
   if (signals.hasEmploymentDecisions && signals.decisionImpact !== 'none')
     categories.push('§4 employment');
-  if (signals.hasEssentialServicesSignal && signals.decisionImpact === 'high')
+  if (
+    signals.hasEssentialServicesSignal &&
+    signals.decisionImpact === 'high' &&
+    signals.hasDecisionsAboutPeople
+  )
     categories.push('§5 essential services');
-  if (signals.isLawEnforcementContext) categories.push('§6 law enforcement');
+  if (
+    signals.isLawEnforcementContext &&
+    signals.hasDecisionsAboutPeople &&
+    signals.decisionImpact !== 'none'
+  )
+    categories.push('§6 law enforcement');
 
   if (categories.length > 0) {
     return { classification: 'high-risk', annexIIICategories: categories };
