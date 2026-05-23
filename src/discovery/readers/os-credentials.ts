@@ -12,8 +12,16 @@
  *
  *   ~/.aws/credentials        — INI file. Profile names ([profile]).
  *   ~/.aws/config             — INI file. Profile names.
- *   ~/.gcloud/application_default_credentials.json
+ *   ~/.config/gcloud/application_default_credentials.json
  *                              — JSON. project_id, client_email-host, type.
+ *                              This is the standard gcloud SDK location on
+ *                              macOS/Linux after `gcloud auth
+ *                              application-default login`. Heron also
+ *                              probes the legacy `~/.gcloud/` location
+ *                              as a fallback, and honors `CLOUDSDK_CONFIG`
+ *                              (the gcloud-supported override for a
+ *                              custom config dir) when set in the env.
+ *                              First hit wins; no duplicate findings.
  *   ~/.kube/config            — YAML. Cluster + context + user names.
  *   ~/.docker/config.json     — JSON. `auths` registry hostnames + helpers.
  *   ~/.npmrc                  — INI-ish. Registry hosts + scopes.
@@ -55,15 +63,16 @@ interface FilePlan {
   parse: (content: string, path: string) => Promise<string[]>;
 }
 
-function plan(home: string): FilePlan[] {
+function plan(home: string, env: NodeJS.ProcessEnv): FilePlan[] {
   return [
     { kind: 'aws-credentials', path: join(home, '.aws/credentials'), parse: parseIniSectionNames },
     { kind: 'aws-config', path: join(home, '.aws/config'), parse: parseIniSectionNames },
-    {
-      kind: 'gcloud-adc',
-      path: join(home, '.gcloud/application_default_credentials.json'),
-      parse: parseGcloudAdc,
-    },
+    // gcloud-adc: probe candidates in priority order. The reader collapses
+    // duplicate `kind: 'gcloud-adc'` entries to the first hit, so $HOME with
+    // BOTH `.config/gcloud/` and `.gcloud/` populated reports the standard
+    // path only. CLOUDSDK_CONFIG, if set, wins outright (gcloud SDK
+    // convention for overriding the config dir).
+    ...gcloudAdcPlans(home, env),
     { kind: 'kube-config', path: join(home, '.kube/config'), parse: parseKubeConfig },
     { kind: 'docker-config', path: join(home, '.docker/config.json'), parse: parseDockerConfig },
     { kind: 'npmrc', path: join(home, '.npmrc'), parse: parseNpmrc },
@@ -74,11 +83,33 @@ function plan(home: string): FilePlan[] {
   ];
 }
 
-export async function readOsCredentials(opts: { home: string }): Promise<OsCredentialsReaderResult> {
+function gcloudAdcPlans(home: string, env: NodeJS.ProcessEnv): FilePlan[] {
+  const dirs: string[] = [];
+  const override = env.CLOUDSDK_CONFIG;
+  if (typeof override === 'string' && override.length > 0) dirs.push(override);
+  dirs.push(join(home, '.config/gcloud'));
+  dirs.push(join(home, '.gcloud'));
+  return dirs.map((dir) => ({
+    kind: 'gcloud-adc' as const,
+    path: join(dir, 'application_default_credentials.json'),
+    parse: parseGcloudAdc,
+  }));
+}
+
+export async function readOsCredentials(opts: {
+  home: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<OsCredentialsReaderResult> {
   const findings: OsCredentialFinding[] = [];
   const scannedPaths: string[] = [];
-  for (const file of plan(opts.home)) {
+  const seenKinds = new Set<OsCredentialKind>();
+  for (const file of plan(opts.home, opts.env ?? process.env)) {
     scannedPaths.push(file.path);
+    // Some kinds (gcloud-adc) have multiple candidate paths probed in
+    // priority order. If we already emitted a finding for this kind from
+    // an earlier candidate, skip, but still leave the path in
+    // `scannedPaths` so the operator sees what we considered.
+    if (seenKinds.has(file.kind)) continue;
     let content: string;
     try {
       content = await readFile(file.path, 'utf8');
@@ -114,6 +145,7 @@ export async function readOsCredentials(opts: { home: string }): Promise<OsCrede
       }
     }
     findings.push({ kind: file.kind, path: file.path, tokens: dedupe(scrubbedTokens) });
+    seenKinds.add(file.kind);
   }
   return { findings, scannedPaths };
 }
