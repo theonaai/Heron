@@ -45,7 +45,10 @@ export interface SamplingInterviewResult {
 export async function runSamplingInterview(
   options: SamplingInterviewOptions,
 ): Promise<SamplingInterviewResult> {
-  const { sessionId, connector, llmClient, maxFollowUps = 3, signal, progress } = options;
+  // AAP-71: production runs pass `maxFollowUps` through as-is (undefined
+  // means "no global cap"; the per-question cap of 2 is the production
+  // limit). Tests can still pass `0` to disable LLM follow-ups entirely.
+  const { sessionId, connector, llmClient, maxFollowUps, signal, progress } = options;
 
   const protocol = createProtocol(llmClient, maxFollowUps);
   const total = protocol.totalCoreQuestions;

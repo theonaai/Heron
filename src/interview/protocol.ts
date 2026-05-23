@@ -233,11 +233,27 @@ function findMissingFields(transcript: QAPair[]): string[] {
 
 // ─── Protocol factory ────────────────────────────────────────────────────────
 
-export function createProtocol(llmClient: LLMClient, maxFollowUps = 6): InterviewProtocol {
+/**
+ * Build an InterviewProtocol.
+ *
+ * AAP-71: `maxFollowUps` is now an OPTIONAL hard ceiling. Default
+ * (undefined) disables the global cap entirely; the per-question cap of 2
+ * is the only production limit. Tests use `maxFollowUps: 0` to disable
+ * LLM-driven follow-ups deterministically. Any positive integer acts as
+ * a session-wide ceiling on regular follow-ups (adversarial probes are
+ * tracked separately and never consume this budget).
+ */
+export function createProtocol(llmClient: LLMClient, maxFollowUps?: number): InterviewProtocol {
   const coreQuestions = getAllQuestionsSorted();
   let currentIndex = 0;
   const transcript: QAPair[] = [];
-  let globalFollowUpCount = 0;
+  // AAP-71: `followUpIdCounter` is a monotonic counter used ONLY to
+  // mint unique follow-up question IDs. It is no longer gated on
+  // `maxFollowUps`; the production limit is the per-question cap of 2.
+  // Adversarial probes have their own counter (`adversarialProbeCount`)
+  // and do not increment this one, so they don't consume the optional
+  // `maxFollowUps` ceiling either.
+  let followUpIdCounter = 0;
   const followUpCountPerQuestion = new Map<string, number>();
   // AAP-43 P3 #10/#11: limit adversarial probes per session so the
   // conversation doesn't devolve into interrogation.
@@ -300,10 +316,11 @@ export function createProtocol(llmClient: LLMClient, maxFollowUps = 6): Intervie
     },
 
     async generateFollowUp(category: QAPair['category']): Promise<InterviewQuestion | null> {
-      // Global cap
-      if (globalFollowUpCount >= maxFollowUps) return null;
-
-      // Per-question cap (2 follow-ups per core question)
+      // Per-question cap (2 follow-ups per core question). This is the
+      // primary production limit on follow-ups. Adversarial probes also
+      // count against this cap (per AAP-71 design) so a single core
+      // question can never receive more than 2 follow-ups regardless of
+      // type.
       const lastCoreQ = coreQuestions.find(q =>
         q.category === category && transcript.some(t => t.question === q.text)
       );
@@ -340,6 +357,19 @@ export function createProtocol(llmClient: LLMClient, maxFollowUps = 6): Intervie
       // or a new adversarial claim was detected
       if (!vague && missingFields.length === 0 && !isNewClaim) return null;
 
+      // AAP-71: optional hard ceiling on regular (non-adversarial)
+      // follow-ups. `undefined` = no cap (production default). Tests use
+      // `0` to disable LLM-driven follow-up generation entirely.
+      // Adversarial probes are NOT gated on this ceiling: they have
+      // their own `MAX_ADVERSARIAL_PROBES = 2` limit (checked above).
+      if (
+        !isNewClaim &&
+        typeof maxFollowUps === 'number' &&
+        followUpIdCounter >= maxFollowUps
+      ) {
+        return null;
+      }
+
       try {
         const prompt =
           isNewClaim && adversarialClaim
@@ -350,21 +380,29 @@ export function createProtocol(llmClient: LLMClient, maxFollowUps = 6): Intervie
 
         if (!followUpText.trim()) return null;
 
-        globalFollowUpCount++;
+        // Bump per-question cap counter for every follow-up (regular and
+        // adversarial). Bump the global ID counter only for regular
+        // follow-ups. Adversarial probes use their own counter for IDs
+        // and must not consume the optional `maxFollowUps` ceiling.
         if (lastCoreQ) {
           followUpCountPerQuestion.set(lastCoreQ.id, (followUpCountPerQuestion.get(lastCoreQ.id) ?? 0) + 1);
         }
+        let idSuffix: number;
         if (isNewClaim && adversarialClaim) {
           adversarialProbeCount++;
           probedClaimKinds.add(adversarialClaim.kind);
+          idSuffix = adversarialProbeCount;
+        } else {
+          followUpIdCounter++;
+          idSuffix = followUpIdCounter;
         }
 
         const idPrefix = isNewClaim && adversarialClaim ? `probe_${adversarialClaim.kind}` : `followup_${category}`;
         const followUp: InterviewQuestion = {
-          id: `${idPrefix}_${globalFollowUpCount}`,
+          id: `${idPrefix}_${idSuffix}`,
           category,
           text: followUpText.trim(),
-          priority: 100 + globalFollowUpCount,
+          priority: 100 + followUpIdCounter + adversarialProbeCount,
         };
         return followUp;
       } catch {
@@ -382,11 +420,14 @@ export function createProtocol(llmClient: LLMClient, maxFollowUps = 6): Intervie
 
     primeFollowUpCounts(state: { global: number; perQuestion: Map<string, number> }): void {
       // Clamp negative inputs to zero and trust the caller's count
-      // otherwise. The protocol's cap checks (`globalFollowUpCount >=
-      // maxFollowUps`, `count >= 2`) use `>=`, so honest counts work
-      // directly and over-counts are still safe (just slightly more
-      // conservative).
-      globalFollowUpCount = Math.max(0, state.global | 0);
+      // otherwise. The per-question cap check (`count >= 2`) uses `>=`,
+      // so honest counts work directly and over-counts are still safe
+      // (just slightly more conservative). The `global` field now seeds
+      // the `followUpIdCounter` so re-minted follow-up IDs after
+      // rehydration stay unique relative to anything the prior protocol
+      // instance produced. AAP-71: the global cap was removed, so
+      // `state.global` no longer participates in any gating check.
+      followUpIdCounter = Math.max(0, state.global | 0);
       for (const [qid, count] of state.perQuestion) {
         followUpCountPerQuestion.set(qid, Math.max(0, count | 0));
       }

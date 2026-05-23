@@ -83,7 +83,7 @@ program
   .option('--llm-model <model>', 'LLM model (auto-selected per provider)')
   .option('--llm-key <key>', 'LLM API key (or set HERON_LLM_API_KEY)')
   .option('--llm-base-url <url>', 'LLM base URL — for LiteLLM / OpenRouter / vLLM / Azure-OpenAI gateways (or set HERON_LLM_BASE_URL)')
-  .option('--max-followups <n>', 'Max follow-up questions per category', '3')
+  .option('--max-followups <n>', 'Optional hard ceiling on LLM-driven follow-ups across the interview (AAP-71). Default: no cap; per-question cap of 2 is the only production limit.')
   .option('--report-dir <dir>', 'Directory to save reports', './reports')
   .option('--scans-dir <dir>', 'Directory for verification scan records (AAP-52)', './.heron/scans')
   .option('--approvals-dir <dir>', 'Directory for approval chains (AAP-52 browser view)')
@@ -107,7 +107,11 @@ program
           model: opts.llmModel,
           baseURL: opts.llmBaseUrl,
         },
-        maxFollowUps: parseInt(opts.maxFollowups ?? '3', 10),
+        // AAP-71: pass through only if the user explicitly set the flag.
+        // Undefined means "no global cap" (production default).
+        ...(typeof opts.maxFollowups === 'string'
+          ? { maxFollowUps: parseInt(opts.maxFollowups, 10) }
+          : {}),
         reportDir: opts.reportDir,
         scansDir: opts.scansDir,
         ...(typeof opts.approvalsDir === 'string' ? { approvalsDir: opts.approvalsDir } : {}),
