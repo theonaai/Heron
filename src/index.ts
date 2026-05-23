@@ -18,7 +18,9 @@ export interface RunOptions {
  * connect → interview → analyze → report
  */
 export async function run(config: HeronConfig, options: RunOptions = {}): Promise<string> {
-  const { verbose = false, maxFollowUps = 3, reportDir = './reports' } = options;
+  // AAP-71: `maxFollowUps` undefined means no global cap; the
+  // per-question cap of 2 inside the protocol is the production limit.
+  const { verbose = false, maxFollowUps, reportDir = './reports' } = options;
 
   // 1. Create LLM client for analysis
   const llmClient = await createLLMClient(config.llm);

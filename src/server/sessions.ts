@@ -54,12 +54,15 @@ export interface Session {
 export class SessionManager {
   private sessions = new Map<string, Session>();
   private llmClient: LLMClient;
-  private maxFollowUps: number;
+  // AAP-71: `undefined` means no global cap; the per-question cap of 2
+  // inside the protocol is the only production limit. Tests pass `0` to
+  // disable LLM-driven follow-ups.
+  private maxFollowUps: number | undefined;
   private reportDir: string | undefined;
 
   constructor(llmClient: LLMClient, options: { maxFollowUps?: number; reportDir?: string } = {}) {
     this.llmClient = llmClient;
-    this.maxFollowUps = options.maxFollowUps ?? 6;
+    this.maxFollowUps = options.maxFollowUps;
     this.reportDir = options.reportDir;
   }
 

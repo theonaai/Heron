@@ -50,9 +50,11 @@ export interface QuestionPlanner {
 export interface QuestionPlannerOptions {
   llmClient: LLMClient;
   /**
-   * Max LLM-driven follow-ups across the whole interview. Matches the
-   * `maxFollowUps` knob in `createProtocol`. Default 3 (production).
-   * Tests use 0 to keep the LLM out of the path.
+   * Optional hard ceiling on LLM-driven follow-ups across the whole
+   * interview. Matches the `maxFollowUps` knob in `createProtocol`.
+   * AAP-71: `undefined` is the production default (no global cap; the
+   * per-question cap of 2 is the only production limit). Tests can pass
+   * `0` to disable LLM-driven follow-ups entirely.
    */
   maxFollowUps?: number;
 }
@@ -76,7 +78,9 @@ export interface QuestionPlannerOptions {
 export function createQuestionPlanner(
   options: QuestionPlannerOptions,
 ): QuestionPlanner {
-  const { llmClient, maxFollowUps = 3 } = options;
+  // AAP-71: pass `maxFollowUps` through as-is; the protocol treats
+  // `undefined` as "no global cap" (production default).
+  const { llmClient, maxFollowUps } = options;
   const orderedCore = getAllQuestionsSorted();
 
   function firstCore(): InterviewQuestion {

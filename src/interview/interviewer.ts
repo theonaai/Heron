@@ -27,7 +27,10 @@ export async function runInterview(
   llmClient: LLMClient,
   options: InterviewOptions = {},
 ): Promise<InterviewSession> {
-  const { maxFollowUps = 3 } = options;
+  // AAP-71: production runs pass `maxFollowUps` through as-is (undefined
+  // means "no global cap"; the per-question cap of 2 is the production
+  // limit). Tests can still pass `0` to disable LLM follow-ups entirely.
+  const { maxFollowUps } = options;
   const protocol = createProtocol(llmClient, maxFollowUps);
   const startedAt = new Date();
   const total = protocol.totalCoreQuestions;

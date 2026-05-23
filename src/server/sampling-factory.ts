@@ -29,7 +29,11 @@ import type {
 export interface SamplingFactoryOptions {
   /** Pre-built LLM client. If omitted, the factory builds one from env + ~/.heron/credentials.json. */
   llmClient?: LLMClient;
-  /** Forwarded to the protocol — max follow-ups per category. Defaults to 3. */
+  /**
+   * Optional hard ceiling on LLM-driven follow-ups across the interview.
+   * AAP-71: `undefined` (default) means no global cap; the per-question
+   * cap of 2 is the only production limit. Tests pass `0` to disable.
+   */
   maxFollowUps?: number;
 }
 
@@ -57,7 +61,10 @@ export async function buildSamplingDeps(
   // checker without lying about the runtime behaviour.
   const llmClient =
     options.llmClient ?? (await createLLMClient({} as Parameters<typeof createLLMClient>[0]));
-  const maxFollowUps = options.maxFollowUps ?? 3;
+  // AAP-71: pass `maxFollowUps` through as-is. Default `undefined` means
+  // no global cap; the per-question cap of 2 (enforced inside the
+  // protocol) is the only production limit.
+  const maxFollowUps = options.maxFollowUps;
 
   const runSamplingInterview: SamplingInterviewRunner = async ({ sessionId, sampler, signal, progress }) => {
     const connector = new SamplingConnector({ server: sampler });

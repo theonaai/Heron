@@ -34,7 +34,12 @@ export interface ServerConfig {
   port: number;
   host: string;
   llm: LLMConfig;
-  maxFollowUps: number;
+  /**
+   * AAP-71: optional hard ceiling on LLM-driven follow-ups across the
+   * interview. `undefined` (default) means no global cap; the
+   * per-question cap of 2 is the only production limit.
+   */
+  maxFollowUps?: number;
   reportDir: string;
   /**
    * Directory for verification scan records (AAP-52). Defaults to
