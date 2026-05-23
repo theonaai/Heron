@@ -36,9 +36,12 @@ async function seed(rel: string, contents: string): Promise<void> {
 
 describe('readOsCredentials — L4 (AAP-67)', () => {
   it('returns empty findings (only scannedPaths) when no files exist', async () => {
-    const out = await readOsCredentials({ home });
+    const out = await readOsCredentials({ home, env: {} });
     expect(out.findings).toEqual([]);
-    expect(out.scannedPaths.length).toBe(10);
+    // 9 non-gcloud kinds + 2 gcloud-adc candidates (standard `.config/gcloud/`
+    // and legacy `.gcloud/`). CLOUDSDK_CONFIG is not set in this fixture, so
+    // no third gcloud candidate is added. See AAP-73.
+    expect(out.scannedPaths.length).toBe(11);
     expect(out.scannedPaths.every((p) => p.startsWith(home))).toBe(true);
   });
 
@@ -78,9 +81,9 @@ region = eu-west-1
     expect(cfg.tokens.sort()).toEqual(['default', 'staging']);
   });
 
-  it('parses ~/.gcloud/application_default_credentials.json — project + type only, no private_key', async () => {
+  it('parses standard ~/.config/gcloud/application_default_credentials.json (AAP-73)', async () => {
     await seed(
-      '.gcloud/application_default_credentials.json',
+      '.config/gcloud/application_default_credentials.json',
       JSON.stringify({
         type: 'service_account',
         project_id: 'heron-test-project',
@@ -91,8 +94,10 @@ region = eu-west-1
         private_key_id: 'fakekeyid12345',
       }),
     );
-    const out = await readOsCredentials({ home });
+    const out = await readOsCredentials({ home, env: {} });
     const gcp = out.findings.find((f) => f.kind === 'gcloud-adc')!;
+    expect(gcp).toBeTruthy();
+    expect(gcp.path).toBe(join(home, '.config/gcloud/application_default_credentials.json'));
     expect(gcp.tokens).toContain('type:service_account');
     expect(gcp.tokens).toContain('project_id:heron-test-project');
     expect(gcp.tokens).toContain('quota_project_id:heron-billing');
@@ -102,6 +107,93 @@ region = eu-west-1
     expect(serialised).not.toContain('BEGIN PRIVATE KEY');
     expect(serialised).not.toContain('fakekeyid12345');
     expect(serialised).not.toContain('heron-sa@'); // local-part of email
+  });
+
+  it('falls back to legacy ~/.gcloud/application_default_credentials.json when standard absent (AAP-73)', async () => {
+    await seed(
+      '.gcloud/application_default_credentials.json',
+      JSON.stringify({
+        type: 'authorized_user',
+        quota_project_id: 'heron-legacy-project',
+      }),
+    );
+    const out = await readOsCredentials({ home, env: {} });
+    const gcp = out.findings.find((f) => f.kind === 'gcloud-adc')!;
+    expect(gcp).toBeTruthy();
+    expect(gcp.path).toBe(join(home, '.gcloud/application_default_credentials.json'));
+    expect(gcp.tokens).toContain('type:authorized_user');
+    expect(gcp.tokens).toContain('quota_project_id:heron-legacy-project');
+    // scannedPaths records BOTH candidates so the operator can see which
+    // locations Heron considered, even though only one produced a finding.
+    expect(out.scannedPaths).toContain(
+      join(home, '.config/gcloud/application_default_credentials.json'),
+    );
+    expect(out.scannedPaths).toContain(
+      join(home, '.gcloud/application_default_credentials.json'),
+    );
+  });
+
+  it('prefers standard ~/.config/gcloud/ when BOTH standard and legacy exist (AAP-73)', async () => {
+    await seed(
+      '.config/gcloud/application_default_credentials.json',
+      JSON.stringify({ type: 'service_account', project_id: 'heron-standard-wins' }),
+    );
+    await seed(
+      '.gcloud/application_default_credentials.json',
+      JSON.stringify({ type: 'service_account', project_id: 'heron-legacy-loses' }),
+    );
+    const out = await readOsCredentials({ home, env: {} });
+    const gcp = out.findings.filter((f) => f.kind === 'gcloud-adc');
+    // Exactly ONE finding, and it points at the standard path.
+    expect(gcp).toHaveLength(1);
+    expect(gcp[0]!.path).toBe(join(home, '.config/gcloud/application_default_credentials.json'));
+    expect(gcp[0]!.tokens).toContain('project_id:heron-standard-wins');
+    // The legacy project id never appears in the serialised output.
+    expect(JSON.stringify(out)).not.toContain('heron-legacy-loses');
+  });
+
+  it('honors CLOUDSDK_CONFIG env override above standard and legacy paths (AAP-73)', async () => {
+    // Custom dir the operator chose for gcloud config. Seed an ADC file
+    // there and a different one at the standard location to prove the
+    // override wins.
+    await seed('custom-gcloud-dir/application_default_credentials.json', JSON.stringify({
+      type: 'service_account',
+      project_id: 'heron-override-project',
+    }));
+    await seed(
+      '.config/gcloud/application_default_credentials.json',
+      JSON.stringify({ type: 'service_account', project_id: 'heron-standard-loses' }),
+    );
+    const out = await readOsCredentials({
+      home,
+      env: { CLOUDSDK_CONFIG: join(home, 'custom-gcloud-dir') },
+    });
+    const gcp = out.findings.filter((f) => f.kind === 'gcloud-adc');
+    expect(gcp).toHaveLength(1);
+    expect(gcp[0]!.path).toBe(
+      join(home, 'custom-gcloud-dir/application_default_credentials.json'),
+    );
+    expect(gcp[0]!.tokens).toContain('project_id:heron-override-project');
+    // Standard path was scanned (operator visibility) but did NOT produce
+    // a finding because the override hit first.
+    expect(out.scannedPaths).toContain(
+      join(home, 'custom-gcloud-dir/application_default_credentials.json'),
+    );
+    expect(out.scannedPaths).toContain(
+      join(home, '.config/gcloud/application_default_credentials.json'),
+    );
+    expect(JSON.stringify(out)).not.toContain('heron-standard-loses');
+  });
+
+  it('ignores empty CLOUDSDK_CONFIG and falls through to standard path (AAP-73)', async () => {
+    await seed(
+      '.config/gcloud/application_default_credentials.json',
+      JSON.stringify({ type: 'service_account', project_id: 'heron-empty-env-fallthrough' }),
+    );
+    const out = await readOsCredentials({ home, env: { CLOUDSDK_CONFIG: '' } });
+    const gcp = out.findings.find((f) => f.kind === 'gcloud-adc')!;
+    expect(gcp.path).toBe(join(home, '.config/gcloud/application_default_credentials.json'));
+    expect(gcp.tokens).toContain('project_id:heron-empty-env-fallthrough');
   });
 
   it('parses ~/.kube/config cluster + context + user names', async () => {
@@ -301,12 +393,13 @@ Host prod-bastion
 
   it('handles malformed JSON/YAML gracefully (returns finding with empty tokens)', async () => {
     await seed('.docker/config.json', '{ not valid json');
-    await seed('.gcloud/application_default_credentials.json', 'not json at all }');
-    const out = await readOsCredentials({ home });
+    await seed('.config/gcloud/application_default_credentials.json', 'not json at all }');
+    const out = await readOsCredentials({ home, env: {} });
     const d = out.findings.find((f) => f.kind === 'docker-config')!;
     expect(d.tokens).toEqual([]);
     const g = out.findings.find((f) => f.kind === 'gcloud-adc')!;
     expect(g.tokens).toEqual([]);
+    expect(g.path).toBe(join(home, '.config/gcloud/application_default_credentials.json'));
   });
 
   it('deep-grep: NO known fixture secret pattern ever survives in the serialized output', async () => {
