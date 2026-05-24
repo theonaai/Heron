@@ -27,6 +27,8 @@ import type {
   LocalAgentDiscoverySection as LocalDiscoveryData,
   LocalDiscoveryFinding,
   LocalDiscoveredCapability,
+  LocalDiscoveredMcpTool,
+  LocalMcpToolEnumeration,
   LocalOsCredentialFinding,
   LocalWorkspaceEnvFile,
   LocalKeychainServiceFinding,
@@ -447,6 +449,9 @@ export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscovery
         </table>
       </div>
 
+      {/* AAP-75 — MCP tool enumeration (read/write split) */}
+      <McpToolEnumerationTable discovery={discovery} />
+
       {/* AAP-58 — Plugins / skills table */}
       <PluginsSkillsTable discovery={discovery} />
 
@@ -511,6 +516,163 @@ export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscovery
         </div>
       )}
     </div>
+  );
+}
+
+/* ── AAP-75 — MCP tool enumeration sub-table ────────────────────────────
+   Renders one row per (server, tool) pair when at least one server has
+   a `toolEnumeration.state === 'ok'` result. Servers whose enumeration
+   failed or was skipped surface as a single status row with the reason,
+   so the operator can see "we tried and X happened" rather than the
+   enumeration silently being absent.
+
+   Read/write classification renders as a colored chip; `unknown` reads
+   muted on purpose — the operator should resolve those manually before
+   the verdict can claim full confidence. */
+function classificationChipClass(c: LocalDiscoveredMcpTool['classification']): string {
+  if (c === 'write') return 'sev sev-high';
+  if (c === 'read') return 'sev sev-info';
+  return 'sev sev-low';
+}
+
+function McpToolEnumerationTable({ discovery }: { discovery: LocalDiscoveryData }) {
+  // Find servers that have an enumeration result attached.
+  type Row =
+    | {
+        kind: 'tool';
+        runtime: string;
+        serverName: string;
+        tool: LocalDiscoveredMcpTool;
+        attemptedAt: string;
+      }
+    | {
+        kind: 'status';
+        runtime: string;
+        serverName: string;
+        state: 'failed' | 'skipped';
+        reason?: string;
+        attemptedAt: string;
+      };
+  const rows: Row[] = [];
+  let writeCount = 0;
+  let readCount = 0;
+  let unknownCount = 0;
+  let anyAttempted = false;
+
+  for (const agent of discovery.agents) {
+    for (const server of agent.mcpServers) {
+      const enumeration: LocalMcpToolEnumeration | undefined = server.toolEnumeration;
+      if (!enumeration) continue;
+      anyAttempted = true;
+      if (enumeration.state === 'ok' && enumeration.tools && enumeration.tools.length > 0) {
+        for (const tool of enumeration.tools) {
+          rows.push({
+            kind: 'tool',
+            runtime: agent.runtime,
+            serverName: server.name,
+            tool,
+            attemptedAt: enumeration.attemptedAt,
+          });
+          if (tool.classification === 'write') writeCount += 1;
+          else if (tool.classification === 'read') readCount += 1;
+          else unknownCount += 1;
+        }
+      } else if (enumeration.state === 'ok') {
+        rows.push({
+          kind: 'status',
+          runtime: agent.runtime,
+          serverName: server.name,
+          state: 'skipped',
+          reason: 'server advertised 0 tools',
+          attemptedAt: enumeration.attemptedAt,
+        });
+      } else {
+        rows.push({
+          kind: 'status',
+          runtime: agent.runtime,
+          serverName: server.name,
+          state: enumeration.state,
+          ...(enumeration.reason ? { reason: enumeration.reason } : {}),
+          attemptedAt: enumeration.attemptedAt,
+        });
+      }
+    }
+  }
+
+  if (!anyAttempted) return null;
+
+  return (
+    <>
+      <div className="tier-label">
+        <span>MCP tool inventory — read / write split</span>
+        <span className="tier-count">
+          {writeCount + readCount + unknownCount} ·{' '}
+          <span style={{ color: 'var(--r-ink-3)' }}>
+            {writeCount}w / {readCount}r / {unknownCount}?
+          </span>
+        </span>
+      </div>
+      <div className="tbl-wrap" style={{ marginBottom: 18 }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 110 }}>Runtime</th>
+              <th style={{ width: 140 }}>Server</th>
+              <th style={{ width: 200 }}>Tool</th>
+              <th style={{ width: 80 }}>Class</th>
+              <th>Description / status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, idx) => {
+              if (row.kind === 'tool') {
+                return (
+                  <tr key={`tool-${row.serverName}-${row.tool.name}-${idx}`}>
+                    <td className="mono" style={{ fontSize: 11.5 }}>
+                      {row.runtime}
+                    </td>
+                    <td style={{ fontWeight: 500, fontSize: 12.5 }}>{row.serverName}</td>
+                    <td className="mono" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                      {row.tool.name}
+                    </td>
+                    <td>
+                      <span className={classificationChipClass(row.tool.classification)}>
+                        {row.tool.classification}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--r-ink-2)' }}>
+                      {row.tool.description ?? <span className="muted">—</span>}
+                    </td>
+                  </tr>
+                );
+              }
+              return (
+                <tr key={`status-${row.serverName}-${idx}`}>
+                  <td className="mono" style={{ fontSize: 11.5 }}>
+                    {row.runtime}
+                  </td>
+                  <td style={{ fontWeight: 500, fontSize: 12.5 }}>{row.serverName}</td>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--r-ink-3)' }}>
+                    —
+                  </td>
+                  <td>
+                    <span className={`sev ${row.state === 'failed' ? 'sev-high' : 'sev-low'}`}>
+                      {row.state}
+                    </span>
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ fontSize: 11.5, color: 'var(--r-ink-3)', wordBreak: 'break-all' }}
+                  >
+                    {row.reason ?? <span className="muted">no reason given</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

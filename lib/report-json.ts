@@ -192,6 +192,33 @@ export interface LocalDiscoveredMcpServer {
   toolsDenied?: string[];
   hasCredentials: boolean;
   redactedEnvKeys: string[];
+  /** AAP-75 — MCP `tools/list` enumeration outcome. */
+  toolEnumeration?: LocalMcpToolEnumeration;
+}
+
+// ── AAP-75 — MCP tools/list enumeration shapes ──────────────────────────
+//
+// Mirrors of `McpToolEnumeration` / `DiscoveredMcpTool` from
+// `src/discovery/types.ts`. Defined here so the dashboard / ReportView
+// don't have to import node-only types into the bundler graph.
+
+export type LocalMcpToolEnumerationState = 'ok' | 'failed' | 'skipped';
+
+export type LocalMcpToolClassification = 'read' | 'write' | 'unknown';
+
+export interface LocalDiscoveredMcpTool {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  classification: LocalMcpToolClassification;
+}
+
+export interface LocalMcpToolEnumeration {
+  state: LocalMcpToolEnumerationState;
+  tools?: LocalDiscoveredMcpTool[];
+  reason?: string;
+  attemptedAt: string;
 }
 
 export type LocalDiscoveryRuntime =
@@ -206,7 +233,7 @@ export type LocalDiscoveryRuntime =
 export type LocalDiscoveryAuthShape = 'token' | 'apiKey' | 'oauth' | 'unknown';
 
 export type LocalDiscoveredCapability =
-  | ({ kind: 'mcp_server' } & LocalDiscoveredMcpServer)
+  | ({ kind: 'mcp_server' } & LocalDiscoveredMcpServer /* includes toolEnumeration */)
   | {
       kind: 'plugin';
       runtime: LocalDiscoveryRuntime;
