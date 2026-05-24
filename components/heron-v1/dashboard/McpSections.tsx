@@ -30,6 +30,11 @@ import type {
   LocalOsCredentialFinding,
   LocalWorkspaceEnvFile,
   LocalKeychainServiceFinding,
+  OAuthScopeConnector,
+  OAuthScopeDiffEntry,
+  OAuthScopeVerificationSection as OAuthScopeVerificationData,
+  OAuthScopeVerificationSourceResult,
+  OAuthScopeVerificationVerdict,
 } from '@/lib/report-json';
 
 function severityToCssClass(s: McpFindingSeverity): string {
@@ -831,5 +836,239 @@ function DiscoveryWarnings({ discovery }: { discovery: LocalDiscoveryData }) {
         ))}
       </ul>
     </>
+  );
+}
+
+/* ── L6 OAuth scope verification (AAP-74) ─────────────────────────────
+   Renders the result of `POST /api/discovery/scan { oauthSources: [...] }`.
+   One sub-card per requested source, each carrying:
+     - verdict pill (Verified / Discrepancy / Unverified)
+     - connector label (Google Workspace, BambooHR, Greenhouse)
+     - actual scope list returned by the introspection endpoint
+     - diff entries (Extra / Missing) with severity pills
+     - warnings + error reason when partial / unverified
+
+   Verdict semantics mirror the CLI orchestrator:
+     - Verified    — read succeeded, zero diffs vs declared baseline.
+     - Discrepancy — read succeeded, at least one extra / missing scope.
+     - Unverified  — read failed (auth, transport, parse). The error
+                     message is rendered as a separate "Reason" row.
+
+   Per the AAP-74 ticket, this is the section that closes the
+   "deterministic verdict on the dashboard" gap for HR-vertical demos:
+   Theona-hosted agents have no L1-L5 evidence, so the L6 introspection
+   result is the only Surface 2 signal the dashboard can render. */
+const CONNECTOR_LABELS: Record<OAuthScopeConnector, string> = {
+  'google-workspace': 'Google Workspace',
+  bamboohr: 'BambooHR',
+  greenhouse: 'Greenhouse',
+};
+
+function oauthVerdictPillClass(v: OAuthScopeVerificationVerdict): string {
+  if (v === 'verified') return 'sev-low';
+  if (v === 'unverified') return 'sev-medium';
+  // 'discrepancy' — at least one extra/missing scope. Severity of the
+  // individual diff drives the per-row pill; the source-level pill
+  // stays neutral-warn rather than escalating off-screen.
+  return 'sev-medium';
+}
+
+function diffSeverityClass(s: OAuthScopeDiffEntry['severity']): string {
+  switch (s) {
+    case 'critical':
+      return 'sev-critical';
+    case 'high':
+      return 'sev-high';
+    case 'medium':
+      return 'sev-medium';
+    case 'low':
+      return 'sev-low';
+    case 'info':
+    default:
+      return 'sev-info';
+  }
+}
+
+function OAuthScopeSourceCard({ source }: { source: OAuthScopeVerificationSourceResult }) {
+  const label = CONNECTOR_LABELS[source.connector] ?? source.connector;
+  const verdictClass = oauthVerdictPillClass(source.verdict);
+  const extras = source.diffs.filter((d) => d.kind === 'extra');
+  const missing = source.diffs.filter((d) => d.kind === 'missing');
+  return (
+    <div className="panel panel-pad" style={{ marginBottom: 14 }}>
+      <div className="row-tight" style={{ marginBottom: 8 }}>
+        <span className={`sev ${verdictClass}`} style={{ marginRight: 8 }}>
+          {source.verdict}
+        </span>
+        <span style={{ fontWeight: 600, color: 'var(--r-ink)' }}>{label}</span>
+        <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+          {source.actualScopes.length} {source.actualScopes.length === 1 ? 'scope' : 'scopes'}
+          {source.diffs.length > 0 && (
+            <>
+              {' · '}
+              {source.diffs.length} {source.diffs.length === 1 ? 'diff' : 'diffs'}
+            </>
+          )}
+        </span>
+      </div>
+      {source.errorMessage && (
+        <p
+          style={{
+            margin: '0 0 10px',
+            fontSize: 12.5,
+            color: 'var(--r-ink-2)',
+            lineHeight: 1.55,
+          }}
+        >
+          <span className="field-label">Reason</span>
+          {source.errorMessage}
+        </p>
+      )}
+      {source.warnings && source.warnings.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div className="field-label">Warnings</div>
+          <ul style={{ margin: '0 0 0 18px', padding: 0, fontSize: 12, color: 'var(--r-ink-2)' }}>
+            {source.warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {source.actualScopes.length > 0 && (
+        <div style={{ marginBottom: extras.length === 0 && missing.length === 0 ? 0 : 12 }}>
+          <div className="field-label">
+            Actual scopes ({source.actualScopes.length})
+          </div>
+          <div className="row-tight" style={{ gap: 6, flexWrap: 'wrap' }}>
+            {source.actualScopes.map((s, i) => (
+              <span
+                key={`${s.service}:${s.scope}:${i}`}
+                className="scope-chip"
+                title={s.service}
+              >
+                {s.scope}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {extras.length > 0 && (
+        <div style={{ marginBottom: missing.length === 0 ? 0 : 12 }}>
+          <div className="field-label">
+            Extra — granted but not declared ({extras.length})
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th style={{ width: 100 }}>Severity</th>
+                <th style={{ width: 160 }}>Service</th>
+                <th>Scope</th>
+              </tr>
+            </thead>
+            <tbody>
+              {extras.map((d, i) => (
+                <tr key={`extra-${i}`}>
+                  <td>
+                    <span className={`sev ${diffSeverityClass(d.severity)}`}>{d.severity}</span>
+                  </td>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--r-ink-2)' }}>
+                    {d.service}
+                  </td>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--r-ink)' }}>
+                    {d.scope}
+                    {d.details && (
+                      <span
+                        style={{
+                          display: 'block',
+                          marginTop: 4,
+                          fontFamily: 'inherit',
+                          color: 'var(--r-ink-3)',
+                          fontSize: 12,
+                        }}
+                      >
+                        {d.details}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {missing.length > 0 && (
+        <div>
+          <div className="field-label">
+            Missing — declared but not granted ({missing.length})
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th style={{ width: 100 }}>Severity</th>
+                <th style={{ width: 160 }}>Service</th>
+                <th>Scope</th>
+              </tr>
+            </thead>
+            <tbody>
+              {missing.map((d, i) => (
+                <tr key={`missing-${i}`}>
+                  <td>
+                    <span className={`sev ${diffSeverityClass(d.severity)}`}>{d.severity}</span>
+                  </td>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--r-ink-2)' }}>
+                    {d.service}
+                  </td>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--r-ink)' }}>
+                    {d.scope}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function OAuthScopeVerificationSection({
+  verification,
+}: {
+  verification: OAuthScopeVerificationData;
+}) {
+  return (
+    <div id="sec-oauth-scope-verification">
+      <div className="h-section">
+        <span className="num">L6</span>
+        <span className="label">OAuth scope verification</span>
+        <span className="meta">
+          {verification.sources.length}{' '}
+          {verification.sources.length === 1 ? 'source' : 'sources'} ·{' '}
+          <span className="mono">{verification.capturedAt}</span>
+        </span>
+      </div>
+      <p
+        style={{
+          margin: '0 0 14px',
+          fontSize: 12.5,
+          color: 'var(--r-ink-2)',
+          lineHeight: 1.55,
+        }}
+      >
+        Live introspection of OAuth tokens against each provider&apos;s scope
+        endpoint. Verified = read succeeded with no diff vs declared
+        baseline; Discrepancy = scope granted that was not declared, or
+        declared scope not granted; Unverified = the source read failed.
+      </p>
+      {verification.sources.length === 0 ? (
+        <p className="muted" style={{ fontStyle: 'italic', fontSize: 12.5 }}>
+          No OAuth sources submitted with this scan.
+        </p>
+      ) : (
+        verification.sources.map((s, i) => (
+          <OAuthScopeSourceCard key={`oauth-${s.connector}-${i}`} source={s} />
+        ))
+      )}
+    </div>
   );
 }

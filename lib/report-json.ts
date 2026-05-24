@@ -114,6 +114,65 @@ export interface OAuthScopesSection {
   reason?: string;
 }
 
+// ─── AAP-74 — L6 OAuth scope verification (dashboard wire-up) ────────────
+//
+// Result shape for an L6 OAuth introspection run invoked by the
+// dashboard scan route. Mirrors the structural details of
+// `SourceVerification` from `src/verification/types.ts` but keeps the
+// public surface narrow (no `_extra`, no raw `error.cause`) so the
+// dashboard can render without pulling node-only types into the bundler
+// graph.
+//
+// Three diff kinds, mapped from the verification differ:
+//  - `Verified`     — scope is in both declared and actual (no diff).
+//  - `Discrepancy`  — actual carries something declared did not, OR
+//                     a tool/scope was missing on the actual side.
+//  - `Unverified`   — source read failed (auth, transport, parse,
+//                     invalid config) so no claim either way.
+//
+// Per ticket AAP-74 part 1, step 6 — the report renderer surfaces this
+// with diff entries per source. Per part 2, "L6" is the canonical
+// name for the OAuth introspection layer (formerly "L7" in the
+// pre-AAP-74 architecture doc).
+
+export type OAuthScopeVerificationVerdict = 'verified' | 'discrepancy' | 'unverified';
+
+export type OAuthScopeConnector = 'google-workspace' | 'bamboohr' | 'greenhouse';
+
+export interface OAuthScopeDiffEntry {
+  /** 'extra' = granted but not declared; 'missing' = declared but not granted. */
+  kind: 'extra' | 'missing';
+  /** Service identifier the scope belongs to (e.g. `gmail`, `greenhouse`). */
+  service: string;
+  /** The scope string in the service's own vocabulary. */
+  scope: string;
+  /** Heron severity tier the differ assigned. */
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  /** Optional human-readable note (e.g. context for an EXTRA scope). */
+  details?: string;
+}
+
+export interface OAuthScopeVerificationSourceResult {
+  /** Connector that produced this result. */
+  connector: OAuthScopeConnector;
+  verdict: OAuthScopeVerificationVerdict;
+  /** Scopes the introspection endpoint actually returned. */
+  actualScopes: { service: string; scope: string }[];
+  /** Declared-vs-actual diff entries (empty when verdict === 'verified'). */
+  diffs: OAuthScopeDiffEntry[];
+  /** Set when verdict === 'unverified' (auth failure, transport error, etc.). */
+  errorMessage?: string;
+  /** Partial-read warnings from the connector (e.g. probe-level timeouts). */
+  warnings?: string[];
+}
+
+export interface OAuthScopeVerificationSection {
+  /** ISO-8601 timestamp of when the verification run completed. */
+  capturedAt: string;
+  /** One entry per requested oauthSource. */
+  sources: OAuthScopeVerificationSourceResult[];
+}
+
 // ─── Local-machine discovery (AAP-53) ──────────────────────────────────────
 
 /** Deterministic agent inventory from filesystem auto-discovery.
@@ -281,6 +340,12 @@ export interface ReportJson {
   // produced by reading filesystem configs with the user's consent.
   // Strictly additive — sessions without a scan render unchanged.
   localAgentDiscovery?: LocalAgentDiscoverySection;
+
+  // AAP-74 — L6 OAuth scope verification results (dashboard wire-up).
+  // Populated by `POST /api/discovery/scan` when the request body
+  // includes `oauthSources`. Strictly additive — sessions without
+  // OAuth introspection still render unchanged.
+  oauthScopeVerification?: OAuthScopeVerificationSection;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import type { DiscoveryFinding, DiscoveryResult } from '../discovery/types.js';
 import type { Risk } from '../report/types.js';
 import { updateSessionMeta, type RiskLevel as SessionRiskLevel } from '../storage/sessions.js';
 import type { TranscriptEntry } from '../storage/sessions.js';
+import type { SourceVerification } from './types.js';
 import { computeVerdict, type Verdict } from './verdict.js';
 
 /**
@@ -61,11 +62,20 @@ function transcriptToText(transcript: TranscriptEntry[]): string {
  * `reportJson.localAgentDiscovery` lookup and pass the fresh scan
  * result directly — avoiding a race between patchReportJson and
  * verdict computation.
+ *
+ * `oauthVerificationsOverride` (AAP-74) does the same for the L6 OAuth
+ * introspection results: the scan route runs `runVerification` after
+ * `runDiscovery`, so the freshest source-verification array is in
+ * memory before `patchReportJson` has fsync'd. Passing it as an
+ * override means the verdict reflects Surface 2 OAuth evidence on
+ * the SAME tick the scan completes, not on the next read of
+ * report.json.
  */
 export function computeVerdictFromArtifacts(args: {
   reportJson?: unknown;
   transcript?: TranscriptEntry[];
   discoveryOverride?: DiscoveryResult;
+  oauthVerificationsOverride?: SourceVerification[];
 }): Verdict {
   const interviewFindings = extractInterviewFindings(args.reportJson);
   let discoveryFindings: DiscoveryFinding[] | undefined;
@@ -81,6 +91,9 @@ export function computeVerdictFromArtifacts(args: {
   const inputs: Parameters<typeof computeVerdict>[0] = {};
   if (interviewFindings !== undefined) inputs.interviewFindings = interviewFindings;
   if (discoveryFindings !== undefined) inputs.discoveryFindings = discoveryFindings;
+  if (args.oauthVerificationsOverride !== undefined) {
+    inputs.oauthVerifications = args.oauthVerificationsOverride;
+  }
   if (interviewTranscriptText.length > 0) {
     inputs.interviewTranscriptText = interviewTranscriptText;
   }

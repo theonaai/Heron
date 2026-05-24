@@ -1,11 +1,17 @@
 'use client';
 
 /**
- * DiscoveryConsentDialog — AAP-53.
+ * DiscoveryConsentDialog — AAP-53 + AAP-74.
  *
  * Modal shown when the user clicks "Run deterministic verification?" in
  * SessionDetail. Lists every config file Heron may read, the projection
  * fields it keeps, and the secret values it explicitly never reads.
+ *
+ * AAP-74 — optional L6 OAuth source paste form. The operator can attach
+ * one or more OAuth credentials per service in scope; on submit, the
+ * tokens travel in-band on the same scan request and are forwarded to
+ * the L6 introspection orchestrator. Tokens are never persisted
+ * client-side or echoed back into the response.
  *
  * Three buttons:
  *   - Allow once               → POST consent + immediate scan
@@ -14,6 +20,8 @@
  */
 
 import { useEffect, useState } from 'react';
+
+import OAuthSourceForm, { type DashboardOAuthSource } from './OAuthSourceForm';
 
 export interface DiscoveryConsentDialogProps {
   sessionId: string;
@@ -32,6 +40,20 @@ export default function DiscoveryConsentDialog({
 }: DiscoveryConsentDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // AAP-74 — OAuth sources collected before submit. The form mutates
+  // this via onAdd / onRemove. Tokens never leave React component state
+  // — they ride the next scan POST and the array is cleared when the
+  // modal closes.
+  const [oauthSources, setOauthSources] = useState<DashboardOAuthSource[]>([]);
+
+  useEffect(() => {
+    if (!open) {
+      // Forget pasted tokens the moment the modal closes — they never
+      // outlive a session of the modal being open.
+      setOauthSources([]);
+      setError(null);
+    }
+  }, [open]);
 
   // ESC closes the dialog. Re-bound whenever `open` flips so the
   // listener is gone while the modal is hidden.
@@ -68,9 +90,20 @@ export default function DiscoveryConsentDialog({
       // Only forward workspaceRoot when it's an absolute path. When it's
       // empty (no hint surfaced yet), let the scan route fall through to
       // session.workspaceHints[0] / process.cwd() — see route.ts.
-      const scanBody: { sessionId: string; workspaceRoot?: string } = { sessionId };
+      const scanBody: {
+        sessionId: string;
+        workspaceRoot?: string;
+        oauthSources?: DashboardOAuthSource[];
+      } = { sessionId };
       if (workspaceRoot && workspaceRoot.startsWith('/')) {
         scanBody.workspaceRoot = workspaceRoot;
+      }
+      // AAP-74 — forward OAuth sources verbatim. The route's Zod schema
+      // re-validates each entry; we don't pre-shape here so a future
+      // connector that adds a new credential variant flows through
+      // without touching the dialog.
+      if (oauthSources.length > 0) {
+        scanBody.oauthSources = oauthSources;
       }
       const scanRes = await fetch('/api/discovery/scan', {
         method: 'POST',
@@ -173,6 +206,15 @@ export default function DiscoveryConsentDialog({
           configured.
         </p>
 
+        <OAuthSourceForm
+          sources={oauthSources}
+          onAdd={(s) => setOauthSources((prev) => [...prev, s])}
+          onRemove={(idx) =>
+            setOauthSources((prev) => prev.filter((_, i) => i !== idx))
+          }
+          disabled={busy}
+        />
+
         {error && (
           <div
             role="alert"
@@ -183,6 +225,7 @@ export default function DiscoveryConsentDialog({
               borderRadius: 4,
               marginBottom: 12,
               fontSize: 12.5,
+              marginTop: 12,
             }}
           >
             {error}
