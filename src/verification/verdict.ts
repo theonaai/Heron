@@ -26,7 +26,7 @@
  * we keep the matcher conservative so it doesn't flood the report.
  */
 
-import type { DiscoveryFinding } from '../discovery/types.js';
+import type { DiscoveredAgent, DiscoveryFinding } from '../discovery/types.js';
 import type { Risk } from '../report/types.js';
 import type { SourceVerification, DiffEntry, DiffSeverity } from './types.js';
 
@@ -54,6 +54,14 @@ export interface VerdictInputs {
   /** Optional raw transcript text (lowercased internally) used for
    *  best-effort discrepancy heuristics. */
   interviewTranscriptText?: string;
+  /**
+   * AAP-75 — discovered agents (post-enumeration). The verdict counts
+   * write-classified MCP tools across all servers and uses that count as
+   * a side-input to the deterministic risk ramp: 1+ write tool nudges
+   * an otherwise-clean discovery to `medium`, 5+ to `high`. Without
+   * enumeration this signal is absent and the legacy ramp applies.
+   */
+  discoveredAgents?: DiscoveredAgent[];
 }
 
 export interface Verdict {
@@ -86,6 +94,46 @@ function discoveryRiskLevel(findings: DiscoveryFinding[]): RiskLevel {
   if (highCount >= 1) return 'medium';
   if (mediumCount >= 3) return 'medium';
   return 'low';
+}
+
+/**
+ * AAP-75 — count `write`-classified tools across all enumerated MCP
+ * servers on all discovered agents. `unknown`-classified tools are NOT
+ * counted; they're surfaced in the report so an operator can manually
+ * resolve, but the verdict ramp stays conservative.
+ */
+function countWriteTools(agents: DiscoveredAgent[]): number {
+  let n = 0;
+  for (const agent of agents) {
+    for (const server of agent.mcpServers) {
+      const tools = server.toolEnumeration?.tools ?? [];
+      for (const t of tools) {
+        if (t.classification === 'write') n++;
+      }
+    }
+  }
+  return n;
+}
+
+/**
+ * AAP-75 — lift the deterministic discovery risk level based on the
+ * number of write-classified MCP tools the agent actually has access to.
+ *
+ * Heron ships strategy v3.0 §3 — "tell the operator exactly what writes
+ * are available". The verdict pill is the highest-leverage place to
+ * surface that count: 1+ writes pushes a baseline-clean discovery to
+ * `medium`, 5+ to `high`, regardless of LLM analysis. The thresholds
+ * are intentionally low because the SAME agent that claims "read-only"
+ * in the interview but ships 1 write tool is precisely the misclaim
+ * AAP-75 exists to expose.
+ *
+ * Note: we never DOWNGRADE — if the discovery findings already say
+ * `high`, the write-tool ramp doesn't drop it back to `medium`.
+ */
+function liftForWriteTools(baseline: RiskLevel, writeToolCount: number): RiskLevel {
+  if (writeToolCount === 0) return baseline;
+  if (writeToolCount >= 5) return maxRisk(baseline, 'high');
+  return maxRisk(baseline, 'medium');
 }
 
 /**
@@ -292,7 +340,12 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
       ? 'verified'
       : 'partial';
 
-  const fromDiscovery = hasDiscovery ? discoveryRiskLevel(discoveryFindings) : 'low';
+  // AAP-75 — lift baseline discovery risk based on write-tool count.
+  const fromDiscoveryBase = hasDiscovery ? discoveryRiskLevel(discoveryFindings) : 'low';
+  const writeToolCount = inputs.discoveredAgents
+    ? countWriteTools(inputs.discoveredAgents)
+    : 0;
+  const fromDiscovery: RiskLevel = liftForWriteTools(fromDiscoveryBase, writeToolCount);
   const fromOauth = hasOauth ? oauthRiskLevel(oauthVerifications) : 'low';
   const deterministicRiskLevel: RiskLevel = maxRisk(fromDiscovery, fromOauth);
 

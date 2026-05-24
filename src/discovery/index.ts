@@ -35,6 +35,10 @@ import { windsurfReader } from './readers/windsurf.js';
 import { readOsCredentials } from './readers/os-credentials.js';
 import { readWorkspaceEnv } from './readers/workspace-env.js';
 import { readKeychain, type KeychainSpawn } from './readers/keychain.js';
+import {
+  enumerateAllServers,
+  type EnumerateOptions,
+} from './mcp-tools-enumerator.js';
 import type {
   AgentReader,
   AuthReader,
@@ -88,6 +92,23 @@ export interface DiscoveryOptions {
    * keychain ACL config; the e2e tests opt in explicitly.
    */
   enableKeychain?: boolean;
+  /**
+   * AAP-75 — when true, after L1 discovery the aggregator opens an MCP
+   * connection to each declared server and calls `tools/list` (the
+   * standard MCP enumeration RPC, which is read-only). The classified
+   * inventory is attached to each `DiscoveredMcpServer.toolEnumeration`.
+   *
+   * Disabled by default because enumeration spawns subprocesses (stdio
+   * transport) and makes outbound HTTP calls (http transport), neither
+   * of which a unit-style `runDiscovery()` call expects. The dashboard
+   * scan route opts in; the CLI path leaves it off until AAP-76.
+   */
+  enableMcpToolEnumeration?: boolean;
+  /**
+   * AAP-75 — overrides for the enumerator. Tests inject a `clientFactory`
+   * (to bypass the real MCP transport) and a `now()` clock.
+   */
+  mcpToolEnumeration?: EnumerateOptions;
 }
 
 function defaultHomeDir(): string {
@@ -254,6 +275,44 @@ export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<Discove
       for (const w of result.warnings) warnings.push(w);
     } catch (e) {
       warnings.push(`keychain reader failed: ${(e as Error).message || String(e)}`);
+    }
+  }
+
+  // ── AAP-75 — MCP tools/list enumeration ────────────────────────────────
+  // Opt-in via `enableMcpToolEnumeration: true`. Mutates each agent's
+  // `mcpServers[]` in-place, attaching a `toolEnumeration` field to
+  // each DiscoveredMcpServer. Failures (timeout, auth, connect) are
+  // surfaced as per-server `state: 'failed' | 'skipped'`, never thrown —
+  // a hung MCP server cannot crash the scan.
+  //
+  // Capability-list sync: each `mcp_server` entry on `agent.capabilities`
+  // was constructed via spread above (a fresh object), so mutating
+  // `agent.mcpServers[]` does NOT propagate. After enumeration we
+  // re-sync the capability mirror so downstream readers see the same
+  // toolEnumeration through either view.
+  if (opts.enableMcpToolEnumeration) {
+    try {
+      await enumerateAllServers(agents, opts.mcpToolEnumeration ?? {});
+      for (const agent of agents) {
+        if (!agent.capabilities) continue;
+        for (let i = 0; i < agent.capabilities.length; i++) {
+          const cap = agent.capabilities[i];
+          if (cap.kind !== 'mcp_server') continue;
+          // Find the matching server on mcpServers[] (same name + transport)
+          // and re-spread so the toolEnumeration field carries across.
+          const match = agent.mcpServers.find(
+            (s) => s.name === cap.name && s.transport === cap.transport,
+          );
+          if (match) {
+            agent.capabilities[i] = { ...match, kind: 'mcp_server' };
+          }
+        }
+      }
+    } catch (e) {
+      // Safety net only — enumerateAllServers itself is non-throwing,
+      // but if a future refactor regresses we never want it to break
+      // discovery as a whole.
+      warnings.push(`mcp tool enumeration failed: ${(e as Error).message || String(e)}`);
     }
   }
 

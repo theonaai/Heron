@@ -88,6 +88,14 @@ export function computeVerdictFromArtifacts(args: {
     ? transcriptToText(args.transcript)
     : '';
 
+  // AAP-75 — surface enumerated MCP servers so the verdict can factor
+  // write-tool count into the deterministic ramp. Pull from the
+  // fresh-scan override when present (avoids a race with patchReportJson);
+  // otherwise dig into the persisted reportJson shape.
+  const discoveredAgents = args.discoveryOverride
+    ? args.discoveryOverride.agents
+    : extractDiscoveredAgents(args.reportJson);
+
   const inputs: Parameters<typeof computeVerdict>[0] = {};
   if (interviewFindings !== undefined) inputs.interviewFindings = interviewFindings;
   if (discoveryFindings !== undefined) inputs.discoveryFindings = discoveryFindings;
@@ -97,7 +105,30 @@ export function computeVerdictFromArtifacts(args: {
   if (interviewTranscriptText.length > 0) {
     inputs.interviewTranscriptText = interviewTranscriptText;
   }
+  if (discoveredAgents !== undefined) inputs.discoveredAgents = discoveredAgents;
   return computeVerdict(inputs);
+}
+
+/**
+ * AAP-75 — extract the `agents[]` array from a persisted reportJson's
+ * `localAgentDiscovery` section. Loosely typed because the persisted
+ * shape uses the dashboard mirror types from `lib/report-json` rather
+ * than the canonical reader types; for verdict purposes the only fields
+ * we touch are `mcpServers[].toolEnumeration?.tools[].classification`.
+ */
+function extractDiscoveredAgents(
+  reportJson: unknown,
+): DiscoveryResult['agents'] | undefined {
+  if (!reportJson || typeof reportJson !== 'object') return undefined;
+  const j = reportJson as { localAgentDiscovery?: { agents?: unknown } };
+  if (!j.localAgentDiscovery) return undefined;
+  const agents = j.localAgentDiscovery.agents;
+  if (!Array.isArray(agents)) return undefined;
+  // The shape we read from disk happens to be structurally compatible
+  // with DiscoveryResult['agents'] for the fields the verdict needs.
+  // We cast through `unknown` to avoid asserting on every nested field —
+  // `countWriteTools` is defensive about missing toolEnumeration / tools.
+  return agents as unknown as DiscoveryResult['agents'];
 }
 
 /**

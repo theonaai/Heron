@@ -297,10 +297,18 @@ export async function POST(request: Request): Promise<Response> {
     const additionalWorkspaceHints = (session.workspaceHints ?? []).filter(
       (h) => h !== workspaceRoot,
     );
+    // AAP-75 — enable MCP tool enumeration on the dashboard path. The
+    // `HERON_DISCOVERY_MCP_TOOLS_DISABLE=1` env override lets ops
+    // toggle the feature off without a code change if a misbehaving
+    // MCP server hangs a real audit; default is on so the dashboard
+    // verdict can factor in write-tool count.
+    const enableMcpToolEnumeration =
+      process.env.HERON_DISCOVERY_MCP_TOOLS_DISABLE !== '1';
     const result = await runDiscovery({
       workspaceDir: workspaceRoot,
       workspaceHints: additionalWorkspaceHints,
       enableKeychain: true,
+      enableMcpToolEnumeration,
     });
     // Layer 4 — secretlint scan over the projected inventory. Catches
     // inline tokens that survived Layer 2/3 scrubbers (JWT in URL, GCP

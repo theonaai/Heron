@@ -41,6 +41,56 @@ export interface DiscoveredMcpServer {
    * deduplication key alongside `name`.
    */
   workspace?: string;
+  /**
+   * AAP-75 — tool inventory captured from `tools/list`. Optional because
+   * enumeration is opt-in (a real network/spawn cost) and many readers
+   * never run it. When present, `toolEnumeration.state` reports whether
+   * the call succeeded; `toolEnumeration.tools[]` is the projected
+   * inventory.
+   */
+  toolEnumeration?: McpToolEnumeration;
+}
+
+/**
+ * AAP-75 — enumeration status + per-tool classification for one MCP server.
+ *
+ * `state` discriminates the three outcomes the route handles:
+ *   - `ok`      — `tools/list` succeeded; `tools[]` populated.
+ *   - `failed`  — connect or `tools/list` errored; `reason` carries a
+ *                 short human-readable note. The server itself is still
+ *                 emitted as discovered — failure here doesn't invalidate
+ *                 the L1 declaration.
+ *   - `skipped` — enumeration was intentionally not attempted (e.g. HTTP
+ *                 transport with no credential we could safely reuse).
+ *                 `reason` explains why.
+ */
+export type McpToolEnumerationState = 'ok' | 'failed' | 'skipped';
+
+export interface DiscoveredMcpTool {
+  /** Tool name as advertised by `tools/list`. */
+  name: string;
+  /** Optional description string (whatever the server provided). */
+  description?: string;
+  /** Optional inputSchema. Captured verbatim — opaque to Heron. */
+  inputSchema?: Record<string, unknown>;
+  /** Optional MCP behavior hints (`readOnlyHint`, `destructiveHint`, …). */
+  annotations?: Record<string, unknown>;
+  /**
+   * AAP-75 classification — `read` (idempotent get-shape), `write`
+   * (mutates state), or `unknown` (ambiguous). See
+   * `src/discovery/tool-classifier.ts` for the resolution rules.
+   */
+  classification: 'read' | 'write' | 'unknown';
+}
+
+export interface McpToolEnumeration {
+  state: McpToolEnumerationState;
+  /** Populated on `state === 'ok'`. */
+  tools?: DiscoveredMcpTool[];
+  /** Populated on `state === 'failed' | 'skipped'`. */
+  reason?: string;
+  /** ISO-8601 timestamp of when the enumeration attempt completed. */
+  attemptedAt: string;
 }
 
 export type DiscoveredRuntime =
