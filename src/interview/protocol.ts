@@ -231,6 +231,41 @@ function findMissingFields(transcript: QAPair[]): string[] {
   return missing;
 }
 
+// ─── Most-recent core question lookup ────────────────────────────────────────
+
+/**
+ * AAP-77 — find the MOST RECENT core question in a given category by
+ * scanning the transcript backward. Returns null if no core question
+ * in that category has been asked yet.
+ *
+ * Why backward, not forward: `coreQuestions.find(...)` returns the first
+ * core declared in the category, but the planner's follow-up bookkeeping
+ * (in `primeFollowUpCounts` and the local increment below) attributes
+ * follow-ups to the most-recently-asked core. If the cap check and the
+ * increment touched different keys, the per-question cap (2 follow-ups
+ * max) would never fire in categories with multiple core questions.
+ *
+ * Exported so the question-planner can share the same lookup logic and
+ * stay byte-for-byte consistent with the cap check.
+ */
+export function findMostRecentCoreInCategory(
+  category: QAPair['category'],
+  transcript: QAPair[],
+  coreQuestions: InterviewQuestion[],
+): InterviewQuestion | null {
+  // Index core questions by text for O(1) lookup during the backward scan.
+  const coreByText = new Map<string, InterviewQuestion>();
+  for (const c of coreQuestions) coreByText.set(c.text, c);
+
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const entry = transcript[i]!;
+    if (entry.category !== category) continue;
+    const core = coreByText.get(entry.question);
+    if (core) return core;
+  }
+  return null;
+}
+
 // ─── Protocol factory ────────────────────────────────────────────────────────
 
 /**
@@ -321,9 +356,17 @@ export function createProtocol(llmClient: LLMClient, maxFollowUps?: number): Int
       // count against this cap (per AAP-71 design) so a single core
       // question can never receive more than 2 follow-ups regardless of
       // type.
-      const lastCoreQ = coreQuestions.find(q =>
-        q.category === category && transcript.some(t => t.question === q.text)
-      );
+      //
+      // AAP-77: must attribute to the MOST RECENT core question in this
+      // category, not the first one declared. Categories like `data`,
+      // `access`, `writes`, and `purpose` have multiple core questions;
+      // `find()` over `coreQuestions` returns the first declared, while
+      // `primeFollowUpCounts` (and the increment below) attribute to the
+      // most-recently-asked core. With mismatched IDs the counter never
+      // reaches 2 and the cap never fires. Scanning the transcript
+      // backward keeps the cap check and the increment writing to the
+      // same key.
+      const lastCoreQ = findMostRecentCoreInCategory(category, transcript, coreQuestions);
       if (lastCoreQ) {
         const count = followUpCountPerQuestion.get(lastCoreQ.id) ?? 0;
         if (count >= 2) return null;

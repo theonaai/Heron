@@ -26,7 +26,7 @@
 
 import type { LLMClient } from '../llm/client.js';
 import type { QAPair } from '../report/types.js';
-import { createProtocol } from './protocol.js';
+import { createProtocol, findMostRecentCoreInCategory } from './protocol.js';
 import { CORE_QUESTIONS, getAllQuestionsSorted, type InterviewQuestion } from './questions.js';
 
 export interface Question {
@@ -155,22 +155,33 @@ export function createQuestionPlanner(
     // AAP-60 — reconstruct follow-up counters from the transcript and
     // prime the protocol. A transcript entry is a follow-up iff its
     // question text does NOT match any core question text exactly.
-    // Each follow-up is attributed to the most recent preceding core
-    // question (mirrors protocol.ts:291-293, which finds `lastCoreQ`
-    // by matching category against transcript entries).
+    //
+    // AAP-77 — attribute each follow-up to the most recent preceding
+    // core question IN THE FOLLOW-UP'S OWN CATEGORY (not just "the most
+    // recent core overall"). This mirrors `findMostRecentCoreInCategory`
+    // in protocol.ts so the cap check and the increment always touch
+    // the same key. Without this, categories with multiple core
+    // questions (data, access, writes, purpose) would attribute to a
+    // different key than the cap check reads, and the per-question cap
+    // would never fire.
     let global = 0;
     const perQuestion = new Map<string, number>();
-    let lastCore: InterviewQuestion | null = null;
-    for (const entry of transcript) {
+    for (let i = 0; i < transcript.length; i++) {
+      const entry = transcript[i]!;
       const coreMatch = byText.get(entry.question);
-      if (coreMatch) {
-        lastCore = coreMatch;
-        continue;
-      }
-      // Follow-up entry.
+      if (coreMatch) continue;
+      // Follow-up entry. Attribute it to the most recent preceding
+      // core question in its own category by scanning the transcript
+      // prefix backward.
       global += 1;
-      if (lastCore) {
-        perQuestion.set(lastCore.id, (perQuestion.get(lastCore.id) ?? 0) + 1);
+      const prefix = transcript.slice(0, i);
+      const owner = findMostRecentCoreInCategory(
+        entry.category as QAPair['category'],
+        prefix,
+        CORE_QUESTIONS,
+      );
+      if (owner) {
+        perQuestion.set(owner.id, (perQuestion.get(owner.id) ?? 0) + 1);
       }
     }
     protocol.primeFollowUpCounts({ global, perQuestion });
