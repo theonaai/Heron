@@ -9,12 +9,14 @@ import {
   DeclaredDiffSection as DeclaredDiffSectionComponent,
   OAuthScopesSection as OAuthScopesSectionComponent,
   LocalDiscoverySection as LocalDiscoverySectionComponent,
+  OAuthScopeVerificationSection as OAuthScopeVerificationSectionComponent,
 } from './McpSections';
 import type {
   McpInventorySection as McpInventoryData,
   DeclaredDiffSection as DeclaredDiffData,
   OAuthScopesSection as OAuthScopesData,
   LocalAgentDiscoverySection as LocalDiscoveryData,
+  OAuthScopeVerificationSection as OAuthScopeVerificationData,
 } from '@/lib/report-json';
 
 /* ── Canonical deployer obligations ──
@@ -234,6 +236,8 @@ interface ReportJson {
   oauthScopes?: OAuthScopesData;
   /** AAP-53: deterministic local-machine agent discovery. Optional. */
   localAgentDiscovery?: LocalDiscoveryData;
+  /** AAP-74: L6 OAuth scope verification (dashboard wire-up). Optional. */
+  oauthScopeVerification?: OAuthScopeVerificationData;
 }
 
 /* ── Constants ── */
@@ -1439,7 +1443,11 @@ export default function ReportView({
   const hasInterviewBody = !!(json && Array.isArray(json.systems) && json.systems.length > 0);
   const hasMcpBody = !!(
     json &&
-    (json.mcpInventory || json.declaredDiff || json.oauthScopes || json.localAgentDiscovery)
+    (json.mcpInventory ||
+      json.declaredDiff ||
+      json.oauthScopes ||
+      json.localAgentDiscovery ||
+      json.oauthScopeVerification)
   );
 
   useEffect(() => {
@@ -1457,6 +1465,7 @@ export default function ReportView({
       'sec-declared-diff',
       'sec-oauth-scopes',
       'sec-discovery',
+      'sec-oauth-scope-verification',
     ];
 
     // The actual scroll container is .report-shell > .body (set up by
@@ -1505,6 +1514,8 @@ export default function ReportView({
     if (json.oauthScopes) mcpAnchors.push({ id: 'sec-oauth-scopes', label: 'OAuth Scopes' });
     if (json.localAgentDiscovery)
       mcpAnchors.push({ id: 'sec-discovery', label: 'Local Discovery' });
+    if (json.oauthScopeVerification)
+      mcpAnchors.push({ id: 'sec-oauth-scope-verification', label: 'L6 OAuth' });
     return (
       <div className="report" ref={reportRootRef}>
         <VerdictBanner
@@ -1529,6 +1540,9 @@ export default function ReportView({
         {json.oauthScopes && <OAuthScopesSectionComponent scopes={json.oauthScopes} />}
         {json.localAgentDiscovery && (
           <LocalDiscoverySectionComponent discovery={json.localAgentDiscovery} />
+        )}
+        {json.oauthScopeVerification && (
+          <OAuthScopeVerificationSectionComponent verification={json.oauthScopeVerification} />
         )}
         <div className="footer">
           <span>Heron · MCP scan report v1</span>
@@ -1630,6 +1644,9 @@ export default function ReportView({
     ...(json.declaredDiff ? [{ id: 'sec-declared-diff', label: 'Declared Diff' }] : []),
     ...(json.oauthScopes ? [{ id: 'sec-oauth-scopes', label: 'OAuth Scopes' }] : []),
     ...(json.localAgentDiscovery ? [{ id: 'sec-discovery', label: 'Local Discovery' }] : []),
+    ...(json.oauthScopeVerification
+      ? [{ id: 'sec-oauth-scope-verification', label: 'L6 OAuth' }]
+      : []),
   ];
 
   const overallRiskClass = (() => {
@@ -2011,6 +2028,9 @@ export default function ReportView({
       {json.oauthScopes && <OAuthScopesSectionComponent scopes={json.oauthScopes} />}
       {json.localAgentDiscovery && (
         <LocalDiscoverySectionComponent discovery={json.localAgentDiscovery} />
+      )}
+      {json.oauthScopeVerification && (
+        <OAuthScopeVerificationSectionComponent verification={json.oauthScopeVerification} />
       )}
 
       {/* Footer */}
