@@ -34,6 +34,13 @@ export interface DiscoveredMcpServer {
   hasCredentials: boolean;
   /** Names of env/header keys that matched secret patterns. Values discarded. */
   redactedEnvKeys: string[];
+  /**
+   * AAP-76 — workspace path the server is scoped to. Present for Claude
+   * Code per-project entries (`~/.claude.json.projects.<workspace>.mcpServers`).
+   * Absent for top-level / global server definitions. Used as the
+   * deduplication key alongside `name`.
+   */
+  workspace?: string;
 }
 
 export type DiscoveredRuntime =
