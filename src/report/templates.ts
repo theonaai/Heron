@@ -1,6 +1,15 @@
 import type { AnalyzeFailureReason } from '../analysis/analyzer.js';
 import type { AuditReport, QAPair, DataQuality, Risk, SystemAssessment, WriteOperation, StructuredCompliance, RegulatoryFlag } from './types.js';
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
+import type { ControlResult } from '../compliance/control-catalog.js';
+import {
+  dedupeControlResults,
+  gapCountsByTier,
+  gapLabelsForFramework,
+  gapResults,
+  statusLabelFromControlResults,
+  worstSeverity,
+} from './control-results-projection.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import { isBusinessSystem } from '../util/systems.js';
 import {
@@ -18,20 +27,73 @@ import { renderFrameworkMappingSection } from '../verification/frameworks/render
 import type { Verdict } from '../verification/verdict.js';
 import type { DiscoveryFinding } from '../discovery/types.js';
 
-// ─── AAP-43 P1 #5: overall regulatory status ──────────────────────────────
+// ─── AAP-43 P1 #5 / AAP-84 Phase 4 — overall regulatory status ────────────
 
 /**
- * Reduce all activated framework flags into a single status label + gap
- * counter. Replaces the prior EU/US/UK jurisdiction matrix which couldn't
- * vary without US/UK frameworks in the OSS registry.
+ * AAP-84 — set of FrameworkId values the OSS pipeline treats as
+ * mandatory. Mirrors `FRAMEWORKS[id].tier === 'mandatory'` for the two
+ * EU-wide statutes shipped in the OSS scope (post-AAP-42 scope cut). We
+ * inline the set here so the templates file does not import the
+ * framework registry just to count gaps.
+ */
+const MANDATORY_FRAMEWORK_IDS = new Set([
+  'eu-ai-act',
+  'gdpr',
+] as const);
+
+/**
+ * Reduce all activated framework signals into a single status label +
+ * gap counter. Replaces the prior EU/US/UK jurisdiction matrix which
+ * couldn't vary without US/UK frameworks in the OSS registry.
+ *
+ * AAP-84 — when `controlResults` is populated (any audit that ran with
+ * Surface 2 actual-evidence enabled) the function reads its gap
+ * verdicts directly. When absent (legacy report on disk, or a Surface 1
+ * only run), it falls back to the legacy `compliance.all` projection so
+ * back-compat survives until Phase 9 deletes the prose synthesis.
  *
  * Labels (descending severity):
- *   - "Action Required"      — at least one action-required flag
- *   - "Needs Clarification"  — at least one clarification-needed flag
- *   - "Review"               — at least one warning-level flag
- *   - "Not Triggered"        — no activated framework flags
+ *   - "Action Required"      — at least one `fail` verdict (typed) OR
+ *                              action-required flag (legacy)
+ *   - "Needs Clarification"  — at least one `partial` verdict (typed) OR
+ *                              clarification-needed flag (legacy)
+ *   - "Review"               — at least one `unverified` verdict (typed)
+ *                              OR warning-level flag (legacy)
+ *   - "Not Triggered"        — no gap-class signals
  */
 function summarizeOverallStatus(c: StructuredCompliance): string {
+  const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
+  if (controlResults.length > 0) {
+    return summarizeOverallStatusFromControlResults(controlResults);
+  }
+  return summarizeOverallStatusFromLegacy(c);
+}
+
+/**
+ * AAP-84 typed projection: reads `controlResults` directly. Gap-count
+ * mapping is documented on
+ * `src/report/control-results-projection.ts:GAP_VERDICTS`.
+ */
+function summarizeOverallStatusFromControlResults(results: ControlResult[]): string {
+  // GAP_EXCLUDED (risk-score) is defined later in this file alongside
+  // the markdown-renderer helpers; we reference it directly so the
+  // exclusion set stays single-source-of-truth across both projections.
+  const label = statusLabelFromControlResults(results);
+  const counts = gapCountsByTier(results, MANDATORY_FRAMEWORK_IDS as ReadonlySet<any>, GAP_EXCLUDED);
+  const parts: string[] = [];
+  if (counts.mandatory > 0) parts.push(`${counts.mandatory} mandatory-framework gap${counts.mandatory === 1 ? '' : 's'}`);
+  if (counts.voluntary > 0) parts.push(`${counts.voluntary} voluntary-framework gap${counts.voluntary === 1 ? '' : 's'}`);
+  const suffix = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  return `${label}${suffix}`;
+}
+
+/**
+ * Legacy projection — kept until Phase 9. Triggered for reports loaded
+ * from disk that predate AAP-83 (`controlResults` absent), and for
+ * Surface 1 only audits where the mapper never received an `actual`
+ * envelope.
+ */
+function summarizeOverallStatusFromLegacy(c: StructuredCompliance): string {
   const all = (c.all ?? []) as RegulatoryFlag[];
   if (all.length === 0) return 'Not Triggered';
 
@@ -1064,6 +1126,16 @@ function getGaps(frameworkId: string, allFlags: TypedRegulatoryFlag[]): string[]
   return uniqueTypes.map(t => GAP_LABELS[t] ?? t);
 }
 
+/**
+ * AAP-84 — typed-projection variant. Reads `controlResults` instead of
+ * `compliance.all`. Same shape contract: returns the unique gap-type
+ * labels for the framework, dropping `risk-score` (methodology anchor,
+ * not a gap, mirrors GAP_EXCLUDED).
+ */
+function getGapsFromControlResults(frameworkId: string, results: ControlResult[]): string[] {
+  return gapLabelsForFramework(results, frameworkId as any, GAP_LABELS, GAP_EXCLUDED);
+}
+
 function formatGaps(gaps: string[]): { status: string; details: string } {
   if (gaps.length === 0) return { status: '✅ No gaps', details: '—' };
   return {
@@ -1073,6 +1145,9 @@ function formatGaps(gaps: string[]): { status: string; details: string } {
 }
 
 function renderApplicabilitySummary(c: StructuredCompliance): string {
+  const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
+  const useTypedPath = controlResults.length > 0;
+
   const activated = new Set((c as any).frameworksActivated ?? []);
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
 
@@ -1093,13 +1168,22 @@ function renderApplicabilitySummary(c: StructuredCompliance): string {
     | { classification: string; annexIIICategories: string[] }
     | undefined;
 
+  // AAP-84 — gap helper switch. Typed path reads `controlResults`; the
+  // legacy path stays for back-compat (reports on disk without typed
+  // evidence, and Surface 1 only audits where the mapper never received
+  // an `actual` envelope).
+  const gapsFor = (frameworkId: string): string[] =>
+    useTypedPath
+      ? getGapsFromControlResults(frameworkId, controlResults)
+      : getGaps(frameworkId, allFlags);
+
   const mandatoryRows = mandatoryFrameworks.map(fw => {
     const isActive = activated.has(fw.id);
     if (!isActive) {
       const reason = NOT_TRIGGERED_REASONS[fw.id] ?? 'No matching signals';
       return `| ${fw.name} | ✅ Not applicable | ${reason} |`;
     }
-    const gaps = getGaps(fw.id, allFlags);
+    const gaps = gapsFor(fw.id);
     let displayName = fw.name;
     if (fw.id === 'eu-ai-act' && euClassification) {
       const cls = euClassification.classification;
@@ -1120,7 +1204,7 @@ function renderApplicabilitySummary(c: StructuredCompliance): string {
   });
 
   const voluntaryRows = voluntaryFrameworks.map(fw => {
-    const gaps = getGaps(fw.id, allFlags);
+    const gaps = gapsFor(fw.id);
     const { status, details } = formatGaps(gaps);
     return `| ${fw.name} | ${status} | ${details} |`;
   });
@@ -1200,6 +1284,103 @@ function frameworkShortName(id: string): string {
 }
 
 function renderFindingFirstDetail(c: StructuredCompliance, report?: AuditReport): string {
+  const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
+  if (controlResults.length > 0) {
+    return renderFindingFirstDetailFromControlResults(controlResults, report);
+  }
+  return renderFindingFirstDetailFromLegacy(c, report);
+}
+
+/**
+ * AAP-84 — typed-projection variant. Renders one section per finding
+ * type, grouping controls by framework and SHOWING per-control verdict
+ * (`verified | partial | unverified | fail`) honestly rather than
+ * collapsing every control under a framework into a single severity.
+ *
+ * This is the load-bearing renderer migration described in the AAP-84
+ * ticket: an auditor who sees `AIUC-1 (A003.3 fail, A003.4 verified)`
+ * gets strictly more information than the prior `AIUC-1 (A003.3,
+ * A003.4)` flat citation list.
+ */
+function renderFindingFirstDetailFromControlResults(
+  results: ControlResult[],
+  report?: AuditReport,
+): string {
+  const deduped = dedupeControlResults(results);
+
+  // Only surface gap-class results in the per-finding section. `verified`
+  // and `not-applicable` controls don't deserve a "Compliance Detail"
+  // entry — they roll up into the applicability summary's "no gaps"
+  // marker but the detail block is for things the reader needs to act
+  // on. This mirrors the legacy `GAP_EXCLUDED` filter on `triggeredBy`.
+  const surfaced = deduped.filter(
+    (r) => !GAP_EXCLUDED.has(r.findingType),
+  );
+
+  // Group by findingType — same shape the legacy renderer used.
+  const byFinding = new Map<string, ControlResult[]>();
+  for (const r of surfaced) {
+    const arr = byFinding.get(r.findingType) ?? [];
+    arr.push(r);
+    byFinding.set(r.findingType, arr);
+  }
+
+  // Drop finding-type buckets where every control verified or is
+  // not-applicable — there's no gap to render.
+  const gapFindings = new Map<string, ControlResult[]>();
+  for (const [findingType, all] of byFinding) {
+    const gaps = all.filter((r) => isGapResult(r));
+    if (gaps.length > 0) gapFindings.set(findingType, all);
+  }
+
+  if (gapFindings.size === 0) {
+    return `### Compliance Detail\n\n_No compliance gaps identified from current signals._\n`;
+  }
+
+  let out = `### Compliance Detail\n\n`;
+
+  for (const [findingType, ctrls] of gapFindings) {
+    const label = GAP_LABELS[findingType] ?? findingType;
+    const description = buildGapDescription(findingType, report);
+
+    // Group per-framework so the Affects line stays compact.
+    const byFramework = new Map<string, ControlResult[]>();
+    for (const r of ctrls) {
+      const fwName = frameworkShortName(r.frameworkId);
+      const existing = byFramework.get(fwName) ?? [];
+      existing.push(r);
+      byFramework.set(fwName, existing);
+    }
+
+    // Render `Framework (controlId verdict, controlId verdict, …)`. We
+    // show every control under the framework, with its verdict suffix
+    // so the reader sees evidence-grounded per-control state instead of
+    // the legacy collapsed severity.
+    const affectsParts = [...byFramework.entries()].map(([fw, rows]) => {
+      const seen = new Set<string>();
+      const items: string[] = [];
+      for (const r of rows) {
+        if (seen.has(r.controlId)) continue;
+        seen.add(r.controlId);
+        items.push(`${r.controlId} ${renderVerdictBadge(r.verdict)}`);
+      }
+      return items.length === 0 ? fw : `${fw} (${items.join(', ')})`;
+    });
+
+    out += `#### ${label}\n\n`;
+    out += `${description}\n\n`;
+    out += `**Affects:** ${affectsParts.join(' · ')}\n\n`;
+  }
+
+  return out;
+}
+
+/**
+ * Pre-AAP-84 markdown contract preserved for back-compat. Triggered for
+ * sessions whose `compliance` blob predates Phase 4 (no `controlResults`
+ * field), and for Surface 1 only audits.
+ */
+function renderFindingFirstDetailFromLegacy(c: StructuredCompliance, report?: AuditReport): string {
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
 
   // Group flags by finding type (triggeredBy)
@@ -1250,6 +1431,39 @@ function renderFindingFirstDetail(c: StructuredCompliance, report?: AuditReport)
   }
 
   return out;
+}
+
+/**
+ * AAP-84 — predicate matching `gapResults` filter logic. Inlined here
+ * (instead of importing the projection helper) because templates.ts
+ * already pulls `dedupeControlResults` and we want the renderer-local
+ * decision to be obvious.
+ */
+function isGapResult(r: ControlResult): boolean {
+  return r.verdict === 'fail' || r.verdict === 'partial' || r.verdict === 'unverified';
+}
+
+/**
+ * AAP-84 — verdict badge for the markdown affects line. Uses unicode
+ * marks rather than emoji so the badges render consistently across
+ * markdown previewers (the existing applicability summary already
+ * mixes ✅ / ⚠️ so we stay consistent).
+ *
+ *   - `fail`           → ❌ fail
+ *   - `partial`        → ⚠️ partial
+ *   - `unverified`     → ❓ unverified
+ *   - `verified`       → ✅ verified
+ *   - `not-applicable` → ➖ n/a
+ */
+function renderVerdictBadge(verdict: ControlResult['verdict']): string {
+  switch (verdict) {
+    case 'fail': return '❌ fail';
+    case 'partial': return '⚠️ partial';
+    case 'unverified': return '❓ unverified';
+    case 'verified': return '✅ verified';
+    case 'not-applicable': return '➖ n/a';
+    default: return verdict;
+  }
 }
 
 // ─── Obligations Requiring Further Review ─────────────────────────────────

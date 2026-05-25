@@ -196,6 +196,42 @@ interface CategorizedCompliance {
     classification: EUAIActClassification;
     annexIIICategories: string[];
   };
+  /**
+   * AAP-83 / AAP-84 Phase 4 — per-control typed-evidence verdicts.
+   * Optional because legacy reports persisted before AAP-83 do not
+   * carry the field. When non-empty, the dashboard renders per-control
+   * verdict pills alongside the legacy flag-driven concerns layout.
+   */
+  controlResults?: ControlResult[];
+}
+
+/**
+ * AAP-84 — per-control verdict shape mirrors
+ * `src/compliance/control-catalog.ts:ControlResult`. Kept inline rather
+ * than imported from the server module so the dashboard bundle stays
+ * decoupled from compliance source files.
+ */
+type ControlResultVerdict =
+  | 'verified'
+  | 'partial'
+  | 'unverified'
+  | 'fail'
+  | 'not-applicable';
+
+type ControlResultSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+interface ControlResult {
+  stableKey: string;
+  findingType: FindingType;
+  frameworkId: FrameworkId;
+  controlId: string;
+  controlName?: string;
+  path: 'typed' | 'prose' | 'combined';
+  surface: 'declared' | 'actual' | 'oauth' | 'approval';
+  verdict: ControlResultVerdict;
+  severity: ControlResultSeverity;
+  rationale: string;
+  evidenceRefs: Array<{ kind: string; ref: string }>;
 }
 
 interface LegacyRegulatoryCompliance {
@@ -1351,6 +1387,13 @@ function CategorizedComplianceView({ compliance }: { compliance: CategorizedComp
   const annexCats = compliance.euAiActClassification?.annexIIICategories ?? [];
   const activated = compliance.frameworksActivated ?? [];
 
+  // AAP-84 Phase 4 — controlResults is the authoritative source when
+  // present. The dashboard renders per-control verdict pills via
+  // ControlResultsView; we still surface the legacy ComplianceConcerns
+  // for sessions without typed evidence (back-compat).
+  const controlResults = compliance.controlResults ?? [];
+  const hasControlResults = controlResults.length > 0;
+
   return (
     <div>
       <p style={{ fontSize: 12, color: 'var(--r-ink-4)', marginBottom: 12, fontStyle: 'italic' }}>
@@ -1405,11 +1448,217 @@ function CategorizedComplianceView({ compliance }: { compliance: CategorizedComp
             backend; not useful to readers. Omitted from UI. */}
       </div>
 
-      <ComplianceConcerns flags={allFlags} />
+      {hasControlResults ? (
+        <ControlResultsView results={controlResults} />
+      ) : (
+        <ComplianceConcerns flags={allFlags} />
+      )}
 
       <ObligationsRequiringReview />
     </div>
   );
+}
+
+/**
+ * AAP-84 Phase 4 — per-control verdict view.
+ *
+ * Renders one section per finding type, listing each control with its
+ * own verdict pill (`fail | partial | unverified | verified | n/a`)
+ * rather than collapsing the framework's controls under one severity.
+ * This is the load-bearing dashboard migration: the auditor now sees
+ * per-control state instead of an aggregated framework severity.
+ *
+ * Legacy `ComplianceConcerns` still renders when the session has no
+ * `controlResults` (older audits or Surface 1 only runs).
+ */
+function ControlResultsView({ results }: { results: ControlResult[] }) {
+  // Dedup by stableKey — adapter rows can register the same detector
+  // under multiple (findingType, frameworkId, controlId) triples
+  // (e.g. AIUC-1 A003.3 + A003.4 share `detectAIUC1_A003`). Two
+  // detectors lighting the same stable key would double-count.
+  const seenKeys = new Set<string>();
+  const deduped: ControlResult[] = [];
+  for (const r of results) {
+    if (seenKeys.has(r.stableKey)) continue;
+    seenKeys.add(r.stableKey);
+    deduped.push(r);
+  }
+
+  // Group by findingType — same bucket vocabulary the legacy
+  // ComplianceConcerns used. Each bucket renders gap-class controls
+  // (fail / partial / unverified) plus verified ones as supporting
+  // evidence.
+  const byFinding = new Map<FindingType, ControlResult[]>();
+  for (const r of deduped) {
+    if (r.findingType === 'risk-score') continue; // methodology anchor, not a gap
+    const arr = byFinding.get(r.findingType) ?? [];
+    arr.push(r);
+    byFinding.set(r.findingType, arr);
+  }
+
+  // Hide sections where every control verified or is not-applicable —
+  // there's nothing for the reader to act on.
+  const sections: Array<{ findingType: FindingType; controls: ControlResult[] }> = [];
+  for (const [findingType, controls] of byFinding) {
+    if (controls.some((c) => isGapVerdict(c.verdict))) {
+      sections.push({ findingType, controls });
+    }
+  }
+
+  if (sections.length === 0) {
+    return (
+      <p style={{ fontSize: 12.5, color: 'var(--r-ink-3)', fontStyle: 'italic' }}>
+        No regulatory gaps identified from typed evidence — all activated controls verified or
+        are not applicable.
+      </p>
+    );
+  }
+
+  return (
+    <div className="stack-md">
+      {sections.map(({ findingType, controls }) => (
+        <ControlResultsCard key={findingType} findingType={findingType} controls={controls} />
+      ))}
+    </div>
+  );
+}
+
+const FINDING_LABEL: Record<FindingType, string> = {
+  'excessive-access': 'Excessive permissions',
+  'write-risk': 'Write operation risks',
+  'sensitive-data': 'Data handling',
+  'scope-creep': 'Scope exceeds purpose',
+  'decisions-about-people': 'Automated decision-making',
+  'regulatory-flags': 'Regulatory concerns',
+  'risk-score': 'Risk score',
+  'dsr-readiness': 'Data subject rights readiness',
+  'prohibited-practice': 'Prohibited practice',
+};
+
+function isGapVerdict(v: ControlResultVerdict): boolean {
+  return v === 'fail' || v === 'partial' || v === 'unverified';
+}
+
+function ControlResultsCard({
+  findingType,
+  controls,
+}: {
+  findingType: FindingType;
+  controls: ControlResult[];
+}) {
+  const label = FINDING_LABEL[findingType] ?? findingType;
+
+  // Worst severity drives the section header pill.
+  const worst = controls
+    .filter((c) => isGapVerdict(c.verdict))
+    .reduce<ControlResultSeverity>(
+      (acc, c) => (severityRankCR(c.severity) > severityRankCR(acc) ? c.severity : acc),
+      'info',
+    );
+
+  // Group by framework so the user sees "AIUC-1: A003 fail, A006 verified"
+  // rather than a flat control list. Each per-framework block lists
+  // every control with its verdict pill.
+  const byFramework = new Map<FrameworkId, ControlResult[]>();
+  for (const c of controls) {
+    const arr = byFramework.get(c.frameworkId) ?? [];
+    arr.push(c);
+    byFramework.set(c.frameworkId, arr);
+  }
+
+  // Show only the first non-empty rationale as the section body — the
+  // per-control rationales are surfaced inline via the verdict tooltips.
+  const headline = controls.find((c) => isGapVerdict(c.verdict))?.rationale ?? '';
+
+  return (
+    <div className="concern">
+      <div className="concern-head">
+        <span className={`dot ${crSeverityDot(worst)}`} style={{ width: 9, height: 9 }} />
+        <h3 className="concern-title">{label}</h3>
+        <span className={`sev ${crSeverityClass(worst)}`}>{crSeverityLabel(worst)}</span>
+      </div>
+
+      {headline && <p className="concern-body">{headline}</p>}
+
+      <div className="concern-affects">
+        <div className="field-label">Per-control verdicts</div>
+        <div className="stack-md" style={{ gap: 8 }}>
+          {Array.from(byFramework.entries()).map(([frameworkId, frameworkControls]) => (
+            <div key={frameworkId} className="row-tight" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--r-ink-2)' }}>
+                {FRAMEWORK_LABELS[frameworkId] ?? frameworkId}
+              </span>
+              {frameworkControls.map((c) => (
+                <span
+                  key={c.stableKey}
+                  className={`fw-chip`}
+                  title={c.rationale}
+                  style={{ gap: 6 }}
+                >
+                  <span className="fw-refs">{c.controlId}</span>
+                  <span className={`sev ${verdictClass(c.verdict)}`}>
+                    {verdictLabel(c.verdict)}
+                  </span>
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const CR_SEVERITY_RANK: Record<ControlResultSeverity, number> = {
+  critical: 5,
+  high: 4,
+  medium: 3,
+  low: 2,
+  info: 1,
+};
+
+function severityRankCR(s: ControlResultSeverity): number {
+  return CR_SEVERITY_RANK[s] ?? 0;
+}
+
+function crSeverityClass(s: ControlResultSeverity): string {
+  switch (s) {
+    case 'critical': return 'sev-critical';
+    case 'high': return 'sev-high';
+    case 'medium': return 'sev-medium';
+    case 'low': return 'sev-low';
+    default: return 'sev-info';
+  }
+}
+
+function crSeverityDot(s: ControlResultSeverity): string {
+  return crSeverityClass(s);
+}
+
+function crSeverityLabel(s: ControlResultSeverity): string {
+  return s.toUpperCase();
+}
+
+function verdictClass(v: ControlResultVerdict): string {
+  switch (v) {
+    case 'fail': return 'sev-high';
+    case 'partial': return 'sev-medium';
+    case 'unverified': return 'sev-review';
+    case 'verified': return 'sev-ok';
+    case 'not-applicable': return 'sev-info';
+    default: return 'sev-info';
+  }
+}
+
+function verdictLabel(v: ControlResultVerdict): string {
+  switch (v) {
+    case 'fail': return 'FAIL';
+    case 'partial': return 'PARTIAL';
+    case 'unverified': return 'UNVERIFIED';
+    case 'verified': return 'VERIFIED';
+    case 'not-applicable': return 'N/A';
+    default: return String(v).toUpperCase();
+  }
 }
 
 /* ── Deployer obligations the audit can't verify alone ──
