@@ -108,12 +108,60 @@ describe('control catalog representation', () => {
     }
   });
 
-  it('every entry starts with no deterministicDetector wired up (Phase 1)', () => {
-    // Phase 2 splices detectors in; this guard documents the Phase 1
-    // contract so a stray import does not silently change semantics.
-    for (const e of CONTROL_CATALOG) {
-      expect(e.deterministicDetector).toBeUndefined();
+  it('Phase 2 wires a typed detector onto the AIUC-1 A003 catalog entries', () => {
+    // The router covered AIUC-1 A003 with a single detector; the catalog
+    // has both A003.3 and A003.4 as paired least-privilege entries.
+    // Both should get the same adapter wired in.
+    for (const controlId of ['A003.3', 'A003.4']) {
+      const entry = findCatalogEntry({
+        findingType: 'excessive-access',
+        frameworkId: 'aiuc-1',
+        controlId,
+      });
+      expect(entry?.deterministicDetector).toBeTypeOf('function');
     }
+  });
+
+  it('Phase 2 wires GDPR Article 22 + 25 detectors onto the catalog', () => {
+    const art22 = findCatalogEntry({
+      findingType: 'decisions-about-people',
+      frameworkId: 'gdpr',
+      controlId: 'Art. 22',
+    });
+    const art25 = findCatalogEntry({
+      findingType: 'excessive-access',
+      frameworkId: 'gdpr',
+      controlId: 'Art. 25',
+    });
+    expect(art22?.deterministicDetector).toBeTypeOf('function');
+    expect(art25?.deterministicDetector).toBeTypeOf('function');
+  });
+
+  it('Phase 2 wires NIST AI RMF MEASURE 1.1 + MANAGE 1.2 detectors', () => {
+    const measure = findCatalogEntry({
+      findingType: 'risk-score',
+      frameworkId: 'nist-ai-rmf',
+      controlId: 'MEASURE 1.1',
+    });
+    const manage = findCatalogEntry({
+      findingType: 'risk-score',
+      frameworkId: 'nist-ai-rmf',
+      controlId: 'MANAGE 1.2',
+    });
+    expect(measure?.deterministicDetector).toBeTypeOf('function');
+    expect(manage?.deterministicDetector).toBeTypeOf('function');
+  });
+
+  it('Phase 2 leaves prose-only ISO/IEC 42001 controls without a detector', () => {
+    // ISO 42001 has no router coverage. The catalog entry remains
+    // detector-less; the prose path is the only way to fire it.
+    const isoEntry = findCatalogEntry({
+      findingType: 'excessive-access',
+      frameworkId: 'iso-42001',
+      controlId: 'A.6.2.6',
+    });
+    expect(isoEntry?.deterministicDetector).toBeUndefined();
+    expect(isoEntry?.prosePathEnabled).toBe(true);
   });
 });
 

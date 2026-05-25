@@ -51,6 +51,7 @@
  */
 
 import { CONTROL_MAPPINGS } from './control-mappings.js';
+import { ROUTER_DETECTOR_ADAPTERS } from './detectors/router-adapter.js';
 import type {
   ControlMapping,
   FindingType,
@@ -162,25 +163,14 @@ export interface ControlCatalogEntry {
   prosePathEnabled: boolean;
 }
 
-// ─── Stable key construction ───────────────────────────────────────────────
+// ─── Stable key re-export ──────────────────────────────────────────────────
 
-/**
- * Build the canonical stable key for a (findingType, frameworkId,
- * controlId) triple. The same key shape is used for dedup of
- * `ControlResult` arrays, for snapshot tests, and (eventually) for the
- * detector registry lookup.
- *
- * `controlId` values like `'Art. 9(2)(a)'` contain whitespace and
- * punctuation; we do NOT normalise — auditors expect the canonical
- * citation to survive verbatim into the report. Dedup is exact-string.
- */
-export function stableKeyFor(args: {
-  findingType: FindingType;
-  frameworkId: FrameworkId;
-  controlId: string;
-}): string {
-  return `${args.findingType}:${args.frameworkId}:${args.controlId}`;
-}
+// Re-export from `./control-key.js` so call sites that already import
+// from this barrel keep working. The helper itself lives in its own
+// module to break a circular dep between this file and the typed-
+// evidence detectors.
+export { stableKeyFor } from './control-key.js';
+import { stableKeyFor } from './control-key.js';
 
 // ─── Catalog construction from CONTROL_MAPPINGS ────────────────────────────
 
@@ -216,16 +206,71 @@ function buildCatalogFromMappings(): ControlCatalogEntry[] {
 }
 
 /**
+ * Splice typed-evidence detectors into the catalog. Phase 2 absorbs the
+ * router's 12 detectors via `router-adapter.ts` — each adapter row maps
+ * to a catalog entry by `stableKey`. When an adapter row references a
+ * controlId the catalog does not yet have, we append a new entry so the
+ * router's coverage survives the migration.
+ *
+ * `control-key.ts` carries `stableKeyFor` to break a would-be circular
+ * dependency: this module imports adapters → adapters import the key
+ * helper → key helper imports nothing.
+ */
+function attachDetectors(
+  base: ControlCatalogEntry[],
+): ControlCatalogEntry[] {
+  const byKey = new Map<string, ControlCatalogEntry>(
+    base.map((e) => [
+      stableKeyFor({
+        findingType: e.findingType,
+        frameworkId: e.frameworkId,
+        controlId: e.controlId,
+      }),
+      e,
+    ]),
+  );
+
+  for (const row of ROUTER_DETECTOR_ADAPTERS) {
+    const key = stableKeyFor({
+      findingType: row.findingType,
+      frameworkId: row.frameworkId,
+      controlId: row.controlId,
+    });
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.deterministicDetector = row.detector as unknown as DetectorFn;
+    } else {
+      // Router covers a (findingType, frameworkId, controlId) triple
+      // that the prose mapper does not. Append it so the unified
+      // catalog covers everything both engines knew about. Category
+      // mirrors the parent finding's category (best-effort — the
+      // prose mapper's controlMapping is the authority on category
+      // assignment; orphan entries get the most common category for
+      // that finding type).
+      const fallback = base.find((e) => e.findingType === row.findingType);
+      byKey.set(key, {
+        findingType: row.findingType,
+        frameworkId: row.frameworkId,
+        controlId: row.controlId,
+        category: fallback?.category ?? 'consumer-protection',
+        deterministicDetector: row.detector as unknown as DetectorFn,
+        prosePathEnabled: false,
+      });
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+/**
  * The unified control catalog. Built once at module load.
  *
- * Phase 1 reads exclusively from `CONTROL_MAPPINGS`. Phase 2 will
- * splice in the router's 12 detector entries, attaching
- * `deterministicDetector` to the matching catalog entries (or
- * appending new ones when the router covers a control the prose
- * mapper does not).
+ * Phase 1 read exclusively from `CONTROL_MAPPINGS`. Phase 2 (here) splices
+ * in the router's 12 detector entries. Future phases may swap the
+ * underlying detector implementations without touching this builder.
  */
 export const CONTROL_CATALOG: readonly ControlCatalogEntry[] = Object.freeze(
-  buildCatalogFromMappings(),
+  attachDetectors(buildCatalogFromMappings()),
 );
 
 // ─── Lookup helpers ────────────────────────────────────────────────────────
