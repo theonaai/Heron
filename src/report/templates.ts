@@ -139,20 +139,37 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
   // the riskIcon adds nothing and undercuts credibility. Dropped.
   const dqPart = report.dataQuality ? ` | **Data Quality**: ${report.dataQuality.score}/100` : '';
 
-  // AAP-63 — the header risk level now comes from the verdict's
-  // primaryRiskLevel when supplied. When no verdict is attached we
-  // fall back to the legacy `overallRiskLevel` from the analyzer for
-  // back-compat (e.g. the existing report golden tests that don't
-  // thread a verdict in). The label is hedged with "self-reported"
-  // when the primary verdict is `'unverified'`.
+  // AAP-63 / AAP-80 — the header risk level now comes from the
+  // verdict's `primaryRiskLevel` when supplied. When no verdict is
+  // attached we fall back to the legacy `overallRiskLevel` from the
+  // analyzer for back-compat (e.g. the existing report golden tests
+  // that don't thread a verdict in).
+  //
+  // AAP-80 — the "(Verified)" / "(Partially Verified)" / "(Unverified)"
+  // suffix is derived from `report.verification.status` (the persisted
+  // report-level field), NOT from `verdict.primaryRiskSource`. Pre-fix
+  // the header read `verdict.primaryRiskSource !== 'no-evidence'` and
+  // emitted "Risk Level (Verified)" for any verdict that had Surface 2
+  // evidence at all, even a `partial` one with one source attempted.
+  // That diverged from the banner and the verification field. Routing
+  // through `report.verification.status` lets the header, the banner,
+  // and the persisted field move in lockstep.
   const primaryRisk =
     verdict?.primaryRiskLevel ?? report.overallRiskLevel;
-  const riskLine =
-    verdict && verdict.primaryRiskSource !== 'no-evidence'
-      ? `**Risk Level (Verified)**: ${primaryRisk.toUpperCase()}`
-      : verdict
-        ? `**Risk Level**: UNVERIFIED (self-reported only — run discovery to verify)`
-        : `**Risk Level**: ${report.overallRiskLevel.toUpperCase()}`;
+  const verificationStatus = report.verification?.status;
+  let riskLine: string;
+  if (!verdict) {
+    riskLine = `**Risk Level**: ${report.overallRiskLevel.toUpperCase()}`;
+  } else if (verificationStatus === 'verified') {
+    riskLine = `**Risk Level (Verified)**: ${primaryRisk.toUpperCase()}`;
+  } else if (verificationStatus === 'partially-verified') {
+    riskLine = `**Risk Level (Partially Verified)**: ${primaryRisk.toUpperCase()}`;
+  } else if (verificationStatus === 'verification-failed') {
+    riskLine = `**Risk Level (Unverified)**: ${primaryRisk.toUpperCase()}`;
+  } else {
+    // 'interrogation-only' or absent (legacy session pre-AAP-79).
+    riskLine = `**Risk Level**: UNVERIFIED (self-reported only — run discovery to verify)`;
+  }
 
   // AAP-43 P1 #5: single overall regulatory status label (replaces
   // EU/US/UK matrix). The matrix implied we'd analyzed each jurisdiction,
@@ -188,6 +205,21 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
 function renderInterrogationOnlyBanner(report: AuditReport): string {
   const status = report.verification?.status;
   if (status === 'verified') return '';
+  if (status === 'partially-verified') {
+    // AAP-80 — amber banner copy. Used when at least one Surface 2
+    // source ran (so we're past interrogation-only) but the verdict
+    // came back `partial`. Distinguished from 'verification-failed' so
+    // the reader knows the report carries SOME deterministic evidence;
+    // they just shouldn't treat it as fully reconciled.
+    return [
+      '> **Partially verified.** One or more deterministic evidence sources did ' +
+        'not run or did not complete cleanly. See the **Verification Status** ' +
+        'section below for per-source detail.',
+      '>',
+      '> Resolve outstanding findings or rerun with any missing or failed ' +
+        'sources available to flip this banner to **Verified**.',
+    ].join('\n');
+  }
   if (status === 'verification-failed') {
     const reason = report.verification?.reason ?? 'see dashboard for details';
     return [

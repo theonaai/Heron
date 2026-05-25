@@ -239,14 +239,15 @@ interface ReportJson {
   /** AAP-74: L6 OAuth scope verification (dashboard wire-up). Optional. */
   oauthScopeVerification?: OAuthScopeVerificationData;
   /**
-   * AAP-79: report-level verification lifecycle. The banner near the
-   * top of the report reads `status` to decide whether to render the
-   * interrogation-only / verification-failed callout. Absent on legacy
-   * sessions persisted before AAP-79 — the banner falls back to the
-   * "interrogation-only" copy in that case so nothing regresses.
+   * AAP-79 / AAP-80: report-level verification lifecycle. The banner
+   * near the top of the report reads `status` to decide whether to
+   * render the interrogation-only / partially-verified / verification-
+   * failed callout. Absent on legacy sessions persisted before AAP-79 —
+   * the banner falls back to the "interrogation-only" copy in that
+   * case so nothing regresses.
    */
   verification?: {
-    status: 'interrogation-only' | 'verified' | 'verification-failed';
+    status: 'interrogation-only' | 'verified' | 'partially-verified' | 'verification-failed';
     reason?: string;
     updatedAt?: string;
   };
@@ -649,12 +650,17 @@ function VerdictBanner({ verdict, meta }: { verdict: string; meta?: React.ReactN
   );
 }
 
-/* ── AAP-79 interrogation-only banner ──
+/* ── AAP-79 + AAP-80 interrogation-only banner ──
  *
- * Sits between the verdict banner and the first numbered section. The
- * orange variant fires when the report has no verification yet (or the
- * legacy field is absent — pre-AAP-79 sessions). The red variant fires
- * when verification ran but errored. Suppressed entirely on `verified`.
+ * Sits between the verdict banner and the first numbered section.
+ * Variants:
+ *   - 'verified' → null (banner hidden).
+ *   - 'partially-verified' → amber banner (AAP-80). At least one Surface
+ *     2 source ran but the verdict came back partial. Distinguishes
+ *     the "real but incomplete evidence" case from the orange
+ *     interrogation-only baseline.
+ *   - 'verification-failed' → red banner.
+ *   - 'interrogation-only' / undefined → orange banner (default).
  *
  * The Run-verification action is owned by the parent SessionDetail
  * component (it knows the consent dialog state); the banner accepts an
@@ -666,11 +672,50 @@ export function InterrogationOnlyBanner({
   reason,
   onRunVerification,
 }: {
-  status?: 'interrogation-only' | 'verified' | 'verification-failed';
+  status?: 'interrogation-only' | 'verified' | 'partially-verified' | 'verification-failed';
   reason?: string;
   onRunVerification?: () => void;
 }) {
   if (status === 'verified') return null;
+  if (status === 'partially-verified') {
+    return (
+      <div
+        role="status"
+        style={{
+          margin: '0 0 16px',
+          padding: '14px 18px',
+          background: '#fff7ed',
+          border: '1px solid #fdba74',
+          borderRadius: 6,
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: '#7c2d12',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <div>
+          <strong style={{ fontWeight: 700 }}>Partially verified.</strong>{' '}
+          One or more deterministic evidence sources did not run or did not
+          complete cleanly. See the Verification Status section below for
+          per-source detail.
+        </div>
+        {onRunVerification && (
+          <div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontWeight: 600 }}
+              onClick={onRunVerification}
+            >
+              Re-run verification
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
   if (status === 'verification-failed') {
     return (
       <div
@@ -1539,26 +1584,37 @@ function AnchorRail({
   );
 }
 
-/* ── AAP-79 banner status inference ──
+/* ── AAP-79 + AAP-80 banner status inference ──
  *
  * The interrogation-only banner reads `verification.status` to decide
- * which copy to render. Sessions persisted before this ticket have
+ * which copy to render. Sessions persisted before AAP-79 have
  * `localAgentDiscovery` populated but no `verification` field — the
- * writer that flips it landed in this PR. Treating undefined as
+ * writer that flips it landed in PR #69. Treating undefined as
  * "interrogation-only" makes the banner lie about a session that
  * already ran discovery.
  *
  * Rules:
- *   - `verification.status` present → use it verbatim.
+ *   - `verification.status` present → use it verbatim. With AAP-80 the
+ *     enum now includes `'partially-verified'` for runs where only a
+ *     subset of Surface 2 sources ran.
  *   - Missing AND discovery has at least one agent on disk → 'verified'
  *     (the discovery scan ran successfully, even though we didn't
- *     write the status marker at the time).
+ *     write the status marker at the time). Legacy inference is
+ *     intentionally forward-only: we don't reclassify pre-AAP-80
+ *     reports as `'partially-verified'` because we can't tell from
+ *     the persisted JSON shape whether OAuth introspection was
+ *     attempted at the time.
  *   - Missing AND no discovery yet → undefined (banner renders the
  *     default 'interrogation-only' copy, which is correct).
  */
 export function inferBannerStatus(
   json: ReportJson,
-): 'interrogation-only' | 'verified' | 'verification-failed' | undefined {
+):
+  | 'interrogation-only'
+  | 'verified'
+  | 'partially-verified'
+  | 'verification-failed'
+  | undefined {
   if (json.verification?.status) return json.verification.status;
   const agents = json.localAgentDiscovery?.agents;
   if (Array.isArray(agents) && agents.length > 0) return 'verified';

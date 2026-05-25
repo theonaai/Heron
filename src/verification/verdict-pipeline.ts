@@ -17,7 +17,7 @@
  */
 
 import type { DiscoveryFinding, DiscoveryResult } from '../discovery/types.js';
-import type { Risk } from '../report/types.js';
+import type { ReportVerificationStatus, Risk } from '../report/types.js';
 import { updateSessionMeta, type RiskLevel as SessionRiskLevel } from '../storage/sessions.js';
 import type { TranscriptEntry } from '../storage/sessions.js';
 import type { SourceVerification } from './types.js';
@@ -156,4 +156,45 @@ export async function persistVerdict(sessionId: string, verdict: Verdict): Promi
     patch.interviewRiskLevel = verdict.interviewRiskLevel as SessionRiskLevel;
   }
   await updateSessionMeta(sessionId, patch);
+}
+
+/**
+ * AAP-80 — derive the report-level `verification.status` from a
+ * computed `Verdict`. The mapping is intentionally narrow so the two
+ * code paths that persist this field (`start_verification` MCP handler
+ * and `POST /api/discovery/scan`) cannot drift.
+ *
+ * Mapping rules:
+ *   - `verdict.status === 'verified'` → `'verified'`. All Surface 2
+ *     sources ran and produced clean evidence.
+ *   - `verdict.status === 'partial'` → `'partially-verified'`. At least
+ *     one Surface 2 source ran but the verdict came back partial —
+ *     either a source did not run, or one returned findings. This is
+ *     the most common steady-state for AAP-79-era audits: discovery
+ *     runs but OAuth introspection (AAP-64) is still wired manually,
+ *     so the verdict can almost never reach `'verified'`.
+ *   - `verdict.status === 'unverified'` AND no Surface 2 source was
+ *     attempted → `'interrogation-only'`. Pre-scan baseline.
+ *   - `verdict.status === 'unverified'` AND a Surface 2 source was
+ *     attempted but failed → `'verification-failed'`. (In practice the
+ *     persist paths short-circuit on errors and call this helper with
+ *     the no-Surface-2 verdict only when nothing ran; this branch
+ *     exists so the helper is total over the verdict surface.)
+ *
+ * The optional second arg lets the caller record which Surface 2
+ * sources were attempted. The helper uses it to disambiguate the two
+ * `'unverified'` outcomes. When omitted, we conservatively assume
+ * "no source attempted" → `'interrogation-only'`; callers that want
+ * the `'verification-failed'` path must opt in explicitly.
+ */
+export function reportVerificationStatusFromVerdict(
+  verdict: Verdict,
+  options: { surface2Attempted?: boolean } = {},
+): ReportVerificationStatus {
+  if (verdict.status === 'verified') return 'verified';
+  if (verdict.status === 'partial') return 'partially-verified';
+  // verdict.status === 'unverified'
+  return options.surface2Attempted === true
+    ? 'verification-failed'
+    : 'interrogation-only';
 }

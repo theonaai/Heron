@@ -243,12 +243,18 @@ export type StructuredCompliance = CategorizedCompliance;
  *     the interview transcript only. No deterministic Surface 2 evidence
  *     has been merged in. Markdown + dashboard render the orange banner
  *     prompting the operator (or the agent) to start verification.
- *   - `'verified'` — discovery (L1-L5) ran successfully. Stage 3
+ *   - `'verified'` — every Surface 2 source ran cleanly. Stage 3
  *     framework mapping has been re-computed against the analyzer
  *     signals + discovery evidence. Banner disappears.
- *   - `'verification-failed'` — discovery ran but errored. `reason`
- *     carries a short diagnostic so the operator can retry. Banner
- *     switches to the failure variant.
+ *   - `'partially-verified'` — at least one Surface 2 source ran, but
+ *     the verdict came back as `partial` (some sources did not run, or
+ *     produced findings). Banner switches to the amber "partially
+ *     verified" variant. AAP-80 introduced this state to stop the
+ *     `start_verification` and `/api/discovery/scan` paths from
+ *     hardcoding `'verified'` when only one source had been exercised.
+ *   - `'verification-failed'` — Surface 2 was attempted but errored.
+ *     `reason` carries a short diagnostic so the operator can retry.
+ *     Banner switches to the failure variant.
  *
  * Distinct from `session.meta.verificationStatus` (AAP-63), which
  * tracks the verdict-level surface 2 state (`unverified` / `partial`
@@ -259,6 +265,7 @@ export type StructuredCompliance = CategorizedCompliance;
 export const reportVerificationStatusValues = [
   'interrogation-only',
   'verified',
+  'partially-verified',
   'verification-failed',
 ] as const;
 export type ReportVerificationStatus = typeof reportVerificationStatusValues[number];

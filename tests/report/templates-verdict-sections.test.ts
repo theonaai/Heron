@@ -153,7 +153,34 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     expect(md).toContain('self-reported only');
   });
 
-  it('header risk-level label shows "Verified" prefix when Surface 2 ran', () => {
+  it('AAP-80: header risk-level label shows "Verified" prefix when report.verification.status is verified', () => {
+    // AAP-80 — the header label is now driven by
+    // `report.verification.status`, not `verdict.primaryRiskSource`.
+    // A verified report carries the Verified prefix.
+    const verdict: Verdict = {
+      status: 'verified',
+      deterministicRiskLevel: 'high',
+      primaryRiskLevel: 'high',
+      primaryRiskSource: 'deterministic',
+      discrepancies: [],
+    };
+    const report = {
+      ...baseReport(),
+      verification: {
+        status: 'verified' as const,
+        updatedAt: '2026-05-25T00:00:00.000Z',
+      },
+    };
+    const md = renderMarkdownReport(report, { verdict });
+    expect(md).toContain('Risk Level (Verified)');
+    expect(md).not.toContain('Risk Level (Partially Verified)');
+    expect(md).toContain('HIGH');
+  });
+
+  it('AAP-80: header risk-level label shows "Partially Verified" when report.verification.status is partially-verified', () => {
+    // AAP-80 — discovery-only runs (the steady state pre-AAP-64) yield
+    // a partial verdict and a `'partially-verified'` field. Header
+    // label moves with it.
     const verdict: Verdict = {
       status: 'partial',
       deterministicRiskLevel: 'high',
@@ -161,9 +188,62 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       primaryRiskSource: 'deterministic',
       discrepancies: [],
     };
-    const md = renderMarkdownReport(baseReport(), { verdict });
-    expect(md).toContain('Risk Level (Verified)');
+    const report = {
+      ...baseReport(),
+      verification: {
+        status: 'partially-verified' as const,
+        updatedAt: '2026-05-25T00:00:00.000Z',
+      },
+    };
+    const md = renderMarkdownReport(report, { verdict });
+    expect(md).toContain('Risk Level (Partially Verified)');
+    expect(md).not.toContain('Risk Level (Verified)');
     expect(md).toContain('HIGH');
+    // The amber AAP-80 banner copy is present.
+    expect(md).toContain('Partially verified.');
+  });
+
+  it('AAP-80: header risk-level label shows "Unverified" when report.verification.status is verification-failed', () => {
+    const verdict: Verdict = {
+      status: 'unverified',
+      primaryRiskLevel: 'unverified',
+      primaryRiskSource: 'no-evidence',
+      discrepancies: [],
+    };
+    const report = {
+      ...baseReport(),
+      verification: {
+        status: 'verification-failed' as const,
+        reason: 'workspace_hint missing on disk',
+        updatedAt: '2026-05-25T00:00:00.000Z',
+      },
+    };
+    const md = renderMarkdownReport(report, { verdict });
+    expect(md).toContain('Risk Level (Unverified)');
+    // The failure banner copy renders for verification-failed.
+    expect(md).toContain('Verification failed.');
+  });
+
+  it('AAP-80: header falls back to "UNVERIFIED" when verdict attached but verification field absent (interrogation-only)', () => {
+    // Pre-AAP-80 behaviour: a verdict attached AND no
+    // `verification.status` on the report produced "Risk Level
+    // (Verified)" if the verdict had any Surface 2 evidence. AAP-80
+    // routes the label through `verification.status`, so the absence of
+    // that field falls back to the interrogation-only copy regardless
+    // of the verdict shape — exactly what callers that never patched
+    // the report-level field should now see.
+    const verdict: Verdict = {
+      status: 'partial',
+      deterministicRiskLevel: 'medium',
+      primaryRiskLevel: 'medium',
+      primaryRiskSource: 'deterministic',
+      discrepancies: [],
+    };
+    const md = renderMarkdownReport(baseReport(), { verdict });
+    expect(md).toContain('UNVERIFIED');
+    expect(md).toContain('self-reported only');
+    expect(md).not.toContain('Risk Level (Verified)');
+    expect(md).not.toContain('Risk Level (Partially Verified)');
   });
 
   it('back-compat: report renders without verdict context', () => {

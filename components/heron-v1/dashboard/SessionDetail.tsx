@@ -88,7 +88,13 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const reportJson = liveSession.reportJson as
     | {
         localAgentDiscovery?: unknown;
-        verification?: { status?: 'interrogation-only' | 'verified' | 'verification-failed' };
+        verification?: {
+          status?:
+            | 'interrogation-only'
+            | 'verified'
+            | 'partially-verified'
+            | 'verification-failed';
+        };
       }
     | undefined;
   const hasDiscovery = !!reportJson?.localAgentDiscovery;

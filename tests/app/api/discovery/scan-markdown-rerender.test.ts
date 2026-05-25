@@ -139,10 +139,12 @@ describe('POST /api/discovery/scan — AAP-79 markdown re-render', () => {
     );
     expect(scanRes.status).toBe(200);
 
-    // 5. Read report.md straight from the sessions dir. The pre-fix
-    //    behaviour left the UNVERIFIED stub in place; the fix replaces
-    //    it with the per-source Verification Status table + a
-    //    "Verified" header risk-level marker.
+    // 5. Read report.md straight from the sessions dir. The pre-AAP-80
+    //    behaviour emitted "Risk Level (Verified)" for any verdict with
+    //    Surface 2 evidence; AAP-80 routes the label through
+    //    `report.verification.status`, so a discovery-only scan (no
+    //    OAuth introspection) produces a partial verdict ⇒
+    //    `'partially-verified'` ⇒ "Risk Level (Partially Verified)".
     const mdPath = join(sessionsDir, id, 'report.md');
     const after = await readFile(mdPath, 'utf8');
 
@@ -153,9 +155,12 @@ describe('POST /api/discovery/scan — AAP-79 markdown re-render', () => {
     // The per-source Verification Status table is in place.
     expect(after).toContain('## Verification Status');
     expect(after).toContain('Filesystem discovery');
-    // The header risk-level line carries the Verified prefix because
-    // computeVerdictFromArtifacts produced a non-unverified verdict.
-    expect(after).toContain('Risk Level (Verified)');
+    // The header risk-level line now carries the Partially Verified
+    // prefix (AAP-80).
+    expect(after).toContain('Risk Level (Partially Verified)');
+    expect(after).not.toContain('Risk Level (Verified)');
+    // The amber AAP-80 banner copy renders for the partial state.
+    expect(after).toContain('Partially verified.');
 
     // The fixture's secret VALUE never leaked into the rendered
     // markdown. Same invariant the response-shape test enforces.
