@@ -23,8 +23,90 @@ export interface LLMChatOpts {
   jsonMode?: boolean;
 }
 
-/** Shared upper bound for analyzer-style JSON outputs across providers. */
-const MAX_OUTPUT_TOKENS = 16384;
+/**
+ * Per-provider default `max_tokens` caps for analyzer-style JSON outputs.
+ *
+ * AAP-81 (2026-05-25): provider asymmetry was silently truncating OpenAI
+ * analyzer outputs at 16K while Anthropic/Gemini got 65K. OpenAI users hit
+ * `analysis_failed` 4x more often than Anthropic with no warning. The fix:
+ * per-provider caps grounded in each vendor's physical limits.
+ *
+ * Verified caps (2026-05-25):
+ * - Anthropic Claude Opus 4.7 default: 128K output tokens (platform.claude.com/docs)
+ * - OpenAI gpt-5.5 default: 128K output tokens (developers.openai.com/api/docs)
+ * - Gemini 2.5 Pro: 65K physical cap (ai.google.dev/gemini-api/docs)
+ *
+ * Older models cap lower (see `MODEL_OUTPUT_TOKEN_OVERRIDES`).
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS_BY_PROVIDER: Record<'anthropic' | 'openai' | 'gemini', number> = {
+  anthropic: 128_000,
+  openai: 128_000,
+  gemini: 65_536,
+};
+
+/**
+ * Per-model overrides for known older snapshots whose physical cap is below
+ * their provider's current default. Match keys against the configured model
+ * id (case-insensitive substring match in `maxOutputTokensFor`).
+ */
+const MODEL_OUTPUT_TOKEN_OVERRIDES: Record<string, number> = {
+  // OpenAI legacy
+  'gpt-4o': 16_384,
+  'gpt-4-turbo': 4_096,
+  'gpt-4': 8_192,
+  'gpt-3.5': 4_096,
+  // Anthropic legacy (Claude Sonnet 3.x caps at 8K output)
+  'claude-3-sonnet': 8_192,
+  'claude-3-opus': 4_096,
+  'claude-3-haiku': 4_096,
+  'claude-sonnet-3': 8_192,
+  // Gemini legacy
+  'gemini-1.5-pro': 8_192,
+  'gemini-1.5-flash': 8_192,
+};
+
+/**
+ * Resolve the `max_tokens` cap for a given provider and model. Default is
+ * the per-provider cap from `DEFAULT_MAX_OUTPUT_TOKENS_BY_PROVIDER`. If the
+ * model id contains any of the override keys (case-insensitive substring),
+ * the override wins, clamping to the older model's physical cap so the
+ * provider doesn't 400 on us.
+ */
+export function maxOutputTokensFor(
+  provider: 'anthropic' | 'openai' | 'gemini',
+  model: string,
+): number {
+  const lowered = model.toLowerCase();
+  for (const [needle, cap] of Object.entries(MODEL_OUTPUT_TOKEN_OVERRIDES)) {
+    if (lowered.includes(needle)) return cap;
+  }
+  return DEFAULT_MAX_OUTPUT_TOKENS_BY_PROVIDER[provider];
+}
+
+/**
+ * Bumped from 90s (AAP-81 2026-05-25): at 128K output, a single response can
+ * stream for 60-90s; the prior 90s ceiling became the bottleneck before the
+ * new token cap. Anthropic SDK uses its own default timeout.
+ */
+const ANALYZER_HTTP_TIMEOUT_MS = 180_000;
+
+/**
+ * Log a stderr warning when a provider returns its max-tokens stop reason.
+ * Truncation usually means the analyzer JSON is incomplete and `JSON.parse`
+ * will throw downstream, so surfacing it here makes the root cause visible
+ * instead of hidden behind a generic `analysis_failed`.
+ */
+function warnTruncated(
+  provider: 'anthropic' | 'openai' | 'gemini',
+  model: string,
+  tokensConsumed: number | undefined,
+): void {
+  const tokens = typeof tokensConsumed === 'number' ? `${tokensConsumed}` : 'unknown';
+  console.error(
+    `  LLM:        truncation warning: ${provider} / ${model} hit max_tokens (consumed=${tokens}). ` +
+    `JSON parsing downstream may fail. Consider a model with a larger output cap or shorter input.`,
+  );
+}
 
 export interface LLMClient {
   chat(systemPrompt: string, userMessage: string, opts?: LLMChatOpts): Promise<string>;
@@ -55,11 +137,15 @@ class AnthropicLLMClient implements LLMClient {
   async chat(systemPrompt: string, userMessage: string, _opts?: LLMChatOpts): Promise<string> {
     const response = await this.client.messages.create({
       model: this.model,
-      max_tokens: 65536,
+      max_tokens: maxOutputTokensFor('anthropic', this.model),
       temperature: 0,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     });
+
+    if (response.stop_reason === 'max_tokens') {
+      warnTruncated('anthropic', this.model, response.usage?.output_tokens);
+    }
 
     const block = response.content[0];
     if (block.type !== 'text') {
@@ -74,7 +160,7 @@ class OpenAILLMClient implements LLMClient {
   private model: string;
 
   constructor(apiKey: string, model: string, baseURL?: string) {
-    const opts: ConstructorParameters<typeof OpenAI>[0] = { apiKey, timeout: 90_000 };
+    const opts: ConstructorParameters<typeof OpenAI>[0] = { apiKey, timeout: ANALYZER_HTTP_TIMEOUT_MS };
     if (baseURL) opts.baseURL = baseURL;
     this.client = new OpenAI(opts);
     this.model = model;
@@ -87,16 +173,21 @@ class OpenAILLMClient implements LLMClient {
     // of the AAP-43 core 13). A truncated JSON then fails `JSON.parse` and
     // the analyzer falls back with "Automated analysis failed".
     //
+    // AAP-81 (2026-05-25): `max_tokens` is now resolved per provider+model
+    // via `maxOutputTokensFor`. Default cap for gpt-5.5 is now 128K (was
+    // 16K), matching Anthropic/Gemini. Older models (gpt-4o, gpt-4-turbo)
+    // keep their lower physical caps via the override table.
+    //
     // Two-stage attempt: first try with `response_format: json_object` when
     // the caller asked for JSON mode (this guarantees a parseable payload on
     // OpenAI proper); if the gateway rejects the parameter (LiteLLM /
     // OpenRouter / vLLM passthrough to a non-OpenAI model often does), fall
     // back to the same call without `response_format`. `max_tokens` is set
-    // unconditionally — it's the actual fix for the truncation regression.
+    // unconditionally: it's the actual fix for the truncation regression.
     const baseRequest = {
       model: this.model,
       temperature: 0,
-      max_tokens: MAX_OUTPUT_TOKENS,
+      max_tokens: maxOutputTokensFor('openai', this.model),
       ...(opts?.deterministicSeed !== undefined ? { seed: opts.deterministicSeed } : {}),
       messages: [
         { role: 'system' as const, content: systemPrompt },
@@ -110,7 +201,11 @@ class OpenAILLMClient implements LLMClient {
           ...baseRequest,
           response_format: { type: 'json_object' as const },
         });
-        return response.choices[0]?.message?.content ?? '';
+        const choice = response.choices[0];
+        if (choice?.finish_reason === 'length') {
+          warnTruncated('openai', this.model, response.usage?.completion_tokens);
+        }
+        return choice?.message?.content ?? '';
       } catch (e) {
         // Common gateway error message shapes: "Unrecognized parameter",
         // "Unknown parameter response_format", "not supported by model".
@@ -122,7 +217,11 @@ class OpenAILLMClient implements LLMClient {
     }
 
     const response = await this.client.chat.completions.create(baseRequest);
-    return response.choices[0]?.message?.content ?? '';
+    const choice = response.choices[0];
+    if (choice?.finish_reason === 'length') {
+      warnTruncated('openai', this.model, response.usage?.completion_tokens);
+    }
+    return choice?.message?.content ?? '';
   }
 }
 
@@ -138,8 +237,12 @@ class GeminiLLMClient implements LLMClient {
   async chat(systemPrompt: string, userMessage: string, opts?: LLMChatOpts): Promise<string> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
 
+    // AAP-81 (2026-05-25): always pass our resolved cap explicitly. Gemini's
+    // SDK defaults `maxOutputTokens` to 8,192 silently if omitted (silent
+    // truncation on large analyzer JSON). Our cap is 65K for 2.5 Pro (its
+    // physical max); older 1.5 snapshots fall to 8K via the override map.
     const generationConfig: Record<string, unknown> = {
-      maxOutputTokens: 65536,
+      maxOutputTokens: maxOutputTokensFor('gemini', this.model),
       temperature: 0,
     };
     if (opts?.deterministicSeed !== undefined) {
@@ -152,7 +255,7 @@ class GeminiLLMClient implements LLMClient {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(ANALYZER_HTTP_TIMEOUT_MS),
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: 'user', parts: [{ text: userMessage }] }],
@@ -166,10 +269,19 @@ class GeminiLLMClient implements LLMClient {
     }
 
     const data = await response.json() as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
+      candidates?: {
+        content?: { parts?: { text?: string }[] };
+        finishReason?: string;
+      }[];
+      usageMetadata?: { candidatesTokenCount?: number };
     };
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const candidate = data.candidates?.[0];
+    if (candidate?.finishReason === 'MAX_TOKENS') {
+      warnTruncated('gemini', this.model, data.usageMetadata?.candidatesTokenCount);
+    }
+
+    const text = candidate?.content?.parts?.[0]?.text;
     if (!text) {
       throw new Error('No text in Gemini response');
     }
