@@ -164,6 +164,7 @@ export interface ControlMapping {
  *   aap-43.2026-04-24 — AAP-43 audit-quality pass: determinism, NOT_PROVIDED scrub, conditional GDPR, Annex III employment gating, overall-status label, adversarial probing
  *   aap-44.2026-04-24 — AAP-44 added AIUC-1 (Q2-2026 release, pinned to 2026-04-15); 16 controls across 4 finding-types; 3 new architecture signals (hasMCPOrA2A, hasSubAgents, hasCrossCustomer); per-control gatedBy filter
  *   nist-restore.2026-04-24 — Restored NIST AI RMF as voluntary framework (widely-referenced US-origin AI risk-management framework); GOVERN/MAP/MEASURE/MANAGE controls across 6 finding-types
+ *   aap-83.2026-05-25 — Unified control catalog: every CONTROL_MAPPINGS entry plus 13 router-detector adapter rows plus 5 discovery-detector rows now consolidate into src/compliance/control-catalog.ts. Mapper accepts envelope-shaped input ({declared, actual}); CategorizedCompliance carries a new controlResults: ControlResult[] field with typed-evidence verdicts + provenance. Legacy `all` projection preserved for back-compat.
  */
-export const MAPPING_VERSION = 'nist-restore.2026-04-24' as const;
-// build-cache-bust: 2026-04-24T00:00:00Z — NIST AI RMF restoration
+export const MAPPING_VERSION = 'aap-83.2026-05-25' as const;
+// build-cache-bust: 2026-05-25T00:00:00Z — AAP-83 mapper unification
