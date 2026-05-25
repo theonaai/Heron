@@ -47,9 +47,12 @@ interface KeyClassification {
 }
 
 /**
- * Mirror of the prose-path `envKeyToEvidence` vocabulary. Centralised so
- * any future addition (e.g. new payment processor) updates both the
- * typed and prose paths at once.
+ * Mirror of the prose-path `envKeyToEvidence` vocabulary in
+ * `src/report/recompute-compliance.ts`. NOT centralised yet — both
+ * tables maintain the same set of patterns independently. Any future
+ * addition (e.g. new payment processor) must be made in BOTH locations
+ * until Phase 9 deletes the prose-path synthesis entirely. Tracked as
+ * a maintenance liability in the AAP-83 PR description.
  */
 function classifyKeyName(rawKey: string): KeyClassification {
   const key = rawKey.toLowerCase();

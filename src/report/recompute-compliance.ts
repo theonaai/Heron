@@ -28,11 +28,17 @@
  * `TypedRegulatoryFlag[]` projection is preserved so renderers that
  * already iterate `compliance.all` keep working.
  *
- * `synthesizeDiscoveryEvidence` is still exported because AAP-79 tests
- * exercise it directly (they assert specific token strings appear in
- * the synthesised text). Production callers no longer route through
- * it. Phase 9 will delete the export once those tests are migrated to
- * the typed-detector vocabulary.
+ * `synthesizeDiscoveryEvidence` is the **legacy projection bridge** —
+ * production still appends its output to the transcript on every
+ * discovery recompute (see `runRecompute` below) so the LLM-driven
+ * prose path inside mapper keeps firing alongside the new typed
+ * detectors. This dual-path bridge stays until Phase 4 (renderers
+ * consume `controlResults` directly) lands, then Phase 9 deletes both
+ * the synthesis call and the `synthesizeDiscoveryEvidence` export. AAP-79
+ * tests exercise it directly and will migrate to typed-detector
+ * vocabulary in Phase 9. Do NOT delete the synthesis call before
+ * renderers consume `controlResults`, or discovery-triggered legacy
+ * flags will disappear from `compliance.all` mid-flight.
  *
  * Privacy contract: unchanged. The module never reads credential
  * values. The already-redacted `DiscoveryResult` (output of the
