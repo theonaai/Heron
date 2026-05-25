@@ -52,7 +52,10 @@ import type {
   SourceVerification,
   VerificationReport,
 } from '../verification/types.js';
-import type { DiscoveryResult } from '../discovery/types.js';
+import type {
+  DiscoveredCapability,
+  DiscoveryResult,
+} from '../discovery/types.js';
 
 // ─── Decision impact ────────────────────────────────────────────────────────
 
@@ -116,6 +119,18 @@ export interface ComplianceSignals {
   hasMCPOrA2A: boolean;       // agent uses Model Context Protocol or agent-to-agent
   hasSubAgents: boolean;      // agent spawns sub-agents or chains tool calls
   hasCrossCustomer: boolean;  // agent serves multiple customers in one deployment
+
+  // ── AAP-85 Codex post-review: category-specific explicit negation ──────
+  // True when prose explicitly negates the category (negation cue + category
+  // keyword within a single sentence window). Distinct from "category not
+  // mentioned" (silence). Used by the typed-signal elevation path so a
+  // BAMBOOHR env key cannot fire §4 when the agent has said "we make no
+  // employment decisions", a CANVAS_LMS key cannot fire §3 when the agent
+  // has said "no education decisions", etc.
+  proseExplicitlyNoBiometric: boolean;        // §1
+  proseExplicitlyNoEducation: boolean;        // §3
+  proseExplicitlyNoEmployment: boolean;       // §4
+  proseExplicitlyNoEssentialServices: boolean; // §5
 }
 
 // EU AI Act Annex III §1 — biometric identification/categorisation/emotion recognition.
@@ -220,6 +235,52 @@ const META_LIST_RE = new RegExp(
 // up to whitespace or punctuation).
 const STRUCTURED_TOKEN_RE =
   /\b(?:skill|tool|mcp[_\s]?server|connector|framework|plugin|agent)s?\s*[:=]\s*[\w./-]+/gi;
+
+// AAP-85 Codex post-review — per-category explicit-negation detectors.
+//
+// Each detector takes original (pre-scrub) text and returns true if a
+// negation cue + this category's keyword appear inside a single sentence
+// window. Distinct from "category not mentioned" (silence). The typed-
+// signal elevation path consults these so a typed credential (BAMBOOHR,
+// CANVAS_LMS, AWS_REKOGNITION, PLAID...) cannot lift a category that the
+// agent has explicitly negated in prose.
+//
+// We deliberately scope each window to a single sentence (`[^.!?]`) and
+// cap filler at 80 chars after the negation cue + 40 chars between
+// trailing keywords — matches the existing NEGATION_WINDOW_RE shape.
+
+function makeCategoryNegationRE(categoryKw: string): RegExp {
+  return new RegExp(
+    NEGATION_HEAD + '[^.!?]{0,80}?(?:' + categoryKw + ')',
+    'i',
+  );
+}
+
+// §1 biometric keywords (mirrors BIOMETRIC_PATTERN core terms).
+const BIOMETRIC_NEGATION_RE = makeCategoryNegationRE(
+  'biometric|facial.?recognition|face.?recognit|voiceprint|voice.?biometric|speaker.?recognit|fingerprint|iris|retina|gait|emotion.?recognition|affect.?detect|liveness|anti.?spoof',
+);
+
+// §3 education keywords (mirrors EDUCATION_ASSESSMENT_PATTERN core terms,
+// plus generic "education" / "educational" / "school" / "student" /
+// "training" / "course" so the agent's plain "no education decisions"
+// phrasing is recognised even when they don't reach for the canonical
+// vocabulary).
+const EDUCATION_NEGATION_RE = makeCategoryNegationRE(
+  'student.?evaluation|grading|exam.?scoring|exam.?proctor|admission|enrollment|school.?assignment|academic.?assessment|learning.?assessment|vocational.?training|apprenticeship|education(?:al)?|school|students?|training|courses?',
+);
+
+// §4 employment keywords (mirrors EMPLOYMENT_KW above).
+const EMPLOYMENT_NEGATION_RE = makeCategoryNegationRE(
+  'hir(?:e|ing)?|recruit(?:er|ing)?|employ(?:ee|er|ment)?|candidates?|resumes?|applicants?',
+);
+
+// §5 essential-services keywords (mirrors ESSENTIAL_SERVICES_PATTERN
+// core terms, plus generic "essential services" / "financial" /
+// "banking" / "loan" / "insurance" so plain-language negations match).
+const ESSENTIAL_SERVICES_NEGATION_RE = makeCategoryNegationRE(
+  'credit(?:\\s*scor|worthiness|\\s*rating)|benefit|eligib|welfare|social\\s*service|public\\s*assistance|emergency|911|triage|dispatch|life\\s*insur|health\\s*insur|insur(?:ance)?\\s*pric|insur(?:ance)?\\s*risk|underwrit|essential\\s+services|financial|banking|loans?|payments?|insurance',
+);
 
 /**
  * Strip Annex III keyword matches that appear inside negation windows,
@@ -387,6 +448,16 @@ export function detectSignals(
     businessSystems.length >= 3 ||
     businessSystems.some((s) => s.blastRadius === 'org-wide' || s.blastRadius === 'cross-tenant');
 
+  // ── AAP-85 Codex post-review: per-category explicit-negation flags ─────
+  // Test against original (pre-scrub) `combinedText` — we want to know
+  // whether a negation cue + category keyword appeared. Sanitisation
+  // would scrub the very evidence we are looking for here.
+  const proseExplicitlyNoBiometric = BIOMETRIC_NEGATION_RE.test(combinedText);
+  const proseExplicitlyNoEducation = EDUCATION_NEGATION_RE.test(combinedText);
+  const proseExplicitlyNoEmployment = EMPLOYMENT_NEGATION_RE.test(combinedText);
+  const proseExplicitlyNoEssentialServices =
+    ESSENTIAL_SERVICES_NEGATION_RE.test(combinedText);
+
   return {
     hasSensitivePII,
     hasPublicPII,
@@ -412,80 +483,226 @@ export function detectSignals(
     hasMCPOrA2A,
     hasSubAgents,
     hasCrossCustomer,
+    proseExplicitlyNoBiometric,
+    proseExplicitlyNoEducation,
+    proseExplicitlyNoEmployment,
+    proseExplicitlyNoEssentialServices,
   };
 }
 
 // ─── EU AI Act classification ───────────────────────────────────────────────
 
+// Finding-type → Annex III category mapping. Mirrors the per-category
+// gates in classifyEUAIAct and the rules that were previously inlined in
+// the pre-AAP-85 `isAnnexIIIApplicableForFinding`.
+//
+// AAP-85 Codex post-review (Blocker 3): the per-control gate now drives
+// off `EUAIActClassificationResult.annexIIICategories` instead of
+// re-running prose-only signal checks. This guarantees top-level and
+// per-control rendering agree — when typed evidence elevates §4 in the
+// classification, the §4 controls are no longer hidden by the gate
+// because the gate uses the same source of truth.
+const FINDING_TO_ANNEX_III: Record<FindingType, string[]> = {
+  'sensitive-data': ['§1 biometric'],
+  'decisions-about-people': [
+    '§3 education',
+    '§4 employment',
+    '§5 essential services',
+    '§6 law enforcement',
+  ],
+  'regulatory-flags': ['§3 education', '§6 law enforcement'],
+  // Other finding types do not gate Annex III controls.
+  'excessive-access': [],
+  'write-risk': [],
+  'scope-creep': [],
+  'risk-score': [],
+  // Note: keep this Record exhaustive so a new FindingType triggers a
+  // TypeScript error here and the author has to think about Annex III
+  // applicability explicitly.
+};
+
 /**
- * Return true if at least one Annex III category signal matches for the given
- * finding type. Used both to gate individual `annexIII: true` controls and to
- * compute the overall EU AI Act classification for the audit.
+ * Return true if at least one Annex III category triggered for this
+ * audit applies to the given finding type. Drives off the canonical
+ * classification result (which already factors in both prose AND typed
+ * signals after AAP-85), so per-control gating cannot drift from the
+ * top-level classification.
+ *
+ * AAP-70 invariant remains: when `classifyEUAIAct` returns
+ * `annexIIICategories: []`, this returns false for every finding type
+ * and Annex III controls stay hidden.
  */
 function isAnnexIIIApplicableForFinding(
   findingType: FindingType,
-  signals: ComplianceSignals,
+  classification: EUAIActClassificationResult,
 ): boolean {
-  // AAP-70: mirror the gating in `classifyEUAIAct`. Per-control flags must
-  // match the overall classification — otherwise the report shows
-  // "limited" up top but renders Annex III controls below.
-  // §1 — biometrics: tied to sensitive-data
-  if (
-    findingType === 'sensitive-data' &&
-    signals.hasSensitivePII &&
-    signals.hasBiometricSignal &&
-    signals.hasDecisionsAboutPeople
-  ) {
-    return true;
-  }
-
-  // §3 — education/training assessment: tied to decisions-about-people + regulatory-flags
-  if (
-    (findingType === 'decisions-about-people' ||
-      findingType === 'regulatory-flags') &&
-    signals.isEducationAssessmentContext &&
-    signals.hasDecisionsAboutPeople
-  ) {
-    return true;
-  }
-
-  // §4 — employment decisions: tied to decisions-about-people
-  if (
-    findingType === 'decisions-about-people' &&
-    signals.hasEmploymentDecisions &&
-    signals.decisionImpact !== 'none'
-  ) {
-    return true;
-  }
-
-  // §5 — access to essential services: tied to high-impact decisions
-  if (
-    findingType === 'decisions-about-people' &&
-    signals.hasEssentialServicesSignal &&
-    signals.decisionImpact === 'high' &&
-    signals.hasDecisionsAboutPeople
-  ) {
-    return true;
-  }
-
-  // §6 — law enforcement: tied to decisions-about-people + regulatory-flags
-  if (
-    (findingType === 'decisions-about-people' ||
-      findingType === 'regulatory-flags') &&
-    signals.isLawEnforcementContext &&
-    signals.hasDecisionsAboutPeople &&
-    signals.decisionImpact !== 'none'
-  ) {
-    return true;
-  }
-
-  return false;
+  if (classification.annexIIICategories.length === 0) return false;
+  const applicable = FINDING_TO_ANNEX_III[findingType] ?? [];
+  if (applicable.length === 0) return false;
+  return classification.annexIIICategories.some((c) => applicable.includes(c));
 }
 
 export interface EUAIActClassificationResult {
   classification: EUAIActClassification;
   /** Human-readable category labels that triggered the classification (Annex III §1, §3, etc.). */
   annexIIICategories: string[];
+}
+
+// ─── AAP-85: typed Annex III signals from discovery ────────────────────────
+//
+// Phase 6 of mapper unification. Pre-AAP-85, classifyEUAIAct consumed only
+// the LLM-derived ComplianceSignals. Surface 2 evidence — discovery
+// findings like BAMBOOHR_API_KEY env vars or auth-credential providers
+// such as `greenhouse_api_key` — could not influence Annex III gating.
+//
+// Two design rules govern the typed-signal contribution:
+//   1. ELEVATE, do NOT override. A typed signal can resolve ambiguity
+//      ("we may make employment decisions" + BAMBOOHR_API_KEY → §4 fires).
+//      It cannot flip an explicit negation ("we make no employment
+//      decisions" + BAMBOOHR_API_KEY → §4 does NOT fire). The agent's
+//      self-declaration is authoritative when it is unambiguous.
+//   2. Conservative on §5 / §6. The cost of a false-positive on law
+//      enforcement or essential services is high (see AAP-70 repro). §6
+//      gets NO typed signal at all — there is no reliable env-key
+//      pattern for law enforcement. §5 requires multiple typed signals
+//      OR typed + prose convergence; a lone Stripe key is not enough.
+//
+// The vocabulary below is intentionally narrow. Adding new keys is
+// cheap once a real customer case justifies it; adding speculative
+// patterns invites the AAP-70 class of false positive.
+//
+// Pattern conventions:
+//   - Case-insensitive substring match on the credential name.
+//   - Anchored to the vendor/system identifier, not generic words.
+//   - Word-boundary inside the name (kebab/underscore separators ok).
+
+interface TypedAnnexIIISignals {
+  hasEmploymentTypedSignal: boolean;     // §4 — HRIS / ATS / payroll
+  hasEducationTypedSignal: boolean;       // §3 — edtech / LMS
+  hasBiometricTypedSignal: boolean;       // §1 — face/voice/fingerprint API
+  hasFinancialTypedSignal: boolean;       // §5 — credit / banking / underwriting
+  hasHealthInsuranceTypedSignal: boolean; // §5(d) — health / life insurance
+  /** Specific credential names that produced each signal, for evidence trails. */
+  evidenceKeys: string[];
+}
+
+// Credential names commonly use snake/kebab/camel separators. JS `\b`
+// treats `_` as a word character so a pattern like `\bbamboohr\b` does
+// NOT match `BAMBOOHR_API_KEY`. We therefore anchor each vendor name on
+// either a string boundary or a non-letter separator (`-`, `_`, `.`,
+// space, digit). The vendor token itself is letters-only; the
+// surrounding boundaries are explicit.
+const BOUNDARY = '(?:^|[^a-z])';
+const BOUNDARY_END = '(?:[^a-z]|$)';
+const employmentVendors =
+  'bamboohr|greenhouse|lever|workday|adp|gusto|rippling|paycom|paychex|sapsuccessfactors|smartrecruiters|jobvite|icims|workable|recruitee|breezyhr|namely|justworks';
+const EMPLOYMENT_TYPED_RE = new RegExp(
+  BOUNDARY + '(' + employmentVendors + ')' + BOUNDARY_END,
+  'i',
+);
+
+const educationVendors =
+  'canvas_?lms|blackboard|moodle|brightspace|d2l|powerschool|schoology|edmodo|kahoot|nearpod|gradescope|turnitin|proctorio|examity|honorlock';
+const EDUCATION_TYPED_RE = new RegExp(
+  BOUNDARY + '(' + educationVendors + ')' + BOUNDARY_END,
+  'i',
+);
+
+const biometricVendors =
+  'rekognition|azure_?face|face_?api|kairos|clearview|paravision|cognitec|sensetime|megvii|neoface|innovatrics|veridium|speaker_?verification|voiceprint_?api|nuance_?voice|pindrop';
+const BIOMETRIC_TYPED_RE = new RegExp(
+  BOUNDARY + '(' + biometricVendors + ')' + BOUNDARY_END,
+  'i',
+);
+
+const financialVendors =
+  'plaid|yodlee|finicity|mx_?atrium|equifax|experian|transunion|fico|zestfinance|upstart_?credit|lendingclub|prosper|kabbage|onedeck';
+const FINANCIAL_TYPED_RE = new RegExp(
+  BOUNDARY + '(' + financialVendors + ')' + BOUNDARY_END,
+  'i',
+);
+
+const healthInsuranceVendors =
+  'epic_?fhir|cerner|allscripts|athenahealth|drchrono|practice_?fusion|nextgen_?health|kareo|simplepractice|policygenius|haven_?life|ladder_?life|gerber_?life|metlife_?underwriting|prudential_?underwriting|guardian_?underwriting';
+const HEALTH_INSURANCE_TYPED_RE = new RegExp(
+  BOUNDARY + '(' + healthInsuranceVendors + ')' + BOUNDARY_END,
+  'i',
+);
+
+/**
+ * Walk a DiscoveredCapability[] and return per-category typed signals.
+ * Visits MCP server names, redacted env-key names, auth-credential
+ * provider names, and the MCP server identifier itself. Never reads
+ * secret VALUES — only KEY NAMES (the discovery layer guarantees the
+ * shape).
+ *
+ * Returns an all-false TypedAnnexIIISignals when discoveryFindings is
+ * undefined / empty. The classifier treats absence as "no typed signal"
+ * rather than "negative typed signal" — the prose path remains
+ * authoritative when typed evidence is silent.
+ */
+export function extractTypedAnnexIIISignals(
+  discoveryFindings?: DiscoveredCapability[],
+): TypedAnnexIIISignals {
+  const out: TypedAnnexIIISignals = {
+    hasEmploymentTypedSignal: false,
+    hasEducationTypedSignal: false,
+    hasBiometricTypedSignal: false,
+    hasFinancialTypedSignal: false,
+    hasHealthInsuranceTypedSignal: false,
+    evidenceKeys: [],
+  };
+  if (!discoveryFindings || discoveryFindings.length === 0) return out;
+
+  const ingest = (name: string) => {
+    if (EMPLOYMENT_TYPED_RE.test(name)) {
+      out.hasEmploymentTypedSignal = true;
+      out.evidenceKeys.push(name);
+    }
+    if (EDUCATION_TYPED_RE.test(name)) {
+      out.hasEducationTypedSignal = true;
+      out.evidenceKeys.push(name);
+    }
+    if (BIOMETRIC_TYPED_RE.test(name)) {
+      out.hasBiometricTypedSignal = true;
+      out.evidenceKeys.push(name);
+    }
+    if (FINANCIAL_TYPED_RE.test(name)) {
+      out.hasFinancialTypedSignal = true;
+      out.evidenceKeys.push(name);
+    }
+    if (HEALTH_INSURANCE_TYPED_RE.test(name)) {
+      out.hasHealthInsuranceTypedSignal = true;
+      out.evidenceKeys.push(name);
+    }
+  };
+
+  for (const cap of discoveryFindings) {
+    if (cap.kind === 'mcp_server') {
+      ingest(cap.name);
+      for (const k of cap.redactedEnvKeys ?? []) ingest(k);
+    } else if (cap.kind === 'auth_credential') {
+      ingest(cap.provider);
+    } else if (cap.kind === 'plugin') {
+      ingest(cap.name);
+    }
+    // SkillCapability has no name field useful for vendor matching.
+  }
+
+  return out;
+}
+
+/**
+ * AAP-85: input envelope for the typed-signal-aware classifyEUAIAct.
+ * Mirrors the AAP-83 declared/actual split — `proseSignals` are the
+ * Surface 1 ComplianceSignals derived from the LLM-extracted transcript,
+ * `discoveryFindings` are the Surface 2 capabilities returned by the
+ * discovery layer. Both optional in callers but proseSignals required
+ * here (the prose path remains authoritative).
+ */
+export interface ClassifyEUAIActInput {
+  proseSignals: ComplianceSignals;
+  discoveryFindings?: DiscoveredCapability[];
 }
 
 /**
@@ -498,10 +715,29 @@ export interface EUAIActClassificationResult {
  * Prohibited / minimal tiers are out-of-scope for v1 signal detection; we
  * surface `high-risk` if any Annex III signal matches, otherwise `limited`
  * (which maps to Art. 50 transparency obligations only).
+ *
+ * AAP-85 — accepts either the legacy `ComplianceSignals` directly OR the
+ * `ClassifyEUAIActInput` envelope with optional `discoveryFindings`. The
+ * envelope form lets typed Surface 2 evidence (HRIS / ATS / edtech /
+ * biometric / financial credential names) elevate classification when
+ * the prose is ambiguous, without ever overriding an explicit prose
+ * negation.
  */
 export function classifyEUAIAct(
-  signals: ComplianceSignals,
+  input: ComplianceSignals | ClassifyEUAIActInput,
 ): EUAIActClassificationResult {
+  // Normalise the input shape. Callers that still pass bare
+  // ComplianceSignals (every pre-AAP-85 caller, plus all the AAP-70
+  // gating tests) keep working unchanged — the typed-signal branch is
+  // simply skipped because discoveryFindings is undefined.
+  const isEnvelope = (
+    v: ComplianceSignals | ClassifyEUAIActInput,
+  ): v is ClassifyEUAIActInput =>
+    (v as ClassifyEUAIActInput).proseSignals !== undefined;
+  const signals = isEnvelope(input) ? input.proseSignals : input;
+  const typed = extractTypedAnnexIIISignals(
+    isEnvelope(input) ? input.discoveryFindings : undefined,
+  );
   // AAP-70: every Annex III category requires `hasDecisionsAboutPeople` at
   // minimum. §6 / §5 also require a non-trivial `decisionImpact`. §4 keeps
   // its prior gate (employment decisions are implicitly decisions about
@@ -517,32 +753,161 @@ export function classifyEUAIAct(
   // whose transcripts merely mentioned compliance categories in negations,
   // skill names, or enumerated meta-lists. See AAP-70 ticket for the
   // 2026-05-21 Claude Code self-audit repro.
+  // AAP-85: ELEVATE vs OVERRIDE rule.
+  //
+  // Prose negation is authoritative. If the agent has explicitly declared
+  // `makesDecisionsAboutPeople: false` AND no decision impact, NO typed
+  // signal can re-classify it as high-risk. This is the AAP-70 invariant —
+  // the load-bearing Claude Code self-audit fixture would regress if we
+  // let a stray HRIS env key flip the classification.
+  //
+  // Typed signals only contribute when:
+  //   (a) the prose has not negated decisions-about-people, AND
+  //   (b) the prose category signal is ambiguous (not firing strongly),
+  //       so the typed evidence resolves the ambiguity rather than
+  //       overriding a clear "no".
+  //
+  // The `proseExplicitlyNegated` predicate captures the AAP-70 shape: the
+  // agent answered Q on decisions-about-people with `false` AND no impact
+  // was inferred. Typed signals are silenced in this case.
+  //
+  // AAP-85 Codex post-review: in addition to the whole-classification
+  // negation above, each Annex III category honours its own explicit
+  // negation. `signals.proseExplicitlyNo<X>` is true when the agent's
+  // prose contains a negation cue + keyword for that category (e.g.
+  // "we make no employment decisions", "no biometric processing",
+  // "no education decisions"). Typed elevation must respect both gates:
+  //   - whole-classification negation (agent makes no decisions at all),
+  //   - category-specific negation (agent explicitly excludes THIS area).
+  // A BAMBOOHR env key in an agent that has said "no employment decisions"
+  // does NOT elevate §4, even when prose decisions-about-people is true
+  // (the agent may make decisions about people in some other domain).
+  const proseExplicitlyNegated =
+    !signals.hasDecisionsAboutPeople && signals.decisionImpact === 'none';
+
   const categories: string[] = [];
+
+  // §1 biometric — prose path unchanged. Typed signal can elevate only
+  // when prose also reports sensitive PII + decisions-about-people; we
+  // refuse to lift §1 on typed-only evidence because the biometric
+  // vendor list (AWS Rekognition, Azure Face, ...) is used widely for
+  // non-Annex-III purposes (photo organisation, accessibility).
   if (
     signals.hasBiometricSignal &&
     signals.hasSensitivePII &&
     signals.hasDecisionsAboutPeople
-  )
+  ) {
     categories.push('§1 biometric');
-  if (
-    signals.isEducationAssessmentContext &&
+  } else if (
+    !proseExplicitlyNegated &&
+    !signals.proseExplicitlyNoBiometric &&
+    typed.hasBiometricTypedSignal &&
+    signals.hasSensitivePII &&
     signals.hasDecisionsAboutPeople
-  )
+  ) {
+    // Typed elevation path — biometric vendor + sensitive PII + decisions.
+    // Still requires the prose-side PII + decision gates so a lone
+    // Rekognition key in a photo-tagging agent doesn't fire §1.
+    // Category-specific negation: if the agent's prose explicitly says
+    // "no biometric processing", honour it even when an AWS Rekognition
+    // credential is present (Rekognition is widely used for accessibility,
+    // moderation, search — not always biometric ID).
+    categories.push('§1 biometric');
+  }
+
+  // §3 education — typed signal elevates when prose decisions-about-people
+  // is true but EDUCATION_ASSESSMENT_PATTERN didn't fire. Common shape:
+  // LMS integration where the prose talks about "students" without using
+  // the canonical "grading" / "assessment" vocabulary.
+  if (signals.isEducationAssessmentContext && signals.hasDecisionsAboutPeople) {
     categories.push('§3 education');
-  if (signals.hasEmploymentDecisions && signals.decisionImpact !== 'none')
+  } else if (
+    !proseExplicitlyNegated &&
+    !signals.proseExplicitlyNoEducation &&
+    typed.hasEducationTypedSignal &&
+    signals.hasDecisionsAboutPeople
+  ) {
+    // Category-specific negation: agent prose saying "no education
+    // decisions" / "not used in schools" must hold even if a CANVAS_LMS
+    // token is in the workspace (could be a parent's homework helper
+    // that decides about people in some non-education sense).
+    categories.push('§3 education');
+  }
+
+  // §4 employment — typed signal is strongest here per AAP-85 spec.
+  // BAMBOOHR / GREENHOUSE / ADP / Workday in the credential surface
+  // is a high-confidence employment indicator. Elevation requires the
+  // prose to NOT have negated employment context — if the agent
+  // explicitly says "no employment decisions", we honour that.
+  if (signals.hasEmploymentDecisions && signals.decisionImpact !== 'none') {
     categories.push('§4 employment');
+  } else if (
+    !proseExplicitlyNegated &&
+    !signals.proseExplicitlyNoEmployment &&
+    typed.hasEmploymentTypedSignal &&
+    signals.hasDecisionsAboutPeople &&
+    signals.decisionImpact !== 'none' &&
+    // Prose must not have explicitly negated employment. We treat the
+    // mapper's `hasEmploymentDecisions: false + decisionImpact !== none`
+    // case as "ambiguous" (e.g. decisions about people but not extracted
+    // as employment by the LLM). This is the canonical elevation case
+    // from the AAP-85 brief.
+    //
+    // The `proseExplicitlyNoEmployment` check above adds the category-
+    // specific negation gate: when the agent says "we make no employment
+    // decisions" but does make OTHER decisions about people, BAMBOOHR
+    // must NOT fire §4. The pre-Codex code only checked the
+    // whole-classification gate, which would let typed elevate here.
+    !signals.hasEmploymentDecisions
+  ) {
+    categories.push('§4 employment');
+  }
+
+  // §5 essential services — conservative. Typed signal alone (e.g. a
+  // single Stripe key) is NOT enough; ticket spec explicitly calls out
+  // the false-positive risk on financial integrations. Typed elevation
+  // requires (a) high-impact decisions AND (b) BOTH typed financial AND
+  // typed health-insurance, OR typed + the prose essential-services
+  // signal already firing. A lone Plaid key in a budgeting agent that
+  // makes high-impact decisions about people still won't fire §5 —
+  // there has to be evidence that the decisions are essential-services
+  // decisions, not just that financial data is being processed.
   if (
     signals.hasEssentialServicesSignal &&
     signals.decisionImpact === 'high' &&
     signals.hasDecisionsAboutPeople
-  )
+  ) {
     categories.push('§5 essential services');
+  } else if (
+    !proseExplicitlyNegated &&
+    !signals.proseExplicitlyNoEssentialServices &&
+    signals.decisionImpact === 'high' &&
+    signals.hasDecisionsAboutPeople &&
+    // Convergence requirement: typed financial+health-insurance, or one
+    // typed signal alongside the prose essential-services regex. Lone
+    // Stripe / Plaid does NOT fire on its own.
+    ((typed.hasFinancialTypedSignal && typed.hasHealthInsuranceTypedSignal) ||
+      (typed.hasFinancialTypedSignal && signals.hasEssentialServicesSignal) ||
+      (typed.hasHealthInsuranceTypedSignal && signals.hasEssentialServicesSignal))
+  ) {
+    // Category-specific negation: explicit "no essential services" in
+    // prose blocks typed convergence too. Defensive even though the
+    // convergence gate is already conservative.
+    categories.push('§5 essential services');
+  }
+
+  // §6 law enforcement — NO typed signal per ticket. The credential
+  // surface has no reliable law-enforcement pattern (no widely-deployed
+  // border / immigration / forensic API with a recognisable key name),
+  // and the cost of a false positive is the AAP-70 repro. Prose path
+  // unchanged.
   if (
     signals.isLawEnforcementContext &&
     signals.hasDecisionsAboutPeople &&
     signals.decisionImpact !== 'none'
-  )
+  ) {
     categories.push('§6 law enforcement');
+  }
 
   if (categories.length > 0) {
     return { classification: 'high-risk', annexIIICategories: categories };
@@ -831,11 +1196,48 @@ export interface MapFindingsInput {
  * — additive, no behaviour change for legacy reports.
  */
 export function mapFindings(input: MapFindingsInput): CategorizedCompliance {
-  const out = mapFindingsCore(input.declared);
+  // AAP-85: forward Surface 2 discovery capabilities into the core so
+  // `classifyEUAIAct` can see typed Annex III signals (HRIS / ATS /
+  // edtech / biometric / financial credentials). When `actual.discovery`
+  // is absent or null, the typed branch is silent and the prose-only
+  // path runs unchanged (AAP-70 invariant preserved).
+  const discoveryFindings = collectDiscoveryCapabilities(input.actual);
+  const out = mapFindingsCore(input.declared, discoveryFindings);
   if (input.actual) {
     out.controlResults = runTypedDetectors(input.actual);
   }
   return out;
+}
+
+/**
+ * AAP-85 helper — flatten `actual.discovery.agents[].capabilities[]`
+ * into a single `DiscoveredCapability[]` for the classifier. Returns
+ * undefined when discovery is absent, so the classifier's typed branch
+ * stays dormant (avoids triggering the back-compat overload mismatch).
+ *
+ * We deliberately walk `capabilities` (the unified AAP-58 list) rather
+ * than `mcpServers` alone — the former already re-emits MCP servers
+ * with `kind: 'mcp_server'` AND carries plugins + auth credentials.
+ * Legacy DiscoveryResult blobs without `capabilities` populated fall
+ * back to walking `mcpServers` directly so older sessions still benefit.
+ */
+function collectDiscoveryCapabilities(
+  actual?: ActualEvidence,
+): DiscoveredCapability[] | undefined {
+  if (!actual || !actual.discovery) return undefined;
+  const caps: DiscoveredCapability[] = [];
+  for (const agent of actual.discovery.agents ?? []) {
+    if (agent.capabilities && agent.capabilities.length > 0) {
+      caps.push(...agent.capabilities);
+    } else {
+      // Legacy fallback — synthesise mcp_server capabilities for old
+      // discovery blobs persisted before AAP-58.
+      for (const srv of agent.mcpServers ?? []) {
+        caps.push({ kind: 'mcp_server', ...srv });
+      }
+    }
+  }
+  return caps;
 }
 
 /**
@@ -901,14 +1303,23 @@ export function mapFindingsToRiskCategories(
  * then optionally enriches the output with typed-evidence detector
  * results.
  */
-function mapFindingsCore(input: DeclaredEvidence): CategorizedCompliance {
+function mapFindingsCore(
+  input: DeclaredEvidence,
+  discoveryFindings?: DiscoveredCapability[],
+): CategorizedCompliance {
   const signals = detectSignals(
     input.systems,
     input.transcript,
     input.makesDecisionsAboutPeople === true,
     input.decisionMakingDetails,
   );
-  const euAiActClassification = classifyEUAIAct(signals);
+  // AAP-85: typed signals from discovery contribute to Annex III gating
+  // ONLY when the prose did not explicitly negate decisions-about-people.
+  // See `classifyEUAIAct` for the ELEVATE-not-OVERRIDE invariant.
+  const euAiActClassification = classifyEUAIAct({
+    proseSignals: signals,
+    ...(discoveryFindings !== undefined ? { discoveryFindings } : {}),
+  });
 
   const mandatory = emptyBucket();
   const voluntary = emptyBucket();
@@ -923,7 +1334,10 @@ function mapFindingsCore(input: DeclaredEvidence): CategorizedCompliance {
     //    signal set does not fire for this finding type.
     //  - drop controls tagged gatedBy=[...] when none of the named signals
     //    are truthy (AIUC-1 architecture gating: MCP, sub-agents, multi-customer).
-    const annexIIIOn = isAnnexIIIApplicableForFinding(mapping.findingType, signals);
+    // AAP-85 Codex post-review (Blocker 3): drive the gate off the
+    // already-computed classification result so per-control rendering
+    // cannot diverge from the top-level classification.
+    const annexIIIOn = isAnnexIIIApplicableForFinding(mapping.findingType, euAiActClassification);
     const applicableControls = mapping.controls.filter((ctrl) => {
       if (ctrl.frameworkId === 'eu-ai-act' && ctrl.annexIII === true) {
         if (!annexIIIOn) return false;

@@ -41,6 +41,10 @@ function makeSignals(over: Partial<ComplianceSignals> = {}): ComplianceSignals {
     hasMCPOrA2A: false,
     hasSubAgents: false,
     hasCrossCustomer: false,
+    proseExplicitlyNoBiometric: false,
+    proseExplicitlyNoEducation: false,
+    proseExplicitlyNoEmployment: false,
+    proseExplicitlyNoEssentialServices: false,
     ...over,
   };
 }

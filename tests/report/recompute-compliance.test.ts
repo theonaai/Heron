@@ -200,3 +200,77 @@ describe('AAP-79 — recomputeComplianceWithDiscovery', () => {
     expect(withUndefined.signals).toEqual(withEmpty.signals);
   });
 });
+
+describe('AAP-85 — typed Annex III signals flow through recomputeComplianceWithDiscovery', () => {
+  // The recompute path already feeds DiscoveryResult into mapFindings via
+  // `actual.discovery`. AAP-85 wires that envelope into classifyEUAIAct so
+  // typed HRIS / ATS / edtech / biometric / financial credential names
+  // can elevate Annex III classification. These tests pin the end-to-end
+  // flow (recompute → mapFindings → classifyEUAIAct), independent of the
+  // unit-level tests in tests/compliance/aap-85-classify-typed-signals.ts.
+  function transcriptAmbiguousEmployment(): QAPair[] {
+    return [
+      {
+        category: 'overview',
+        question: 'What does the agent do?',
+        answer:
+          'Reviews application submissions and decides who advances. Decisions are binding.',
+      },
+    ];
+  }
+
+  function discoveryWithCredential(provider: string): DiscoveryResult {
+    return {
+      agents: [
+        {
+          runtime: 'codex',
+          configPath: '/Users/me/.codex/config.toml',
+          mcpServers: [],
+          capabilities: [
+            {
+              kind: 'auth_credential',
+              runtime: 'codex',
+              configPath: '/Users/me/.codex/auth.json',
+              provider,
+              hasValue: true,
+              valueShape: 'apiKey',
+            },
+          ],
+        },
+      ],
+      findings: [],
+      scannedAt: '2026-05-25T00:00:00.000Z',
+      scannedPaths: [],
+    };
+  }
+
+  it('BAMBOOHR_API_KEY in discovery + decisions-about-people transcript → §4 employment fires', () => {
+    const out = recomputeComplianceWithDiscovery({
+      analyzer: {
+        systems: analyzerSystems,
+        makesDecisionsAboutPeople: true,
+        decisionMakingDetails:
+          'Agent reviews application submissions and decides advancement; decisions are binding.',
+      },
+      transcript: transcriptAmbiguousEmployment(),
+      discovery: discoveryWithCredential('BAMBOOHR_API_KEY'),
+    });
+    expect(out.euAiActClassification.classification).toBe('high-risk');
+    expect(out.euAiActClassification.annexIIICategories).toContain(
+      '§4 employment',
+    );
+  });
+
+  it('BAMBOOHR_API_KEY in discovery + explicit no-decisions transcript → stays limited (AAP-70 invariant)', () => {
+    const out = recomputeComplianceWithDiscovery({
+      analyzer: {
+        systems: analyzerSystems,
+        makesDecisionsAboutPeople: false,
+      },
+      transcript: transcriptWithoutPII(),
+      discovery: discoveryWithCredential('BAMBOOHR_API_KEY'),
+    });
+    expect(out.euAiActClassification.classification).toBe('limited');
+    expect(out.euAiActClassification.annexIIICategories).toEqual([]);
+  });
+});
