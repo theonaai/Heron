@@ -63,8 +63,37 @@ export interface DiscoveredMcpServer {
  *   - `skipped` — enumeration was intentionally not attempted (e.g. HTTP
  *                 transport with no credential we could safely reuse).
  *                 `reason` explains why.
+ *
+ * AAP-82 — `source` records who produced the enumeration. Defaults to
+ * `connector` (Heron called `tools/list` itself); `agent-reported`
+ * marks rows the audited agent forwarded via the
+ * `report_mcp_tools_list` MCP tool.
  */
 export type McpToolEnumerationState = 'ok' | 'failed' | 'skipped';
+
+/**
+ * AAP-82 — provenance of a `DiscoveredMcpTool`. Two values today:
+ *
+ *   - `connector`      — Heron opened the MCP connection itself
+ *                        (stdio spawn, or HTTP with a credential the
+ *                        enumerator was handed) and called `tools/list`.
+ *                        This is the AAP-75 baseline.
+ *   - `agent-reported` — the audited agent called `tools/list` against
+ *                        its own MCP server using credentials Heron
+ *                        never sees, and forwarded the raw response via
+ *                        the `report_mcp_tools_list` MCP tool. Trust
+ *                        model: same as any other self-report — an
+ *                        honest agent gives Heron a complete inventory;
+ *                        an adversarial agent can omit or rewrite
+ *                        entries. The verdict ramp + classification do
+ *                        not branch on `source`; downstream code that
+ *                        wants to mark agent-reported rows in the UI
+ *                        keys off this field.
+ *
+ * Optional + defaulted-to-`connector` in callers so legacy report.json
+ * blobs persisted before AAP-82 keep deserialising cleanly.
+ */
+export type DiscoveredMcpToolSource = 'connector' | 'agent-reported';
 
 export interface DiscoveredMcpTool {
   /** Tool name as advertised by `tools/list`. */
@@ -81,6 +110,11 @@ export interface DiscoveredMcpTool {
    * `src/discovery/tool-classifier.ts` for the resolution rules.
    */
   classification: 'read' | 'write' | 'unknown';
+  /**
+   * AAP-82 — where this tool entry came from. Optional for backward
+   * compatibility; absence means `connector`.
+   */
+  source?: DiscoveredMcpToolSource;
 }
 
 export interface McpToolEnumeration {
@@ -91,6 +125,13 @@ export interface McpToolEnumeration {
   reason?: string;
   /** ISO-8601 timestamp of when the enumeration attempt completed. */
   attemptedAt: string;
+  /**
+   * AAP-82 — who produced this enumeration. Optional for backward
+   * compatibility; absence means `connector` (Heron called `tools/list`
+   * itself). `agent-reported` marks responses the audited agent
+   * forwarded via the `report_mcp_tools_list` MCP tool.
+   */
+  source?: DiscoveredMcpToolSource;
 }
 
 export type DiscoveredRuntime =

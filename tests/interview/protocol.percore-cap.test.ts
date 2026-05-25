@@ -365,10 +365,10 @@ describe('follow-up counter attributes to the most recent core (AAP-77)', () => 
   });
 });
 
-// ─── End-to-end sanity: synthetic 15-question walk ───────────────────────────
+// ─── End-to-end sanity: synthetic 16-question walk ───────────────────────────
 
-describe('synthetic walk: total follow-ups respects 15 × 2 ceiling (AAP-77 sanity)', () => {
-  it('walking every core question with vague answers yields ≤ 30 follow-ups', async () => {
+describe('synthetic walk: total follow-ups respects 16 × 2 ceiling (AAP-77 sanity)', () => {
+  it('walking every core question with vague answers yields ≤ 32 follow-ups', async () => {
     const protocol = createProtocol(alwaysFollowsUpLLM()); // no global cap
     const core = getAllQuestionsSorted();
 
@@ -395,9 +395,9 @@ describe('synthetic walk: total follow-ups respects 15 × 2 ceiling (AAP-77 sani
       expect(count, `core ${qid} exceeded per-Q cap of 2`).toBeLessThanOrEqual(2);
     }
 
-    // Total follow-ups must respect 15 × 2 = 30.
+    // Total follow-ups must respect 16 × 2 = 32 (AAP-82 added one core).
     const total = [...followUpsPerCore.values()].reduce((a, b) => a + b, 0);
-    expect(total, `total follow-ups across all cores`).toBeLessThanOrEqual(30);
+    expect(total, `total follow-ups across all cores`).toBeLessThanOrEqual(32);
 
     // Pre-fix: in multi-core categories the cap never fired so the
     // outer loop's `for (j ... < 5)` bound was reached — count would be

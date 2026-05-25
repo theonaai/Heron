@@ -248,6 +248,53 @@ export interface StartVerificationInput {
   workspace_hint?: string;
 }
 
+// ─── report_mcp_tools_list (AAP-82) ───────────────────────────────────────
+
+/**
+ * AAP-82 — input for the `report_mcp_tools_list` MCP tool.
+ *
+ * The audited agent calls this once per HTTP/SSE MCP server it talks to
+ * after Q14. `session_id` ties the forward to the live audit. `server_name`
+ * mirrors the name the agent declared in `systems_enum`. `raw_response`
+ * is the verbatim JSON-RPC `tools/list` body the agent received — Heron
+ * unwraps the envelope itself (`{ jsonrpc, id, result: { tools } }` /
+ * `{ result: { tools } }` / `{ tools }`).
+ *
+ * Trust model: same as transcript answers. Heron never sees the
+ * credentials the agent used to call its MCP server. An honest agent
+ * forwards a complete inventory; an adversarial agent can omit or
+ * rewrite entries. See AAP-82 §"Trust model note".
+ */
+export interface ReportMcpToolsListInput {
+  session_id: string;
+  server_name: string;
+  raw_response: Record<string, unknown>;
+}
+
+/**
+ * AAP-82 — output for `report_mcp_tools_list`. Echoes the projected
+ * counts so the agent can log how many tools Heron actually accepted
+ * (parse failures land on `state: 'failed'` with zero tools).
+ */
+export interface ReportMcpToolsListOutput {
+  session_id: string;
+  server_name: string;
+  /** `ok | failed` after parsing — `skipped` is not possible on this path. */
+  state: 'ok' | 'failed';
+  /** Count of projected tools when `state === 'ok'`. */
+  tool_count: number;
+  /** Short human-readable reason when `state === 'failed'`. */
+  reason?: string;
+  /** ISO-8601 timestamp the forward was accepted at. */
+  received_at: string;
+  /**
+   * True when this call replaced an earlier `report_mcp_tools_list` for
+   * the same `server_name`. Lets the agent log the spec'd "last write
+   * wins" warning when it suspects accidental duplication.
+   */
+  replaced_previous?: boolean;
+}
+
 /**
  * Output for `start_verification`. The handler returns a structured
  * summary; the dashboard's discovery section + the markdown report

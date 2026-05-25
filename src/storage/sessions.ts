@@ -713,6 +713,113 @@ export async function submitToolCallAnswer(
   return entry;
 }
 
+// ─── AAP-82 — agent-reported MCP `tools/list` storage ────────────────────
+
+/**
+ * AAP-82 — one server's `tools/list` response as forwarded by the audited
+ * agent via the `report_mcp_tools_list` MCP tool. Persisted per session
+ * under `<session>/reported-mcp-tools.json` keyed by `serverName`. Last
+ * write wins (per AAP-82 spec edge case: "Multiple report_mcp_tools_list
+ * for same server -> last write wins, log warning").
+ *
+ * The raw response is the unmodified JSON-RPC body the agent received
+ * from its MCP server. Heron parses + classifies via
+ * `parseAgentReportedToolsList`; the projected `McpToolEnumeration` is
+ * cached alongside the raw response so dashboard reads don't have to
+ * re-parse on every render.
+ */
+export interface ReportedMcpToolsRecord {
+  /** Server name the agent attributed the response to. */
+  serverName: string;
+  /** ISO-8601 timestamp of when Heron received the forward. */
+  receivedAt: string;
+  /** Raw JSON-RPC `tools/list` response body as forwarded. */
+  rawResponse: unknown;
+  /** Projected enumeration (parsed + classified). Cached for dashboard reads. */
+  enumeration: import('../discovery/types.js').McpToolEnumeration;
+  /** True when this write replaced an earlier record for the same serverName. */
+  replacedPrevious?: boolean;
+}
+
+/**
+ * Persist one agent-forwarded `tools/list` response. Subsequent writes
+ * for the same `serverName` REPLACE the earlier record — the spec's
+ * "last write wins" semantics. Returns the freshly stored record so the
+ * caller (the `report_mcp_tools_list` handler) can echo the projection
+ * counts back to the agent.
+ */
+export async function saveReportedMcpToolsList(
+  id: string,
+  record: Omit<ReportedMcpToolsRecord, 'replacedPrevious'>,
+): Promise<ReportedMcpToolsRecord> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const dir = await ensureSessionsDir();
+  await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
+  const path = join(dir, id, 'reported-mcp-tools.json');
+  // Read existing index (tolerate missing / malformed file by treating as empty).
+  let existing: Record<string, ReportedMcpToolsRecord> = {};
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, ReportedMcpToolsRecord>;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // SyntaxError / read error — fall through to fresh write, don't
+      // crash the audit loop because of a single corrupt cache file.
+    }
+  }
+  const replacedPrevious = Object.prototype.hasOwnProperty.call(existing, record.serverName);
+  const stored: ReportedMcpToolsRecord = { ...record, replacedPrevious };
+  existing[record.serverName] = stored;
+  await atomicWriteFile(path, JSON.stringify(existing, null, 2));
+  const next: StoredMeta = { ...meta, updatedAt: nowIso() };
+  await writeMeta(id, next);
+  return stored;
+}
+
+/**
+ * Read every reported `tools/list` record persisted for this session.
+ * Returns `[]` when the session has no `reported-mcp-tools.json` yet
+ * (no agent ever called `report_mcp_tools_list`). Order is insertion
+ * order of the JSON object — readers must not rely on it.
+ */
+export async function listReportedMcpTools(
+  id: string,
+): Promise<ReportedMcpToolsRecord[]> {
+  if (!SESSION_ID_REGEX.test(id)) return [];
+  const path = join(getSessionsDir(), id, 'reported-mcp-tools.json');
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const out: ReportedMcpToolsRecord[] = [];
+  for (const value of Object.values(parsed as Record<string, unknown>)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      typeof (value as ReportedMcpToolsRecord).serverName === 'string'
+    ) {
+      out.push(value as ReportedMcpToolsRecord);
+    }
+  }
+  return out;
+}
+
 export async function softDeleteSession(id: string): Promise<void> {
   assertValidId(id);
   const meta = await readMeta(id);

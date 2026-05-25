@@ -43,6 +43,7 @@ import { classifyTool } from './tool-classifier.js';
 import type {
   DiscoveredMcpServer,
   DiscoveredMcpTool,
+  DiscoveredMcpToolSource,
   McpToolEnumeration,
 } from './types.js';
 
@@ -221,11 +222,12 @@ export async function enumerateMcpServerTools(
         attemptedAt: now().toISOString(),
       };
     }
-    const tools = projectTools(server.name, result.value.tools);
+    const tools = projectTools(server.name, result.value.tools, 'connector');
     return {
       state: 'ok',
       tools,
       attemptedAt: now().toISOString(),
+      source: 'connector',
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -252,10 +254,16 @@ export async function enumerateMcpServerTools(
  * contract: only the documented fields cross over; `_extra` is dropped
  * entirely so unknown forward-compatible MCP fields cannot leak into
  * report.json (where they could contain auth-bearing keys).
+ *
+ * AAP-82 — `source` is stamped onto every projected row so downstream
+ * code can tell connector-sourced enumerations apart from
+ * agent-forwarded ones without re-deriving from the parent
+ * `McpToolEnumeration.source`.
  */
 function projectTools(
   serverName: string,
   rawTools: ToolInventoryRecord['tools'],
+  source: DiscoveredMcpToolSource,
 ): DiscoveredMcpTool[] {
   const out: DiscoveredMcpTool[] = [];
   for (const raw of rawTools) {
@@ -267,6 +275,7 @@ function projectTools(
         ...(raw.description !== undefined ? { description: raw.description } : {}),
         ...(raw.annotations !== undefined ? { annotations: raw.annotations } : {}),
       }),
+      source,
     };
     if (raw.description !== undefined) projected.description = raw.description;
     if (raw.inputSchema !== undefined) projected.inputSchema = raw.inputSchema;
@@ -300,4 +309,126 @@ export async function enumerateAllServers<
     agent.mcpServers = enumerated;
   }
   return agents;
+}
+
+// ─── AAP-82 — agent-forwarded `tools/list` parsing ────────────────────────
+
+/**
+ * AAP-82 — parse a JSON-RPC `tools/list` response that the audited
+ * agent forwarded via the `report_mcp_tools_list` MCP tool, and project
+ * it into the same `McpToolEnumeration` shape `enumerateMcpServerTools`
+ * produces for connector-sourced enumerations.
+ *
+ * The agent forwards the response **verbatim** — we never assume a
+ * specific top-level wrapper. We accept all of the following shapes the
+ * MCP SDK has historically produced, in order of preference:
+ *
+ *   1. Full JSON-RPC envelope: `{ jsonrpc: "2.0", id: 1, result: { tools: [...] } }`
+ *   2. Result-only blob:       `{ result: { tools: [...] } }`
+ *   3. Bare result body:       `{ tools: [...] }`
+ *
+ * Anything else collapses to `state: 'failed'` with `reason: 'parse-error'`.
+ * Per-tool projection mirrors `projectTools` above so the classification
+ * + verdict ramp see identical structure regardless of source.
+ *
+ * Never throws — the result-style contract matches `enumerateMcpServerTools`.
+ */
+export interface ParseAgentReportedOptions {
+  /** Override the wall-clock used for `attemptedAt`. Tests only. */
+  now?: () => Date;
+}
+
+export function parseAgentReportedToolsList(
+  serverName: string,
+  rawResponse: unknown,
+  opts: ParseAgentReportedOptions = {},
+): McpToolEnumeration {
+  const now = opts.now ?? (() => new Date());
+  const attemptedAt = now().toISOString();
+
+  if (rawResponse === null || typeof rawResponse !== 'object' || Array.isArray(rawResponse)) {
+    return {
+      state: 'failed',
+      reason: 'parse-error: raw_response must be a JSON object',
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  // Unwrap to the result body. We tolerate a JSON-RPC error envelope by
+  // collapsing it onto `state: 'failed'` rather than attempting to read
+  // the agent-side error payload (it can carry HTTP body fragments we
+  // don't want to relay into report.json verbatim).
+  const obj = rawResponse as Record<string, unknown>;
+  if (obj.error !== undefined) {
+    return {
+      state: 'failed',
+      reason: 'parse-error: agent forwarded a JSON-RPC error envelope (no tools to project)',
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  let body: Record<string, unknown> = obj;
+  const result = obj.result;
+  if (result !== undefined) {
+    if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+      return {
+        state: 'failed',
+        reason: 'parse-error: `result` must be a JSON object when present',
+        attemptedAt,
+        source: 'agent-reported',
+      };
+    }
+    body = result as Record<string, unknown>;
+  }
+
+  const toolsField = body.tools;
+  if (!Array.isArray(toolsField)) {
+    return {
+      state: 'failed',
+      reason: 'parse-error: `tools` array missing from forwarded response',
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  const rawTools: ToolInventoryRecord['tools'] = [];
+  for (const entry of toolsField) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    const name = row.name;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const projected: ToolInventoryRecord['tools'][number] = { name };
+    if (typeof row.description === 'string') {
+      projected.description = row.description;
+    }
+    if (row.inputSchema && typeof row.inputSchema === 'object' && !Array.isArray(row.inputSchema)) {
+      projected.inputSchema = row.inputSchema as Record<string, unknown>;
+    }
+    if (row.annotations && typeof row.annotations === 'object' && !Array.isArray(row.annotations)) {
+      projected.annotations = row.annotations as Record<string, unknown>;
+    }
+    rawTools.push(projected);
+  }
+
+  if (rawTools.length === 0) {
+    // An empty `tools[]` is a valid `tools/list` response — the server
+    // legitimately advertises no tools. Keep `state: 'ok'` so the verdict
+    // ramp sees a clean "agent reported zero tools" signal instead of
+    // treating this as a parse failure.
+    return {
+      state: 'ok',
+      tools: [],
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  return {
+    state: 'ok',
+    tools: projectTools(serverName, rawTools, 'agent-reported'),
+    attemptedAt,
+    source: 'agent-reported',
+  };
 }

@@ -58,6 +58,33 @@
     }
   },
   {
+    "name": "report_mcp_tools_list",
+    "description": "Forward the raw `tools/list` response from one of your MCP servers to Heron.\n\nHeron will:\n  - Parse the response to extract tool names + descriptions\n  - Run the same read/write classification as stdio servers (AAP-75)\n  - Merge into the discovery report alongside stdio results\n\nNEVER:\n  - Stores the credentials you used to call the server\n  - Asks for or sees those credentials",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session id returned by a prior start_audit_session call. The forwarded inventory is attached to this audit run."
+        },
+        "server_name": {
+          "type": "string",
+          "description": "The MCP server name as you declared it in your systems_enum answer (Q2). Used to deduplicate forwards: a second report for the same server replaces the first."
+        },
+        "raw_response": {
+          "type": "object",
+          "description": "The verbatim JSON-RPC `tools/list` response body your MCP server returned. Heron accepts the full envelope `{ jsonrpc, id, result: { tools } }`, the result-only blob `{ result: { tools } }`, or a bare `{ tools }` body."
+        }
+      },
+      "required": [
+        "session_id",
+        "server_name",
+        "raw_response"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "get_report",
     "description": "Retrieve a previously-generated Heron audit report by its id.",
     "inputSchema": {
