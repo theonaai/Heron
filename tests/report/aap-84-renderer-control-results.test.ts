@@ -401,20 +401,22 @@ describe('AAP-84 CategorizedCompliance projection', () => {
 
 // ─── 5. AAP-79 regression ───────────────────────────────────────────────────
 
-describe('AAP-84 — AAP-79 regression preserved', () => {
-  it('discovery STRIPE_SECRET_KEY still fires GDPR sensitive-data on both projections', () => {
+describe('AAP-84 — AAP-79 regression preserved (typed path, post-AAP-86)', () => {
+  it('discovery STRIPE_SECRET_KEY still fires GDPR sensitive-data on the typed projection', () => {
+    // Pre-AAP-86: this assertion required BOTH `compliance.all` (legacy
+    // prose-projection back-compat) and `compliance.controlResults`
+    // (typed projection) to fire. AAP-86 deleted the prose-synthesis
+    // bridge — `compliance.all` only populates from real interview
+    // transcript prose now. Discovery-only sensitive-data signals
+    // surface exclusively through `controlResults`; the renderer's
+    // merged projection in templates.ts ensures the GDPR Art. 6 row
+    // still appears under the Compliance Detail section.
     const result = recomputeComplianceWithDiscovery({
       analyzer: { systems: [] },
       transcript: [],
       discovery: discoveryWithStripe(),
     });
-    // Prose projection (back-compat path the dashboard falls back to
-    // when controlResults is empty — e.g. Surface 1 only sessions).
-    const gdprSensitiveFlags = result.all.filter(
-      (f) => f.frameworkId === 'gdpr' && f.triggeredBy === 'sensitive-data',
-    );
-    expect(gdprSensitiveFlags.length).toBeGreaterThan(0);
-    // Typed projection (the new dashboard primary path).
+    // Typed projection (the canonical dashboard path post-AAP-86).
     const gdprSensitiveResults = result.controlResults.filter(
       (r) => r.findingType === 'sensitive-data' && r.frameworkId === 'gdpr',
     );

@@ -1,35 +1,37 @@
 /**
- * AAP-79 — Stage 3 framework re-computation with discovery evidence.
+ * AAP-79 / AAP-86 — Stage 3 framework re-computation with discovery
+ * evidence.
  *
- * Closes the original gap that motivated this ticket: pre-AAP-79 the
+ * Closes the original gap that motivated AAP-79: pre-AAP-79 the
  * analyzer's `mapFindingsToRiskCategories` ran exactly once, against
  * the interview transcript only. A transcript that never mentioned PII
  * could leave the report missing GDPR Article 5(1)(c) controls even
  * when discovery later surfaced an env file with `STRIPE_SECRET_KEY`
  * in it.
  *
- * `recomputeComplianceWithDiscovery` synthesises a virtual evidence
- * row from the discovery payload (names only, never values, mirroring
- * the discovery readers' privacy contract) and re-feeds the augmented
- * transcript through the same mapper. The mapper's `hasSensitivePII`
- * signal regex picks up the synthesised `credit card` token and the
- * sensitive-data finding now fires against the GDPR framework.
+ * Pre-AAP-86 the recompute path synthesised a virtual evidence row
+ * from the discovery payload and fed it through the prose mapper so
+ * the `hasSensitivePII` regex would fire. AAP-86 deletes that synthesis
+ * — the typed detectors in `src/compliance/detectors/discovery-detectors.ts`
+ * read the discovery payload directly and emit `ControlResult`s with
+ * proper provenance.
  *
- * These tests pin two scenarios:
- *   1. Empty discovery scan → recomputed compliance matches the baseline
- *      (no regressions for sessions without Surface 2 evidence).
- *   2. Discovery finds a STRIPE_SECRET_KEY → recomputed compliance picks
- *      up GDPR sensitive-data flags (the recompute path is the only way
- *      that flag can fire, since the transcript itself never mentioned
- *      sensitive PII).
+ * These tests pin the post-AAP-86 contract:
+ *   1. Empty discovery scan → recomputed compliance has no typed
+ *      sensitive-data controls and no GDPR sensitive-data flag in the
+ *      legacy projection.
+ *   2. Discovery finds a STRIPE_SECRET_KEY → recomputed compliance
+ *      surfaces typed GDPR Art. 6 / 35 / 33 + AIUC-1 A006 control
+ *      results AND the legacy `compliance.all` GDPR sensitive-data
+ *      flag (preserved through the merged projection in `mapFindings`).
+ *   3. Same outcome from the mcpServer.redactedEnvKeys surface — the
+ *      typed detectors walk both L1 (MCP) and L5 (workspace env).
+ *   4. AAP-85 typed Annex III signals continue to flow through.
  */
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  recomputeComplianceWithDiscovery,
-  synthesizeDiscoveryEvidence,
-} from '../../src/report/recompute-compliance.js';
+import { recomputeComplianceWithDiscovery } from '../../src/report/recompute-compliance.js';
 import type { DiscoveryResult } from '../../src/discovery/types.js';
 import type { QAPair, SystemAssessment } from '../../src/report/types.js';
 
@@ -67,31 +69,37 @@ function transcriptWithoutPII(): QAPair[] {
 
 const analyzerSystems: SystemAssessment[] = [];
 
-describe('AAP-79 — recomputeComplianceWithDiscovery', () => {
-  it('returns a baseline (no PII flags) when discovery is empty + transcript has no PII', () => {
+describe('AAP-79 / AAP-86 — recomputeComplianceWithDiscovery', () => {
+  it('returns a baseline (no typed sensitive-data controls, no GDPR sensitive-data flag) when discovery is empty + transcript has no PII', () => {
     const result = recomputeComplianceWithDiscovery({
       analyzer: { systems: analyzerSystems },
       transcript: transcriptWithoutPII(),
       discovery: emptyDiscovery(),
     });
 
-    // No PII surfaced anywhere → sensitive-data finding never fires.
-    expect(result.signals.hasSensitivePII).toBe(false);
-    expect(result.signals.hasPublicPII).toBe(false);
-    expect(result.signals.hasPII).toBe(false);
+    // Typed projection: no sensitive-data controls fired.
+    const typedSensitive = result.controlResults.filter(
+      (r) => r.findingType === 'sensitive-data',
+    );
+    expect(typedSensitive).toEqual([]);
 
-    // No GDPR flag with triggeredBy=sensitive-data.
+    // Legacy projection: no GDPR flag with triggeredBy=sensitive-data.
     const gdprSensitive = result.all.filter(
       (f) => f.frameworkId === 'gdpr' && f.triggeredBy === 'sensitive-data',
     );
     expect(gdprSensitive).toHaveLength(0);
   });
 
-  it('lifts GDPR sensitive-data flag when discovery surfaces a STRIPE_SECRET_KEY env var', () => {
+  it('lifts GDPR sensitive-data controls when discovery surfaces a STRIPE_SECRET_KEY env var', () => {
     // The transcript still does not mention any PII signal. The ONLY
-    // thing pushing the mapper towards a sensitive-data finding here
-    // is the discovery payload, fed through `synthesizeDiscoveryEvidence`
-    // and folded into the augmented transcript by the recompute helper.
+    // thing pushing the mapper toward sensitive-data controls here is
+    // the discovery payload, fed through the typed-evidence detectors
+    // in `src/compliance/detectors/discovery-detectors.ts`.
+    //
+    // Post-AAP-86 contract: discovery-only sensitive-data signals
+    // surface exclusively through `controlResults`. The renderer's
+    // merged projection in templates.ts keeps `compliance.all`-driven
+    // renderers honest by combining both projections at render time.
     const discovery: DiscoveryResult = {
       agents: [
         {
@@ -113,39 +121,33 @@ describe('AAP-79 — recomputeComplianceWithDiscovery', () => {
       scannedPaths: ['/Users/me/.codex/config.toml'],
     };
 
-    // Sanity-check the synthesiser maps STRIPE_ to the "credit card"
-    // vocabulary the mapper's regex looks for. Without this token the
-    // recompute wouldn't trip hasSensitivePII.
-    const synthesized = synthesizeDiscoveryEvidence(discovery);
-    expect(synthesized.answer.toLowerCase()).toContain('credit card');
-
     const result = recomputeComplianceWithDiscovery({
       analyzer: { systems: analyzerSystems },
       transcript: transcriptWithoutPII(),
       discovery,
     });
 
-    expect(result.signals.hasSensitivePII).toBe(true);
-    expect(result.signals.hasPII).toBe(true);
-
-    // Sensitive-data flag now fires against GDPR. The control ID label
-    // contains "Article 5" (data minimisation / lawful basis); the exact
-    // wording is owned by the framework registry, we just assert one of
-    // the GDPR controls landed.
-    const gdprSensitive = result.all.filter(
-      (f) => f.frameworkId === 'gdpr' && f.triggeredBy === 'sensitive-data',
+    // Typed projection: STRIPE key fires GDPR Art. 6 / 35 / 33 + AIUC-1 A006.
+    const typedSensitive = result.controlResults.filter(
+      (r) => r.findingType === 'sensitive-data',
     );
-    expect(gdprSensitive.length).toBeGreaterThan(0);
-    // Severity escalates to action-required when the trigger is sensitive
-    // (rather than public) PII — covered in describeFinding().
-    expect(gdprSensitive[0]?.severity).toBe('action-required');
+    const ids = typedSensitive.map((r) => `${r.frameworkId}:${r.controlId}`);
+    expect(ids).toContain('gdpr:Art. 6');
+    expect(ids).toContain('gdpr:Art. 35');
+    expect(ids).toContain('gdpr:Art. 33');
+    expect(ids).toContain('aiuc-1:A006');
+    for (const r of typedSensitive) {
+      expect(r.path).toBe('typed');
+      expect(r.surface).toBe('actual');
+      expect(r.verdict).toBe('fail');
+    }
   });
 
-  it('lifts the same flag when STRIPE_SECRET_KEY comes from a discovered mcpServer redactedEnvKeys', () => {
+  it('lifts the same controls when STRIPE_SECRET_KEY comes from a discovered mcpServer redactedEnvKeys', () => {
     // Same outcome from a different L1/L2 surface. Belt-and-braces — the
-    // synthesiser walks both `agent.mcpServers[].redactedEnvKeys` AND
+    // typed detector walks `agent.mcpServers[].redactedEnvKeys` AND
     // `workspaceEnv[].keys`, so both paths must produce the same
-    // vocabulary the mapper can lock onto.
+    // sensitive-data ControlResults.
     const discovery: DiscoveryResult = {
       agents: [
         {
@@ -173,11 +175,12 @@ describe('AAP-79 — recomputeComplianceWithDiscovery', () => {
       discovery,
     });
 
-    expect(result.signals.hasSensitivePII).toBe(true);
-    const gdprSensitive = result.all.filter(
-      (f) => f.frameworkId === 'gdpr' && f.triggeredBy === 'sensitive-data',
+    const typedSensitive = result.controlResults.filter(
+      (r) => r.findingType === 'sensitive-data',
     );
-    expect(gdprSensitive.length).toBeGreaterThan(0);
+    const ids = typedSensitive.map((r) => `${r.frameworkId}:${r.controlId}`);
+    expect(ids).toContain('gdpr:Art. 6');
+    expect(ids).toContain('aiuc-1:A006');
   });
 
   it('does not synthesise content for discovery=undefined (back-compat with pre-AAP-79 reports)', () => {
