@@ -255,8 +255,16 @@ export interface StartVerificationInput {
  */
 export interface StartVerificationOutput {
   session_id: string;
-  /** Report-level verification state after this call. */
-  verification_status: 'verified' | 'verification-failed';
+  /**
+   * Report-level verification state after this call. AAP-80 added
+   * `'partially-verified'` so single-source runs (e.g. discovery only,
+   * no OAuth introspection) stop overclaiming the verdict as fully
+   * verified.
+   */
+  verification_status:
+    | 'verified'
+    | 'partially-verified'
+    | 'verification-failed';
   /** Short prose summary of what changed. */
   summary: string;
   /** Number of HIGH severity findings from the scan. */

@@ -203,7 +203,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     expect(verif?.reason).toMatch(/workspace_hint/);
   });
 
-  it('happy path: flips verification.status to verified + rewrites report.md with Verified markers', async () => {
+  it('happy path: flips verification.status to partially-verified + rewrites report.md with Partially Verified markers (AAP-80)', async () => {
     // End-to-end success path through the public `invoke()` surface.
     // The handler runs `runDiscovery` against a temp $HOME that carries a
     // fixture Codex config, secretlint-scrubs the result, recomputes
@@ -217,6 +217,11 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     //      partial `report.json` against `writeAnalysisFailure`'s
     //      "no report.json for failed analyses" invariant — covered
     //      separately by the analysis_failed rejection test above.
+    //
+    // AAP-80 — discovery-only runs now produce a `partial` verdict, which
+    // maps to `'partially-verified'` on the report-level field (not
+    // `'verified'`). The MCP response, the persisted verification field,
+    // and the header label all move together.
     const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap79-success-home-'));
     const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
     process.env.HERON_DISCOVERY_HOME = fakeHome;
@@ -272,18 +277,21 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
 
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      expect(r.value.verification_status).toBe('verified');
+      // AAP-80 — discovery-only runs yield a partial verdict ⇒
+      // 'partially-verified' on the report-level field + the MCP response.
+      expect(r.value.verification_status).toBe('partially-verified');
 
       const after = await getSession(id);
       const verif = (after!.reportJson as {
         verification?: { status?: string };
       }).verification;
-      expect(verif?.status).toBe('verified');
+      expect(verif?.status).toBe('partially-verified');
 
-      // Read report.md off the live sessions dir. The pre-fix
-      // behaviour left the UNVERIFIED stub in place; the fix replaces
-      // it with the per-source Verification Status table and a
-      // "Verified" header tag.
+      // Read report.md off the live sessions dir. The pre-AAP-80
+      // behaviour emitted "Risk Level (Verified)" for any verdict with
+      // Surface 2 evidence; the AAP-80 fix routes the label through
+      // `report.verification.status`, so a partial verdict produces
+      // "Risk Level (Partially Verified)".
       const { readFileSync } = await import('node:fs');
       const { getSessionsDir } = await import('../../src/storage/sessions.js');
       const mdPath = join(getSessionsDir(), id, 'report.md');
@@ -292,7 +300,10 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
       expect(renderedMd).not.toContain(
         'UNVERIFIED — Surface 2 deterministic sources have not run yet',
       );
-      expect(renderedMd).toContain('Risk Level (Verified)');
+      expect(renderedMd).toContain('Risk Level (Partially Verified)');
+      expect(renderedMd).not.toContain('Risk Level (Verified)');
+      // The amber AAP-80 banner copy renders for the partial state.
+      expect(renderedMd).toContain('Partially verified.');
       expect(renderedMd).toContain('## Verification Status');
       expect(renderedMd).toContain('Filesystem discovery');
       // Secret value never appears in the rendered .md.

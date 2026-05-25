@@ -64,6 +64,20 @@ export interface PersistVerifiedMarkdownArgs {
   merged: Record<string, unknown>;
   verdict: Verdict;
   discoveryFindings: DiscoveryFinding[];
+  /**
+   * AAP-80 — per-source status the renderer surfaces in the
+   * "Verification Status" section. Defaults to `'ran'` for back-compat
+   * with the AAP-79 callers (filesystem discovery), but the OAuth-only
+   * hosted-agent path passes `'skipped'` so the table doesn't lie
+   * about a source that never executed.
+   */
+  discoveryStatus?: 'ran' | 'skipped' | 'failed';
+  /**
+   * AAP-80 — same idea for OAuth introspection rows. When omitted the
+   * template falls back to its existing "skipped" placeholder; callers
+   * with concrete per-provider results should pass them through.
+   */
+  oauthIntrospectionStatus?: Array<{ provider: string; status: 'ran' | 'skipped' | 'failed' }>;
 }
 
 /**
@@ -85,7 +99,10 @@ export async function persistVerifiedMarkdown(
     const markdown = renderMarkdownReport(renderable, {
       verdict: args.verdict,
       discoveryFindings: args.discoveryFindings,
-      discoveryStatus: 'ran',
+      discoveryStatus: args.discoveryStatus ?? 'ran',
+      ...(args.oauthIntrospectionStatus !== undefined
+        ? { oauthIntrospectionStatus: args.oauthIntrospectionStatus }
+        : {}),
     });
     await writeReport(args.sessionId, { markdown, json: args.merged });
     return true;

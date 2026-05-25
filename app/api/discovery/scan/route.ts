@@ -60,6 +60,7 @@ import { publishSessionEvent } from '@/src/storage/session-events';
 import {
   computeVerdictFromArtifacts,
   persistVerdict,
+  reportVerificationStatusFromVerdict,
 } from '@/src/verification/verdict-pipeline';
 import {
   runOAuthScopeVerification,
@@ -368,15 +369,32 @@ export async function POST(request: Request): Promise<Response> {
   //
   // AAP-79 — same code path that powers the `start_verification` MCP
   // tool. Re-compute Stage 3 framework mapping with discovery evidence
-  // merged in, then flip `verification.status` to 'verified'. The
-  // dashboard's manual "Run verification" button hits this route, so
-  // sessions that never received an agent-initiated start_verification
-  // (e.g. operator returning to a stale session) get the same Surface 2
-  // benefit.
+  // merged in, then flip `verification.status` based on the verdict.
+  // The dashboard's manual "Run verification" button hits this route,
+  // so sessions that never received an agent-initiated
+  // start_verification (e.g. operator returning to a stale session)
+  // get the same Surface 2 benefit.
+  //
+  // AAP-80 — compute the verdict FIRST (using the pre-patch reportJson
+  // plus the discovery / oauth overrides) so the status we persist on
+  // `verification` is derived from the verdict instead of hardcoded
+  // 'verified'. The override args mean the verdict reflects the fresh
+  // Surface 2 evidence on the same tick as the patch.
+  const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
+  const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
+    reportJson,
+    transcript: session.transcript,
+  };
+  if (finalResult) verdictArgs.discoveryOverride = finalResult;
+  if (oauth.verifications.length > 0) {
+    verdictArgs.oauthVerificationsOverride = oauth.verifications;
+  }
+  const surface2Attempted = !!finalResult || oauth.verifications.length > 0;
+  const verdict = computeVerdictFromArtifacts(verdictArgs);
+
   const patch: Record<string, unknown> = {};
   if (finalResult) {
     patch.localAgentDiscovery = finalResult;
-    const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
     if (reportJson && Array.isArray(reportJson.systems)) {
       const transcriptAsQA: QAPair[] = session.transcript.map((t) => ({
         category: t.category as QAPair['category'],
@@ -401,12 +419,24 @@ export async function POST(request: Request): Promise<Response> {
       // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
       patch.regulatoryCompliance = compliance;
     }
+  }
+  if (oauth.section) patch.oauthScopeVerification = oauth.section;
+
+  // AAP-80 — patch `verification.status` whenever ANY Surface 2 source
+  // attempted (filesystem OR oauth). Pre-AAP-80 this patch was gated on
+  // `finalResult`, so the OAuth-only hosted-agent path (skipFilesystem
+  // + oauthSources) left the report in `interrogation-only` even
+  // though L6 evidence had just landed and the verdict had flipped to
+  // `partial` or `verified`.
+  if (surface2Attempted) {
+    const verificationStatus: ReportVerificationStatus =
+      reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
     patch.verification = {
-      status: 'verified' as ReportVerificationStatus,
+      status: verificationStatus,
       updatedAt: new Date().toISOString(),
     };
   }
-  if (oauth.section) patch.oauthScopeVerification = oauth.section;
+
   const merged = await patchReportJson(body.data.sessionId, patch);
 
   // AAP-63 + AAP-74 — Surface 2 evidence just landed. Re-run
@@ -416,15 +446,6 @@ export async function POST(request: Request): Promise<Response> {
   // yellow "VERIFICATION REQUIRED" to the deterministic risk level.
   // Overrides avoid the brief race window where patchReportJson has
   // fsync'd but a stale getSession() snapshot is still in-flight.
-  const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
-    reportJson: merged,
-    transcript: session.transcript,
-  };
-  if (finalResult) verdictArgs.discoveryOverride = finalResult;
-  if (oauth.verifications.length > 0) {
-    verdictArgs.oauthVerificationsOverride = oauth.verifications;
-  }
-  const verdict = computeVerdictFromArtifacts(verdictArgs);
   await persistVerdict(body.data.sessionId, verdict);
 
   // AAP-79 — re-render `report.md` so the downloadable artefact tracks
@@ -433,17 +454,37 @@ export async function POST(request: Request): Promise<Response> {
   // `verified` while the .md download still carried the interrogation-only
   // banner and the stale compliance section. Shared helper with the
   // `start_verification` MCP handler so both paths produce byte-identical
-  // markdown for the same merged report. Only triggered when filesystem
-  // discovery actually ran — an OAuth-only request leaves the report
-  // verification status untouched (status patch above is gated on
-  // `finalResult`), so the markdown re-render has nothing to refresh.
-  if (finalResult) {
-    await persistVerifiedMarkdown({
+  // markdown for the same merged report.
+  //
+  // AAP-80 — re-render whenever ANY Surface 2 source attempted
+  // (filesystem OR oauth), not just filesystem. Previously the OAuth-only
+  // path (`skipFilesystem: true`) left the .md carrying the
+  // interrogation-only banner even after L6 evidence landed.
+  //
+  // Pass per-source status into the renderer so the "Verification
+  // Status" table reflects reality: the OAuth-only path emits
+  // `discoveryStatus: 'skipped'` (filesystem never ran) and a row per
+  // attempted provider, while the filesystem path keeps the default
+  // `'ran'`.
+  if (surface2Attempted) {
+    const persistArgs: Parameters<typeof persistVerifiedMarkdown>[0] = {
       sessionId: body.data.sessionId,
       merged,
       verdict,
-      discoveryFindings: finalResult.findings ?? [],
-    });
+      discoveryFindings: finalResult?.findings ?? [],
+      discoveryStatus: finalResult ? 'ran' : 'skipped',
+    };
+    if (oauth.verifications.length > 0) {
+      persistArgs.oauthIntrospectionStatus = oauth.verifications.map((v) => ({
+        provider: v.sourceId,
+        // `unverified` here means the source read errored (auth, transport,
+        // parse). Map it to 'failed' for the renderer so the table makes
+        // the gap obvious; everything else (verified / discrepancy) maps
+        // to 'ran'.
+        status: v.verdict === 'unverified' ? 'failed' : 'ran',
+      }));
+    }
+    await persistVerifiedMarkdown(persistArgs);
   }
 
   publishSessionEvent(body.data.sessionId, {

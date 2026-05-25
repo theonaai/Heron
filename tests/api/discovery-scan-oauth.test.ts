@@ -239,6 +239,83 @@ describe('POST /api/discovery/scan — L6 OAuth wire-up (AAP-74)', () => {
     // is deterministic (low, given a clean read with no declared
     // baseline → extras at info severity).
     expect(updated!.deterministicRiskLevel).toBeDefined();
+
+    // AAP-80 — the report-level `verification.status` now flips on the
+    // OAuth-only path too (previously the patch was gated on
+    // filesystem `finalResult`, leaving the report stuck in
+    // 'interrogation-only' despite L6 evidence landing).
+    const verif = (updated!.reportJson as {
+      verification?: { status?: string };
+    }).verification;
+    expect(verif?.status).toBe('partially-verified');
+  });
+
+  it('AAP-80: skipFilesystem + oauthSources writes partially-verified into report.json + report.md', async () => {
+    // Tightens the AAP-80 spec point 4: the OAuth-only path persists
+    // both the JSON-level verification.status AND a refreshed
+    // report.md. The previous regression let report.md keep the
+    // interrogation-only banner even after L6 evidence landed.
+    __setGoogleWorkspaceHttpClientForTesting(
+      googleTokenInfoOk(['https://www.googleapis.com/auth/gmail.readonly']),
+    );
+    // Seed a richer report.md baseline so we can prove the re-render
+    // happened (the AAP-79 stub copy carries "UNVERIFIED — Surface 2
+    // deterministic sources have not run yet" which we expect to
+    // disappear after the rewrite).
+    await reportPOST(
+      jsonRequest(`${ORIGIN}/api/audit/sessions/${sessionId}/report`, {
+        markdown:
+          '# Stub\n\n## Verification Status\n\n**Verification status:** ' +
+          '_UNVERIFIED — Surface 2 deterministic sources have not run yet._\n',
+        json: {
+          summary: 's',
+          agentPurpose: 'p',
+          systems: [],
+          risks: [],
+          recommendations: [],
+          overallRiskLevel: 'low',
+          metadata: {
+            date: '2026-05-25',
+            target: 'demo',
+            interviewDuration: 100,
+            questionsAsked: 0,
+          },
+          transcript: [],
+        },
+      }),
+      { params: Promise.resolve({ id: sessionId }) } as never,
+    );
+
+    const res = await scanPOST(
+      jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+        sessionId,
+        skipFilesystem: true,
+        oauthSources: [
+          { kind: 'google-workspace', accessToken: FAKE_GOOGLE_ACCESS_TOKEN },
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    const updated = await getSession(sessionId);
+    const verif = (updated!.reportJson as {
+      verification?: { status?: string; updatedAt?: string };
+    }).verification;
+    expect(verif?.status).toBe('partially-verified');
+    expect(verif?.updatedAt).toBeDefined();
+
+    // Read report.md from disk. The AAP-80 re-render must have replaced
+    // the UNVERIFIED stub with the partially-verified header marker.
+    const { readFile } = await import('node:fs/promises');
+    const mdPath = join(sessionsDir, sessionId, 'report.md');
+    const md = await readFile(mdPath, 'utf8');
+    expect(md).not.toContain(
+      'UNVERIFIED — Surface 2 deterministic sources have not run yet',
+    );
+    expect(md).toContain('Risk Level (Partially Verified)');
+    // Per-source table reflects "filesystem: skipped" honestly.
+    expect(md).toContain('Filesystem discovery');
+    expect(md).toMatch(/Filesystem discovery.*skipped/i);
   });
 
   // ── Validation errors ─────────────────────────────────────────────

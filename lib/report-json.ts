@@ -374,16 +374,18 @@ export interface ReportJson {
   // OAuth introspection still render unchanged.
   oauthScopeVerification?: OAuthScopeVerificationSection;
 
-  // AAP-79 — report-level verification lifecycle. The dashboard
-  // ReportView reads this to render the interrogation-only banner;
-  // markdown templates do the same. `status` values:
+  // AAP-79 + AAP-80 — report-level verification lifecycle. The
+  // dashboard ReportView reads this to render the interrogation-only
+  // banner; markdown templates do the same. `status` values:
   //   - 'interrogation-only' — only the LLM interview has run; banner shown.
-  //   - 'verified' — discovery (L1-L5) ran cleanly; banner suppressed.
-  //   - 'verification-failed' — discovery errored; failure banner shown.
+  //   - 'verified' — every Surface 2 source ran cleanly; banner suppressed.
+  //   - 'partially-verified' — at least one Surface 2 source ran but
+  //     verdict came back as `partial`; amber banner shown (AAP-80).
+  //   - 'verification-failed' — Surface 2 errored; failure banner shown.
   // Optional so legacy sessions persisted before AAP-79 continue to
   // deserialise without migration.
   verification?: {
-    status: 'interrogation-only' | 'verified' | 'verification-failed';
+    status: 'interrogation-only' | 'verified' | 'partially-verified' | 'verification-failed';
     reason?: string;
     updatedAt?: string;
   };

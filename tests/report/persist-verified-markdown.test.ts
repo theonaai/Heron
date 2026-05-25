@@ -75,10 +75,17 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('writes markdown with "Verified" markers when verdict is partial/verified', async () => {
+  it('writes markdown with "Partially Verified" markers when verdict is partial (AAP-80)', async () => {
     // Seed the session with a stub markdown so we can prove the helper
     // overwrote it. The starting body deliberately includes the legacy
     // interrogation-only banner copy.
+    //
+    // AAP-80 — the header label now derives from `report.verification.status`,
+    // not `verdict.primaryRiskSource`. Discovery-only runs (the common case
+    // until OAuth introspection (AAP-64) is wired manually) produce a
+    // `partial` verdict, which now maps to `'partially-verified'` on the
+    // report-level field. The header label and banner both swing to the
+    // amber "Partially Verified" copy.
     const { id } = await createSession({ agentName: 'verifies', mode: 'tool-call' });
     await writeReport(id, {
       markdown: '# Stub\n\n> **This report is based on the interview only.**\n',
@@ -103,9 +110,21 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
       },
     ];
 
+    // AAP-80 — callers always set `verification.status` on the merged
+    // report before invoking this helper (both code paths now do this
+    // via `reportVerificationStatusFromVerdict`). Mirror that here so
+    // the header label has the field to read.
+    const mergedWithVerification = {
+      ...(makeReport() as unknown as Record<string, unknown>),
+      verification: {
+        status: 'partially-verified',
+        updatedAt: '2026-05-25T00:00:00.000Z',
+      },
+    };
+
     const ok = await persistVerifiedMarkdown({
       sessionId: id,
-      merged: makeReport() as unknown as Record<string, unknown>,
+      merged: mergedWithVerification,
       verdict,
       discoveryFindings,
     });
@@ -114,18 +133,16 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     const mdPath = join(getSessionsDir(), id, 'report.md');
     const rendered = readFileSync(mdPath, 'utf8');
 
-    // Verified verdict puts a "Verified" prefix on the header risk line.
-    expect(rendered).toContain('Risk Level (Verified)');
+    // AAP-80 — partial verdict ⇒ "Partially Verified" header marker.
+    expect(rendered).toContain('Risk Level (Partially Verified)');
+    expect(rendered).not.toContain('Risk Level (Verified)');
+    // The amber AAP-80 banner copy renders for `partially-verified`.
+    expect(rendered).toContain('Partially verified.');
     // The Verification Status section is the per-source table, not the
     // UNVERIFIED stub. Surface 2 ran, so the table mentions filesystem
     // discovery.
     expect(rendered).toContain('## Verification Status');
     expect(rendered).toContain('Filesystem discovery');
-    // The interrogation-only banner is suppressed when verification is
-    // present on the report — but our test report doesn't carry the
-    // verification field. The Verified verdict context, however, is what
-    // populates the Surface 2 status table — the banner copy from the
-    // initial stub is no longer present in the rendered output.
     expect(rendered).not.toMatch(/UNVERIFIED.+Surface 2 deterministic sources have not run/i);
     // The discovery finding propagated into the deterministic findings
     // table.

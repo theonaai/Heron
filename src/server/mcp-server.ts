@@ -76,6 +76,7 @@ import { publishSessionEvent } from '../storage/session-events.js';
 import {
   computeVerdictFromArtifacts,
   persistVerdict,
+  reportVerificationStatusFromVerdict,
 } from '../verification/verdict-pipeline.js';
 import { runDiscovery } from '../discovery/index.js';
 import { diffAgainstTranscript } from '../discovery/diff.js';
@@ -1430,10 +1431,28 @@ export class HeronMCPServer {
       answer: t.answer,
     }));
     const completedAt = new Date().toISOString();
+
+    // AAP-80 — compute the verdict BEFORE patching `report.json` so the
+    // `verification.status` we persist reflects the real Surface 2
+    // outcome (verified vs partially-verified vs failed) instead of a
+    // hardcoded `'verified'`. We pass `reportJson` (the pre-patch
+    // snapshot) plus `discoveryOverride: scrubbed` so the verdict
+    // factors in the fresh scan without racing patchReportJson's
+    // fsync. `oauthVerificationsOverride` is intentionally absent
+    // here — the MCP `start_verification` path is filesystem-only;
+    // OAuth introspection is dashboard-exclusive today.
+    const verdict = computeVerdictFromArtifacts({
+      reportJson,
+      transcript: session.transcript,
+      discoveryOverride: scrubbed,
+    });
+    const verificationStatus: ReportVerificationStatus =
+      reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
+
     const reportPatch: Record<string, unknown> = {
       localAgentDiscovery: scrubbed,
       verification: {
-        status: 'verified' as ReportVerificationStatus,
+        status: verificationStatus,
         updatedAt: completedAt,
       },
     };
@@ -1458,17 +1477,6 @@ export class HeronMCPServer {
     }
     const merged = await patchReportJson(sessionId, reportPatch);
 
-    // Compute the verdict FIRST so the markdown re-render gets the
-    // verified-state context. Pre-AAP-79 (and during the first pass of
-    // this ticket) the renderer ran before `computeVerdictFromArtifacts`,
-    // so the `Verification Status` section fell back to the UNVERIFIED
-    // stub even for sessions whose JSON had correctly flipped to
-    // `verified`. Codex review surfaced this on PR #69.
-    const verdict = computeVerdictFromArtifacts({
-      reportJson: merged,
-      transcript: session.transcript,
-      discoveryOverride: scrubbed,
-    });
     await persistVerdict(sessionId, verdict);
 
     // Re-render the markdown report so the on-disk artefact matches the
@@ -1492,13 +1500,30 @@ export class HeronMCPServer {
 
     const totalFindings = scrubbed.findings?.length ?? 0;
     const highSeverity = (scrubbed.findings ?? []).filter((f) => f.severity === 'HIGH').length;
-    const summary = `Verification complete. ${totalFindings} discovery findings; ${highSeverity} HIGH severity.`;
+    // AAP-80 — surface the actual status (and a verdict-aware summary
+    // prefix) instead of hardcoding 'verified' / "Verification
+    // complete.". The MCP client uses the response shape to decide
+    // whether to nudge the operator to wire additional Surface 2
+    // sources (the `partially-verified` case) before signing off.
+    const statusLabel: Record<
+      'verified' | 'partially-verified' | 'verification-failed',
+      string
+    > = {
+      verified: 'Verification complete.',
+      'partially-verified':
+        'Partially verified — one or more Surface 2 sources did not run cleanly.',
+      'verification-failed':
+        'Verification failed — Surface 2 did not produce a usable verdict.',
+    };
+    const responseStatus =
+      verificationStatus === 'interrogation-only' ? 'verification-failed' : verificationStatus;
+    const summary = `${statusLabel[responseStatus]} ${totalFindings} discovery findings; ${highSeverity} HIGH severity.`;
 
     return {
       ok: true,
       value: {
         session_id: sessionId,
-        verification_status: 'verified',
+        verification_status: responseStatus,
         summary,
         high_severity_findings: highSeverity,
         total_findings: totalFindings,
