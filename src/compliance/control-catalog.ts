@@ -51,6 +51,7 @@
  */
 
 import { CONTROL_MAPPINGS } from './control-mappings.js';
+import { DISCOVERY_DETECTOR_ADAPTERS } from './detectors/discovery-detectors.js';
 import { ROUTER_DETECTOR_ADAPTERS } from './detectors/router-adapter.js';
 import type {
   ControlMapping,
@@ -230,7 +231,9 @@ function attachDetectors(
     ]),
   );
 
-  for (const row of ROUTER_DETECTOR_ADAPTERS) {
+  const allRows = [...ROUTER_DETECTOR_ADAPTERS, ...DISCOVERY_DETECTOR_ADAPTERS];
+
+  for (const row of allRows) {
     const key = stableKeyFor({
       findingType: row.findingType,
       frameworkId: row.frameworkId,
@@ -240,7 +243,7 @@ function attachDetectors(
     if (existing) {
       existing.deterministicDetector = row.detector as unknown as DetectorFn;
     } else {
-      // Router covers a (findingType, frameworkId, controlId) triple
+      // Adapter covers a (findingType, frameworkId, controlId) triple
       // that the prose mapper does not. Append it so the unified
       // catalog covers everything both engines knew about. Category
       // mirrors the parent finding's category (best-effort — the
