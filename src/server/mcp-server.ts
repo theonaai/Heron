@@ -65,8 +65,10 @@ import type { QuestionPlanner } from '../interview/question-planner.js';
 import {
   createSession,
   getSession,
+  listReportedMcpTools,
   mergeWorkspaceHints,
   patchReportJson,
+  ReportedMcpToolsPerSessionCapExceeded,
   saveReportedMcpToolsList,
   setPendingQuestion,
   submitToolCallAnswer,
@@ -74,6 +76,7 @@ import {
   writeReport,
   writeAnalysisFailure,
   type AuditSessionStatus,
+  type ReportedMcpToolsRecord,
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
 import {
@@ -83,7 +86,10 @@ import {
 } from '../verification/verdict-pipeline.js';
 import { runDiscovery } from '../discovery/index.js';
 import { diffAgainstTranscript } from '../discovery/diff.js';
-import { parseAgentReportedToolsList } from '../discovery/mcp-tools-enumerator.js';
+import {
+  overlayAgentReportedToolEnumerations,
+  parseAgentReportedToolsList,
+} from '../discovery/mcp-tools-enumerator.js';
 import { secretlintScrub } from '../discovery/secretlint-scrub.js';
 import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
 import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
@@ -536,7 +542,21 @@ const startVerificationInputSchema = z.object({
  * separators from leaking into a key the storage layer would later
  * write to disk. raw_response is treated as opaque JSON — the parser in
  * `mcp-tools-enumerator.ts` does the structural validation.
+ *
+ * AAP-82 Blocker 3 (Codex post-review): per-tool and per-payload size
+ * caps. These run BEFORE `parseAgentReportedToolsList` so a hostile
+ * (or accidentally enormous) forward never reaches the parser or the
+ * storage layer. See `REPORT_MCP_TOOLS_*` constants for the limits.
  */
+/** Max tools accepted per single `report_mcp_tools_list` call. */
+export const REPORT_MCP_TOOLS_MAX_TOOLS_PER_CALL = 200;
+/** Max characters allowed in a single tool's `name` field. */
+export const REPORT_MCP_TOOLS_MAX_NAME_LEN = 200;
+/** Max characters allowed in a single tool's `description` field. */
+export const REPORT_MCP_TOOLS_MAX_DESCRIPTION_LEN = 2000;
+/** Max bytes allowed in the serialized `raw_response` payload. */
+export const REPORT_MCP_TOOLS_MAX_PAYLOAD_BYTES = 256 * 1024;
+
 const reportMcpToolsListInputSchema = z.object({
   session_id: z
     .string({ required_error: 'session_id is required' })
@@ -546,11 +566,89 @@ const reportMcpToolsListInputSchema = z.object({
     .min(1, 'server_name must not be empty')
     .max(200, 'server_name must be 200 characters or fewer')
     .regex(/^[^/\\\0]+$/, 'server_name must not contain `/`, `\\`, or null bytes'),
-  raw_response: z.record(z.unknown(), {
-    required_error: 'raw_response is required',
-    invalid_type_error: 'raw_response must be a JSON object',
-  }),
+  raw_response: z
+    .record(z.unknown(), {
+      required_error: 'raw_response is required',
+      invalid_type_error: 'raw_response must be a JSON object',
+    })
+    .superRefine((value, ctx) => {
+      // Payload-size guard. `JSON.stringify` may throw on cyclic graphs;
+      // catching here lets us return a clean Zod issue instead of a 500.
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(value);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `raw_response is not JSON-serialisable: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+      const byteLen = Buffer.byteLength(serialized, 'utf8');
+      if (byteLen > REPORT_MCP_TOOLS_MAX_PAYLOAD_BYTES) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `raw_response payload is ${byteLen} bytes, above the ${REPORT_MCP_TOOLS_MAX_PAYLOAD_BYTES}-byte cap`,
+        });
+        return;
+      }
+
+      // Locate the `tools` array (mirror the parser's three accepted
+      // shapes) so the caps run before parse. When the shape is
+      // unrecognised here, we let the parser surface the real reason via
+      // `state: 'failed'` — that path already produces actionable output.
+      const tools = locateToolsArray(value);
+      if (!tools) return;
+      if (tools.length > REPORT_MCP_TOOLS_MAX_TOOLS_PER_CALL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `tools[] has ${tools.length} entries, above the ${REPORT_MCP_TOOLS_MAX_TOOLS_PER_CALL} per-call cap`,
+        });
+        return;
+      }
+      for (let i = 0; i < tools.length; i++) {
+        const t = tools[i];
+        if (!t || typeof t !== 'object') continue;
+        const row = t as Record<string, unknown>;
+        if (
+          typeof row.name === 'string' &&
+          row.name.length > REPORT_MCP_TOOLS_MAX_NAME_LEN
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `tools[${i}].name has ${row.name.length} characters, above the ${REPORT_MCP_TOOLS_MAX_NAME_LEN} cap`,
+          });
+          return;
+        }
+        if (
+          typeof row.description === 'string' &&
+          row.description.length > REPORT_MCP_TOOLS_MAX_DESCRIPTION_LEN
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `tools[${i}].description has ${row.description.length} characters, above the ${REPORT_MCP_TOOLS_MAX_DESCRIPTION_LEN} cap`,
+          });
+          return;
+        }
+      }
+    }),
 });
+
+/**
+ * Mirror the three top-level shapes `parseAgentReportedToolsList`
+ * accepts, returning the `tools` array (or `null` when we cannot find
+ * one cleanly). Used by the Zod superRefine size cap so the bounds
+ * apply regardless of which envelope the agent forwarded.
+ */
+function locateToolsArray(payload: Record<string, unknown>): unknown[] | null {
+  if (Array.isArray(payload.tools)) return payload.tools;
+  const result = payload.result;
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const inner = (result as Record<string, unknown>).tools;
+    if (Array.isArray(inner)) return inner;
+  }
+  return null;
+}
 
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
@@ -1481,6 +1579,26 @@ export class HeronMCPServer {
         enableKeychain: true,
         enableMcpToolEnumeration,
       });
+
+      // AAP-82 Blocker 1 (Codex post-review): merge agent-forwarded
+      // `tools/list` records into the freshly discovered agents BEFORE
+      // secretlintScrub so the overlay goes through the same redaction
+      // pass as connector-sourced enumerations. The dashboard scan route
+      // does the same; the helper keeps the two paths byte-identical.
+      const reportedRecords = await listReportedMcpTools(sessionId);
+      const overlayed = overlayAgentReportedToolEnumerations(
+        result.agents,
+        reportedRecords.map((r) => ({
+          serverName: r.serverName,
+          enumeration: r.enumeration,
+        })),
+      );
+      const overlayWarnings = overlayed.unmatched.length > 0
+        ? [
+            `agent-reported tools/list referenced servers not present in discovery: ${overlayed.unmatched.join(', ')}`,
+          ]
+        : [];
+
       const scrubbedAgents = await secretlintScrub(result.agents);
       const scrubbedOsCredentials = result.osCredentials
         ? await secretlintScrub(result.osCredentials)
@@ -1492,6 +1610,10 @@ export class HeronMCPServer {
         ? await secretlintScrub(result.keychainServices)
         : undefined;
       const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+      const mergedWarnings = [
+        ...(result.warnings ?? []),
+        ...overlayWarnings,
+      ];
       scrubbed = {
         ...result,
         agents: scrubbedAgents,
@@ -1505,6 +1627,7 @@ export class HeronMCPServer {
         ...(scrubbedKeychain !== undefined
           ? { keychainServices: scrubbedKeychain }
           : {}),
+        ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1677,18 +1800,34 @@ export class HeronMCPServer {
     // throws — failure collapses to `state: 'failed'` with a parse-error
     // reason, which we still persist so the dashboard can render "agent
     // forwarded a malformed response" instead of silently dropping it.
+    //
+    // AAP-82 Blocker 2 Option A (Codex post-review): the parser drops
+    // `inputSchema` / `annotations` from each projected tool, and the
+    // storage layer no longer persists the raw response verbatim. Only
+    // the projected `enumeration` (names + descriptions + classification)
+    // lands on disk; `rawResponse` is consumed locally to compute the
+    // projection and then discarded.
     const enumeration = parseAgentReportedToolsList(serverName, rawResponse);
     const receivedAt = enumeration.attemptedAt;
 
-    let stored;
+    let stored: ReportedMcpToolsRecord;
     try {
       stored = await saveReportedMcpToolsList(sessionId, {
         serverName,
         receivedAt,
-        rawResponse,
         enumeration,
       });
     } catch (err) {
+      if (err instanceof ReportedMcpToolsPerSessionCapExceeded) {
+        return {
+          ok: false,
+          error: {
+            kind: 'tool_failure',
+            cause: 'per_session_tool_cap_exceeded',
+            message: err.message,
+          },
+        };
+      }
       const message = err instanceof Error ? err.message : String(err);
       return {
         ok: false,

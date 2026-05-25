@@ -716,33 +716,64 @@ export async function submitToolCallAnswer(
 // ─── AAP-82 — agent-reported MCP `tools/list` storage ────────────────────
 
 /**
+ * AAP-82 Blocker 3 (Codex post-review): hard cap on the cumulative tool
+ * count we keep per session across all forwarded servers. The per-call
+ * Zod cap (200 tools per single forward, see `mcp-server.ts`) prevents a
+ * single payload from being huge; this cap stops an agent from issuing
+ * many smaller forwards to grow the session bag unbounded. 1000 covers
+ * the worst real-world inventories with room to spare and keeps the
+ * on-disk record bounded.
+ */
+export const REPORTED_MCP_TOOLS_PER_SESSION_CAP = 1000;
+
+/**
  * AAP-82 — one server's `tools/list` response as forwarded by the audited
  * agent via the `report_mcp_tools_list` MCP tool. Persisted per session
  * under `<session>/reported-mcp-tools.json` keyed by `serverName`. Last
  * write wins (per AAP-82 spec edge case: "Multiple report_mcp_tools_list
  * for same server -> last write wins, log warning").
  *
- * The raw response is the unmodified JSON-RPC body the agent received
- * from its MCP server. Heron parses + classifies via
- * `parseAgentReportedToolsList`; the projected `McpToolEnumeration` is
- * cached alongside the raw response so dashboard reads don't have to
- * re-parse on every render.
+ * Privacy contract (Codex post-review, Blocker 2 Option A): the cached
+ * `enumeration` is the ONLY payload persisted. The agent-forwarded raw
+ * JSON-RPC body is intentionally NOT stored on disk — it can carry
+ * `inputSchema` fragments, vendor `_meta`, and other fields that the
+ * interview directive does not promise to retain. The parser
+ * (`parseAgentReportedToolsList`) extracts only `name` + `description` +
+ * the classifier verdict before returning, and that projection is what
+ * lands here. Dashboard / verdict readers consume `enumeration` only.
  */
 export interface ReportedMcpToolsRecord {
   /** Server name the agent attributed the response to. */
   serverName: string;
   /** ISO-8601 timestamp of when Heron received the forward. */
   receivedAt: string;
-  /** Raw JSON-RPC `tools/list` response body as forwarded. */
-  rawResponse: unknown;
-  /** Projected enumeration (parsed + classified). Cached for dashboard reads. */
+  /** Projected enumeration (parsed + classified). Names + descriptions only. */
   enumeration: import('../discovery/types.js').McpToolEnumeration;
   /** True when this write replaced an earlier record for the same serverName. */
   replacedPrevious?: boolean;
 }
 
 /**
- * Persist one agent-forwarded `tools/list` response. Subsequent writes
+ * Error thrown by `saveReportedMcpToolsList` when accepting the new
+ * record would exceed `REPORTED_MCP_TOOLS_PER_SESSION_CAP`. Exported so
+ * the MCP handler can convert it to a `tool_failure` with a clear
+ * reason.
+ */
+export class ReportedMcpToolsPerSessionCapExceeded extends Error {
+  constructor(
+    public readonly totalTools: number,
+    public readonly cap: number,
+    public readonly serverName: string,
+  ) {
+    super(
+      `report_mcp_tools_list: persisting "${serverName}" would push the per-session tool count to ${totalTools}, above the ${cap} cap`,
+    );
+    this.name = 'ReportedMcpToolsPerSessionCapExceeded';
+  }
+}
+
+/**
+ * Persist one agent-forwarded `tools/list` projection. Subsequent writes
  * for the same `serverName` REPLACE the earlier record — the spec's
  * "last write wins" semantics. Returns the freshly stored record so the
  * caller (the `report_mcp_tools_list` handler) can echo the projection
@@ -772,6 +803,26 @@ export async function saveReportedMcpToolsList(
       // crash the audit loop because of a single corrupt cache file.
     }
   }
+
+  // AAP-82 Blocker 3 (Codex post-review): enforce per-session cumulative
+  // tool cap BEFORE writing. The cap counts the projected tools across
+  // every server, accounting for last-write-wins (the incoming record
+  // replaces an earlier one for the same serverName).
+  const incomingToolCount = record.enumeration.tools?.length ?? 0;
+  let priorTotal = 0;
+  for (const [name, existingRecord] of Object.entries(existing)) {
+    if (name === record.serverName) continue;
+    priorTotal += existingRecord.enumeration?.tools?.length ?? 0;
+  }
+  const projectedTotal = priorTotal + incomingToolCount;
+  if (projectedTotal > REPORTED_MCP_TOOLS_PER_SESSION_CAP) {
+    throw new ReportedMcpToolsPerSessionCapExceeded(
+      projectedTotal,
+      REPORTED_MCP_TOOLS_PER_SESSION_CAP,
+      record.serverName,
+    );
+  }
+
   const replacedPrevious = Object.prototype.hasOwnProperty.call(existing, record.serverName);
   const stored: ReportedMcpToolsRecord = { ...record, replacedPrevious };
   existing[record.serverName] = stored;

@@ -100,7 +100,12 @@ describe('parseAgentReportedToolsList — accepted shapes', () => {
     expect(byName.echo).toBe('unknown');
   });
 
-  it('preserves optional description, inputSchema, and annotations', () => {
+  it('keeps description, drops inputSchema and annotations from the projection', () => {
+    // AAP-82 Blocker 2 Option A (Codex post-review): the parser strips
+    // schemas + annotations from the projection so they never reach the
+    // persisted record. Annotations still influence classification —
+    // the parser passes them through to `classifyTool` and discards
+    // them once the classifier returns.
     const result = parseAgentReportedToolsList(
       'custom-vendor',
       {
@@ -119,10 +124,11 @@ describe('parseAgentReportedToolsList — accepted shapes', () => {
     expect(result.state).toBe('ok');
     const tool = result.tools?.[0];
     expect(tool?.description).toBe('Fetch one widget by id.');
-    expect(tool?.inputSchema).toMatchObject({ type: 'object' });
-    expect(tool?.annotations).toMatchObject({ readOnlyHint: true });
+    expect(tool).not.toHaveProperty('inputSchema');
+    expect(tool).not.toHaveProperty('annotations');
     // readOnlyHint: true forces the classifier to 'read' even though the
-    // 'fetch' token already wins.
+    // 'fetch' token already wins — proving the classifier saw the
+    // annotation before it was discarded.
     expect(tool?.classification).toBe('read');
   });
 
@@ -155,6 +161,32 @@ describe('parseAgentReportedToolsList — accepted shapes', () => {
 
     expect(result.state).toBe('ok');
     expect(result.tools?.map((t) => t.name)).toEqual(['read_a', 'write_b']);
+  });
+
+  it('returns state=failed (all-entries-malformed) when no entry survives projection', () => {
+    // AAP-82 Bonus 6 (Codex post-review): a non-empty `tools[]` whose
+    // every entry is malformed (missing name, wrong type, empty string)
+    // must NOT be reported as `state: 'ok'` with zero tools — that
+    // would silently swallow "the agent forwarded garbage". Only a
+    // genuinely empty `tools: []` stays `ok`.
+    const result = parseAgentReportedToolsList(
+      'all-bad',
+      {
+        tools: [
+          null,
+          'not an object',
+          { description: 'still no name' },
+          { name: '' },
+          { name: 42 },
+        ],
+      },
+      { now: fixedNow },
+    );
+
+    expect(result.state).toBe('failed');
+    expect(result.tools).toBeUndefined();
+    expect(result.reason).toMatch(/all-entries-malformed/);
+    expect(result.source).toBe('agent-reported');
   });
 });
 
