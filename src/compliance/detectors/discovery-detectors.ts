@@ -19,10 +19,10 @@
  *
  * Discovery walks every L1-L5 surface (`agent.mcpServers[].redactedEnvKeys`,
  * `agent.capabilities[]` (auth_credential), `keychainServices[]`,
- * `osCredentials[]`, `workspaceEnv[].keys`). The key-vocabulary classifier
- * `classifyKeyName` carries the same vocabulary the prose path's
- * `envKeyToEvidence` helper used — preserves the AAP-79 semantic
- * contract while killing the regex round-trip.
+ * `osCredentials[]`, `workspaceEnv[].keys`). The key-vocabulary
+ * classifier `classifyKeyName` is the single source of truth for
+ * credential-name → category mapping (the AAP-79 prose-synthesis
+ * shadow was deleted in AAP-86).
  */
 
 import type { DiscoveryResult } from '../../discovery/types.js';
@@ -47,12 +47,12 @@ interface KeyClassification {
 }
 
 /**
- * Mirror of the prose-path `envKeyToEvidence` vocabulary in
- * `src/report/recompute-compliance.ts`. NOT centralised yet — both
- * tables maintain the same set of patterns independently. Any future
- * addition (e.g. new payment processor) must be made in BOTH locations
- * until Phase 9 deletes the prose-path synthesis entirely. Tracked as
- * a maintenance liability in the AAP-83 PR description.
+ * Centralised key-vocabulary classifier (AAP-86). The prose-path shadow
+ * in `src/report/recompute-compliance.ts` was deleted in AAP-86 once
+ * the renderer migrated to `controlResults`. This is now the SINGLE
+ * source of truth for credential-key → category mapping. Future
+ * additions (new payment processor, new HRIS, etc.) only need to land
+ * here.
  */
 function classifyKeyName(rawKey: string): KeyClassification {
   const key = rawKey.toLowerCase();
