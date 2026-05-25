@@ -316,6 +316,15 @@ export class SessionManager {
           interviewDuration: Date.now() - session.createdAt.getTime(),
           questionsAsked: session.questionsAsked,
         },
+        // AAP-79: same lifecycle as generator.ts — the legacy CLI session
+        // starts in 'interrogation-only'. The CLI does not have a
+        // post-interview verification trigger today, so the field stays
+        // here purely so a `heron run` markdown report matches the
+        // dashboard's banner output.
+        verification: {
+          status: 'interrogation-only',
+          updatedAt: new Date().toISOString(),
+        },
       };
 
       const report = renderMarkdownReport(reportJson);

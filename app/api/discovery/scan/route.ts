@@ -65,6 +65,12 @@ import {
   runOAuthScopeVerification,
   type OAuthSourceInput,
 } from '@/src/verification/oauth-scope-runner';
+import { recomputeComplianceWithDiscovery } from '@/src/report/recompute-compliance';
+import type {
+  AuditReport,
+  QAPair,
+  ReportVerificationStatus,
+} from '@/src/report/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -358,8 +364,47 @@ export async function POST(request: Request): Promise<Response> {
   // surface localAgentDiscovery only when filesystem ran, and
   // oauthScopeVerification only when L6 ran; both are strictly
   // additive so existing report.json shapes are preserved.
+  //
+  // AAP-79 — same code path that powers the `start_verification` MCP
+  // tool. Re-compute Stage 3 framework mapping with discovery evidence
+  // merged in, then flip `verification.status` to 'verified'. The
+  // dashboard's manual "Run verification" button hits this route, so
+  // sessions that never received an agent-initiated start_verification
+  // (e.g. operator returning to a stale session) get the same Surface 2
+  // benefit.
   const patch: Record<string, unknown> = {};
-  if (finalResult) patch.localAgentDiscovery = finalResult;
+  if (finalResult) {
+    patch.localAgentDiscovery = finalResult;
+    const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
+    if (reportJson && Array.isArray(reportJson.systems)) {
+      const transcriptAsQA: QAPair[] = session.transcript.map((t) => ({
+        category: t.category as QAPair['category'],
+        question: t.question,
+        answer: t.answer,
+      }));
+      const analyzerSubset = {
+        systems: reportJson.systems,
+        ...(reportJson.makesDecisionsAboutPeople !== undefined
+          ? { makesDecisionsAboutPeople: reportJson.makesDecisionsAboutPeople }
+          : {}),
+        ...(reportJson.decisionMakingDetails !== undefined
+          ? { decisionMakingDetails: reportJson.decisionMakingDetails }
+          : {}),
+      };
+      const compliance = recomputeComplianceWithDiscovery({
+        analyzer: analyzerSubset,
+        transcript: transcriptAsQA,
+        discovery: finalResult,
+      });
+      patch.compliance = compliance;
+      // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
+      patch.regulatoryCompliance = compliance;
+    }
+    patch.verification = {
+      status: 'verified' as ReportVerificationStatus,
+      updatedAt: new Date().toISOString(),
+    };
+  }
   if (oauth.section) patch.oauthScopeVerification = oauth.section;
   const merged = await patchReportJson(body.data.sessionId, patch);
 

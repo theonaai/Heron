@@ -159,6 +159,15 @@ async function buildSuccessReport(
       interviewDuration: session.completedAt.getTime() - session.startedAt.getTime(),
       questionsAsked: session.questionsAsked,
     },
+    // AAP-79: every freshly-rendered report starts in 'interrogation-only'.
+    // start_verification (or the dashboard scan route) flips this to
+    // 'verified' / 'verification-failed' after the L1-L5 evidence reads
+    // complete. Until then, the banner in markdown + dashboard tells the
+    // operator (or the calling agent) that the verdict is self-report only.
+    verification: {
+      status: 'interrogation-only' as const,
+      updatedAt: new Date().toISOString(),
+    },
   };
 
   // 5. Compute the AAP-63 verdict from the Surface-1-only evidence

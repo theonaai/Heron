@@ -219,4 +219,59 @@ export interface SubmitAnswerOutput {
     reason: 'parse_failure' | 'llm_unreachable' | 'unknown';
     message: string;
   };
+  /**
+   * AAP-79 — hint for the calling agent on the recommended next step.
+   * Present when `status === 'analyzing'` so the agent learns it should
+   * call `start_verification` to convert the interrogation-only report
+   * into a verified one. The runtime renders its standard tool
+   * permission prompt at that point; the user grants or denies the
+   * filesystem scan.
+   */
+  next_step?: {
+    tool: 'start_verification';
+    /** Free-text guidance the agent can echo to the user or its LLM. */
+    message: string;
+  };
+}
+
+// ─── start_verification (AAP-79) ──────────────────────────────────────────
+
+/**
+ * Input for the `start_verification` MCP tool. The runtime's standard
+ * tool-permission prompt is the consent surface — the tool description
+ * registered server-side is what the runtime renders to the user.
+ */
+export interface StartVerificationInput {
+  /** Session id from a prior `start_audit_session`. Must be terminal. */
+  session_id: string;
+  /** Optional absolute workspace path the scan should target. */
+  workspace_hint?: string;
+}
+
+/**
+ * Output for `start_verification`. The handler returns a structured
+ * summary; the dashboard's discovery section + the markdown report
+ * carry the full per-source detail.
+ */
+export interface StartVerificationOutput {
+  session_id: string;
+  /** Report-level verification state after this call. */
+  verification_status: 'verified' | 'verification-failed';
+  /** Short prose summary of what changed. */
+  summary: string;
+  /** Number of HIGH severity findings from the scan. */
+  high_severity_findings: number;
+  /** Total number of findings from the scan. */
+  total_findings: number;
+  /** ISO-8601 timestamp of the scan completion. */
+  completed_at: string;
+  /** Present when verification_status === 'verification-failed'. */
+  error?: {
+    reason:
+      | 'session_not_found'
+      | 'interview_not_complete'
+      | 'workspace_invalid'
+      | 'scan_error';
+    message: string;
+  };
 }

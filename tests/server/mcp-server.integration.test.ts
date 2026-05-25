@@ -28,7 +28,7 @@ const STDIO_FIXTURE = resolve(__dirname, '../fixtures/mcp-server/stdio-heron-ser
  */
 
 describe('HeronMCPServer — stdio transport', () => {
-  it('lists the four MCP tools', async () => {
+  it('lists the five MCP tools', async () => {
     const client = await connectStdio();
     try {
       const result = await client.listTools();
@@ -37,6 +37,7 @@ describe('HeronMCPServer — stdio transport', () => {
         'compare_reports',
         'get_report',
         'start_audit_session',
+        'start_verification',
         'submit_answer',
       ]);
     } finally {
@@ -102,7 +103,7 @@ describe('HeronMCPServer — HTTP transport', () => {
     await new Promise<void>((r) => httpServer.close(() => r()));
   });
 
-  it('connects over HTTP transport and lists the four MCP tools', async () => {
+  it('connects over HTTP transport and lists the five MCP tools', async () => {
     const client = new Client({ name: 'heron-integ-test', version: '0.0.1' }, { capabilities: {} });
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
     await client.connect(transport);
@@ -112,6 +113,7 @@ describe('HeronMCPServer — HTTP transport', () => {
         'compare_reports',
         'get_report',
         'start_audit_session',
+        'start_verification',
         'submit_answer',
       ]);
     } finally {

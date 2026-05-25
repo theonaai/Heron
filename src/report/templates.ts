@@ -96,6 +96,11 @@ export function renderMarkdownReport(
 
   const sections = [
     renderHeader(report, verdict),
+    // AAP-79 — interrogation-only banner sits ABOVE the existing
+    // Verification Status section so a reader scanning the top of the
+    // report cannot miss that the verdict is self-report only. The
+    // banner is suppressed once `verification.status === 'verified'`.
+    renderInterrogationOnlyBanner(report),
     // AAP-63 — Verification Status sits near the top so an auditor sees
     // "deterministic or not?" before reading any findings.
     renderVerificationStatusSection(verdict, context),
@@ -163,6 +168,46 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
   return `# Agent Access Audit Report
 
 **Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${riskLine}${dqPart}${regLine}`;
+}
+
+// ─── AAP-79 — interrogation-only banner ────────────────────────────────────
+
+/**
+ * Render a prominent banner near the top of the markdown report when
+ * `verification.status === 'interrogation-only'` (or the older format
+ * that omits the field entirely). The banner uses a fenced ASCII frame
+ * so it survives reader-side markdown stripping (e.g. plaintext export)
+ * and stays visible on the dashboard's markdown fallback path.
+ *
+ * The 'verification-failed' state renders a separate failure banner so
+ * the operator sees the reason the scan errored and can retry.
+ *
+ * When `verification.status === 'verified'`, the banner is suppressed
+ * — the upstream `sections.filter(Boolean)` drops the empty string.
+ */
+function renderInterrogationOnlyBanner(report: AuditReport): string {
+  const status = report.verification?.status;
+  if (status === 'verified') return '';
+  if (status === 'verification-failed') {
+    const reason = report.verification?.reason ?? 'see dashboard for details';
+    return [
+      '> **Verification failed.** Discovery could not complete for this session.',
+      `> Reason: ${escapeInlineCode(reason)}`,
+      '>',
+      '> The report below remains based on the interview only. Retry verification ' +
+        'via the dashboard or by re-calling `start_verification` from the agent host.',
+    ].join('\n');
+  }
+  // Default = 'interrogation-only' or undefined (legacy session pre-AAP-79).
+  return [
+    '> **This report is based on the interview only.** Run verification to ' +
+      'confirm declared scope against deterministic evidence ' +
+      '(MCP configs, OS credentials, .env files, Keychain — names only).',
+    '>',
+    '> Verified runs flip this banner off and re-compute the framework mapping ' +
+      'with the discovery evidence merged in. Call `start_verification` from the ' +
+      'agent host, or click **Run verification** in the dashboard.',
+  ].join('\n');
 }
 
 // ─── Scope & Methodology ────────────────────────────────────────────────────
