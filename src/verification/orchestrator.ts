@@ -115,7 +115,10 @@ export async function runVerification(args: RunVerificationArgs): Promise<Verifi
   //     }
   //   }
   //   if (!isFrameworkMappingDisabled()) {
-  //     report.frameworkMapping = runFrameworkMapping(report);
+  //     report.frameworkMapping = controlResultsToFrameworkMapping(
+  //       mapFindings({ declared: { systems: [], transcript: [] },
+  //                     actual: { verificationReport: report } }).controlResults,
+  //     );
   //   }
   return report;
 }

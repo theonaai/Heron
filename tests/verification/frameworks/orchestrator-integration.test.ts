@@ -12,7 +12,7 @@
  *     `frameworkMapping`.
  *  2. `isFrameworkMappingDisabled` is the single source of truth for
  *     the env-disable flag and CLI sites use it to opt out of mapping.
- *  3. When a caller manually runs `runFrameworkMapping` on the
+ *  3. When a caller manually runs `buildFrameworkMapping` on the
  *     returned report (the new CLI flow), the mapping has the full
  *     12-control rollout.
  */
@@ -20,11 +20,26 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { runVerification, isFrameworkMappingDisabled } from '../../../src/verification/orchestrator.js';
-import { runFrameworkMapping } from '../../../src/verification/frameworks/router.js';
+import { mapFindings } from '../../../src/compliance/mapper.js';
+import { controlResultsToFrameworkMapping } from '../../../src/verification/frameworks/control-results-to-mapping.js';
+import type { FrameworkMapping } from '../../../src/verification/frameworks/types.js';
 import type {
   DeterministicSource,
   DeterministicSourceResult,
+  VerificationReport,
 } from '../../../src/verification/types.js';
+
+// AAP-86 shim: see tests/verification/frameworks/router.test.ts.
+function buildFrameworkMapping(
+  report: VerificationReport,
+  opts: { now?: () => Date } = {},
+): FrameworkMapping {
+  const compliance = mapFindings({
+    declared: { systems: [], transcript: [] },
+    actual: { verificationReport: report },
+  });
+  return controlResultsToFrameworkMapping(compliance.controlResults, opts);
+}
 
 function staticSource(result: DeterministicSourceResult): DeterministicSource<unknown> {
   return {
@@ -62,7 +77,7 @@ describe('runVerification — framework mapping is NOT attached automatically (H
     expect(report.frameworkMapping).toBeUndefined();
   });
 
-  it('caller can run runFrameworkMapping on the returned report and get the 12-control rollout', async () => {
+  it('caller can run buildFrameworkMapping on the returned report and get the 13-control rollout', async () => {
     const report = await runVerification({
       declared: [{ source: 'interview', capturedAt: 't', scopes: [{ service: 'jira', scope: 'tickets:read' }] }],
       sources: [{
@@ -74,8 +89,10 @@ describe('runVerification — framework mapping is NOT attached automatically (H
       }],
       agentLabel: 'test',
     });
-    const mapping = runFrameworkMapping(report);
-    expect(mapping.controls.length).toBe(12);
+    const mapping = buildFrameworkMapping(report);
+    // AAP-86: catalog splits AIUC-1 A003 into A003.3 + A003.4 — total
+    // 13 entries (12 detectors, A003 lights both paired catalog rows).
+    expect(mapping.controls.length).toBe(13);
   });
 
   it('isFrameworkMappingDisabled reflects HERON_FRAMEWORK_MAPPING_DISABLED env', () => {

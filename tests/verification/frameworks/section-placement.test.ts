@@ -8,8 +8,22 @@
 import { describe, it, expect } from 'vitest';
 
 import { renderVerificationSection } from '../../../src/report/templates.js';
-import { runFrameworkMapping } from '../../../src/verification/frameworks/router.js';
+import { mapFindings } from '../../../src/compliance/mapper.js';
+import { controlResultsToFrameworkMapping } from '../../../src/verification/frameworks/control-results-to-mapping.js';
+import type { FrameworkMapping } from '../../../src/verification/frameworks/types.js';
 import type { VerificationReport } from '../../../src/verification/types.js';
+
+// AAP-86 shim: see tests/verification/frameworks/router.test.ts.
+function buildFrameworkMapping(
+  report: VerificationReport,
+  opts: { now?: () => Date } = {},
+): FrameworkMapping {
+  const compliance = mapFindings({
+    declared: { systems: [], transcript: [] },
+    actual: { verificationReport: report },
+  });
+  return controlResultsToFrameworkMapping(compliance.controlResults, opts);
+}
 
 const FROZEN = () => new Date('2026-05-16T10:00:00.000Z');
 
@@ -35,7 +49,7 @@ describe('renderVerificationSection — framework mapping placement', () => {
 
   it('renders the framework section AFTER the Sources subsection', () => {
     const report = reportFixture();
-    report.frameworkMapping = runFrameworkMapping(report, { now: FROZEN });
+    report.frameworkMapping = buildFrameworkMapping(report, { now: FROZEN });
     const md = renderVerificationSection(report);
     const idxSources = md.indexOf('### Sources');
     const idxFrameworks = md.indexOf('## Compliance Framework Mapping');
@@ -45,7 +59,7 @@ describe('renderVerificationSection — framework mapping placement', () => {
 
   it('Summary subsection is inside the framework section', () => {
     const report = reportFixture();
-    report.frameworkMapping = runFrameworkMapping(report, { now: FROZEN });
+    report.frameworkMapping = buildFrameworkMapping(report, { now: FROZEN });
     const md = renderVerificationSection(report);
     expect(md).toMatch(/## Compliance Framework Mapping[\s\S]*### Summary/);
   });
