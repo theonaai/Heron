@@ -1,16 +1,18 @@
 /**
  * AAP-83 Phase 7 — renderer invariants survive the mapper unification.
  *
- * Two invariants we want to keep stable:
+ * Three data-layer invariants we want to keep stable. These tests do
+ * NOT depend on the renderer's read priority — they exercise the data
+ * shape only. AAP-84 (Phase 4) changes the renderer to prefer
+ * `controlResults` when present, but the invariants below still hold
+ * for the underlying CategorizedCompliance object the mapper builds.
  *
- *   1. `templates.ts:summarizeOverallStatus` counts `compliance.all`
- *      entries where `severity !== 'info'`. The new `controlResults`
- *      field is additive — it must NOT leak into the gap count
- *      (different shape, different consumer).
+ *   1. `controlResults` never leaks into `compliance.all`. Two
+ *      different shapes, two different consumers. Adding typed
+ *      detector results MUST NOT inflate the legacy flag projection.
  *
  *   2. Legacy reports loaded from disk without `controlResults` must
- *      still render. The renderer reads `c.all`, which is unchanged.
- *      `controlResults` defaults to `[]` when absent — exercise that.
+ *      still render. `controlResults` defaults to `[]` when absent.
  *
  *   3. MAPPING_VERSION bumped so cache-busts and downstream consumers
  *      can pin to the new behaviour explicitly.
