@@ -1,37 +1,55 @@
 /**
- * AAP-79 — recompute the Stage 3 framework mapping with discovery evidence.
+ * AAP-79 / AAP-83 — recompute the Stage 3 framework mapping with
+ * discovery evidence.
  *
- * The original analyzer pipeline runs `mapFindingsToRiskCategories` exactly
- * once, on the LLM-extracted systems + the raw interview transcript. Surface
- * 2 evidence (`runDiscovery` filesystem reads — L1-L5) lands later, after
- * the report is already on disk. Pre-AAP-79 the mapping was never
- * re-computed, so a transcript that never mentioned PII could still leave
- * the report missing GDPR Art 5(1)(c) controls even when discovery found an
- * AWS credentials file or a `.env` with `STRIPE_SECRET_KEY` in it.
+ * Original AAP-79 problem: the analyzer pipeline runs
+ * `mapFindingsToRiskCategories` exactly once, on the LLM-extracted
+ * systems + the raw interview transcript. Surface 2 evidence
+ * (`runDiscovery` filesystem reads — L1-L5) lands later, after the
+ * report is already on disk. Pre-AAP-79 the mapping was never
+ * re-computed, so a transcript that never mentioned PII could still
+ * leave the report missing GDPR Art 5(1)(c) controls even when
+ * discovery found an AWS credentials file or a `.env` with
+ * `STRIPE_SECRET_KEY` in it.
  *
- * This module closes that gap (Finding 1 in the 2026-05-24 architecture
- * audit). It synthesises a virtual transcript fragment from the discovery
- * payload — names only, never values, mirroring the names-not-values
- * contract that the discovery readers themselves uphold — and feeds the
- * augmented transcript back into `mapFindingsToRiskCategories`.
+ * Pre-AAP-83: this module synthesised a virtual transcript fragment
+ * from the discovery payload (names only, never values) and fed the
+ * augmented transcript back into the prose mapper so its
+ * `hasSensitivePII` / `hasInternationalTransfer` regexes would fire.
+ * Typed → fake prose → regex on fake prose. The synthesis approach
+ * worked but routed deterministic evidence through a prose path that
+ * was designed for self-report.
  *
- * Why the synthesis route rather than retrofitting `detectSignals` with an
- * extra parameter: the analyzer + mapper already speak the same vocabulary
- * (transcript text). Pushing discovery evidence through the same channel
- * means every signal regex the mapper already maintains (`hasSensitivePII`,
- * `hasInternationalTransfer`, `hasMCPOrA2A`, etc.) automatically benefits
- * without a coordinated schema change. The synthesised text is also kept
- * out of the persisted transcript itself — only the mapper sees it.
+ * AAP-83: the mapper now accepts a typed `actual` envelope. We pass the
+ * discovery payload through it unchanged — `mapFindings({declared,
+ * actual: {discovery}})` lights up the typed-evidence detectors in
+ * `src/compliance/detectors/discovery-detectors.ts` and emits
+ * `ControlResult`s with proper provenance. The legacy
+ * `TypedRegulatoryFlag[]` projection is preserved so renderers that
+ * already iterate `compliance.all` keep working.
  *
- * Privacy contract: this module NEVER reads credential values. It accepts
- * the already-redacted `DiscoveryResult` (output of the discovery readers
- * + secretlint pass) and constructs evidence text from KEY NAMES, FILE
- * PATHS, PROFILE NAMES, and SERVICE NAMES only.
+ * `synthesizeDiscoveryEvidence` is the **legacy projection bridge** —
+ * production still appends its output to the transcript on every
+ * discovery recompute (see `runRecompute` below) so the LLM-driven
+ * prose path inside mapper keeps firing alongside the new typed
+ * detectors. This dual-path bridge stays until Phase 4 (renderers
+ * consume `controlResults` directly) lands, then Phase 9 deletes both
+ * the synthesis call and the `synthesizeDiscoveryEvidence` export. AAP-79
+ * tests exercise it directly and will migrate to typed-detector
+ * vocabulary in Phase 9. Do NOT delete the synthesis call before
+ * renderers consume `controlResults`, or discovery-triggered legacy
+ * flags will disappear from `compliance.all` mid-flight.
+ *
+ * Privacy contract: unchanged. The module never reads credential
+ * values. The already-redacted `DiscoveryResult` (output of the
+ * discovery readers + secretlint pass) flows in; KEY NAMES, FILE
+ * PATHS, PROFILE NAMES, and SERVICE NAMES are the only fields the
+ * detectors ever inspect.
  */
 
 import type { DiscoveryResult } from '../discovery/types.js';
 import {
-  mapFindingsToRiskCategories,
+  mapFindings,
   type CategorizedCompliance,
 } from '../compliance/mapper.js';
 import type {
@@ -69,18 +87,30 @@ export function recomputeComplianceWithDiscovery(args: {
   transcript: QAPair[];
   discovery?: DiscoveryResult | null;
 }): CategorizedCompliance {
+  // AAP-83 dual-path: feed the typed `discovery` payload through the
+  // envelope so `controlResults` carries proper provenance. We still
+  // synthesise the prose evidence row when discovery is present so the
+  // existing `compliance.all` projection (read by every Markdown / JSON
+  // renderer that hasn't been migrated to `controlResults` yet) keeps
+  // firing the same GDPR / AIUC-1 flags it used pre-AAP-83. Phase 9
+  // strips the synthesis once every renderer has been moved over.
   const augmentedTranscript = args.discovery
     ? [...args.transcript, synthesizeDiscoveryEvidence(args.discovery)]
     : args.transcript;
 
-  return mapFindingsToRiskCategories({
-    systems: args.analyzer.systems,
-    transcript: augmentedTranscript,
-    ...(args.analyzer.makesDecisionsAboutPeople !== undefined
-      ? { makesDecisionsAboutPeople: args.analyzer.makesDecisionsAboutPeople }
-      : {}),
-    ...(args.analyzer.decisionMakingDetails !== undefined
-      ? { decisionMakingDetails: args.analyzer.decisionMakingDetails }
+  return mapFindings({
+    declared: {
+      systems: args.analyzer.systems,
+      transcript: augmentedTranscript,
+      ...(args.analyzer.makesDecisionsAboutPeople !== undefined
+        ? { makesDecisionsAboutPeople: args.analyzer.makesDecisionsAboutPeople }
+        : {}),
+      ...(args.analyzer.decisionMakingDetails !== undefined
+        ? { decisionMakingDetails: args.analyzer.decisionMakingDetails }
+        : {}),
+    },
+    ...(args.discovery
+      ? { actual: { discovery: args.discovery } }
       : {}),
   });
 }

@@ -27,6 +27,13 @@ import type {
   SystemAssessment,
 } from '../report/types.js';
 import { CONTROL_MAPPINGS } from './control-mappings.js';
+import { CONTROL_CATALOG } from './control-catalog.js';
+import type {
+  ControlCatalogEntry,
+  ControlResult,
+} from './control-catalog.js';
+import { stableKeyFor } from './control-key.js';
+import type { TypedEvidenceEnvelope } from './detectors/types.js';
 import { FRAMEWORKS } from './frameworks.js';
 import type {
   ControlMapping,
@@ -41,6 +48,11 @@ import type {
 } from './types.js';
 import { MAPPING_VERSION } from './types.js';
 import { isBusinessSystem } from '../util/systems.js';
+import type {
+  SourceVerification,
+  VerificationReport,
+} from '../verification/types.js';
+import type { DiscoveryResult } from '../discovery/types.js';
 
 // ─── Decision impact ────────────────────────────────────────────────────────
 
@@ -592,6 +604,18 @@ export interface CategorizedCompliance {
    * Read-only snapshot of the signals that produced the flags above.
    */
   signals: ComplianceSignals;
+  /**
+   * AAP-83 — per-control results from typed-evidence detectors. Empty when
+   * the caller did not provide an `actual` envelope (the `mapFindings`
+   * default). Populated when the dashboard / CLI feeds discovery, the
+   * verification report, or OAuth introspection into the mapper.
+   *
+   * The legacy `TypedRegulatoryFlag` projection above still drives the
+   * existing renderers — this field is additive so future surfaces
+   * (per-control verdict pills, control-level provenance hovers) have
+   * structured data to render. Dedup is by `stableKey`.
+   */
+  controlResults: ControlResult[];
 }
 
 function emptyBucket(): CategorizedBucket {
@@ -748,9 +772,136 @@ export interface MapperInput {
   decisionMakingDetails?: string;
 }
 
+/**
+ * AAP-83 — declared half of the envelope-shaped mapper input.
+ *
+ * Mirrors the fields the legacy `MapperInput` already accepts. Lives
+ * under `MapFindingsInput.declared` so the call site can distinguish
+ * Surface 1 evidence (interview / agent declaration) from Surface 2
+ * evidence (`actual`).
+ */
+export interface DeclaredEvidence {
+  systems: SystemAssessment[];
+  transcript: QAPair[];
+  makesDecisionsAboutPeople?: boolean;
+  decisionMakingDetails?: string;
+}
+
+/**
+ * AAP-83 — actual (Surface 2 / cloud) half of the envelope. Optional
+ * in every field so phases 3 and 4 can roll out the new shape without
+ * forcing every caller to wire up discovery / verification / OAuth at
+ * once. When omitted, the typed-evidence detectors return null and the
+ * mapper falls back to the prose path unchanged.
+ *
+ * `discovery` carries filesystem L1-L5 reads (MCP configs, OAuth scopes,
+ * env files, keychain). `verificationReport` carries the diff +
+ * inventory + approval chain output from `runVerification`.
+ * `oauthVerifications` is the per-provider source-verification array
+ * the cloud-side L7 introspection produces.
+ */
+export interface ActualEvidence {
+  discovery?: DiscoveryResult | null;
+  verificationReport?: VerificationReport;
+  oauthVerifications?: SourceVerification[];
+}
+
+/**
+ * AAP-83 envelope-shaped input. Surface 1 / Surface 2 split is now
+ * explicit — `declared` for what the agent owner says, `actual` for
+ * what infrastructure shows.
+ */
+export interface MapFindingsInput {
+  declared: DeclaredEvidence;
+  actual?: ActualEvidence;
+}
+
+/**
+ * AAP-83 — envelope-shaped public entrypoint. The legacy
+ * `mapFindingsToRiskCategories` is now a thin alias that calls into
+ * this function with `actual` omitted. Existing callers (generator.ts,
+ * sessions.ts) keep working unchanged; new callers that have typed
+ * evidence on hand wire it through `actual` to light up the
+ * deterministic detectors per catalog entry.
+ *
+ * The function preserves the legacy `CategorizedCompliance` output
+ * shape end-to-end, plus the new `controlResults` array that carries
+ * per-control verdicts + provenance for any catalog entry that fired
+ * a typed-evidence detector. Empty array when no `actual` was provided
+ * — additive, no behaviour change for legacy reports.
+ */
+export function mapFindings(input: MapFindingsInput): CategorizedCompliance {
+  const out = mapFindingsCore(input.declared);
+  if (input.actual) {
+    out.controlResults = runTypedDetectors(input.actual);
+  }
+  return out;
+}
+
+/**
+ * Run every catalog entry's `deterministicDetector` against the typed
+ * evidence envelope. Detectors that return null are skipped (no
+ * relevant evidence). Phase 4 promotes these results into the
+ * per-control verdict ladder; Phase 3 just collects them.
+ */
+function runTypedDetectors(actual: ActualEvidence): ControlResult[] {
+  const evidence: TypedEvidenceEnvelope = {};
+  if (actual.discovery !== undefined && actual.discovery !== null) {
+    evidence.discovery = actual.discovery;
+  }
+  if (actual.verificationReport !== undefined) {
+    evidence.verificationReport = actual.verificationReport;
+  }
+  if (actual.oauthVerifications !== undefined) {
+    evidence.oauthVerifications = actual.oauthVerifications;
+  }
+
+  const out: ControlResult[] = [];
+  const seen = new Set<string>();
+  for (const entry of CONTROL_CATALOG as ControlCatalogEntry[]) {
+    if (!entry.deterministicDetector) continue;
+    const result = entry.deterministicDetector(evidence) as ControlResult | null;
+    if (!result) continue;
+    const key = stableKeyFor({
+      findingType: entry.findingType,
+      frameworkId: entry.frameworkId,
+      controlId: entry.controlId,
+    });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(result);
+  }
+  return out;
+}
+
+/**
+ * Legacy entrypoint preserved verbatim. Routes through `mapFindings` so
+ * the envelope shape becomes the canonical implementation path. New
+ * callers should use `mapFindings({ declared, actual })` directly.
+ */
 export function mapFindingsToRiskCategories(
   input: MapperInput,
 ): CategorizedCompliance {
+  const declared: DeclaredEvidence = {
+    systems: input.systems,
+    transcript: input.transcript,
+  };
+  if (input.makesDecisionsAboutPeople !== undefined) {
+    declared.makesDecisionsAboutPeople = input.makesDecisionsAboutPeople;
+  }
+  if (input.decisionMakingDetails !== undefined) {
+    declared.decisionMakingDetails = input.decisionMakingDetails;
+  }
+  return mapFindings({ declared });
+}
+
+/**
+ * The original `mapFindingsToRiskCategories` body lives here, scoped to
+ * the declared half of the envelope. `mapFindings` calls into it and
+ * then optionally enriches the output with typed-evidence detector
+ * results.
+ */
+function mapFindingsCore(input: DeclaredEvidence): CategorizedCompliance {
   const signals = detectSignals(
     input.systems,
     input.transcript,
@@ -836,5 +987,8 @@ export function mapFindingsToRiskCategories(
     all,
     euAiActClassification,
     signals,
+    // AAP-83 phase 3 — empty by default; `mapFindings` populates this
+    // when the caller provides typed evidence in `actual`.
+    controlResults: [],
   };
 }
