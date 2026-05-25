@@ -1,13 +1,19 @@
 /**
  * Heron's MCP server.
  *
- * Transport-agnostic wrapper that exposes three tools over any MCP
+ * Transport-agnostic wrapper that exposes five tools over any MCP
  * transport:
- *   - `start_audit_session` (AAP-52) — interrogate the audited agent
+ *   - `start_audit_session` (AAP-52): interrogate the audited agent
  *     over MCP sampling, persist the run under `~/.heron/sessions/`,
  *     return the rendered report.
- *   - `get_report` — fetch an in-memory stored report by id.
- *   - `compare_reports` — diff two reports.
+ *   - `submit_answer` (AAP-55): provide the next answer for
+ *     non-sampling clients running the awaiting-answer flow.
+ *   - `start_verification` (AAP-79): scan the runtime workspace for
+ *     deterministic evidence (L1-L5 discovery + secretlint scrub),
+ *     re-compute Stage 3 compliance with the merged evidence, persist
+ *     the verified verdict.
+ *   - `get_report`: fetch an in-memory stored report by id.
+ *   - `compare_reports`: diff two reports.
  *
  * OSS mounts this at stdio via `heron mcp-serve` and at HTTP via
  * `app/mcp/route.ts`. Future Hosted (AAP-47) mounts the same wrapper
@@ -75,7 +81,7 @@ import { runDiscovery } from '../discovery/index.js';
 import { diffAgainstTranscript } from '../discovery/diff.js';
 import { secretlintScrub } from '../discovery/secretlint-scrub.js';
 import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
-import { renderMarkdownReport } from '../report/templates.js';
+import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
 import type { DiscoveryResult } from '../discovery/types.js';
 
 const SERVER_NAME = 'heron';
@@ -378,7 +384,8 @@ const START_VERIFICATION_DEF: ToolDefinition = {
         type: 'string',
         description:
           'The session id returned by a prior start_audit_session call. Must reference ' +
-          'a session whose interview has completed (status complete or analysis_failed).',
+          'a session whose interview has completed (status complete). Sessions in ' +
+          'analysis_failed are rejected: re-run start_audit_session first.',
       },
       workspace_hint: {
         type: 'string',
@@ -1272,23 +1279,31 @@ export class HeronMCPServer {
 
     // Interview must have run to completion before verification. The
     // analyzer's report.json is what `recomputeComplianceWithDiscovery`
-    // patches — there is no useful work to do for a session that hasn't
-    // produced one yet. `analysis_failed` is accepted on purpose: the
-    // failure-mode report still benefits from the discovery section
-    // landing on disk so the operator can review evidence before re-running
-    // the interview, but Stage 3 re-computation is a no-op without the
-    // analyzer subset.
-    const interviewComplete =
-      session.status === 'complete' || session.status === 'analysis_failed';
-    if (!interviewComplete) {
+    // patches; there is no useful work to do for a session that hasn't
+    // produced one yet.
+    //
+    // `analysis_failed` is rejected explicitly. `writeAnalysisFailure`
+    // intentionally does NOT write report.json (the absence is what tells
+    // the dashboard "no analysis to render"), so a partial patch from
+    // this handler would violate that invariant. The SSE event a
+    // successful run publishes also has no truthful meaning for a session
+    // that never produced an AuditReport; the dashboard would flip
+    // optimistically to 'complete' and then revert on the next read.
+    if (session.status !== 'complete') {
+      const cause =
+        session.status === 'analysis_failed'
+          ? 'analysis_failed'
+          : 'interview_not_complete';
+      const message =
+        session.status === 'analysis_failed'
+          ? `Session ${sessionId} ended in analysis_failed; verification has no report.json to patch. Re-run start_audit_session before calling start_verification.`
+          : `Session ${sessionId} is still in status '${session.status}'. Wait for the interview to finish (status complete) before calling start_verification.`;
       return {
         ok: false,
         error: {
           kind: 'tool_failure',
-          cause: 'interview_not_complete',
-          message:
-            `Session ${sessionId} is still in status '${session.status}'. ` +
-            'Wait for the interview to finish (status complete) before calling start_verification.',
+          cause,
+          message,
         },
       };
     }
@@ -1443,28 +1458,32 @@ export class HeronMCPServer {
     }
     const merged = await patchReportJson(sessionId, reportPatch);
 
-    // Re-render the markdown report so the on-disk artefact matches the
-    // refreshed compliance + verification banner. Failure to re-render
-    // is non-fatal — the JSON is canonical; the markdown is downloadable.
-    try {
-      const renderInput = ensureMergedHasRequiredFields(merged);
-      if (renderInput) {
-        const markdown = renderMarkdownReport(renderInput);
-        await writeReport(sessionId, { markdown, json: merged });
-      }
-    } catch {
-      // Best-effort; the JSON write above already captured the new state.
-    }
-
-    // Re-run verdict computation so the dashboard's deterministic /
-    // interview risk-level fields pick up the new Surface 2 evidence on
-    // the same tick.
+    // Compute the verdict FIRST so the markdown re-render gets the
+    // verified-state context. Pre-AAP-79 (and during the first pass of
+    // this ticket) the renderer ran before `computeVerdictFromArtifacts`,
+    // so the `Verification Status` section fell back to the UNVERIFIED
+    // stub even for sessions whose JSON had correctly flipped to
+    // `verified`. Codex review surfaced this on PR #69.
     const verdict = computeVerdictFromArtifacts({
       reportJson: merged,
       transcript: session.transcript,
       discoveryOverride: scrubbed,
     });
     await persistVerdict(sessionId, verdict);
+
+    // Re-render the markdown report so the on-disk artefact matches the
+    // refreshed compliance + verified banner. Failure to re-render is
+    // non-fatal: the JSON is canonical, the markdown is downloadable.
+    // Shared with the dashboard scan route via
+    // `persistVerifiedMarkdown` so both code paths produce byte-identical
+    // .md output for the same merged report.
+    await persistVerifiedMarkdown({
+      sessionId,
+      merged,
+      verdict,
+      discoveryFindings: scrubbed.findings ?? [],
+    });
+
     publishSessionEvent(sessionId, {
       type: 'status-change',
       status: 'complete',
@@ -1840,7 +1859,7 @@ function toolResultFromMcp(result: MCPServerResult<unknown>): {
  */
 export function buildStartVerificationHint(sessionId: string): string {
   return (
-    'Analysis complete. This report is based on the interview only — declared scope ' +
+    'Analysis complete. This report is based on the interview only. Declared scope ' +
     'is not yet verified against your runtime environment.\n\n' +
     'To produce a verified report, call the `start_verification` tool. You will be asked ' +
     'for permission to scan your filesystem for deterministic evidence (MCP configs, ' +
@@ -1885,28 +1904,9 @@ async function persistVerificationFailure(
   });
 }
 
-/**
- * Type-guard the merged report.json shape after `patchReportJson`. We
- * need the analyzer's required fields (`systems`, `risks`, etc.) before
- * we can hand the blob to `renderMarkdownReport`. For sessions whose
- * report.json never landed (analysis_failed before AAP-79), the
- * markdown re-render is skipped — the JSON write above is still valid.
- */
-function ensureMergedHasRequiredFields(
-  merged: Record<string, unknown>,
-): AuditReport | null {
-  if (!merged || typeof merged !== 'object') return null;
-  const required = ['summary', 'systems', 'risks', 'metadata'];
-  for (const k of required) {
-    if (!(k in merged)) return null;
-  }
-  return merged as unknown as AuditReport;
-}
-
 void buildStartVerificationHint;
 void verifyExistingDirectory;
 void persistVerificationFailure;
-void ensureMergedHasRequiredFields;
 
 function formatError(err: MCPServerError): string {
   switch (err.kind) {

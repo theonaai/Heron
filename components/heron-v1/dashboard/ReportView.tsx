@@ -1539,6 +1539,32 @@ function AnchorRail({
   );
 }
 
+/* ── AAP-79 banner status inference ──
+ *
+ * The interrogation-only banner reads `verification.status` to decide
+ * which copy to render. Sessions persisted before this ticket have
+ * `localAgentDiscovery` populated but no `verification` field — the
+ * writer that flips it landed in this PR. Treating undefined as
+ * "interrogation-only" makes the banner lie about a session that
+ * already ran discovery.
+ *
+ * Rules:
+ *   - `verification.status` present → use it verbatim.
+ *   - Missing AND discovery has at least one agent on disk → 'verified'
+ *     (the discovery scan ran successfully, even though we didn't
+ *     write the status marker at the time).
+ *   - Missing AND no discovery yet → undefined (banner renders the
+ *     default 'interrogation-only' copy, which is correct).
+ */
+export function inferBannerStatus(
+  json: ReportJson,
+): 'interrogation-only' | 'verified' | 'verification-failed' | undefined {
+  if (json.verification?.status) return json.verification.status;
+  const agents = json.localAgentDiscovery?.agents;
+  if (Array.isArray(agents) && agents.length > 0) return 'verified';
+  return undefined;
+}
+
 /* ── Main ReportView ──
    Note: Download .md lives in SessionDetail's topbar now (next to
    Share), not inside the report body. ReportView still receives the
@@ -1802,9 +1828,16 @@ export default function ReportView({
       {/* AAP-79 — interrogation-only / verification-failed banner. Sits
           above the anchor rail so the reader's eye lands on it before
           they scroll into the findings. Suppressed when verification
-          succeeded. */}
+          succeeded.
+
+          Legacy (pre-AAP-79) sessions have `localAgentDiscovery` populated
+          but no `verification` field, because the writer that flips the
+          field landed in this ticket. Treat those sessions as verified so
+          the banner doesn't lie about an already-completed discovery run.
+          A session with neither field gets the default
+          'interrogation-only' rendering (correct: nothing has run). */}
       <InterrogationOnlyBanner
-        status={json.verification?.status}
+        status={inferBannerStatus(json)}
         reason={json.verification?.reason}
         {...(onRunVerification ? { onRunVerification } : {})}
       />

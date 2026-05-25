@@ -44,7 +44,7 @@
       "properties": {
         "session_id": {
           "type": "string",
-          "description": "The session id returned by a prior start_audit_session call. Must reference a session whose interview has completed (status complete or analysis_failed)."
+          "description": "The session id returned by a prior start_audit_session call. Must reference a session whose interview has completed (status complete). Sessions in analysis_failed are rejected: re-run start_audit_session first."
         },
         "workspace_hint": {
           "type": "string",

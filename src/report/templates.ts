@@ -202,7 +202,7 @@ function renderInterrogationOnlyBanner(report: AuditReport): string {
   return [
     '> **This report is based on the interview only.** Run verification to ' +
       'confirm declared scope against deterministic evidence ' +
-      '(MCP configs, OS credentials, .env files, Keychain — names only).',
+      '(MCP configs, OS credentials, .env files, Keychain: names only).',
     '>',
     '> Verified runs flip this banner off and re-compute the framework mapping ' +
       'with the discovery evidence merged in. Call `start_verification` from the ' +

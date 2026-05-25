@@ -1,0 +1,163 @@
+/**
+ * AAP-79 — `persistVerifiedMarkdown` helper tests.
+ *
+ * The helper is what flips a session's `report.md` from the
+ * interrogation-only banner to the verified Surface 2 layout. It is
+ * called by BOTH `handleStartVerification` (the MCP-tool path) and the
+ * `/api/discovery/scan` route (the dashboard "Run verification" button
+ * path). Codex review on PR #69 caught two regressions in the original
+ * pass:
+ *
+ *   1. Inside `handleStartVerification`, the markdown was re-rendered
+ *      WITHOUT verdict context, BEFORE `computeVerdictFromArtifacts`
+ *      had run. The `Verification Status` section fell back to the
+ *      UNVERIFIED stub even when the JSON had correctly flipped to
+ *      `verified`.
+ *   2. Inside the dashboard scan route, the markdown was never
+ *      re-rendered at all. The dashboard would show `verified` while
+ *      the .md download still carried the interrogation-only banner.
+ *
+ * These tests cover the helper itself:
+ *   - Renderable report + verdict + discovery findings → markdown carries
+ *     "Verified" / "Risk Level (Verified)" markers, NOT "UNVERIFIED".
+ *   - Renderable report without analyzer-required fields → `false`
+ *     return, no markdown write.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { persistVerifiedMarkdown } from '../../src/report/persist-verified-markdown.js';
+import {
+  createSession,
+  writeReport,
+  getSessionsDir,
+} from '../../src/storage/sessions.js';
+import type { AuditReport } from '../../src/report/types.js';
+import type { Verdict } from '../../src/verification/verdict.js';
+import type { DiscoveryFinding } from '../../src/discovery/types.js';
+
+function makeReport(): AuditReport {
+  return {
+    summary: 'Demo agent.',
+    agentPurpose: 'Demo',
+    systems: [],
+    dataNeeds: [],
+    accessAssessment: { claimed: [], actuallyNeeded: [], excessive: [], missing: [] },
+    risks: [
+      { severity: 'medium', title: 'Self-reported risk', description: 'self-reported description' },
+    ],
+    recommendations: [],
+    overallRiskLevel: 'medium',
+    transcript: [{ question: 'q', answer: 'a', category: 'purpose' }],
+    metadata: {
+      date: '2026-05-25',
+      target: 'demo-agent',
+      interviewDuration: 1000,
+      questionsAsked: 1,
+    },
+  };
+}
+
+describe('persistVerifiedMarkdown — re-render after successful verification', () => {
+  let tmpDir: string;
+  const origEnv = process.env.HERON_SESSIONS_DIR;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-aap79-persist-verified-'));
+    process.env.HERON_SESSIONS_DIR = tmpDir;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.HERON_SESSIONS_DIR;
+    else process.env.HERON_SESSIONS_DIR = origEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('writes markdown with "Verified" markers when verdict is partial/verified', async () => {
+    // Seed the session with a stub markdown so we can prove the helper
+    // overwrote it. The starting body deliberately includes the legacy
+    // interrogation-only banner copy.
+    const { id } = await createSession({ agentName: 'verifies', mode: 'tool-call' });
+    await writeReport(id, {
+      markdown: '# Stub\n\n> **This report is based on the interview only.**\n',
+      json: makeReport() as unknown as Record<string, unknown>,
+    });
+
+    const verdict: Verdict = {
+      status: 'partial',
+      deterministicRiskLevel: 'medium',
+      interviewRiskLevel: 'medium',
+      primaryRiskLevel: 'medium',
+      primaryRiskSource: 'deterministic',
+      discrepancies: [],
+    };
+    const discoveryFindings: DiscoveryFinding[] = [
+      {
+        kind: 'EXTRA',
+        severity: 'HIGH',
+        serverName: 'slack',
+        runtime: 'codex',
+        description: 'undisclosed slack server with credentials',
+      },
+    ];
+
+    const ok = await persistVerifiedMarkdown({
+      sessionId: id,
+      merged: makeReport() as unknown as Record<string, unknown>,
+      verdict,
+      discoveryFindings,
+    });
+    expect(ok).toBe(true);
+
+    const mdPath = join(getSessionsDir(), id, 'report.md');
+    const rendered = readFileSync(mdPath, 'utf8');
+
+    // Verified verdict puts a "Verified" prefix on the header risk line.
+    expect(rendered).toContain('Risk Level (Verified)');
+    // The Verification Status section is the per-source table, not the
+    // UNVERIFIED stub. Surface 2 ran, so the table mentions filesystem
+    // discovery.
+    expect(rendered).toContain('## Verification Status');
+    expect(rendered).toContain('Filesystem discovery');
+    // The interrogation-only banner is suppressed when verification is
+    // present on the report — but our test report doesn't carry the
+    // verification field. The Verified verdict context, however, is what
+    // populates the Surface 2 status table — the banner copy from the
+    // initial stub is no longer present in the rendered output.
+    expect(rendered).not.toMatch(/UNVERIFIED.+Surface 2 deterministic sources have not run/i);
+    // The discovery finding propagated into the deterministic findings
+    // table.
+    expect(rendered).toContain('### Deterministic Findings (Surface 2)');
+    expect(rendered).toContain('slack');
+  });
+
+  it('returns false (no write) when merged blob is missing required analyzer fields', async () => {
+    // Legacy pre-AAP-79 path where report.json never landed at all.
+    const { id } = await createSession({ agentName: 'legacy', mode: 'tool-call' });
+
+    const incomplete: Record<string, unknown> = {
+      // Missing every required key (summary / systems / risks / metadata).
+      verification: { status: 'verified', updatedAt: '2026-05-25T00:00:00.000Z' },
+    };
+    const verdict: Verdict = {
+      status: 'unverified',
+      primaryRiskLevel: 'unverified',
+      primaryRiskSource: 'no-evidence',
+      discrepancies: [],
+    };
+
+    const ok = await persistVerifiedMarkdown({
+      sessionId: id,
+      merged: incomplete,
+      verdict,
+      discoveryFindings: [],
+    });
+    expect(ok).toBe(false);
+
+    // No report.md was ever written for this session.
+    const mdPath = join(getSessionsDir(), id, 'report.md');
+    expect(existsSync(mdPath)).toBe(false);
+  });
+});

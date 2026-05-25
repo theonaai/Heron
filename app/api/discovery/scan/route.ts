@@ -66,6 +66,7 @@ import {
   type OAuthSourceInput,
 } from '@/src/verification/oauth-scope-runner';
 import { recomputeComplianceWithDiscovery } from '@/src/report/recompute-compliance';
+import { persistVerifiedMarkdown } from '@/src/report/persist-verified-markdown';
 import type {
   AuditReport,
   QAPair,
@@ -425,6 +426,25 @@ export async function POST(request: Request): Promise<Response> {
   }
   const verdict = computeVerdictFromArtifacts(verdictArgs);
   await persistVerdict(body.data.sessionId, verdict);
+
+  // AAP-79 — re-render `report.md` so the downloadable artefact tracks
+  // the verified verdict + the recomputed compliance mapping. Pre-fix
+  // this route only patched `report.json`; the dashboard would show
+  // `verified` while the .md download still carried the interrogation-only
+  // banner and the stale compliance section. Shared helper with the
+  // `start_verification` MCP handler so both paths produce byte-identical
+  // markdown for the same merged report. Only triggered when filesystem
+  // discovery actually ran — an OAuth-only request leaves the report
+  // verification status untouched (status patch above is gated on
+  // `finalResult`), so the markdown re-render has nothing to refresh.
+  if (finalResult) {
+    await persistVerifiedMarkdown({
+      sessionId: body.data.sessionId,
+      merged,
+      verdict,
+      discoveryFindings: finalResult.findings ?? [],
+    });
+  }
 
   publishSessionEvent(body.data.sessionId, {
     type: 'status-change',
