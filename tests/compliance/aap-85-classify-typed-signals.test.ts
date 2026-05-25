@@ -73,6 +73,10 @@ function makeSignals(over: Partial<ComplianceSignals> = {}): ComplianceSignals {
     hasMCPOrA2A: false,
     hasSubAgents: false,
     hasCrossCustomer: false,
+    proseExplicitlyNoBiometric: false,
+    proseExplicitlyNoEducation: false,
+    proseExplicitlyNoEmployment: false,
+    proseExplicitlyNoEssentialServices: false,
     ...over,
   };
 }
@@ -695,5 +699,278 @@ describe('AAP-85 cross-check: prose signals from detectSignals + typed elevation
       discoveryFindings: [envKeyCap('BAMBOOHR_API_KEY')],
     });
     expect(cls.annexIIICategories).toContain('§4 employment');
+  });
+});
+
+// ─── Section 12 — Codex post-review: category-specific explicit negation ───
+//
+// AAP-85 Codex Blockers 1+2+4. The pre-Codex code used a whole-classification
+// `proseExplicitlyNegated` predicate (no decisions-about-people AND no
+// impact) as the only guard against typed-signal elevation. That predicate
+// is necessary but not sufficient — an agent that DOES make decisions about
+// people but has explicitly carved a category out (e.g. "we make tenant-
+// screening decisions but no employment decisions") would still see typed
+// BAMBOOHR_API_KEY elevate §4. After the fix, each Annex III category
+// honours its own explicit negation in addition to the whole-classification
+// gate.
+
+describe('AAP-85 Codex Blocker 1+2+4: category-specific explicit negation', () => {
+  it('§4: hasDecisionsAboutPeople=true + hasEmploymentDecisions=false + proseExplicitlyNoEmployment + BAMBOOHR → §4 does NOT fire', () => {
+    // The exact shape Codex flagged. The agent decides about people in
+    // some other domain (tenant screening, content moderation) but has
+    // explicitly negated employment. Typed BAMBOOHR_API_KEY must NOT
+    // elevate §4.
+    const proseSignals = makeSignals({
+      hasDecisionsAboutPeople: true,
+      decisionImpact: 'high',
+      hasEmploymentDecisions: false,
+      proseExplicitlyNoEmployment: true, // explicit "no employment decisions"
+    });
+    const discoveryFindings: DiscoveredCapability[] = [
+      envKeyCap('BAMBOOHR_API_KEY'),
+    ];
+    const cls = classifyEUAIAct({ proseSignals, discoveryFindings });
+    expect(cls.annexIIICategories).not.toContain('§4 employment');
+  });
+
+  it('§3: hasDecisionsAboutPeople=true + proseExplicitlyNoEducation + CANVAS_LMS → §3 does NOT fire', () => {
+    const proseSignals = makeSignals({
+      hasDecisionsAboutPeople: true,
+      decisionImpact: 'medium',
+      isEducationAssessmentContext: false,
+      proseExplicitlyNoEducation: true, // explicit "no education decisions"
+    });
+    const discoveryFindings: DiscoveredCapability[] = [
+      envKeyCap('CANVAS_LMS_TOKEN'),
+    ];
+    const cls = classifyEUAIAct({ proseSignals, discoveryFindings });
+    expect(cls.annexIIICategories).not.toContain('§3 education');
+  });
+
+  it('§1: hasDecisionsAboutPeople=true + hasSensitivePII + proseExplicitlyNoBiometric + AWS_REKOGNITION → §1 does NOT fire', () => {
+    const proseSignals = makeSignals({
+      hasDecisionsAboutPeople: true,
+      hasSensitivePII: true,
+      decisionImpact: 'high',
+      hasBiometricSignal: false,
+      proseExplicitlyNoBiometric: true, // explicit "no biometric"
+    });
+    const discoveryFindings: DiscoveredCapability[] = [
+      envKeyCap('AWS_REKOGNITION_KEY'),
+    ];
+    const cls = classifyEUAIAct({ proseSignals, discoveryFindings });
+    expect(cls.annexIIICategories).not.toContain('§1 biometric');
+  });
+
+  it('§5: hasDecisionsAboutPeople=true + impact=high + proseExplicitlyNoEssentialServices + PLAID + EPIC_FHIR → §5 does NOT fire', () => {
+    // Even with the convergence path satisfied (financial + health-insurance
+    // typed signals together), explicit negation of essential services in
+    // prose must hold. Defensive: the convergence gate is already
+    // conservative, but if a customer has both Plaid and Epic FHIR for an
+    // unrelated workflow and explicitly says "this is not essential-
+    // services adjacent", we honour them.
+    const proseSignals = makeSignals({
+      hasDecisionsAboutPeople: true,
+      decisionImpact: 'high',
+      hasEssentialServicesSignal: false,
+      proseExplicitlyNoEssentialServices: true,
+    });
+    const discoveryFindings: DiscoveredCapability[] = [
+      envKeyCap('PLAID_CLIENT_ID'),
+      envKeyCap('EPIC_FHIR_SECRET'),
+    ];
+    const cls = classifyEUAIAct({ proseSignals, discoveryFindings });
+    expect(cls.annexIIICategories).not.toContain('§5 essential services');
+  });
+
+  it('category-specific negation is isolated — proseExplicitlyNoEmployment does NOT block §3 elevation by CANVAS_LMS', () => {
+    // Each negation is scoped to its own category. The agent saying "no
+    // employment decisions" does not negate education.
+    const proseSignals = makeSignals({
+      hasDecisionsAboutPeople: true,
+      decisionImpact: 'medium',
+      proseExplicitlyNoEmployment: true,
+      // §3 prose-side is silent (not negated).
+    });
+    const cls = classifyEUAIAct({
+      proseSignals,
+      discoveryFindings: [envKeyCap('CANVAS_LMS_TOKEN')],
+    });
+    expect(cls.annexIIICategories).toContain('§3 education');
+    expect(cls.annexIIICategories).not.toContain('§4 employment');
+  });
+
+  it('detectSignals derives proseExplicitlyNoEmployment from "we make no employment decisions" in prose', () => {
+    const transcript: QAPair[] = [
+      {
+        category: 'overview',
+        question: 'What decisions does the agent make?',
+        answer:
+          'The agent decides which tenant applications to advance for review. We make no employment decisions and do not screen job candidates.',
+      },
+    ];
+    const sig = detectSignals(
+      [],
+      transcript,
+      true,
+      'Reviews tenant applications. We make no employment decisions; this is not a hiring agent.',
+    );
+    expect(sig.proseExplicitlyNoEmployment).toBe(true);
+  });
+
+  it('detectSignals derives proseExplicitlyNoEducation from "no education" prose', () => {
+    const transcript: QAPair[] = [
+      {
+        category: 'overview',
+        question: 'Context?',
+        answer: 'Generic chatbot. Not used for education or grading.',
+      },
+    ];
+    const sig = detectSignals([], transcript, true, 'Generic chatbot — not used for education or schools.');
+    expect(sig.proseExplicitlyNoEducation).toBe(true);
+  });
+
+  it('detectSignals derives proseExplicitlyNoBiometric from "no biometric" prose', () => {
+    const transcript: QAPair[] = [
+      {
+        category: 'overview',
+        question: 'Context?',
+        answer: 'Photo organisation. No biometric identification, no facial recognition.',
+      },
+    ];
+    const sig = detectSignals(
+      [],
+      transcript,
+      true,
+      'Photo organisation. No biometric ID, no facial recognition.',
+    );
+    expect(sig.proseExplicitlyNoBiometric).toBe(true);
+  });
+
+  it('detectSignals does NOT set proseExplicitlyNoEmployment when prose is silent on employment', () => {
+    // Silence is not negation. The typed signal should still be free to
+    // elevate when prose is silent.
+    const transcript: QAPair[] = [
+      {
+        category: 'overview',
+        question: 'What does the agent do?',
+        answer: 'Reviews applications and decides who advances.',
+      },
+    ];
+    const sig = detectSignals(
+      [],
+      transcript,
+      true,
+      'Reviews applications and decides advancement.',
+    );
+    expect(sig.proseExplicitlyNoEmployment).toBe(false);
+  });
+});
+
+// ─── Section 13 — Codex Blocker 3: per-control gate uses classification ────
+//
+// Pre-Codex, `classifyEUAIAct` saw typed signals but
+// `isAnnexIIIApplicableForFinding` (the per-control gate) ran a duplicate
+// prose-only signal check. Result: top-level classification could say
+// "high-risk §4 employment" (lifted by typed BAMBOOHR), while per-control
+// rendering filtered out every annexIII=true control because the gate
+// only saw prose. The fix routes the gate through the already-computed
+// classification result so the two paths cannot diverge.
+
+describe('AAP-85 Codex Blocker 3: per-control gate matches top-level classification', () => {
+  function transcriptAmbiguousEmployment(): QAPair[] {
+    return [
+      {
+        category: 'overview',
+        question: 'What does the agent do?',
+        answer:
+          'Reviews submissions for a research grant program and decides which to advance.',
+      },
+    ];
+  }
+
+  it('typed-elevated §4: per-control annexIII=true controls render in CategorizedCompliance.all', () => {
+    const out = mapFindings({
+      declared: {
+        systems: [],
+        transcript: transcriptAmbiguousEmployment(),
+        makesDecisionsAboutPeople: true,
+        decisionMakingDetails:
+          'Reviews grant submissions and decides advancement; final decisions affect the applicants.',
+      },
+      actual: {
+        discovery: {
+          agents: [
+            {
+              runtime: 'codex',
+              configPath: '/Users/me/.codex/config.toml',
+              mcpServers: [],
+              capabilities: [envKeyCap('BAMBOOHR_API_KEY')],
+            },
+          ],
+          findings: [],
+          scannedAt: '2026-05-25T00:00:00.000Z',
+          scannedPaths: [],
+        },
+      },
+    });
+
+    // Top-level says §4 high-risk via typed elevation.
+    expect(out.euAiActClassification.annexIIICategories).toContain('§4 employment');
+    expect(out.euAiActClassification.classification).toBe('high-risk');
+
+    // Per-control gate must agree: at least one EU AI Act flag tagged
+    // with the elevated high-risk classification should appear. Pre-fix,
+    // the gate would have hidden every annexIII=true control because it
+    // ran a fresh prose-only check.
+    const euFlags = out.all.filter((f) => f.frameworkId === 'eu-ai-act');
+    expect(euFlags.length).toBeGreaterThan(0);
+    const highRiskEUFlags = euFlags.filter(
+      (f) => f.euAiActClassification === 'high-risk',
+    );
+    expect(highRiskEUFlags.length).toBeGreaterThan(0);
+  });
+
+  it('explicit negation: top-level limited AND per-control gate hides Annex III controls (AAP-70 invariant)', () => {
+    // Mirror image of the test above. When prose explicitly negates
+    // decisions-about-people, both top-level AND per-control must agree
+    // there are no Annex III categories firing.
+    const out = mapFindings({
+      declared: {
+        systems: [],
+        transcript: [
+          {
+            category: 'overview',
+            question: 'What does it do?',
+            answer: 'Summarises meeting notes.',
+          },
+        ],
+        makesDecisionsAboutPeople: false,
+      },
+      actual: {
+        discovery: {
+          agents: [
+            {
+              runtime: 'codex',
+              configPath: '/Users/me/.codex/config.toml',
+              mcpServers: [],
+              capabilities: [envKeyCap('BAMBOOHR_API_KEY')],
+            },
+          ],
+          findings: [],
+          scannedAt: '2026-05-25T00:00:00.000Z',
+          scannedPaths: [],
+        },
+      },
+    });
+
+    expect(out.euAiActClassification.classification).toBe('limited');
+    expect(out.euAiActClassification.annexIIICategories).toEqual([]);
+    // Any EU AI Act flags that do render should NOT carry the high-risk
+    // classification label.
+    const highRiskEUFlags = out.all.filter(
+      (f) => f.frameworkId === 'eu-ai-act' && f.euAiActClassification === 'high-risk',
+    );
+    expect(highRiskEUFlags.length).toBe(0);
   });
 });
