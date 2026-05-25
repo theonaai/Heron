@@ -216,8 +216,8 @@ function renderInterrogationOnlyBanner(report: AuditReport): string {
         'not run or did not complete cleanly. See the **Verification Status** ' +
         'section below for per-source detail.',
       '>',
-      '> Re-run verification with the missing source wired to flip this banner ' +
-        'to **Verified**.',
+      '> Resolve outstanding findings or rerun with any missing or failed ' +
+        'sources available to flip this banner to **Verified**.',
     ].join('\n');
   }
   if (status === 'verification-failed') {
