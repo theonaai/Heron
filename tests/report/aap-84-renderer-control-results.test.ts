@@ -451,3 +451,274 @@ describe('AAP-84 HR pack regression — unchanged', () => {
     expect((result as any).hrSignals).toBeUndefined();
   });
 });
+
+// ─── 7. Codex post-review blockers ──────────────────────────────────────────
+
+/**
+ * Codex spotted three blockers AFTER the initial AAP-84 merge was up for
+ * review:
+ *
+ *   Blocker 1: renderer switched absolutely on `controlResults.length > 0`
+ *              which HID prose-only flags whenever any typed detector
+ *              fired. Renderer must consume a MERGED projection.
+ *   Blocker 2: framework activation read only the legacy
+ *              `frameworksActivated` field. A typed-only "GDPR Art. 6
+ *              fail" with empty `frameworksActivated` rendered
+ *              "GDPR not applicable" — wrong.
+ *   Blocker 3: `summarizeOverallStatusFromControlResults` computed the
+ *              status label BEFORE excluding `risk-score` entries,
+ *              so a risk-score-only fail produced "Action Required"
+ *              with zero real gaps.
+ *
+ * These tests pin the fixes in place. They are deliberately tight
+ * against the bug shape — they will catch a regression to the old
+ * either/or switch even if the typed projection itself is correct.
+ */
+describe('AAP-84 Codex post-review — Blocker 1 (merged projection)', () => {
+  it('renderer surfaces a prose-only legacy flag even when controlResults is non-empty', () => {
+    // Mixed shape: typed detector fired for `excessive-access` (GDPR
+    // Art. 25) but prose-only flag covers `sensitive-data` (GDPR
+    // Art. 6). The old switch would have hidden the prose flag.
+    const mixedCompliance: any = {
+      mappingVersion: 'aap-84.codex-fix',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['gdpr'],
+      all: [
+        {
+          framework: 'GDPR — Art. 6',
+          severity: 'action-required',
+          description: 'Lawful basis required for personal data',
+          frameworkId: 'gdpr',
+          controlIds: ['Art. 6'],
+          category: 'privacy',
+          tier: 'mandatory',
+          mandatoryIn: ['EU'],
+          triggeredBy: 'sensitive-data',
+        },
+      ],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'excessive-access',
+          frameworkId: 'gdpr',
+          controlId: 'Art. 25',
+          verdict: 'fail',
+          severity: 'high',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(mixedCompliance);
+    // Typed gap (excessive-access on Art. 25) surfaces.
+    expect(md).toContain('Art. 25 ❌ fail');
+    expect(md).toContain('Excessive permissions');
+    // Prose-only gap (sensitive-data on Art. 6) ALSO surfaces — this
+    // is the load-bearing assertion against Blocker 1.
+    expect(md).toContain('Data handling');
+    expect(md).toContain('GDPR (Art. 6)');
+  });
+
+  it('applicability summary "Gaps Found" cell unions typed + prose-only gap labels', () => {
+    const mixedCompliance: any = {
+      mappingVersion: 'aap-84.codex-fix',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['gdpr'],
+      all: [
+        {
+          framework: 'GDPR — Art. 6',
+          severity: 'action-required',
+          description: 'Sensitive data processing',
+          frameworkId: 'gdpr',
+          controlIds: ['Art. 6'],
+          category: 'privacy',
+          tier: 'mandatory',
+          mandatoryIn: ['EU'],
+          triggeredBy: 'sensitive-data',
+        },
+      ],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'excessive-access',
+          frameworkId: 'gdpr',
+          controlId: 'Art. 25',
+          verdict: 'fail',
+          severity: 'high',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(mixedCompliance);
+    // The GDPR row in the applicability summary must mention BOTH gap
+    // labels. Old behaviour: only the typed projection's label
+    // surfaced (Excessive permissions).
+    expect(md).toMatch(/GDPR.*Excessive permissions.*Data handling|GDPR.*Data handling.*Excessive permissions/);
+  });
+});
+
+describe('AAP-84 Codex post-review — Blocker 2 (framework activation union)', () => {
+  it('typed-only GDPR fail with empty frameworksActivated still renders GDPR as applicable', () => {
+    // The bug shape: prose synthesis didn't activate GDPR (empty
+    // `frameworksActivated`) but a typed detector flagged GDPR Art. 6
+    // as a fail. Old renderer: "GDPR not applicable". Expected: GDPR
+    // gap row.
+    const typedOnlyCompliance: any = {
+      mappingVersion: 'aap-84.codex-fix',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: [], // legacy says "nothing activated"
+      all: [],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'sensitive-data',
+          frameworkId: 'gdpr',
+          controlId: 'Art. 6',
+          verdict: 'fail',
+          severity: 'high',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(typedOnlyCompliance);
+    // GDPR must surface as activated (not "Not applicable") because the
+    // typed projection has a result for it.
+    expect(md).not.toContain('GDPR | ✅ Not applicable');
+    // The gap appears in the applicability table.
+    expect(md).toMatch(/GDPR.*⚠️.*gap/);
+    // The gap also appears in the Compliance Detail block.
+    expect(md).toContain('Data handling');
+    expect(md).toContain('Art. 6 ❌ fail');
+  });
+
+  it('typed-only GDPR fail activates the GDPR obligations table rows', () => {
+    // Obligations table is gated on `activated.has('gdpr')`. The union
+    // fix means a typed-only GDPR result must light up the obligations
+    // table even when prose synthesis left `frameworksActivated` empty.
+    const typedOnlyWithSignals: any = {
+      mappingVersion: 'aap-84.codex-fix',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: [],
+      all: [],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: { hasPII: true } as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'sensitive-data',
+          frameworkId: 'gdpr',
+          controlId: 'Art. 6',
+          verdict: 'fail',
+          severity: 'high',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(typedOnlyWithSignals);
+    // PII-driven obligation row appears — proves the gate flipped via
+    // the typed activation union.
+    expect(md).toContain('GDPR Art. 6');
+    expect(md).toContain('Decide and document WHY you are allowed to process this data');
+  });
+});
+
+describe('AAP-84 Codex post-review — Blocker 3 (risk-score excluded before status label)', () => {
+  it('risk-score-only fail produces "Not Triggered" not "Action Required"', () => {
+    // Pre-fix shape: `statusLabelFromControlResults` saw a fail and
+    // returned "Action Required" before the GAP_EXCLUDED filter ran,
+    // even though risk-score is a methodology anchor (not a real gap)
+    // and the gap-count suffix was zero. The fix excludes risk-score
+    // first.
+    const riskScoreOnly: any = {
+      mappingVersion: 'aap-84.codex-fix',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['nist-ai-rmf'],
+      all: [],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'risk-score',
+          frameworkId: 'nist-ai-rmf',
+          controlId: 'MEASURE 1.1',
+          verdict: 'fail',
+          severity: 'low',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(riskScoreOnly);
+    // The Compliance Detail section must show the "no compliance gaps"
+    // stub — risk-score is not a gap.
+    expect(md).toContain('No compliance gaps identified');
+  });
+
+  it('risk-score-only partial does not produce "Needs Clarification" either', () => {
+    const riskScoreOnly: any = {
+      mappingVersion: 'aap-84.codex-fix',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: [],
+      all: [],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'risk-score',
+          frameworkId: 'nist-ai-rmf',
+          controlId: 'MEASURE 1.1',
+          verdict: 'partial',
+          severity: 'low',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(riskScoreOnly);
+    // The Compliance Detail section is empty — risk-score is excluded
+    // from gaps regardless of verdict.
+    expect(md).toContain('No compliance gaps identified');
+  });
+});
+
+describe('AAP-84 Codex post-review — backwards compat preserved', () => {
+  it('legacy reports without controlResults still render via the prose path', () => {
+    // Legacy report = pre-AAP-83 session = no controlResults. Must
+    // render finding-types from `compliance.all` exactly as before.
+    const legacyOnly: any = {
+      mappingVersion: 'aap-43.2026-04-24',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['gdpr'],
+      all: [
+        {
+          framework: 'GDPR — Art. 6',
+          severity: 'action-required',
+          description: 'Lawful basis required',
+          frameworkId: 'gdpr',
+          controlIds: ['Art. 6'],
+          category: 'privacy',
+          tier: 'mandatory',
+          mandatoryIn: ['EU'],
+          triggeredBy: 'sensitive-data',
+        },
+      ],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      // controlResults intentionally omitted
+    };
+
+    const md = renderStructuredCompliance(legacyOnly);
+    // Legacy path renders the prose flag.
+    expect(md).toContain('Data handling');
+    expect(md).toContain('GDPR (Art. 6)');
+    // No typed verdict badge appears because the typed path didn't
+    // fire — backwards compat preserved.
+    expect(md).not.toContain('❌ fail');
+  });
+});

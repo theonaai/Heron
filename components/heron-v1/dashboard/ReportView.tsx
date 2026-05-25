@@ -1385,14 +1385,34 @@ function CategorizedComplianceView({ compliance }: { compliance: CategorizedComp
 
   const euClass = compliance.euAiActClassification?.classification ?? 'unclassified';
   const annexCats = compliance.euAiActClassification?.annexIIICategories ?? [];
-  const activated = compliance.frameworksActivated ?? [];
 
-  // AAP-84 Phase 4 — controlResults is the authoritative source when
-  // present. The dashboard renders per-control verdict pills via
-  // ControlResultsView; we still surface the legacy ComplianceConcerns
-  // for sessions without typed evidence (back-compat).
+  // AAP-84 Phase 4 — controlResults is the authoritative source for the
+  // finding-types it covers. controlResults is partial — typed
+  // detectors don't cover every legacy flag, so prose-only flags from
+  // `compliance.all` still surface real gaps.
   const controlResults = compliance.controlResults ?? [];
   const hasControlResults = controlResults.length > 0;
+
+  // Codex post-review fix (Blocker 2): activation is the UNION of the
+  // legacy `frameworksActivated` field and frameworks that have at
+  // least one typed control result. A typed-only "GDPR Art. 6 fail"
+  // with empty `frameworksActivated` must still light up the GDPR chip.
+  const typedActivatedSet = new Set<FrameworkId>();
+  for (const r of controlResults) typedActivatedSet.add(r.frameworkId);
+  const legacyActivated = compliance.frameworksActivated ?? [];
+  const activatedSet = new Set<FrameworkId>([...legacyActivated, ...typedActivatedSet]);
+  const activated: FrameworkId[] = [...activatedSet];
+
+  // Codex post-review fix (Blocker 1): render BOTH typed verdicts AND
+  // prose-only flags. The old `hasControlResults ? typed : legacy`
+  // switch hid prose flags whenever a single typed detector fired.
+  // We dedup so a finding-type that appears in BOTH sources renders
+  // once, sourced from the typed projection (more specific evidence).
+  const typedCoveredFindings = new Set<FindingType>();
+  for (const r of controlResults) typedCoveredFindings.add(r.findingType as FindingType);
+  const legacyOnlyFlags = allFlags.filter(
+    (f) => !f.triggeredBy || !typedCoveredFindings.has(f.triggeredBy as FindingType),
+  );
 
   return (
     <div>
@@ -1448,11 +1468,8 @@ function CategorizedComplianceView({ compliance }: { compliance: CategorizedComp
             backend; not useful to readers. Omitted from UI. */}
       </div>
 
-      {hasControlResults ? (
-        <ControlResultsView results={controlResults} />
-      ) : (
-        <ComplianceConcerns flags={allFlags} />
-      )}
+      {hasControlResults && <ControlResultsView results={controlResults} />}
+      {legacyOnlyFlags.length > 0 && <ComplianceConcerns flags={legacyOnlyFlags} />}
 
       <ObligationsRequiringReview />
     </div>
