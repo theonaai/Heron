@@ -164,12 +164,18 @@ describe('typed discovery detectors — external processor signal', () => {
   });
 });
 
-describe('AAP-79 regression — preserved through Phase 5', () => {
-  it('recomputeComplianceWithDiscovery still fires GDPR sensitive-data on STRIPE key', async () => {
-    // The legacy `compliance.all` projection must keep firing for
-    // renderers that have not yet migrated to controlResults. Phase 5
-    // routes the discovery payload through both the typed envelope and
-    // the prose path so neither projection regresses.
+describe('AAP-79 regression — preserved through Phase 9 (typed path)', () => {
+  it('recomputeComplianceWithDiscovery still fires GDPR sensitive-data on STRIPE key via the typed projection', async () => {
+    // Pre-AAP-86: the recompute path synthesised prose evidence from
+    // discovery so the LLM mapper's `hasSensitivePII` regex fired and
+    // `compliance.all` carried a GDPR sensitive-data flag.
+    //
+    // Post-AAP-86: the synthesis bridge is deleted. The typed-evidence
+    // detectors (this module) are the single source of truth for
+    // discovery-only sensitive-data signals. `compliance.all` only
+    // populates from real interview transcript prose; discovery-only
+    // sessions surface sensitive-data via `controlResults` instead.
+    // Renderers consume the merged projection in templates.ts.
     const { recomputeComplianceWithDiscovery } = await import(
       '../../src/report/recompute-compliance.js'
     );
@@ -178,12 +184,7 @@ describe('AAP-79 regression — preserved through Phase 5', () => {
       transcript: [],
       discovery: discoveryWithEnvKey('STRIPE_SECRET_KEY'),
     });
-    // Prose-path projection (back-compat).
-    const gdprSensitive = result.all.filter(
-      (f) => f.frameworkId === 'gdpr' && f.triggeredBy === 'sensitive-data',
-    );
-    expect(gdprSensitive.length).toBeGreaterThan(0);
-    // Typed-path projection (AAP-83 new).
+    // Typed-path projection (AAP-83 / AAP-86 canonical path).
     const typedSensitive = result.controlResults.filter(
       (r) => r.findingType === 'sensitive-data' && r.frameworkId === 'gdpr',
     );

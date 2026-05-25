@@ -22,9 +22,9 @@ import {
   detectGDPR_Article5,
   detectNIST_Measure,
   detectNIST_Manage,
-  isHRAgent,
-} from '../../../src/verification/frameworks/router.js';
-import type { VerificationSignals } from '../../../src/verification/frameworks/router.js';
+} from '../../../src/verification/frameworks/detectors.js';
+import { isHRAgent } from '../../../src/verification/frameworks/classify.js';
+import type { VerificationSignals } from '../../../src/verification/frameworks/envelope.js';
 import type {
   ActualInventory,
   DeclaredInventory,

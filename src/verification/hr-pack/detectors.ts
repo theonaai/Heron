@@ -51,7 +51,7 @@
  * Tracking: https://linear.app/theona/issue/AAP-51
  */
 
-import type { VerificationSignals } from '../frameworks/router.js';
+import type { VerificationSignals } from '../frameworks/envelope.js';
 import type { ActualScope, ActualTool } from '../types.js';
 import type { HRSignal, HRSignalEvidenceRef } from './types.js';
 

@@ -8,7 +8,8 @@ import * as logger from '../util/logger.js';
 import { generateId } from '../util/id.js';
 import { escapeInlineCode, escapeText } from '../util/markdown-escape.js';
 import { runVerification, isFrameworkMappingDisabled } from '../verification/orchestrator.js';
-import { runFrameworkMapping } from '../verification/frameworks/router.js';
+import { controlResultsToFrameworkMapping } from '../verification/frameworks/control-results-to-mapping.js';
+import { mapFindings } from '../compliance/mapper.js';
 import { runHRPack } from '../verification/hr-pack/router.js';
 import { renderExecutiveSummary } from '../verification/hr-pack/exec-summary.js';
 import { renderHRSignalsSection } from '../verification/hr-pack/render.js';
@@ -884,7 +885,21 @@ async function runVerificationForCli(args: RunVerificationForCliArgs): Promise<V
     report.approvalChain = args.approvalAttachment;
   }
   if (!isFrameworkMappingDisabled()) {
-    report.frameworkMapping = runFrameworkMapping(report);
+    // AAP-86: route through `mapFindings` + the catalog adapter. The
+    // CLI has no interview transcript, so `declared` is the empty
+    // `{systems: [], transcript: []}` envelope. The
+    // `actual.verificationReport` side feeds the typed detectors (via
+    // `src/compliance/detectors/router-adapter.ts`) so the 12 framework
+    // controls light up identically to the old standalone driver. The
+    // catalog adapter then reshapes the resulting `controlResults` back
+    // into the legacy `FrameworkMapping` envelope that downstream
+    // renderers (markdown, HTML, HR exec summary) still consume from
+    // `report.frameworkMapping`.
+    const compliance = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { verificationReport: report },
+    });
+    report.frameworkMapping = controlResultsToFrameworkMapping(compliance.controlResults);
   }
 
   // AAP-51: run the HR vertical pack AFTER the framework mapper.

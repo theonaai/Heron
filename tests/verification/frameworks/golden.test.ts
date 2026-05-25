@@ -13,12 +13,26 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { runFrameworkMapping } from '../../../src/verification/frameworks/router.js';
+import { mapFindings } from '../../../src/compliance/mapper.js';
+import { controlResultsToFrameworkMapping } from '../../../src/verification/frameworks/control-results-to-mapping.js';
 import { renderFrameworkMappingSection } from '../../../src/verification/frameworks/render.js';
 import { hashEntry } from '../../../src/approvals/canonical.js';
 import { verifyChainIntegrity } from '../../../src/approvals/store.js';
+import type { FrameworkMapping } from '../../../src/verification/frameworks/types.js';
 import type { VerificationReport } from '../../../src/verification/types.js';
 import type { ApprovalChain, ApprovalEntry } from '../../../src/approvals/types.js';
+
+// AAP-86 shim: see tests/verification/frameworks/router.test.ts.
+function buildFrameworkMapping(
+  report: VerificationReport,
+  opts: { now?: () => Date } = {},
+): FrameworkMapping {
+  const compliance = mapFindings({
+    declared: { systems: [], transcript: [] },
+    actual: { verificationReport: report },
+  });
+  return controlResultsToFrameworkMapping(compliance.controlResults, opts);
+}
 
 const FROZEN_NOW = () => new Date('2026-05-16T10:00:00.000Z');
 
@@ -60,7 +74,7 @@ describe('Golden — HR failure scenario', () => {
         ] },
       }],
     };
-    const mapping = runFrameworkMapping(report, { now: FROZEN_NOW });
+    const mapping = buildFrameworkMapping(report, { now: FROZEN_NOW });
     const md = renderFrameworkMappingSection(mapping);
     expect(md).toMatch(/A003/);
     expect(md).toMatch(/B006/);
@@ -101,12 +115,14 @@ describe('Golden — Clean compliance scenario', () => {
       ],
       approvalChain: { chain, integrity: verifyChainIntegrity(chain) },
     };
-    const mapping = runFrameworkMapping(report, { now: FROZEN_NOW });
+    const mapping = buildFrameworkMapping(report, { now: FROZEN_NOW });
     const md = renderFrameworkMappingSection(mapping);
     expect(mapping.summary.failCount).toBe(0);
     expect(mapping.summary.verifiedCount).toBeGreaterThanOrEqual(8);
     expect(md).toMatch(/E004/);
-    expect(md).toMatch(/Article 14/);
+    // AAP-86: catalog id for EU AI Act Article 14 is `Art. 14(4)(d)`
+    // (Heron_v1 citation style); legacy short label was `Article 14`.
+    expect(md).toMatch(/Art\. 14/);
     expect(md).toMatch(/Verified/);
   });
 });
@@ -129,9 +145,13 @@ describe('Golden — Non-HR scenario', () => {
         inventory: { source: 'oauth-scopes', capturedAt: 't', scopes: [{ service: 'jira', scope: 'tickets:read' }] },
       }],
     };
-    const mapping = runFrameworkMapping(report, { now: FROZEN_NOW });
+    const mapping = buildFrameworkMapping(report, { now: FROZEN_NOW });
     const md = renderFrameworkMappingSection(mapping);
-    const annex = mapping.controls.find(c => c.controlId === 'Annex III §4')!;
+    // AAP-86: catalog id for the EU AI Act Annex III §4 employment
+    // routing is `Art. 6(2) + Annex III`.
+    const annex = mapping.controls.find(
+      c => c.controlId === 'Art. 6(2) + Annex III',
+    )!;
     expect(annex.verdict).toBe('not-applicable');
     expect(md).toMatch(/Annex III/);
   });

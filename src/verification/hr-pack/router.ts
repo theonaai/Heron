@@ -5,8 +5,8 @@
  * `runHRPack` entry point. The router is responsible for:
  *
  *  1. Building the `VerificationSignals` envelope from the
- *     `VerificationReport`, mirroring `runFrameworkMapping` so the two
- *     pipelines see the same view of the world.
+ *     `VerificationReport`, mirroring the framework-detector wiring so
+ *     the two pipelines see the same view of the world.
  *  2. Gating detector execution on `isHRAgent(signals)` — non-HR agents
  *     return an empty result. Detectors are NOT called at all when the
  *     gate is closed, so no false positives can fire on a non-HR agent.
@@ -23,8 +23,8 @@
  * Tracking: https://linear.app/theona/issue/AAP-51
  */
 
-import { isHRAgent } from '../frameworks/router.js';
-import type { VerificationSignals } from '../frameworks/router.js';
+import { isHRAgent } from '../frameworks/classify.js';
+import type { VerificationSignals } from '../frameworks/envelope.js';
 import type { VerificationReport } from '../types.js';
 import {
   detectAutoRejectionWithoutDisclosure,
@@ -51,7 +51,7 @@ type HRDetector = (sig: VerificationSignals) => HRSignal;
  *  6. offer-letter-out-of-range          (critical)
  *  7. sub-agent-scope-expansion          (high)
  */
-const HR_DETECTOR_ENTRIES: ReadonlyArray<[string, HRDetector]> = [
+const HR_DETECTOR_TABLE: ReadonlyArray<[string, HRDetector]> = [
   ['auto-rejection-without-disclosure', detectAutoRejectionWithoutDisclosure],
   ['ats-write-scope-sprawl', detectATSWriteScopeSprawl],
   ['candidate-pii-in-logs', detectCandidatePIIInLogs],
@@ -61,7 +61,7 @@ const HR_DETECTOR_ENTRIES: ReadonlyArray<[string, HRDetector]> = [
   ['sub-agent-scope-expansion', detectSubAgentScopeExpansion],
 ];
 
-const HR_DETECTORS: ReadonlyMap<string, HRDetector> = new Map(HR_DETECTOR_ENTRIES);
+const HR_DETECTORS: ReadonlyMap<string, HRDetector> = new Map(HR_DETECTOR_TABLE);
 
 /**
  * Single source of truth for the HR-pack env-disable flag. Used by the
@@ -72,7 +72,7 @@ export function isHRPackDisabled(): boolean {
 }
 
 export function listHRDetectorIds(): string[] {
-  return HR_DETECTOR_ENTRIES.map(([id]) => id);
+  return HR_DETECTOR_TABLE.map(([id]) => id);
 }
 
 function emptyResult(): HRPackResult {
@@ -116,7 +116,7 @@ export function runHRPack(report: VerificationReport): HRPackResult {
   if (!isHRAgent(signals)) return emptyResult();
 
   const out: HRSignal[] = [];
-  for (const [, detector] of HR_DETECTOR_ENTRIES) {
+  for (const [, detector] of HR_DETECTOR_TABLE) {
     out.push(detector(signals));
   }
   return {

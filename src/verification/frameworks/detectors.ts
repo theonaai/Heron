@@ -1,16 +1,29 @@
 /**
- * Deterministic framework-control router (AAP-49).
+ * AAP-86 — framework-control detectors (12 controls).
  *
- * Translates the signal triple — diffs + inventories + approval chain —
- * into per-control verdicts against AIUC-1, EU AI Act, GDPR, and NIST AI
- * RMF. Detectors are PURE functions, run synchronously, no I/O.
+ * Lifted out of the deleted `router.ts` registry. Each detector remains
+ * a pure function: given the pre-aggregated `VerificationSignals` it
+ * returns a `FrameworkControl`. Production routing now flows through
+ * `src/compliance/detectors/router-adapter.ts`, which wraps each
+ * detector into the typed-detector envelope contract that `mapFindings`
+ * consumes per catalog entry.
  *
- * Detector lookup uses a `Map<string, ControlDetector>` rather than a
- * `Record<string, ControlDetector>` to short-circuit any prototype-
- * pollution path through a hostile control id. The map is built once,
- * frozen by closure scope, and never accepts new entries at runtime.
+ * Why the file split (legacy single-file module → detectors.ts +
+ * classify.ts + envelope.ts):
+ *   - Phase 9 deletes the standalone framework-mapping driver and its
+ *     ordered detector table — both were only ever called from the CLI
+ *     mcp-scan top-level. The CLI now uses
+ *     `controlResultsToFrameworkMapping` (see
+ *     `./control-results-to-mapping.ts`).
+ *   - The detector functions themselves stay alive because the
+ *     compliance-side router adapter wraps them into typed-evidence
+ *     detectors. They just no longer need a registry / driver.
+ *   - `VerificationSignals` moves to `envelope.ts` because the HR pack
+ *     and detector packs also consume it.
+ *   - `isHRAgent` moves to `classify.ts` because both the framework
+ *     Annex III §4 detector AND the HR vertical pack gate on it.
  *
- * Control coverage (12 controls in scope for AAP-49 HR pilot):
+ * Control coverage (12 controls):
  *   AIUC-1: A003, B006, D003, E004, E015
  *   EU AI Act: Annex III §4, Article 14, Article 12
  *   GDPR: Article 22, Article 5
@@ -23,48 +36,16 @@
  */
 
 import type {
-  ActualInventory,
   ActualScope,
   ActualTool,
-  DeclaredInventory,
   DiffEntry,
-  VerificationReport,
 } from '../types.js';
-import type { ApprovalChain, ChainIntegrityResult } from '../../approvals/types.js';
 import type {
   ControlEvidenceRef,
-  ControlSeverity,
-  ControlVerdict,
   FrameworkControl,
-  FrameworkId,
-  FrameworkMapping,
-  FrameworkMappingSummary,
 } from './types.js';
-
-/**
- * Pre-aggregated signal envelope. Detectors only see what they need.
- *
- *  - `diffs` is flattened across every source so a detector does not need
- *    to walk `report.sources` itself.
- *  - `declaredInventory` is the FIRST declared inventory in the report
- *    (most agents only have one). Subsequent declared inventories are
- *    accessible via the report directly if a future detector needs them;
- *    the HR-subset rules in scope here only consult the primary.
- *  - `actualInventories` is the raw array from the report. The D003 rule
- *    needs to walk MCP tools specifically and the A003/B006 rules need
- *    to know whether any scope inventory was produced at all.
- *  - `approvalChain` + `approvalIntegrity` are split so detectors can
- *    branch on integrity without re-running it.
- */
-export interface VerificationSignals {
-  diffs: DiffEntry[];
-  declaredInventory?: DeclaredInventory;
-  actualInventories: ActualInventory[];
-  approvalChain?: ApprovalChain;
-  approvalIntegrity?: ChainIntegrityResult;
-}
-
-type ControlDetector = (sig: VerificationSignals) => FrameworkControl;
+import type { VerificationSignals } from './envelope.js';
+import { isHRAgent } from './classify.js';
 
 // ─── Signal helpers ────────────────────────────────────────────────────────
 
@@ -150,105 +131,6 @@ const RISKY_TOOL_DESCRIPTION_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * HR-vertical signals. The agent is classified as HR if AT LEAST TWO
- * of the three independent signals fire:
- *
- *   1. Connector — declared scope.service exactly matches a known HR
- *      SaaS canonical name (Greenhouse, BambooHR, Workday, …).
- *   2. HR scope — declared scope.scope matches an HR-class scope
- *      pattern (admin.directory, candidates:*, applications:*,
- *      jobs:*, offers:*, recruiting:*, employees:*, interviews:*).
- *   3. HR keyword — declared agent.purpose or tool name/description
- *      matches an HR-phrase regex (e.g. "candidate notification",
- *      "hiring process", "employee onboarding").
- *
- * PR #22 round-2 MEDIUM fix: the previous gate fired on ANY one of
- * the three signals using substring matching for connectors and
- * bare-word regex for keywords. That produced false positives —
- * "greenhouse-marketing" → substring match; "hire a car rental"
- * → bare-word match; "marketing emails to candidate accounts" →
- * bare-word match on /candidate/.
- *
- * Two-signal requirement prevents false-positive HR classification on
- * agents that share one keyword with the HR domain (e.g. "candidate
- * accounts" in a marketing context). Connector match is also tightened
- * to exact equality so a SaaS product whose name simply contains the
- * substring "greenhouse" cannot be misclassified.
- *
- * Pattern lists are documented explicitly so future contributors can
- * grep the keyword list when extending the heuristic.
- */
-const HR_CONNECTORS: ReadonlySet<string> = new Set([
-  'greenhouse',
-  'bamboohr',
-  'bamboo',
-  'workday',
-  'lever',
-  'gusto',
-  'rippling',
-  'sapsuccessfactors',
-]);
-
-const HR_SCOPE_PATTERNS: readonly RegExp[] = [
-  // Google Workspace admin directory — the canonical "I can read your
-  // employee roster" scope. Highly HR-class.
-  /admin\.directory/i,
-  // ATS-native HR namespaces. Kept narrow on purpose: scopes like
-  // `jobs:` or `directory:` are ambiguous (jobs could be cron jobs,
-  // directory could be filesystem) and are intentionally NOT in this
-  // list — they wouldn't count as a stand-alone HR signal even when
-  // paired with an HR connector.
-  /\bcandidates?:/i,
-  /\bapplicants?:/i,
-  /\bapplications?:/i,
-  /\binterviews?:/i,
-  /\brecruiting:/i,
-];
-
-const HR_KEYWORDS: readonly RegExp[] = [
-  /\bcandidate\s+(rejection|notification|scoring|review|outreach|pipeline)/i,
-  /\b(recruit(er|ing|ment))\b/i,
-  /\b(hiring|hire)\s+(decision|process|workflow|manager|criteria)/i,
-  /\b(employee|onboarding)\s+(scoring|review|onboard|directory|record)/i,
-  /\b(applicant|interview)\s+(tracking|scheduling|scoring|review)/i,
-  /\b(cv|resume)\s+(parsing|review|scoring)/i,
-];
-
-function matchesHRConnector(service: string): boolean {
-  return HR_CONNECTORS.has(service.toLowerCase().trim());
-}
-
-function hasHRConnector(d: DeclaredInventory | undefined): boolean {
-  if (!d) return false;
-  for (const s of d.scopes ?? []) {
-    if (matchesHRConnector(s.service)) return true;
-  }
-  return false;
-}
-
-function hasHRScope(d: DeclaredInventory | undefined, _actuals: readonly ActualInventory[]): boolean {
-  if (!d) return false;
-  for (const s of d.scopes ?? []) {
-    if (matchesAnyRegex(s.scope, HR_SCOPE_PATTERNS)) return true;
-    // admin.directory is sometimes encoded in the service field
-    // (Google Workspace canonical service paths).
-    if (matchesAnyRegex(s.service, HR_SCOPE_PATTERNS)) return true;
-  }
-  return false;
-}
-
-function hasHRKeyword(d: DeclaredInventory | undefined): boolean {
-  if (!d) return false;
-  const purpose = d.agent?.purpose ?? '';
-  if (purpose && matchesAnyRegex(purpose, HR_KEYWORDS)) return true;
-  for (const t of d.tools ?? []) {
-    const text = `${t.name} ${t.description ?? ''}`;
-    if (matchesAnyRegex(text, HR_KEYWORDS)) return true;
-  }
-  return false;
-}
-
-/**
  * Find every `extra`-kind, scope-dimension diff whose actual scope
  * matches the predicate. Returns the narrowed scope payload + a
  * descriptor string so callers do not need to re-narrow the diff
@@ -301,24 +183,6 @@ function declaredScopesAny(sig: VerificationSignals): boolean {
   return (sig.declaredInventory?.scopes?.length ?? 0) > 0;
 }
 
-function declaredToolsAny(sig: VerificationSignals): boolean {
-  return (sig.declaredInventory?.tools?.length ?? 0) > 0;
-}
-
-function declaredAny(sig: VerificationSignals): boolean {
-  return declaredScopesAny(sig) || declaredToolsAny(sig);
-}
-
-function findToolAcrossInventories(sig: VerificationSignals, predicate: (t: ActualTool) => boolean): ActualTool[] {
-  const out: ActualTool[] = [];
-  for (const inv of sig.actualInventories) {
-    for (const t of inv.tools ?? []) {
-      if (predicate(t)) out.push(t);
-    }
-  }
-  return out;
-}
-
 function toolAcknowledgesRisk(t: ActualTool): boolean {
   // Acknowledgement signals: any of these annotations indicate the
   // owner has deliberately marked the tool as risky and accepted the
@@ -329,29 +193,6 @@ function toolAcknowledgesRisk(t: ActualTool): boolean {
   if (a.idempotency === false) return true;
   if (a.unsafeAcknowledged === true) return true;
   return false;
-}
-
-/**
- * Exported for unit tests and downstream consumers that need to gate a
- * UI hint on whether the agent is HR-class. Pure boolean; no side
- * effects.
- *
- * PR #22 round-2 MEDIUM fix: requires AT LEAST TWO independent signals
- * from {connector, scope, keyword}. Two-signal requirement prevents
- * false-positive HR classification on agents that share one keyword
- * with the HR domain (e.g. "candidate accounts" in a marketing context,
- * "hire a car" in a travel-booking agent). See the HR_CONNECTORS /
- * HR_SCOPE_PATTERNS / HR_KEYWORDS doc-block above for rationale.
- */
-export function isHRAgent(sig: VerificationSignals): boolean {
-  const d = sig.declaredInventory;
-  if (!d) return false;
-
-  let signalCount = 0;
-  if (hasHRConnector(d)) signalCount++;
-  if (hasHRScope(d, sig.actualInventories)) signalCount++;
-  if (hasHRKeyword(d)) signalCount++;
-  return signalCount >= 2;
 }
 
 // ─── Detector: AIUC-1 A003 — Limit Data Access ────────────────────────────
@@ -971,108 +812,3 @@ export function detectNIST_Manage(sig: VerificationSignals): FrameworkControl {
     severity: 'medium',
   };
 }
-
-// ─── Detector registry ─────────────────────────────────────────────────────
-
-/**
- * Ordered list of detector entries. Order matters for the rendered
- * table — AIUC-1 family first (most actionable for procurement), then
- * EU AI Act, then GDPR, then NIST AI RMF.
- *
- * Map (not Record) defends against prototype-pollution via a hostile
- * control identifier in a future caller.
- */
-const DETECTOR_ENTRIES: ReadonlyArray<[string, ControlDetector]> = [
-  ['aiuc-1:A003', detectAIUC1_A003],
-  ['aiuc-1:B006', detectAIUC1_B006],
-  ['aiuc-1:D003', detectAIUC1_D003],
-  ['aiuc-1:E004', detectAIUC1_E004],
-  ['aiuc-1:E015', detectAIUC1_E015],
-  ['eu-ai-act:Annex-III-4', detectEUAIAct_AnnexIII4],
-  ['eu-ai-act:Article-14', detectEUAIAct_Article14],
-  ['eu-ai-act:Article-12', detectEUAIAct_Article12],
-  ['gdpr:Article-22', detectGDPR_Article22],
-  ['gdpr:Article-5', detectGDPR_Article5],
-  ['nist-ai-rmf:MEASURE', detectNIST_Measure],
-  ['nist-ai-rmf:MANAGE', detectNIST_Manage],
-];
-
-const DETECTORS: ReadonlyMap<string, ControlDetector> = new Map(DETECTOR_ENTRIES);
-
-export function getDetector(id: string): ControlDetector | undefined {
-  return DETECTORS.get(id);
-}
-
-export function listDetectorIds(): string[] {
-  return DETECTOR_ENTRIES.map(([id]) => id);
-}
-
-// ─── Top-level mapper ──────────────────────────────────────────────────────
-
-export interface RunFrameworkMappingOpts {
-  now?: () => Date;
-}
-
-/**
- * Run all 12 detectors against the given verification report and return
- * a `FrameworkMapping`. Pure with respect to `report` — does not mutate.
- */
-export function runFrameworkMapping(
-  report: VerificationReport,
-  opts: RunFrameworkMappingOpts = {},
-): FrameworkMapping {
-  const now = opts.now ?? (() => new Date());
-  const generatedAt = now().toISOString();
-
-  const signals: VerificationSignals = {
-    diffs: report.sources.flatMap((s) => s.diffs),
-    declaredInventory: report.declared[0],
-    actualInventories: report.sources
-      .map((s) => s.inventory)
-      .filter((i): i is NonNullable<typeof i> => i !== undefined),
-    ...(report.approvalChain
-      ? {
-          approvalChain: report.approvalChain.chain,
-          approvalIntegrity: report.approvalChain.integrity,
-        }
-      : {}),
-  };
-
-  const controls: FrameworkControl[] = [];
-  for (const [, detector] of DETECTOR_ENTRIES) {
-    controls.push(detector(signals));
-  }
-
-  return {
-    generatedAt,
-    controls,
-    summary: summarise(controls),
-  };
-}
-
-function summarise(controls: readonly FrameworkControl[]): FrameworkMappingSummary {
-  const summary: FrameworkMappingSummary = {
-    verifiedCount: 0,
-    partialCount: 0,
-    unverifiedCount: 0,
-    failCount: 0,
-    notApplicableCount: 0,
-  };
-  for (const c of controls) {
-    switch (c.verdict) {
-      case 'verified': summary.verifiedCount++; break;
-      case 'partial': summary.partialCount++; break;
-      case 'unverified': summary.unverifiedCount++; break;
-      case 'fail': summary.failCount++; break;
-      case 'not-applicable': summary.notApplicableCount++; break;
-      default: {
-        const _exhaustive: never = c.verdict;
-        void _exhaustive;
-      }
-    }
-  }
-  return summary;
-}
-
-// Re-export so consumers can import everything from one module.
-export type { ControlVerdict, FrameworkId, ControlSeverity };

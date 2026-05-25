@@ -18,7 +18,7 @@ import {
   detectOfferLetterOutOfRange,
   detectSubAgentScopeExpansion,
 } from '../../../src/verification/hr-pack/detectors.js';
-import type { VerificationSignals } from '../../../src/verification/frameworks/router.js';
+import type { VerificationSignals } from '../../../src/verification/frameworks/envelope.js';
 import type {
   ActualInventory,
   DeclaredInventory,

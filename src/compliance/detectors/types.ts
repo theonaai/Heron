@@ -33,16 +33,18 @@ import type {
   ControlResultVerdict,
 } from '../control-catalog.js';
 
-// Re-export the existing router-side primitives so detector authors can
-// import everything from one place. Once Phase 9 deletes the router
-// registry these can move to live here permanently.
+// Re-export the framework-side primitives so detector authors can
+// import everything from one place. AAP-86 retargets the
+// `VerificationSignals` re-export onto the new `envelope.ts` shared
+// contract; `ControlVerdict` / `ControlEvidenceRef` continue to live in
+// `frameworks/types.ts` (framework-domain semantics).
 export type {
   ControlEvidenceRef,
   ControlSeverity,
   ControlVerdict,
   FrameworkControl as RouterFrameworkControl,
 } from '../../verification/frameworks/types.js';
-export type { VerificationSignals } from '../../verification/frameworks/router.js';
+export type { VerificationSignals } from '../../verification/frameworks/envelope.js';
 
 /**
  * Typed-evidence envelope.

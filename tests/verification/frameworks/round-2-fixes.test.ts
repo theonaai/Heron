@@ -34,16 +34,29 @@ import {
   detectAIUC1_D003,
   detectEUAIAct_Article14,
   detectGDPR_Article22,
-  isHRAgent,
-  runFrameworkMapping,
-} from '../../../src/verification/frameworks/router.js';
+} from '../../../src/verification/frameworks/detectors.js';
+import { isHRAgent } from '../../../src/verification/frameworks/classify.js';
+import { mapFindings } from '../../../src/compliance/mapper.js';
+import { controlResultsToFrameworkMapping } from '../../../src/verification/frameworks/control-results-to-mapping.js';
 import { renderFrameworkMappingSection } from '../../../src/verification/frameworks/render.js';
 import { runMcpScan } from '../../../src/commands/mcp-scan.js';
 import { appendEntry } from '../../../src/approvals/store.js';
-import type { VerificationSignals } from '../../../src/verification/frameworks/router.js';
+import type { VerificationSignals } from '../../../src/verification/frameworks/envelope.js';
 import type { ActualInventory, VerificationReport } from '../../../src/verification/types.js';
-import type { FrameworkControl } from '../../../src/verification/frameworks/types.js';
+import type { FrameworkControl, FrameworkMapping } from '../../../src/verification/frameworks/types.js';
 import type { ApprovalChain } from '../../../src/approvals/types.js';
+
+// AAP-86 shim: see tests/verification/frameworks/router.test.ts.
+function buildFrameworkMapping(
+  report: VerificationReport,
+  opts: { now?: () => Date } = {},
+): FrameworkMapping {
+  const compliance = mapFindings({
+    declared: { systems: [], transcript: [] },
+    actual: { verificationReport: report },
+  });
+  return controlResultsToFrameworkMapping(compliance.controlResults, opts);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STDIO_SERVER_PATH = resolve(__dirname, '../../fixtures/mcp/stdio-test-server.mjs');
@@ -463,7 +476,7 @@ describe('HIGH-1: heron scan attaches approval chain BEFORE running framework ma
 // ─── LOW-2 — Tautology cleanup (behavioural; orchestrator runs ok) ────────
 
 describe('LOW-2: hasScopeInventory tautology cleanup', () => {
-  it('runFrameworkMapping treats an oauth-scopes inventory with an empty scopes array as a present scope inventory (A003 not UNVERIFIED)', () => {
+  it('buildFrameworkMapping treats an oauth-scopes inventory with an empty scopes array as a present scope inventory (A003 not UNVERIFIED)', () => {
     const report: VerificationReport = {
       capturedAt: 't',
       agentLabel: 'l',
@@ -475,8 +488,9 @@ describe('LOW-2: hasScopeInventory tautology cleanup', () => {
         inventory: { source: 'oauth-scopes', capturedAt: 't', scopes: [] },
       }],
     };
-    const mapping = runFrameworkMapping(report);
-    const a003 = mapping.controls.find((c) => c.controlId === 'A003')!;
+    const mapping = buildFrameworkMapping(report);
+    // AAP-86: catalog id `A003.3` (first of the paired A003 entries).
+    const a003 = mapping.controls.find((c) => c.controlId === 'A003.3')!;
     // With declared scopes present and a real (if empty) inventory,
     // A003 should be VERIFIED — there are no extra broad-read scopes
     // because there are no actual scopes at all. The previous tautology

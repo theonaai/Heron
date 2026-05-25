@@ -10,9 +10,23 @@ import { describe, it, expect } from 'vitest';
 
 import { renderExecutiveSummary } from '../../../src/verification/hr-pack/exec-summary.js';
 import { runHRPack } from '../../../src/verification/hr-pack/router.js';
-import { runFrameworkMapping } from '../../../src/verification/frameworks/router.js';
+import { mapFindings } from '../../../src/compliance/mapper.js';
+import { controlResultsToFrameworkMapping } from '../../../src/verification/frameworks/control-results-to-mapping.js';
+import type { FrameworkMapping } from '../../../src/verification/frameworks/types.js';
 import type { VerificationReport } from '../../../src/verification/types.js';
 import type { ApprovalChain } from '../../../src/approvals/types.js';
+
+// AAP-86 shim: see tests/verification/frameworks/router.test.ts.
+function buildFrameworkMapping(
+  report: VerificationReport,
+  opts: { now?: () => Date } = {},
+): FrameworkMapping {
+  const compliance = mapFindings({
+    declared: { systems: [], transcript: [] },
+    actual: { verificationReport: report },
+  });
+  return controlResultsToFrameworkMapping(compliance.controlResults, opts);
+}
 
 function makeReport(opts: {
   agent?: { name?: string; purpose?: string; owner?: string };
@@ -97,7 +111,7 @@ function makeReport(opts: {
       integrity: { ok: true },
     };
   }
-  report.frameworkMapping = runFrameworkMapping(report);
+  report.frameworkMapping = buildFrameworkMapping(report);
   return report;
 }
 
