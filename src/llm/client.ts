@@ -71,6 +71,12 @@ const MODEL_OUTPUT_TOKEN_OVERRIDES: Record<string, number> = {
  * model id contains any of the override keys (case-insensitive substring),
  * the override wins, clamping to the older model's physical cap so the
  * provider doesn't 400 on us.
+ *
+ * This resolver is only the INITIAL attempt value. When the provider rejects
+ * the request with a "max_tokens too large" error (custom snapshot, gateway
+ * proxy to a different physical model, new model id not yet in the override
+ * table), `runWithAdaptiveMaxTokens` halves and retries until success or
+ * the minimum threshold. See AAP-81 Codex Finding #1.
  */
 export function maxOutputTokensFor(
   provider: 'anthropic' | 'openai' | 'gemini',
@@ -81,6 +87,128 @@ export function maxOutputTokensFor(
     if (lowered.includes(needle)) return cap;
   }
   return DEFAULT_MAX_OUTPUT_TOKENS_BY_PROVIDER[provider];
+}
+
+/**
+ * Minimum `max_tokens` floor for the adaptive retry. Below this we give up
+ * and rethrow: a model that can't accept 4K output won't usefully complete an
+ * analyzer JSON anyway.
+ */
+export const MIN_ADAPTIVE_MAX_TOKENS = 4_096;
+
+/**
+ * Cache of the highest known-good `max_tokens` per (provider, model). Once the
+ * adaptive retry finds a working value, subsequent calls in the same process
+ * skip the halving sequence and use the cached value directly.
+ *
+ * Exported for tests. Module-scope Map so cache lives for the process lifetime
+ * (analyzer typically calls the same model many times per audit).
+ */
+export const ADAPTIVE_MAX_TOKENS_CACHE = new Map<string, number>();
+
+function cacheKey(provider: 'anthropic' | 'openai' | 'gemini', model: string): string {
+  return `${provider}:${model}`;
+}
+
+/**
+ * Provider-specific detector for "max_tokens exceeds the model's cap" errors.
+ * Returns true iff the error looks like a cap rejection (not a quota issue,
+ * not an auth error, not a rate-limit, not a content-policy refusal). When
+ * true, the adaptive retry halves and tries again; otherwise we rethrow.
+ *
+ * Detection rules (verified against vendor docs + SDK error shapes 2026-05-25):
+ *   - Anthropic: `BadRequestError` (HTTP 400) with message containing
+ *     `max_tokens` and `maximum` (typical shape:
+ *     `"max_tokens: 128000 > 64000 maximum"`)
+ *   - OpenAI: `BadRequestError` (HTTP 400) with `param === 'max_tokens'` OR
+ *     message containing `max_tokens` plus a size word (`maximum`, `too
+ *     large`, `exceeds`)
+ *   - Gemini: HTTP 400 with response body mentioning `maxOutputTokens`
+ *     validation. The Gemini fetch path throws an Error with the body text;
+ *     we substring-match.
+ */
+export function isMaxTokensCapError(
+  provider: 'anthropic' | 'openai' | 'gemini',
+  err: unknown,
+): boolean {
+  if (!err) return false;
+  const errAny = err as { status?: number; param?: string; message?: string };
+  const msg = (errAny.message ?? String(err)).toLowerCase();
+  const status = errAny.status;
+
+  switch (provider) {
+    case 'anthropic':
+      // Anthropic SDK BadRequestError: status 400, message like
+      // "max_tokens: 128000 > 64000 maximum"
+      if (status !== undefined && status !== 400) return false;
+      return msg.includes('max_tokens') && msg.includes('maximum');
+    case 'openai':
+      // OpenAI SDK BadRequestError: status 400, param often 'max_tokens'.
+      // Some gateways flatten it into the message only.
+      if (status !== undefined && status !== 400) return false;
+      if (errAny.param === 'max_tokens') return true;
+      if (!msg.includes('max_tokens')) return false;
+      return /maximum|too large|exceeds|greater than|too many/.test(msg);
+    case 'gemini':
+      // Gemini fetch path throws a plain Error with the response body text.
+      // No SDK status field; look for HTTP 400 marker in the message plus a
+      // maxOutputTokens hint.
+      if (!msg.includes('maxoutputtokens')) return false;
+      return msg.includes('400') || msg.includes('invalid') || msg.includes('exceeds');
+  }
+}
+
+/**
+ * Adaptive `max_tokens` retry. Calls `fn(maxTokens)` starting at the resolved
+ * initial value. If the call throws a cap-related error (per
+ * `isMaxTokensCapError`), halves and retries. Stops when:
+ *   - the call succeeds (caches the working value),
+ *   - the next halved value would be < `MIN_ADAPTIVE_MAX_TOKENS` (rethrows
+ *     with a clear message), or
+ *   - the error is not a cap rejection (rethrows immediately).
+ *
+ * On a cache hit, skips straight to the cached value.
+ *
+ * AAP-81 follow-up (Codex Finding #1, 2026-05-25): replaces the brittle
+ * pre-known model table approach for OUT-of-table snapshots and custom model
+ * ids. The table stays as a smart default; this handles when it's wrong.
+ */
+export async function runWithAdaptiveMaxTokens<T>(
+  provider: 'anthropic' | 'openai' | 'gemini',
+  model: string,
+  initialMaxTokens: number,
+  fn: (maxTokens: number) => Promise<T>,
+): Promise<T> {
+  const key = cacheKey(provider, model);
+  const cached = ADAPTIVE_MAX_TOKENS_CACHE.get(key);
+  let attempt = cached ?? initialMaxTokens;
+
+  // Safety: never start below the floor (would skip the retry loop entirely).
+  if (attempt < MIN_ADAPTIVE_MAX_TOKENS) attempt = MIN_ADAPTIVE_MAX_TOKENS;
+
+  while (true) {
+    try {
+      const result = await fn(attempt);
+      ADAPTIVE_MAX_TOKENS_CACHE.set(key, attempt);
+      return result;
+    } catch (e) {
+      if (!isMaxTokensCapError(provider, e)) throw e;
+      const next = Math.floor(attempt / 2);
+      if (next < MIN_ADAPTIVE_MAX_TOKENS) {
+        const original = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          `LLM ${provider} / ${model}: max_tokens rejected at ${attempt} ` +
+          `and next halved value (${next}) is below the ${MIN_ADAPTIVE_MAX_TOKENS} ` +
+          `floor. Original provider error: ${original}`,
+        );
+      }
+      console.error(
+        `  LLM:        ${provider} / ${model} rejected max_tokens=${attempt}; ` +
+        `retrying with ${next}`,
+      );
+      attempt = next;
+    }
+  }
 }
 
 /**
@@ -135,13 +263,18 @@ class AnthropicLLMClient implements LLMClient {
   }
 
   async chat(systemPrompt: string, userMessage: string, _opts?: LLMChatOpts): Promise<string> {
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: maxOutputTokensFor('anthropic', this.model),
-      temperature: 0,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const response = await runWithAdaptiveMaxTokens(
+      'anthropic',
+      this.model,
+      maxOutputTokensFor('anthropic', this.model),
+      (maxTokens) => this.client.messages.create({
+        model: this.model,
+        max_tokens: maxTokens,
+        temperature: 0,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+    );
 
     if (response.stop_reason === 'max_tokens') {
       warnTruncated('anthropic', this.model, response.usage?.output_tokens);
@@ -175,8 +308,13 @@ class OpenAILLMClient implements LLMClient {
     //
     // AAP-81 (2026-05-25): `max_tokens` is now resolved per provider+model
     // via `maxOutputTokensFor`. Default cap for gpt-5.5 is now 128K (was
-    // 16K), matching Anthropic/Gemini. Older models (gpt-4o, gpt-4-turbo)
-    // keep their lower physical caps via the override table.
+    // 16K), matching Anthropic; Gemini stays at 65K physical cap. Older
+    // OpenAI models (gpt-4o, gpt-4-turbo) keep their lower physical caps
+    // via the override table.
+    //
+    // AAP-81 follow-up (Codex Finding #1, 2026-05-25): the override table is
+    // a smart default; `runWithAdaptiveMaxTokens` handles when it's wrong
+    // (custom snapshots, gateway proxies, model ids not yet listed).
     //
     // Two-stage attempt: first try with `response_format: json_object` when
     // the caller asked for JSON mode (this guarantees a parseable payload on
@@ -184,44 +322,55 @@ class OpenAILLMClient implements LLMClient {
     // OpenRouter / vLLM passthrough to a non-OpenAI model often does), fall
     // back to the same call without `response_format`. `max_tokens` is set
     // unconditionally: it's the actual fix for the truncation regression.
-    const baseRequest = {
+    const buildRequest = (maxTokens: number) => ({
       model: this.model,
       temperature: 0,
-      max_tokens: maxOutputTokensFor('openai', this.model),
+      max_tokens: maxTokens,
       ...(opts?.deterministicSeed !== undefined ? { seed: opts.deterministicSeed } : {}),
       messages: [
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: userMessage },
       ],
-    };
+    });
 
-    if (opts?.jsonMode) {
-      try {
-        const response = await this.client.chat.completions.create({
-          ...baseRequest,
-          response_format: { type: 'json_object' as const },
-        });
+    return runWithAdaptiveMaxTokens(
+      'openai',
+      this.model,
+      maxOutputTokensFor('openai', this.model),
+      async (maxTokens) => {
+        const baseRequest = buildRequest(maxTokens);
+        if (opts?.jsonMode) {
+          try {
+            const response = await this.client.chat.completions.create({
+              ...baseRequest,
+              response_format: { type: 'json_object' as const },
+            });
+            const choice = response.choices[0];
+            if (choice?.finish_reason === 'length') {
+              warnTruncated('openai', this.model, response.usage?.completion_tokens);
+            }
+            return choice?.message?.content ?? '';
+          } catch (e) {
+            // Common gateway error message shapes: "Unrecognized parameter",
+            // "Unknown parameter response_format", "not supported by model".
+            // NB: a max_tokens cap error here re-raises and is caught by
+            // `runWithAdaptiveMaxTokens` for the halving retry; the param-error
+            // branch only swallows JSON-mode-specific rejections.
+            const msg = e instanceof Error ? e.message : String(e);
+            const isParamError = /response_format|json[_ ]object|unrecognized|unknown.*parameter|not supported/i.test(msg);
+            if (!isParamError) throw e;
+            // Fall through to non-JSON-mode attempt
+          }
+        }
+
+        const response = await this.client.chat.completions.create(baseRequest);
         const choice = response.choices[0];
         if (choice?.finish_reason === 'length') {
           warnTruncated('openai', this.model, response.usage?.completion_tokens);
         }
         return choice?.message?.content ?? '';
-      } catch (e) {
-        // Common gateway error message shapes: "Unrecognized parameter",
-        // "Unknown parameter response_format", "not supported by model".
-        const msg = e instanceof Error ? e.message : String(e);
-        const isParamError = /response_format|json[_ ]object|unrecognized|unknown.*parameter|not supported/i.test(msg);
-        if (!isParamError) throw e;
-        // Fall through to non-JSON-mode attempt
-      }
-    }
-
-    const response = await this.client.chat.completions.create(baseRequest);
-    const choice = response.choices[0];
-    if (choice?.finish_reason === 'length') {
-      warnTruncated('openai', this.model, response.usage?.completion_tokens);
-    }
-    return choice?.message?.content ?? '';
+      },
+    );
   }
 }
 
@@ -241,51 +390,63 @@ class GeminiLLMClient implements LLMClient {
     // SDK defaults `maxOutputTokens` to 8,192 silently if omitted (silent
     // truncation on large analyzer JSON). Our cap is 65K for 2.5 Pro (its
     // physical max); older 1.5 snapshots fall to 8K via the override map.
-    const generationConfig: Record<string, unknown> = {
-      maxOutputTokens: maxOutputTokensFor('gemini', this.model),
-      temperature: 0,
-    };
-    if (opts?.deterministicSeed !== undefined) {
-      generationConfig.seed = opts.deterministicSeed;
-    }
-    if (opts?.jsonMode) {
-      generationConfig.responseMimeType = 'application/json';
-    }
+    //
+    // AAP-81 follow-up (Codex Finding #1, 2026-05-25): if a custom/newer
+    // model id rejects 65K, `runWithAdaptiveMaxTokens` halves and retries
+    // (Gemini returns HTTP 400 with `maxOutputTokens` in the body; our
+    // detector matches that shape).
+    return runWithAdaptiveMaxTokens(
+      'gemini',
+      this.model,
+      maxOutputTokensFor('gemini', this.model),
+      async (maxTokens) => {
+        const generationConfig: Record<string, unknown> = {
+          maxOutputTokens: maxTokens,
+          temperature: 0,
+        };
+        if (opts?.deterministicSeed !== undefined) {
+          generationConfig.seed = opts.deterministicSeed;
+        }
+        if (opts?.jsonMode) {
+          generationConfig.responseMimeType = 'application/json';
+        }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(ANALYZER_HTTP_TIMEOUT_MS),
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-        generationConfig,
-      }),
-    });
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(ANALYZER_HTTP_TIMEOUT_MS),
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+            generationConfig,
+          }),
+        });
 
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Gemini API error (${response.status}): ${err}`);
-    }
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`Gemini API error (${response.status}): ${err}`);
+        }
 
-    const data = await response.json() as {
-      candidates?: {
-        content?: { parts?: { text?: string }[] };
-        finishReason?: string;
-      }[];
-      usageMetadata?: { candidatesTokenCount?: number };
-    };
+        const data = await response.json() as {
+          candidates?: {
+            content?: { parts?: { text?: string }[] };
+            finishReason?: string;
+          }[];
+          usageMetadata?: { candidatesTokenCount?: number };
+        };
 
-    const candidate = data.candidates?.[0];
-    if (candidate?.finishReason === 'MAX_TOKENS') {
-      warnTruncated('gemini', this.model, data.usageMetadata?.candidatesTokenCount);
-    }
+        const candidate = data.candidates?.[0];
+        if (candidate?.finishReason === 'MAX_TOKENS') {
+          warnTruncated('gemini', this.model, data.usageMetadata?.candidatesTokenCount);
+        }
 
-    const text = candidate?.content?.parts?.[0]?.text;
-    if (!text) {
-      throw new Error('No text in Gemini response');
-    }
-    return text;
+        const text = candidate?.content?.parts?.[0]?.text;
+        if (!text) {
+          throw new Error('No text in Gemini response');
+        }
+        return text;
+      },
+    );
   }
 }
 
