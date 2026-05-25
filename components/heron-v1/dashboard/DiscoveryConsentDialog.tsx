@@ -45,6 +45,13 @@ export default function DiscoveryConsentDialog({
   // — they ride the next scan POST and the array is cleared when the
   // modal closes.
   const [oauthSources, setOauthSources] = useState<DashboardOAuthSource[]>([]);
+  // AAP-79 review — editable workspace path so the operator can correct
+  // a stale / invalid hint on retry (e.g. after a `workspace_invalid`
+  // error). Pre-filled with the workspaceRoot prop (session.workspaceHints[0]
+  // when SessionDetail surfaces one). When left blank or non-absolute,
+  // the scan route falls back to session.workspaceHints[0] / process.cwd()
+  // exactly as before.
+  const [workspaceInput, setWorkspaceInput] = useState(workspaceRoot);
 
   useEffect(() => {
     if (!open) {
@@ -52,8 +59,13 @@ export default function DiscoveryConsentDialog({
       // outlive a session of the modal being open.
       setOauthSources([]);
       setError(null);
+    } else {
+      // Re-seed the workspace input from the prop whenever the dialog
+      // opens. Covers the retry case: the previous attempt may have
+      // mutated the input, the prop is the canonical hint.
+      setWorkspaceInput(workspaceRoot);
     }
-  }, [open]);
+  }, [open, workspaceRoot]);
 
   // ESC closes the dialog. Re-bound whenever `open` flips so the
   // listener is gone while the modal is hidden.
@@ -90,13 +102,17 @@ export default function DiscoveryConsentDialog({
       // Only forward workspaceRoot when it's an absolute path. When it's
       // empty (no hint surfaced yet), let the scan route fall through to
       // session.workspaceHints[0] / process.cwd() — see route.ts.
+      // AAP-79 review — prefer the user-edited `workspaceInput` over
+      // the prop so a retry after `workspace_invalid` can supply a
+      // corrected path without re-opening the dialog with stale state.
+      const trimmed = workspaceInput.trim();
       const scanBody: {
         sessionId: string;
         workspaceRoot?: string;
         oauthSources?: DashboardOAuthSource[];
       } = { sessionId };
-      if (workspaceRoot && workspaceRoot.startsWith('/')) {
-        scanBody.workspaceRoot = workspaceRoot;
+      if (trimmed && trimmed.startsWith('/')) {
+        scanBody.workspaceRoot = trimmed;
       }
       // AAP-74 — forward OAuth sources verbatim. The route's Zod schema
       // re-validates each entry; we don't pre-shape here so a future
@@ -205,6 +221,62 @@ export default function DiscoveryConsentDialog({
           <code>SLACK_BOT_TOKEN</code> without its value), so you know which servers have credentials
           configured.
         </p>
+
+        {/* AAP-79 review — editable workspace input. Pre-filled with the
+            session's recorded workspace hint. Operators retrying after
+            a workspace_invalid error can correct the path here without
+            having to re-create the session. Empty / non-absolute input
+            falls through to the session.workspaceHints[0] / process.cwd()
+            fallback on the server. */}
+        <div style={{ margin: '0 0 16px' }}>
+          <label
+            htmlFor="discovery-consent-workspace"
+            style={{
+              display: 'block',
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: 'var(--r-ink-2, #475569)',
+              marginBottom: 4,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+            }}
+          >
+            Workspace path (optional)
+          </label>
+          <input
+            id="discovery-consent-workspace"
+            type="text"
+            value={workspaceInput}
+            onChange={(e) => setWorkspaceInput(e.target.value)}
+            disabled={busy}
+            placeholder="/absolute/path/to/workspace"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            style={{
+              width: '100%',
+              padding: '8px 10px',
+              fontFamily: 'var(--r-font-mono, monospace)',
+              fontSize: 12.5,
+              borderRadius: 4,
+              border: '1px solid #cbd5e1',
+              background: 'var(--r-bg, #ffffff)',
+              color: 'var(--r-ink, #0f172a)',
+              boxSizing: 'border-box',
+            }}
+          />
+          <p
+            style={{
+              margin: '4px 0 0',
+              fontSize: 11.5,
+              color: 'var(--r-ink-2, #475569)',
+              lineHeight: 1.4,
+            }}
+          >
+            Absolute POSIX path. Leave blank to use the workspace the MCP client advertised at session
+            start.
+          </p>
+        </div>
 
         <OAuthSourceForm
           sources={oauthSources}

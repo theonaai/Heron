@@ -37,6 +37,27 @@
     }
   },
   {
+    "name": "start_verification",
+    "description": "Scan agent's runtime environment for evidence supporting the audit transcript.\n\nReads:\n  - MCP server configurations from runtime configs\n  - Plugin / skill / auth credential NAMES (never values)\n  - macOS Keychain service names matching AI/SaaS allowlist (opt-in)\n  - Cross-cutting OS credential file identifiers (AWS, GCP, kube, npm, ...)\n  - Environment variable NAMES from workspace .env files\n\nNEVER reads:\n  - Actual credential values, tokens, passwords\n  - Files outside the standard discovery paths\n\nOutput: deterministic evidence to verify the agent's declared scope.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session id returned by a prior start_audit_session call. Must reference a session whose interview has completed (status complete). Sessions in analysis_failed are rejected: re-run start_audit_session first."
+        },
+        "workspace_hint": {
+          "type": "string",
+          "description": "Optional absolute workspace path the verification scan should target. When omitted, Heron uses the workspace path the MCP client advertised at session start, falling back to the server process cwd."
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "get_report",
     "description": "Retrieve a previously-generated Heron audit report by its id.",
     "inputSchema": {

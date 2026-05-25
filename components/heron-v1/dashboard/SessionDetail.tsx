@@ -79,12 +79,22 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const { sessions: allSessions } = useSessions();
   const [consentOpen, setConsentOpen] = useState(false);
 
-  // AAP-53: callout appears only when the audit is complete AND no
-  // discovery scan has run yet. Once localAgentDiscovery is present on
-  // the report blob, the discovery section renders inside ReportView
-  // and the callout disappears.
-  const reportJson = liveSession.reportJson as { localAgentDiscovery?: unknown } | undefined;
+  // AAP-53 + AAP-79: callout appears only when the audit is complete
+  // AND no discovery scan has run yet. Pre-AAP-79 the gate was a simple
+  // `!localAgentDiscovery` check. Post-AAP-79 the report itself carries
+  // `verification.status`; we keep the legacy check as a fallback for
+  // sessions persisted before AAP-79 (no `verification` field) so they
+  // still see the prompt.
+  const reportJson = liveSession.reportJson as
+    | {
+        localAgentDiscovery?: unknown;
+        verification?: { status?: 'interrogation-only' | 'verified' | 'verification-failed' };
+      }
+    | undefined;
   const hasDiscovery = !!reportJson?.localAgentDiscovery;
+  const reportVerificationStatus = reportJson?.verification?.status;
+  const showLegacyVerificationCallout =
+    reportVerificationStatus === undefined && !hasDiscovery;
 
   // AAP-52: subscribe to /api/audit/sessions/:id/stream while the
   // audit is still running. EventSource handles reconnect; the
@@ -457,7 +467,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
                 </div>
               </div>
             )}
-            {isComplete && !isAnalysisFailed && !hasDiscovery && (
+            {isComplete && !isAnalysisFailed && showLegacyVerificationCallout && (
               <div
                 style={{
                   margin: '0 0 16px',
@@ -496,6 +506,9 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
               report={liveSession.report}
               reportJson={liveSession.reportJson}
               riskLevel={liveSession.riskLevel}
+              onRunVerification={
+                isComplete && !isAnalysisFailed ? () => setConsentOpen(true) : undefined
+              }
             />
           </>
         ) : tab === 'diff' && diff ? (

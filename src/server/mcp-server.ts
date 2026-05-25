@@ -1,13 +1,19 @@
 /**
  * Heron's MCP server.
  *
- * Transport-agnostic wrapper that exposes three tools over any MCP
+ * Transport-agnostic wrapper that exposes five tools over any MCP
  * transport:
- *   - `start_audit_session` (AAP-52) — interrogate the audited agent
+ *   - `start_audit_session` (AAP-52): interrogate the audited agent
  *     over MCP sampling, persist the run under `~/.heron/sessions/`,
  *     return the rendered report.
- *   - `get_report` — fetch an in-memory stored report by id.
- *   - `compare_reports` — diff two reports.
+ *   - `submit_answer` (AAP-55): provide the next answer for
+ *     non-sampling clients running the awaiting-answer flow.
+ *   - `start_verification` (AAP-79): scan the runtime workspace for
+ *     deterministic evidence (L1-L5 discovery + secretlint scrub),
+ *     re-compute Stage 3 compliance with the merged evidence, persist
+ *     the verified verdict.
+ *   - `get_report`: fetch an in-memory stored report by id.
+ *   - `compare_reports`: diff two reports.
  *
  * OSS mounts this at stdio via `heron mcp-serve` and at HTTP via
  * `app/mcp/route.ts`. Future Hosted (AAP-47) mounts the same wrapper
@@ -42,16 +48,23 @@ import type {
   RequestContext,
   StartAuditSessionInput,
   StartAuditSessionOutput,
+  StartVerificationInput,
+  StartVerificationOutput,
   SubmitAnswerInput,
   SubmitAnswerOutput,
 } from './mcp-types.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import type { QAPair } from '../report/types.js';
+import type {
+  AuditReport,
+  QAPair,
+  ReportVerificationStatus,
+} from '../report/types.js';
 import type { QuestionPlanner } from '../interview/question-planner.js';
 import {
   createSession,
   getSession,
   mergeWorkspaceHints,
+  patchReportJson,
   setPendingQuestion,
   submitToolCallAnswer,
   updateSessionMeta,
@@ -64,6 +77,12 @@ import {
   computeVerdictFromArtifacts,
   persistVerdict,
 } from '../verification/verdict-pipeline.js';
+import { runDiscovery } from '../discovery/index.js';
+import { diffAgainstTranscript } from '../discovery/diff.js';
+import { secretlintScrub } from '../discovery/secretlint-scrub.js';
+import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
+import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
+import type { DiscoveryResult } from '../discovery/types.js';
 
 const SERVER_NAME = 'heron';
 const SERVER_VERSION = '0.4.0';
@@ -336,9 +355,55 @@ const SUBMIT_ANSWER_DEF: ToolDefinition = {
   },
 };
 
+// AAP-79 — `start_verification` tool. The description below is the
+// consent text the runtime renders in its tool-permission prompt
+// (Claude Code, Cursor, Codex CLI, etc. all surface the description
+// verbatim). Keep it audit-grade: enumerate exactly what gets read,
+// what does NOT, and why the operator should approve. AAP-78 RFC §
+// "Design decisions locked" item 4 — the runtime permission prompt is
+// the trust authority; the server description is part of the auditable
+// trust chain via `/mcp list-tools`.
+const START_VERIFICATION_DEF: ToolDefinition = {
+  name: 'start_verification',
+  description:
+    "Scan agent's runtime environment for evidence supporting the audit transcript.\n\n" +
+    'Reads:\n' +
+    '  - MCP server configurations from runtime configs\n' +
+    '  - Plugin / skill / auth credential NAMES (never values)\n' +
+    '  - macOS Keychain service names matching AI/SaaS allowlist (opt-in)\n' +
+    '  - Cross-cutting OS credential file identifiers (AWS, GCP, kube, npm, ...)\n' +
+    '  - Environment variable NAMES from workspace .env files\n\n' +
+    'NEVER reads:\n' +
+    '  - Actual credential values, tokens, passwords\n' +
+    '  - Files outside the standard discovery paths\n\n' +
+    "Output: deterministic evidence to verify the agent's declared scope.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description:
+          'The session id returned by a prior start_audit_session call. Must reference ' +
+          'a session whose interview has completed (status complete). Sessions in ' +
+          'analysis_failed are rejected: re-run start_audit_session first.',
+      },
+      workspace_hint: {
+        type: 'string',
+        description:
+          'Optional absolute workspace path the verification scan should target. ' +
+          'When omitted, Heron uses the workspace path the MCP client advertised at ' +
+          'session start, falling back to the server process cwd.',
+      },
+    },
+    required: ['session_id'],
+    additionalProperties: false,
+  },
+};
+
 const TOOL_DEFINITIONS: ToolDefinition[] = [
   START_AUDIT_SESSION_DEF,
   SUBMIT_ANSWER_DEF,
+  START_VERIFICATION_DEF,
   GET_REPORT_DEF,
   COMPARE_REPORTS_DEF,
 ];
@@ -385,19 +450,47 @@ const submitAnswerInputSchema = z.object({
   answer: z.string({ required_error: 'answer is required' }),
 });
 
+/**
+ * AAP-79 — Zod schema for `start_verification`. `session_id` carries the
+ * same path-traversal-tight regex as submit_answer. `workspace_hint` is
+ * permissive at the schema layer (must be a non-empty string starting
+ * with `/` and free of `..`); the handler later runs `fs.stat` to
+ * confirm the directory exists before passing it to the discovery
+ * readers.
+ */
+const startVerificationInputSchema = z.object({
+  session_id: z
+    .string({ required_error: 'session_id is required' })
+    .regex(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/, 'invalid session_id format'),
+  workspace_hint: z
+    .string()
+    .min(1)
+    .max(2000)
+    .regex(/^\/[^\0]*$/, 'workspace_hint must be an absolute POSIX path')
+    .refine((p) => !p.includes('/dashboard/'), {
+      message: 'workspace_hint must not be a dashboard URL pathname',
+    })
+    .refine((p) => !p.split('/').includes('..'), {
+      message: 'workspace_hint must not contain `..` segments',
+    })
+    .optional(),
+});
+
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
 export type ToolName =
   | 'get_report'
   | 'compare_reports'
   | 'start_audit_session'
-  | 'submit_answer';
+  | 'submit_answer'
+  | 'start_verification';
 
 type InvokeMap = {
   get_report: { input: GetReportInput; output: GetReportOutput };
   compare_reports: { input: CompareReportsInput; output: CompareReportsOutput };
   start_audit_session: { input: StartAuditSessionInput; output: StartAuditSessionOutput };
   submit_answer: { input: SubmitAnswerInput; output: SubmitAnswerOutput };
+  start_verification: { input: StartVerificationInput; output: StartVerificationOutput };
 };
 
 export class HeronMCPServer {
@@ -464,6 +557,11 @@ export class HeronMCPServer {
         case 'submit_answer':
           return (await this.handleSubmitAnswer(
             input as SubmitAnswerInput,
+            ctx,
+          )) as MCPServerResult<InvokeMap[N]['output']>;
+        case 'start_verification':
+          return (await this.handleStartVerification(
+            input as StartVerificationInput,
             ctx,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
@@ -545,6 +643,28 @@ export class HeronMCPServer {
         const result = await this.invoke(
           'submit_answer',
           args as SubmitAnswerInput,
+          bridge.ctx,
+        );
+        await bridge.flush();
+        return toolResultFromMcp(result);
+      },
+    );
+
+    // start_verification (AAP-79) — runtime-permission-gated discovery scan
+    server.registerTool(
+      START_VERIFICATION_DEF.name,
+      {
+        description: START_VERIFICATION_DEF.description,
+        inputSchema: {
+          session_id: z.string(),
+          workspace_hint: z.string().optional(),
+        },
+      },
+      async (args, extra) => {
+        const bridge = contextFromExtra(extra);
+        const result = await this.invoke(
+          'start_verification',
+          args as StartVerificationInput,
           bridge.ctx,
         );
         await bridge.flush();
@@ -1104,12 +1224,285 @@ export class HeronMCPServer {
 
     // Return immediately. Status is 'analyzing' — the client polls
     // get_report or watches the dashboard SSE stream to track progress.
+    //
+    // AAP-79 — the response carries a `next_step` hint pointing the
+    // calling agent at `start_verification`. The agent's runtime will
+    // render its standard tool-permission prompt when the agent calls
+    // that tool; the operator approves or denies the filesystem scan
+    // there. Without this hint the agent has no signal that the
+    // interrogation-only report needs deterministic verification next.
     return {
       ok: true,
       value: {
         session_id: sessionId,
         status: 'analyzing',
         questions_asked: updated.questionsAsked,
+        next_step: {
+          tool: 'start_verification',
+          message: buildStartVerificationHint(sessionId),
+        },
+      },
+    };
+  }
+
+  // ─── start_verification (AAP-79) ─────────────────────────────────────
+
+  private async handleStartVerification(
+    rawInput: StartVerificationInput,
+    ctx: RequestContext,
+  ): Promise<MCPServerResult<StartVerificationOutput>> {
+    const parsed = startVerificationInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return {
+        ok: false,
+        error: {
+          kind: 'invalid_input',
+          field: issue?.path?.[0]?.toString() ?? 'unknown',
+          message: issue?.message ?? 'invalid input',
+        },
+      };
+    }
+
+    const { session_id: sessionId, workspace_hint: workspaceHint } = parsed.data;
+    const session = await getSession(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'session_not_found',
+          message: `Session not found: ${sessionId}`,
+        },
+      };
+    }
+
+    // Interview must have run to completion before verification. The
+    // analyzer's report.json is what `recomputeComplianceWithDiscovery`
+    // patches; there is no useful work to do for a session that hasn't
+    // produced one yet.
+    //
+    // `analysis_failed` is rejected explicitly. `writeAnalysisFailure`
+    // intentionally does NOT write report.json (the absence is what tells
+    // the dashboard "no analysis to render"), so a partial patch from
+    // this handler would violate that invariant. The SSE event a
+    // successful run publishes also has no truthful meaning for a session
+    // that never produced an AuditReport; the dashboard would flip
+    // optimistically to 'complete' and then revert on the next read.
+    if (session.status !== 'complete') {
+      const cause =
+        session.status === 'analysis_failed'
+          ? 'analysis_failed'
+          : 'interview_not_complete';
+      const message =
+        session.status === 'analysis_failed'
+          ? `Session ${sessionId} ended in analysis_failed; verification has no report.json to patch. Re-run start_audit_session before calling start_verification.`
+          : `Session ${sessionId} is still in status '${session.status}'. Wait for the interview to finish (status complete) before calling start_verification.`;
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause,
+          message,
+        },
+      };
+    }
+
+    // Resolve the workspace root. Priority order mirrors the dashboard
+    // scan route (AAP-58):
+    //   1. Explicit `workspace_hint` from the tool call.
+    //   2. session.workspaceHints[0] (captured at session start from
+    //      `_meta['x-codex-turn-metadata']`).
+    //   3. process.cwd() — Heron's own checkout (last resort).
+    const additionalHints = (session.workspaceHints ?? []).slice();
+    const ctxHints = ctx.workspaceHints ?? [];
+    for (const h of ctxHints) {
+      if (!additionalHints.includes(h)) additionalHints.push(h);
+    }
+    let workspaceRoot: string | null = null;
+    if (workspaceHint) {
+      workspaceRoot = await verifyExistingDirectory(workspaceHint);
+      if (!workspaceRoot) {
+        const summary =
+          `workspace_hint does not exist or is not a directory: ${workspaceHint}`;
+        await persistVerificationFailure(sessionId, summary);
+        return {
+          ok: true,
+          value: {
+            session_id: sessionId,
+            verification_status: 'verification-failed',
+            summary,
+            high_severity_findings: 0,
+            total_findings: 0,
+            completed_at: new Date().toISOString(),
+            error: { reason: 'workspace_invalid', message: summary },
+          },
+        };
+      }
+    } else {
+      for (const h of additionalHints) {
+        const verified = await verifyExistingDirectory(h);
+        if (verified) {
+          workspaceRoot = verified;
+          break;
+        }
+      }
+      if (!workspaceRoot) {
+        workspaceRoot = process.cwd();
+      }
+    }
+
+    // From here on we trust the runtime permission prompt's approval.
+    // The dashboard `~/.heron/discovery-consent.json` store is intentionally
+    // bypassed — AAP-78 RFC §"Design decisions locked" item 11 makes the
+    // runtime prompt the trust authority. The store still gates the
+    // `POST /api/discovery/scan` browser-facing path; nothing here writes
+    // to it, so we do not pollute the operator's consent decisions with
+    // tool-invocation grants.
+    const hintsForReader = additionalHints.filter((h) => h !== workspaceRoot);
+    const enableMcpToolEnumeration =
+      process.env.HERON_DISCOVERY_MCP_TOOLS_DISABLE !== '1';
+
+    let scrubbed: DiscoveryResult;
+    try {
+      const result = await runDiscovery({
+        workspaceDir: workspaceRoot,
+        workspaceHints: hintsForReader,
+        enableKeychain: true,
+        enableMcpToolEnumeration,
+      });
+      const scrubbedAgents = await secretlintScrub(result.agents);
+      const scrubbedOsCredentials = result.osCredentials
+        ? await secretlintScrub(result.osCredentials)
+        : undefined;
+      const scrubbedWorkspaceEnv = result.workspaceEnv
+        ? await secretlintScrub(result.workspaceEnv)
+        : undefined;
+      const scrubbedKeychain = result.keychainServices
+        ? await secretlintScrub(result.keychainServices)
+        : undefined;
+      const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+      scrubbed = {
+        ...result,
+        agents: scrubbedAgents,
+        findings,
+        ...(scrubbedOsCredentials !== undefined
+          ? { osCredentials: scrubbedOsCredentials }
+          : {}),
+        ...(scrubbedWorkspaceEnv !== undefined
+          ? { workspaceEnv: scrubbedWorkspaceEnv }
+          : {}),
+        ...(scrubbedKeychain !== undefined
+          ? { keychainServices: scrubbedKeychain }
+          : {}),
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const summary = `Discovery scan failed: ${message}`;
+      await persistVerificationFailure(sessionId, summary);
+      publishSessionEvent(sessionId, { type: 'error', message: summary });
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          verification_status: 'verification-failed',
+          summary,
+          high_severity_findings: 0,
+          total_findings: 0,
+          completed_at: new Date().toISOString(),
+          error: { reason: 'scan_error', message },
+        },
+      };
+    }
+
+    // Re-compute Stage 3 framework mapping with the fresh evidence. This
+    // is the load-bearing part of AAP-79 — pre-AAP-79 the mapper ran
+    // once at analyzer time and never again. A transcript that never
+    // mentioned PII could leave the report missing GDPR Art 5(1)(c)
+    // controls even when discovery found `STRIPE_SECRET_KEY` in an
+    // env file. `recomputeComplianceWithDiscovery` synthesises a
+    // virtual evidence row from the discovery payload and re-runs the
+    // mapper against the augmented transcript.
+    const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
+    const transcriptAsQA: QAPair[] = session.transcript.map((t) => ({
+      category: t.category as QAPair['category'],
+      question: t.question,
+      answer: t.answer,
+    }));
+    const completedAt = new Date().toISOString();
+    const reportPatch: Record<string, unknown> = {
+      localAgentDiscovery: scrubbed,
+      verification: {
+        status: 'verified' as ReportVerificationStatus,
+        updatedAt: completedAt,
+      },
+    };
+    if (reportJson && Array.isArray(reportJson.systems)) {
+      const analyzerSubset = {
+        systems: reportJson.systems,
+        ...(reportJson.makesDecisionsAboutPeople !== undefined
+          ? { makesDecisionsAboutPeople: reportJson.makesDecisionsAboutPeople }
+          : {}),
+        ...(reportJson.decisionMakingDetails !== undefined
+          ? { decisionMakingDetails: reportJson.decisionMakingDetails }
+          : {}),
+      };
+      const compliance = recomputeComplianceWithDiscovery({
+        analyzer: analyzerSubset,
+        transcript: transcriptAsQA,
+        discovery: scrubbed,
+      });
+      reportPatch.compliance = compliance;
+      // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
+      reportPatch.regulatoryCompliance = compliance;
+    }
+    const merged = await patchReportJson(sessionId, reportPatch);
+
+    // Compute the verdict FIRST so the markdown re-render gets the
+    // verified-state context. Pre-AAP-79 (and during the first pass of
+    // this ticket) the renderer ran before `computeVerdictFromArtifacts`,
+    // so the `Verification Status` section fell back to the UNVERIFIED
+    // stub even for sessions whose JSON had correctly flipped to
+    // `verified`. Codex review surfaced this on PR #69.
+    const verdict = computeVerdictFromArtifacts({
+      reportJson: merged,
+      transcript: session.transcript,
+      discoveryOverride: scrubbed,
+    });
+    await persistVerdict(sessionId, verdict);
+
+    // Re-render the markdown report so the on-disk artefact matches the
+    // refreshed compliance + verified banner. Failure to re-render is
+    // non-fatal: the JSON is canonical, the markdown is downloadable.
+    // Shared with the dashboard scan route via
+    // `persistVerifiedMarkdown` so both code paths produce byte-identical
+    // .md output for the same merged report.
+    await persistVerifiedMarkdown({
+      sessionId,
+      merged,
+      verdict,
+      discoveryFindings: scrubbed.findings ?? [],
+    });
+
+    publishSessionEvent(sessionId, {
+      type: 'status-change',
+      status: 'complete',
+      ...(verdict.primaryRiskLevel ? { riskLevel: verdict.primaryRiskLevel } : {}),
+    });
+
+    const totalFindings = scrubbed.findings?.length ?? 0;
+    const highSeverity = (scrubbed.findings ?? []).filter((f) => f.severity === 'HIGH').length;
+    const summary = `Verification complete. ${totalFindings} discovery findings; ${highSeverity} HIGH severity.`;
+
+    return {
+      ok: true,
+      value: {
+        session_id: sessionId,
+        verification_status: 'verified',
+        summary,
+        high_severity_findings: highSeverity,
+        total_findings: totalFindings,
+        completed_at: completedAt,
       },
     };
   }
@@ -1454,6 +1847,66 @@ function toolResultFromMcp(result: MCPServerResult<unknown>): {
     structuredContent: { error: err as unknown as Record<string, unknown> },
   };
 }
+
+// ─── AAP-79 helpers ──────────────────────────────────────────────────────
+
+/**
+ * Build the next-step hint the calling agent sees after the final
+ * `submit_answer` tool call. The agent's LLM is the audience here; the
+ * text reminds the agent that the analysis is interrogation-only and
+ * points it at `start_verification`. The user-facing consent text lives
+ * on the tool description (rendered by the runtime's permission prompt).
+ */
+export function buildStartVerificationHint(sessionId: string): string {
+  return (
+    'Analysis complete. This report is based on the interview only. Declared scope ' +
+    'is not yet verified against your runtime environment.\n\n' +
+    'To produce a verified report, call the `start_verification` tool. You will be asked ' +
+    'for permission to scan your filesystem for deterministic evidence (MCP configs, ' +
+    'OS credentials, .env files, Keychain). No secret values are read.\n\n' +
+    `Session ID: ${sessionId}`
+  );
+}
+
+/**
+ * Resolve + sanity-check a workspace path. Returns the path on success,
+ * null on missing / non-directory / unreadable. Promise-based stat
+ * lookup so we can keep handlers async without a top-level import dance.
+ */
+async function verifyExistingDirectory(path: string): Promise<string | null> {
+  try {
+    const fs = await import('node:fs/promises');
+    const st = await fs.stat(path);
+    if (!st.isDirectory()) return null;
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist the report-level `verification-failed` marker without
+ * touching the analyzer output. Used by the `start_verification` handler
+ * when discovery cannot run (bad workspace, scan error). The session
+ * stays in its prior `status` — only the `verification` field flips.
+ */
+async function persistVerificationFailure(
+  sessionId: string,
+  reason: string,
+): Promise<void> {
+  const truncated = reason.length > 400 ? reason.slice(0, 400) : reason;
+  await patchReportJson(sessionId, {
+    verification: {
+      status: 'verification-failed' as ReportVerificationStatus,
+      reason: truncated,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+}
+
+void buildStartVerificationHint;
+void verifyExistingDirectory;
+void persistVerificationFailure;
 
 function formatError(err: MCPServerError): string {
   switch (err.kind) {

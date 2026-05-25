@@ -230,6 +230,48 @@ export interface CategorizedBucket {
 /** AAP-31: replaces legacy RegulatoryCompliance {eu, us, uk} on AuditReport. */
 export type StructuredCompliance = CategorizedCompliance;
 
+// ─── Verification status (AAP-79) ───────────────────────────────────────────
+
+/**
+ * AAP-79 — report-level verification lifecycle.
+ *
+ * Reflects whether the runtime evidence scan (`start_verification` MCP
+ * tool or the dashboard `Run verification` button) has run for this
+ * report:
+ *
+ *   - `'interrogation-only'` — the report is the LLM analyzer's read of
+ *     the interview transcript only. No deterministic Surface 2 evidence
+ *     has been merged in. Markdown + dashboard render the orange banner
+ *     prompting the operator (or the agent) to start verification.
+ *   - `'verified'` — discovery (L1-L5) ran successfully. Stage 3
+ *     framework mapping has been re-computed against the analyzer
+ *     signals + discovery evidence. Banner disappears.
+ *   - `'verification-failed'` — discovery ran but errored. `reason`
+ *     carries a short diagnostic so the operator can retry. Banner
+ *     switches to the failure variant.
+ *
+ * Distinct from `session.meta.verificationStatus` (AAP-63), which
+ * tracks the verdict-level surface 2 state (`unverified` / `partial`
+ * / `verified`). The two move together on success, but the report-level
+ * field is what the renderer reads for the banner so legacy sessions
+ * persisted before AAP-79 (no field) silently default to "no banner".
+ */
+export const reportVerificationStatusValues = [
+  'interrogation-only',
+  'verified',
+  'verification-failed',
+] as const;
+export type ReportVerificationStatus = typeof reportVerificationStatusValues[number];
+
+export const reportVerificationSchema = z.object({
+  status: z.enum(reportVerificationStatusValues),
+  /** Diagnostic note when status === 'verification-failed'. */
+  reason: z.string().max(400).optional(),
+  /** ISO-8601 of the last status change. */
+  updatedAt: z.string().optional(),
+});
+export type ReportVerification = z.infer<typeof reportVerificationSchema>;
+
 // ─── Audit Report ───────────────────────────────────────────────────────────
 
 export const auditReportSchema = z.object({
@@ -267,10 +309,20 @@ export const auditReportSchema = z.object({
     interviewDuration: z.number(),
     questionsAsked: z.number(),
   }),
+  /**
+   * AAP-79 — report-level verification lifecycle. Initialised to
+   * `'interrogation-only'` by the analyzer pipeline, flipped to
+   * `'verified'` by `start_verification` (or the dashboard
+   * `Run verification` button) on success, and to
+   * `'verification-failed'` on error.
+   */
+  verification: reportVerificationSchema.optional(),
 });
 export type AuditReport = z.infer<typeof auditReportSchema> & {
   compliance?: StructuredCompliance;
   /** AAP-69: writer-side alias of `compliance` so the dashboard
    *  ReportView (which reads `json.regulatoryCompliance`) renders. */
   regulatoryCompliance?: StructuredCompliance;
+  /** AAP-79: see reportVerificationSchema. */
+  verification?: ReportVerification;
 };

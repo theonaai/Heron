@@ -52,7 +52,7 @@ describe('runMcpServe — HTTP transport (direct integration)', () => {
     expect(port).toBeLessThan(65_536);
   });
 
-  it('lists all four tools through the streamable HTTP transport', async () => {
+  it('lists all five tools through the streamable HTTP transport', async () => {
     const client = new Client(
       { name: 'heron-http-direct-test', version: '0.0.1' },
       { capabilities: {} },
@@ -68,6 +68,7 @@ describe('runMcpServe — HTTP transport (direct integration)', () => {
         'compare_reports',
         'get_report',
         'start_audit_session',
+        'start_verification',
         'submit_answer',
       ]);
     } finally {

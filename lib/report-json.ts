@@ -373,6 +373,20 @@ export interface ReportJson {
   // includes `oauthSources`. Strictly additive — sessions without
   // OAuth introspection still render unchanged.
   oauthScopeVerification?: OAuthScopeVerificationSection;
+
+  // AAP-79 — report-level verification lifecycle. The dashboard
+  // ReportView reads this to render the interrogation-only banner;
+  // markdown templates do the same. `status` values:
+  //   - 'interrogation-only' — only the LLM interview has run; banner shown.
+  //   - 'verified' — discovery (L1-L5) ran cleanly; banner suppressed.
+  //   - 'verification-failed' — discovery errored; failure banner shown.
+  // Optional so legacy sessions persisted before AAP-79 continue to
+  // deserialise without migration.
+  verification?: {
+    status: 'interrogation-only' | 'verified' | 'verification-failed';
+    reason?: string;
+    updatedAt?: string;
+  };
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

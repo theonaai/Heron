@@ -238,6 +238,18 @@ interface ReportJson {
   localAgentDiscovery?: LocalDiscoveryData;
   /** AAP-74: L6 OAuth scope verification (dashboard wire-up). Optional. */
   oauthScopeVerification?: OAuthScopeVerificationData;
+  /**
+   * AAP-79: report-level verification lifecycle. The banner near the
+   * top of the report reads `status` to decide whether to render the
+   * interrogation-only / verification-failed callout. Absent on legacy
+   * sessions persisted before AAP-79 — the banner falls back to the
+   * "interrogation-only" copy in that case so nothing regresses.
+   */
+  verification?: {
+    status: 'interrogation-only' | 'verified' | 'verification-failed';
+    reason?: string;
+    updatedAt?: string;
+  };
 }
 
 /* ── Constants ── */
@@ -633,6 +645,110 @@ function VerdictBanner({ verdict, meta }: { verdict: string; meta?: React.ReactN
       </span>
       <span>{verdict}</span>
       {meta && <span className="verdict-meta">{meta}</span>}
+    </div>
+  );
+}
+
+/* ── AAP-79 interrogation-only banner ──
+ *
+ * Sits between the verdict banner and the first numbered section. The
+ * orange variant fires when the report has no verification yet (or the
+ * legacy field is absent — pre-AAP-79 sessions). The red variant fires
+ * when verification ran but errored. Suppressed entirely on `verified`.
+ *
+ * The Run-verification action is owned by the parent SessionDetail
+ * component (it knows the consent dialog state); the banner accepts an
+ * optional `onRunVerification` callback so the caller can wire its
+ * existing button if desired.
+ */
+export function InterrogationOnlyBanner({
+  status,
+  reason,
+  onRunVerification,
+}: {
+  status?: 'interrogation-only' | 'verified' | 'verification-failed';
+  reason?: string;
+  onRunVerification?: () => void;
+}) {
+  if (status === 'verified') return null;
+  if (status === 'verification-failed') {
+    return (
+      <div
+        role="alert"
+        style={{
+          margin: '0 0 16px',
+          padding: '14px 18px',
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: 6,
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: '#7f1d1d',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <div>
+          <strong style={{ fontWeight: 700 }}>Verification failed.</strong>{' '}
+          Discovery could not complete for this session.
+          {reason && (
+            <>
+              {' '}Reason: <code style={{ fontFamily: 'var(--r-font-mono)' }}>{reason}</code>
+            </>
+          )}
+        </div>
+        {onRunVerification && (
+          <div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontWeight: 600 }}
+              onClick={onRunVerification}
+            >
+              Retry verification
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+  // Default = 'interrogation-only' or undefined (legacy session pre-AAP-79).
+  return (
+    <div
+      role="status"
+      style={{
+        margin: '0 0 16px',
+        padding: '14px 18px',
+        background: '#fefce8',
+        border: '1px solid #fde68a',
+        borderRadius: 6,
+        fontSize: 13,
+        lineHeight: 1.55,
+        color: '#78350f',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+      }}
+    >
+      <div>
+        <strong style={{ fontWeight: 600 }}>
+          This report is based on the interview only.
+        </strong>{' '}
+        Run verification to confirm declared scope against deterministic evidence.
+      </div>
+      {onRunVerification && (
+        <div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ fontWeight: 600 }}
+            onClick={onRunVerification}
+          >
+            Run verification
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1423,6 +1539,32 @@ function AnchorRail({
   );
 }
 
+/* ── AAP-79 banner status inference ──
+ *
+ * The interrogation-only banner reads `verification.status` to decide
+ * which copy to render. Sessions persisted before this ticket have
+ * `localAgentDiscovery` populated but no `verification` field — the
+ * writer that flips it landed in this PR. Treating undefined as
+ * "interrogation-only" makes the banner lie about a session that
+ * already ran discovery.
+ *
+ * Rules:
+ *   - `verification.status` present → use it verbatim.
+ *   - Missing AND discovery has at least one agent on disk → 'verified'
+ *     (the discovery scan ran successfully, even though we didn't
+ *     write the status marker at the time).
+ *   - Missing AND no discovery yet → undefined (banner renders the
+ *     default 'interrogation-only' copy, which is correct).
+ */
+export function inferBannerStatus(
+  json: ReportJson,
+): 'interrogation-only' | 'verified' | 'verification-failed' | undefined {
+  if (json.verification?.status) return json.verification.status;
+  const agents = json.localAgentDiscovery?.agents;
+  if (Array.isArray(agents) && agents.length > 0) return 'verified';
+  return undefined;
+}
+
 /* ── Main ReportView ──
    Note: Download .md lives in SessionDetail's topbar now (next to
    Share), not inside the report body. ReportView still receives the
@@ -1430,10 +1572,20 @@ function AnchorRail({
 export default function ReportView({
   report,
   reportJson,
+  onRunVerification,
 }: {
   report: string;
   reportJson?: unknown;
   riskLevel?: string;
+  /**
+   * AAP-79 — optional callback wired by `SessionDetail`. When supplied,
+   * the interrogation-only / verification-failed banner renders an
+   * inline "Run verification" / "Retry verification" button that
+   * triggers the dashboard's existing consent dialog. The fallback path
+   * (no callback) still renders the banner copy; the operator clicks the
+   * top-of-page "Run verification" instead.
+   */
+  onRunVerification?: () => void;
 }) {
   const [activeAnchor, setActiveAnchor] = useState<string>('sec-scope');
   const reportRootRef = useRef<HTMLDivElement>(null);
@@ -1671,6 +1823,23 @@ export default function ReportView({
               )} · ${json.metadata.date}`
             : null
         }
+      />
+
+      {/* AAP-79 — interrogation-only / verification-failed banner. Sits
+          above the anchor rail so the reader's eye lands on it before
+          they scroll into the findings. Suppressed when verification
+          succeeded.
+
+          Legacy (pre-AAP-79) sessions have `localAgentDiscovery` populated
+          but no `verification` field, because the writer that flips the
+          field landed in this ticket. Treat those sessions as verified so
+          the banner doesn't lie about an already-completed discovery run.
+          A session with neither field gets the default
+          'interrogation-only' rendering (correct: nothing has run). */}
+      <InterrogationOnlyBanner
+        status={inferBannerStatus(json)}
+        reason={json.verification?.reason}
+        {...(onRunVerification ? { onRunVerification } : {})}
       />
 
       <AnchorRail items={anchorItems} active={activeAnchor} />
