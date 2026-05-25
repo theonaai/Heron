@@ -1403,16 +1403,42 @@ function CategorizedComplianceView({ compliance }: { compliance: CategorizedComp
   const activatedSet = new Set<FrameworkId>([...legacyActivated, ...typedActivatedSet]);
   const activated: FrameworkId[] = [...activatedSet];
 
-  // Codex post-review fix (Blocker 1): render BOTH typed verdicts AND
-  // prose-only flags. The old `hasControlResults ? typed : legacy`
-  // switch hid prose flags whenever a single typed detector fired.
-  // We dedup so a finding-type that appears in BOTH sources renders
-  // once, sourced from the typed projection (more specific evidence).
-  const typedCoveredFindings = new Set<FindingType>();
-  for (const r of controlResults) typedCoveredFindings.add(r.findingType as FindingType);
-  const legacyOnlyFlags = allFlags.filter(
-    (f) => !f.triggeredBy || !typedCoveredFindings.has(f.triggeredBy as FindingType),
-  );
+  // Codex post-review fix #2 (2026-05-25): dedup at PER-CONTROL grain
+  // (`findingType:frameworkId:controlId`), NOT at finding-type grain.
+  //
+  // The earlier finding-type-only check suppressed legacy
+  // `sensitive-data` flags for ISO 42001 / NIST / AIUC-1 the moment a
+  // single typed `sensitive-data` result existed for GDPR Art. 6
+  // (different framework, different control, same finding-type). The
+  // typed projection is partial per-control, not per-finding-type, so
+  // the dedup key must match.
+  const typedCoveredKeys = new Set<string>();
+  for (const r of controlResults) {
+    typedCoveredKeys.add(`${r.findingType}:${r.frameworkId}:${r.controlId}`);
+  }
+  // For each legacy flag: filter controlIds down to the ones the typed
+  // projection does NOT yet cover. Drop the flag only if every control
+  // it carried is already covered by a typed result. Preserve the flag
+  // (with residual controlIds) if any control still lacks typed
+  // coverage so the dashboard chip + Affects line still cite it.
+  const legacyOnlyFlags = allFlags
+    .map((f) => {
+      // No metadata to dedup against, surface the legacy flag as-is.
+      if (!f.triggeredBy || !f.frameworkId) return f;
+      const originalIds = f.controlIds ?? [];
+      const remaining = originalIds.filter(
+        (cid) => !typedCoveredKeys.has(`${f.triggeredBy}:${f.frameworkId}:${cid}`),
+      );
+      if (originalIds.length > 0 && remaining.length === 0) {
+        // Typed projection owns every control on this row, drop the
+        // legacy duplicate.
+        return null;
+      }
+      return remaining.length === originalIds.length
+        ? f
+        : { ...f, controlIds: remaining };
+    })
+    .filter((f): f is RegulatoryFlag => f !== null);
 
   return (
     <div>

@@ -1370,15 +1370,42 @@ function renderFindingFirstDetailMerged(
   report?: AuditReport,
 ): string {
   const typedSection = controlResults_renderSections(results, report);
-  const typedCoveredFindings = new Set(
-    dedupeControlResults(results).map((r) => r.findingType),
+  // Codex post-review fix #2 (2026-05-25): dedup at PER-CONTROL grain
+  // (`findingType:frameworkId:controlId`), NOT at finding-type grain.
+  //
+  // Old shape suppressed legacy `sensitive-data` for ISO 42001 / NIST /
+  // AIUC-1 just because a typed `sensitive-data` result existed for
+  // GDPR Art. 6 (different framework, different control, same finding-
+  // type). The typed projection is partial per-control, not per-
+  // finding-type, so the dedup key must match.
+  const typedCoveredKeys = new Set(
+    dedupeControlResults(results).map(
+      (r) => `${r.findingType}:${r.frameworkId}:${r.controlId}`,
+    ),
   );
-  // Only render legacy entries for finding-types the typed projection
-  // did NOT cover. This prevents a finding-type from appearing in both
-  // the typed pretty-printed block AND the legacy block.
-  const legacyFiltered = allFlags.filter(
-    (f) => !typedCoveredFindings.has(f.triggeredBy),
-  );
+  // Filter legacy flags at the controlId level: drop only the control
+  // IDs already covered by a typed result. If the residual list is
+  // empty the entry is dropped entirely; otherwise the entry survives
+  // with its remaining (uncovered) controlIds so the auditor still
+  // sees those framework citations on the Affects line.
+  const legacyFiltered = allFlags
+    .map((f) => {
+      const remaining = (f.controlIds ?? []).filter(
+        (cid) => !typedCoveredKeys.has(`${f.triggeredBy}:${f.frameworkId}:${cid}`),
+      );
+      if ((f.controlIds ?? []).length > 0 && remaining.length === 0) {
+        // Every controlId on this legacy entry already has a typed
+        // verdict, the typed block owns this row, drop the legacy
+        // duplicate.
+        return null;
+      }
+      // Preserve the entry; rewrite controlIds to the residual set so
+      // covered IDs don't double-render in the Affects line.
+      return remaining.length === (f.controlIds ?? []).length
+        ? f
+        : { ...f, controlIds: remaining };
+    })
+    .filter((f): f is TypedRegulatoryFlag => f !== null);
   const legacySection = legacyOnly_renderSections(legacyFiltered, report);
 
   const sections = [typedSection, legacySection].filter((s) => s.length > 0);

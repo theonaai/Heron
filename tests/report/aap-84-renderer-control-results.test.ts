@@ -475,6 +475,60 @@ describe('AAP-84 HR pack regression — unchanged', () => {
  * either/or switch even if the typed projection itself is correct.
  */
 describe('AAP-84 Codex post-review — Blocker 1 (merged projection)', () => {
+  it('same-triggeredBy across frameworks: typed GDPR Art. 6 + legacy ISO 42001 BOTH render', () => {
+    // The actual bug shape Codex flagged in the second review pass
+    // (2026-05-25). The earlier fix deduped at the finding-type level
+    // ('sensitive-data'), so a single typed `sensitive-data` result on
+    // GDPR Art. 6 silenced EVERY legacy `sensitive-data` flag on every
+    // other framework, including unmigrated ISO 42001, NIST AI RMF and
+    // AIUC-1 controls. The per-control dedup key fixes this: only the
+    // exact (findingType, frameworkId, controlId) triple is suppressed;
+    // flags on different frameworks survive.
+    const crossFrameworkCompliance: any = {
+      mappingVersion: 'aap-84.codex-fix-2',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['gdpr', 'iso-42001'],
+      all: [
+        {
+          framework: 'ISO 42001 — 7.2',
+          severity: 'action-required',
+          description: 'Information handling controls for AI systems',
+          frameworkId: 'iso-42001',
+          controlIds: ['7.2'],
+          category: 'privacy',
+          tier: 'voluntary',
+          mandatoryIn: [],
+          triggeredBy: 'sensitive-data',
+        },
+      ],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        // Typed detector covers GDPR Art. 6 only; ISO 42001 has no
+        // typed detector yet.
+        syntheticControlResult({
+          findingType: 'sensitive-data',
+          frameworkId: 'gdpr',
+          controlId: 'Art. 6',
+          verdict: 'fail',
+          severity: 'high',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(crossFrameworkCompliance);
+    // Typed verdict for GDPR Art. 6 surfaces (typed projection).
+    expect(md).toContain('Art. 6 ❌ fail');
+    expect(md).toContain('GDPR');
+    // ISO 42001 7.2 ALSO surfaces (legacy fallback). This is the load-
+    // bearing assertion: with the old finding-type dedup, this
+    // expectation would fail because the typed `sensitive-data:gdpr`
+    // row would have silenced the legacy `sensitive-data:iso-42001`
+    // row.
+    expect(md).toContain('ISO 42001 (7.2)');
+  });
+
   it('renderer surfaces a prose-only legacy flag even when controlResults is non-empty', () => {
     // Mixed shape: typed detector fired for `excessive-access` (GDPR
     // Art. 25) but prose-only flag covers `sensitive-data` (GDPR
@@ -518,6 +572,52 @@ describe('AAP-84 Codex post-review — Blocker 1 (merged projection)', () => {
     // is the load-bearing assertion against Blocker 1.
     expect(md).toContain('Data handling');
     expect(md).toContain('GDPR (Art. 6)');
+  });
+
+  it('per-control split: typed Art. 6 suppresses Art. 6 row but keeps residual Art. 9', () => {
+    // Edge case from the second Codex review: a single legacy flag
+    // carries MULTIPLE controlIds. The fix must filter the array, not
+    // drop the entry, so any uncovered IDs still surface on the
+    // Affects line. Here typed covers GDPR Art. 6, but the legacy
+    // flag also lists Art. 9. Art. 9 must survive.
+    const splitCompliance: any = {
+      mappingVersion: 'aap-84.codex-fix-2',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['gdpr'],
+      all: [
+        {
+          framework: 'GDPR — Art. 6 + Art. 9',
+          severity: 'action-required',
+          description: 'Lawful basis and special category data',
+          frameworkId: 'gdpr',
+          controlIds: ['Art. 6', 'Art. 9'],
+          category: 'privacy',
+          tier: 'mandatory',
+          mandatoryIn: ['EU'],
+          triggeredBy: 'sensitive-data',
+        },
+      ],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as any,
+      controlResults: [
+        syntheticControlResult({
+          findingType: 'sensitive-data',
+          frameworkId: 'gdpr',
+          controlId: 'Art. 6',
+          verdict: 'fail',
+          severity: 'high',
+        }),
+      ],
+    };
+
+    const md = renderStructuredCompliance(splitCompliance);
+    // Typed Art. 6 surfaces with the verdict pill.
+    expect(md).toContain('Art. 6 ❌ fail');
+    // Art. 9 still appears via the legacy Affects line. The per-
+    // control filter kept the residual control even though Art. 6 on
+    // the same legacy entry was covered.
+    expect(md).toContain('Art. 9');
   });
 
   it('applicability summary "Gaps Found" cell unions typed + prose-only gap labels', () => {
