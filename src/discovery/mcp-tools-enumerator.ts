@@ -449,7 +449,12 @@ export function parseAgentReportedToolsList(
     // not silently report `state: 'ok'` with zero tools. That swallowed
     // the "the agent forwarded garbage" signal entirely. Only the truly
     // empty `tools: []` case stays `ok`.
-    if (candidateCount > 0) {
+    //
+    // Codex final review caught: previous condition only fired on object
+    // entries (via `candidateCount`). Primitive-only arrays like
+    // `[null, "x", []]` still returned `ok`. Use `toolsField.length` so
+    // ANY non-empty malformed array fails.
+    if (toolsField.length > 0) {
       return {
         state: 'failed',
         reason: 'parse-error: all-entries-malformed (every tool entry missing a string `name`)',
