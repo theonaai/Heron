@@ -358,3 +358,159 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     expect(r.value.error?.reason).toBe('workspace_invalid');
   });
 });
+
+describe('HeronMCPServer.start_verification — agent-reported tools overlay (AAP-82 Blocker 1 + Bonus 9)', () => {
+  let tmpDir: string;
+  const origEnv = process.env.HERON_SESSIONS_DIR;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-aap82-startverif-overlay-'));
+    process.env.HERON_SESSIONS_DIR = tmpDir;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.HERON_SESSIONS_DIR;
+    else process.env.HERON_SESSIONS_DIR = origEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('persists agent-reported tools into localAgentDiscovery and lifts the verdict for the write tools', async () => {
+    // AAP-82 Bonus 9 (Codex post-review): the load-bearing contract. An
+    // agent forwards a `tools/list` for an HTTP MCP server via
+    // `report_mcp_tools_list`; running `start_verification` later must
+    // merge that forwarded inventory into the discovery output, mark
+    // each tool with `source: 'agent-reported'`, and let the write
+    // tools lift the verdict ramp exactly like connector-sourced tools
+    // would.
+    //
+    // Fixture shape mirrors the AAP-79 happy-path test above — a
+    // Codex config under a fake $HOME — so `runDiscovery` finds the
+    // declared HTTP MCP server, then the overlay step replaces its
+    // (no_credential) toolEnumeration with the agent-forwarded tools.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap82-startverif-home-'));
+    const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap82-startverif-workspace-'));
+    try {
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(
+        join(fakeHome, '.codex/config.toml'),
+        '[mcp_servers.github]\n' +
+          'url = "https://api.githubcopilot.com/mcp"\n' +
+          '[mcp_servers.github.env]\n' +
+          'GITHUB_TOKEN = "ghp-fixture-DO-NOT-LEAK"\n',
+      );
+
+      const server = makeServer();
+      const { id } = await createSession({
+        agentName: 'aap82-overlay-fixture',
+        mode: 'tool-call',
+      });
+
+      // Step 1 — agent forwards its tools/list for the github server
+      // BEFORE start_verification runs. The directive in
+      // src/interview/questions.ts asks for exactly this sequence.
+      const forward = await server.invoke(
+        'report_mcp_tools_list',
+        {
+          session_id: id,
+          server_name: 'github',
+          raw_response: {
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              tools: [
+                { name: 'get_pull_request', description: 'Read a PR.' },
+                { name: 'create_issue', description: 'Open an issue.' },
+                { name: 'merge_pull_request', description: 'Merge a PR.' },
+                { name: 'delete_branch', description: 'Delete a branch.' },
+                { name: 'update_repository', description: 'Mutate repo settings.' },
+                { name: 'create_pull_request', description: 'File a PR.' },
+              ],
+            },
+          },
+        },
+        makeCtx(),
+      );
+      expect(forward.ok).toBe(true);
+
+      // Step 2 — seed the session with a complete report so
+      // start_verification proceeds past the gating checks. Carry an
+      // empty `systems` so `recomputeComplianceWithDiscovery` runs.
+      await updateSessionMeta(id, { status: 'complete' });
+      const minimalReport = {
+        summary: 'Demo agent that uses GitHub MCP.',
+        agentPurpose: 'GitHub automation',
+        systems: [],
+        risks: [],
+        recommendations: [],
+        overallRiskLevel: 'low',
+        transcript: [],
+        metadata: {
+          date: '2026-05-25',
+          target: 'github-bot',
+          interviewDuration: 1000,
+          questionsAsked: 0,
+        },
+      };
+      await writeReport(id, { markdown: '# stub', json: minimalReport });
+
+      // Step 3 — start_verification.
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+
+      // Step 4 — assert the persisted report.json reflects the overlay.
+      const after = await getSession(id);
+      const reportJson = after!.reportJson as {
+        localAgentDiscovery?: {
+          agents?: Array<{
+            mcpServers: Array<{
+              name: string;
+              toolEnumeration?: {
+                state: string;
+                source?: string;
+                tools?: Array<{ name: string; classification: string; source?: string }>;
+              };
+            }>;
+          }>;
+        };
+      };
+      expect(reportJson.localAgentDiscovery).toBeDefined();
+      const allServers = (reportJson.localAgentDiscovery?.agents ?? []).flatMap(
+        (a) => a.mcpServers,
+      );
+      const githubServer = allServers.find((s) => s.name === 'github');
+      expect(githubServer).toBeDefined();
+      expect(githubServer!.toolEnumeration?.state).toBe('ok');
+      expect(githubServer!.toolEnumeration?.source).toBe('agent-reported');
+      const tools = githubServer!.toolEnumeration?.tools ?? [];
+      // 6 tools forwarded — they all reach report.json with the
+      // agent-reported provenance stamp.
+      expect(tools.length).toBe(6);
+      for (const tool of tools) {
+        expect(tool.source).toBe('agent-reported');
+      }
+      const writeNames = tools.filter((t) => t.classification === 'write').map((t) => t.name);
+      // create_issue / merge_pull_request / create_pull_request /
+      // update_repository / delete_branch all map to write under the
+      // existing classifier rules.
+      expect(writeNames.length).toBeGreaterThanOrEqual(4);
+
+      // Step 5 — verdict ramp picks up the agent-forwarded write tools.
+      // `countWriteTools` lifts the deterministic risk to 'high' once
+      // five+ writes land, so the persisted risk level moves off the
+      // base 'low' the analyzer wrote.
+      const persistedDeterministic = after!.deterministicRiskLevel;
+      expect(persistedDeterministic).toBeDefined();
+      expect(['medium', 'high']).toContain(persistedDeterministic);
+    } finally {
+      if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+      else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});

@@ -198,6 +198,7 @@ describe('startHttpServer — HTTP-level prototype-pollution resistance (CodeQL)
       expect(names).toEqual([
         'compare_reports',
         'get_report',
+        'report_mcp_tools_list',
         'start_audit_session',
         'start_verification',
         'submit_answer',

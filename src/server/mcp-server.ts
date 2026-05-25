@@ -45,6 +45,8 @@ import type {
   MCPServerError,
   MCPServerResult,
   ProgressNotification,
+  ReportMcpToolsListInput,
+  ReportMcpToolsListOutput,
   RequestContext,
   StartAuditSessionInput,
   StartAuditSessionOutput,
@@ -63,14 +65,18 @@ import type { QuestionPlanner } from '../interview/question-planner.js';
 import {
   createSession,
   getSession,
+  listReportedMcpTools,
   mergeWorkspaceHints,
   patchReportJson,
+  ReportedMcpToolsPerSessionCapExceeded,
+  saveReportedMcpToolsList,
   setPendingQuestion,
   submitToolCallAnswer,
   updateSessionMeta,
   writeReport,
   writeAnalysisFailure,
   type AuditSessionStatus,
+  type ReportedMcpToolsRecord,
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
 import {
@@ -80,6 +86,10 @@ import {
 } from '../verification/verdict-pipeline.js';
 import { runDiscovery } from '../discovery/index.js';
 import { diffAgainstTranscript } from '../discovery/diff.js';
+import {
+  overlayAgentReportedToolEnumerations,
+  parseAgentReportedToolsList,
+} from '../discovery/mcp-tools-enumerator.js';
 import { secretlintScrub } from '../discovery/secretlint-scrub.js';
 import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
 import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
@@ -401,10 +411,57 @@ const START_VERIFICATION_DEF: ToolDefinition = {
   },
 };
 
+// AAP-82 — `report_mcp_tools_list` tool. The description below is the
+// consent text the runtime renders in its tool-permission prompt; the
+// audited agent calls this after Q14 (`mcp_a2a_auth`) for every
+// HTTP/SSE MCP server it talks to. Heron itself NEVER reads the
+// credentials the agent used to call its MCP server — the agent makes
+// the call, then forwards the raw `tools/list` response here. AAP-82
+// §"Why this exists" locked this design 2026-05-25.
+const REPORT_MCP_TOOLS_LIST_DEF: ToolDefinition = {
+  name: 'report_mcp_tools_list',
+  description:
+    'Forward the raw `tools/list` response from one of your MCP servers to Heron.\n\n' +
+    'Heron will:\n' +
+    '  - Parse the response to extract tool names + descriptions\n' +
+    '  - Run the same read/write classification as stdio servers (AAP-75)\n' +
+    '  - Merge into the discovery report alongside stdio results\n\n' +
+    'NEVER:\n' +
+    '  - Stores the credentials you used to call the server\n' +
+    '  - Asks for or sees those credentials',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description:
+          'The session id returned by a prior start_audit_session call. The forwarded ' +
+          'inventory is attached to this audit run.',
+      },
+      server_name: {
+        type: 'string',
+        description:
+          'The MCP server name as you declared it in your systems_enum answer (Q2). Used ' +
+          'to deduplicate forwards: a second report for the same server replaces the first.',
+      },
+      raw_response: {
+        type: 'object',
+        description:
+          'The verbatim JSON-RPC `tools/list` response body your MCP server returned. ' +
+          'Heron accepts the full envelope `{ jsonrpc, id, result: { tools } }`, the ' +
+          'result-only blob `{ result: { tools } }`, or a bare `{ tools }` body.',
+      },
+    },
+    required: ['session_id', 'server_name', 'raw_response'],
+    additionalProperties: false,
+  },
+};
+
 const TOOL_DEFINITIONS: ToolDefinition[] = [
   START_AUDIT_SESSION_DEF,
   SUBMIT_ANSWER_DEF,
   START_VERIFICATION_DEF,
+  REPORT_MCP_TOOLS_LIST_DEF,
   GET_REPORT_DEF,
   COMPARE_REPORTS_DEF,
 ];
@@ -477,6 +534,122 @@ const startVerificationInputSchema = z.object({
     .optional(),
 });
 
+/**
+ * AAP-82 — Zod schema for `report_mcp_tools_list`. session_id carries
+ * the same path-traversal-tight regex used elsewhere. server_name is
+ * bounded so a maliciously long forward can't bloat
+ * `reported-mcp-tools.json`; the disallowed-character set blocks path
+ * separators from leaking into a key the storage layer would later
+ * write to disk. raw_response is treated as opaque JSON — the parser in
+ * `mcp-tools-enumerator.ts` does the structural validation.
+ *
+ * AAP-82 Blocker 3 (Codex post-review): per-tool and per-payload size
+ * caps. These run BEFORE `parseAgentReportedToolsList` so a hostile
+ * (or accidentally enormous) forward never reaches the parser or the
+ * storage layer. See `REPORT_MCP_TOOLS_*` constants for the limits.
+ */
+/** Max tools accepted per single `report_mcp_tools_list` call. */
+export const REPORT_MCP_TOOLS_MAX_TOOLS_PER_CALL = 200;
+/** Max characters allowed in a single tool's `name` field. */
+export const REPORT_MCP_TOOLS_MAX_NAME_LEN = 200;
+/** Max characters allowed in a single tool's `description` field. */
+export const REPORT_MCP_TOOLS_MAX_DESCRIPTION_LEN = 2000;
+/** Max bytes allowed in the serialized `raw_response` payload. */
+export const REPORT_MCP_TOOLS_MAX_PAYLOAD_BYTES = 256 * 1024;
+
+const reportMcpToolsListInputSchema = z.object({
+  session_id: z
+    .string({ required_error: 'session_id is required' })
+    .regex(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/, 'invalid session_id format'),
+  server_name: z
+    .string({ required_error: 'server_name is required' })
+    .min(1, 'server_name must not be empty')
+    .max(200, 'server_name must be 200 characters or fewer')
+    .regex(/^[^/\\\0]+$/, 'server_name must not contain `/`, `\\`, or null bytes'),
+  raw_response: z
+    .record(z.unknown(), {
+      required_error: 'raw_response is required',
+      invalid_type_error: 'raw_response must be a JSON object',
+    })
+    .superRefine((value, ctx) => {
+      // Payload-size guard. `JSON.stringify` may throw on cyclic graphs;
+      // catching here lets us return a clean Zod issue instead of a 500.
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(value);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `raw_response is not JSON-serialisable: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+      const byteLen = Buffer.byteLength(serialized, 'utf8');
+      if (byteLen > REPORT_MCP_TOOLS_MAX_PAYLOAD_BYTES) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `raw_response payload is ${byteLen} bytes, above the ${REPORT_MCP_TOOLS_MAX_PAYLOAD_BYTES}-byte cap`,
+        });
+        return;
+      }
+
+      // Locate the `tools` array (mirror the parser's three accepted
+      // shapes) so the caps run before parse. When the shape is
+      // unrecognised here, we let the parser surface the real reason via
+      // `state: 'failed'` — that path already produces actionable output.
+      const tools = locateToolsArray(value);
+      if (!tools) return;
+      if (tools.length > REPORT_MCP_TOOLS_MAX_TOOLS_PER_CALL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `tools[] has ${tools.length} entries, above the ${REPORT_MCP_TOOLS_MAX_TOOLS_PER_CALL} per-call cap`,
+        });
+        return;
+      }
+      for (let i = 0; i < tools.length; i++) {
+        const t = tools[i];
+        if (!t || typeof t !== 'object') continue;
+        const row = t as Record<string, unknown>;
+        if (
+          typeof row.name === 'string' &&
+          row.name.length > REPORT_MCP_TOOLS_MAX_NAME_LEN
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `tools[${i}].name has ${row.name.length} characters, above the ${REPORT_MCP_TOOLS_MAX_NAME_LEN} cap`,
+          });
+          return;
+        }
+        if (
+          typeof row.description === 'string' &&
+          row.description.length > REPORT_MCP_TOOLS_MAX_DESCRIPTION_LEN
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `tools[${i}].description has ${row.description.length} characters, above the ${REPORT_MCP_TOOLS_MAX_DESCRIPTION_LEN} cap`,
+          });
+          return;
+        }
+      }
+    }),
+});
+
+/**
+ * Mirror the three top-level shapes `parseAgentReportedToolsList`
+ * accepts, returning the `tools` array (or `null` when we cannot find
+ * one cleanly). Used by the Zod superRefine size cap so the bounds
+ * apply regardless of which envelope the agent forwarded.
+ */
+function locateToolsArray(payload: Record<string, unknown>): unknown[] | null {
+  if (Array.isArray(payload.tools)) return payload.tools;
+  const result = payload.result;
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const inner = (result as Record<string, unknown>).tools;
+    if (Array.isArray(inner)) return inner;
+  }
+  return null;
+}
+
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
 export type ToolName =
@@ -484,7 +657,8 @@ export type ToolName =
   | 'compare_reports'
   | 'start_audit_session'
   | 'submit_answer'
-  | 'start_verification';
+  | 'start_verification'
+  | 'report_mcp_tools_list';
 
 type InvokeMap = {
   get_report: { input: GetReportInput; output: GetReportOutput };
@@ -492,6 +666,10 @@ type InvokeMap = {
   start_audit_session: { input: StartAuditSessionInput; output: StartAuditSessionOutput };
   submit_answer: { input: SubmitAnswerInput; output: SubmitAnswerOutput };
   start_verification: { input: StartVerificationInput; output: StartVerificationOutput };
+  report_mcp_tools_list: {
+    input: ReportMcpToolsListInput;
+    output: ReportMcpToolsListOutput;
+  };
 };
 
 export class HeronMCPServer {
@@ -564,6 +742,10 @@ export class HeronMCPServer {
           return (await this.handleStartVerification(
             input as StartVerificationInput,
             ctx,
+          )) as MCPServerResult<InvokeMap[N]['output']>;
+        case 'report_mcp_tools_list':
+          return (await this.handleReportMcpToolsList(
+            input as ReportMcpToolsListInput,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
           return {
@@ -666,6 +848,31 @@ export class HeronMCPServer {
         const result = await this.invoke(
           'start_verification',
           args as StartVerificationInput,
+          bridge.ctx,
+        );
+        await bridge.flush();
+        return toolResultFromMcp(result);
+      },
+    );
+
+    // report_mcp_tools_list (AAP-82) — agent-executed HTTP MCP `tools/list`
+    // forwarding. Heron does not read the agent's runtime OAuth tokens;
+    // the agent makes the call itself and forwards the raw JSON-RPC body.
+    server.registerTool(
+      REPORT_MCP_TOOLS_LIST_DEF.name,
+      {
+        description: REPORT_MCP_TOOLS_LIST_DEF.description,
+        inputSchema: {
+          session_id: z.string(),
+          server_name: z.string(),
+          raw_response: z.record(z.unknown()),
+        },
+      },
+      async (args, extra) => {
+        const bridge = contextFromExtra(extra);
+        const result = await this.invoke(
+          'report_mcp_tools_list',
+          args as ReportMcpToolsListInput,
           bridge.ctx,
         );
         await bridge.flush();
@@ -1372,6 +1579,26 @@ export class HeronMCPServer {
         enableKeychain: true,
         enableMcpToolEnumeration,
       });
+
+      // AAP-82 Blocker 1 (Codex post-review): merge agent-forwarded
+      // `tools/list` records into the freshly discovered agents BEFORE
+      // secretlintScrub so the overlay goes through the same redaction
+      // pass as connector-sourced enumerations. The dashboard scan route
+      // does the same; the helper keeps the two paths byte-identical.
+      const reportedRecords = await listReportedMcpTools(sessionId);
+      const overlayed = overlayAgentReportedToolEnumerations(
+        result.agents,
+        reportedRecords.map((r) => ({
+          serverName: r.serverName,
+          enumeration: r.enumeration,
+        })),
+      );
+      const overlayWarnings = overlayed.unmatched.length > 0
+        ? [
+            `agent-reported tools/list referenced servers not present in discovery: ${overlayed.unmatched.join(', ')}`,
+          ]
+        : [];
+
       const scrubbedAgents = await secretlintScrub(result.agents);
       const scrubbedOsCredentials = result.osCredentials
         ? await secretlintScrub(result.osCredentials)
@@ -1383,6 +1610,10 @@ export class HeronMCPServer {
         ? await secretlintScrub(result.keychainServices)
         : undefined;
       const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+      const mergedWarnings = [
+        ...(result.warnings ?? []),
+        ...overlayWarnings,
+      ];
       scrubbed = {
         ...result,
         agents: scrubbedAgents,
@@ -1396,6 +1627,7 @@ export class HeronMCPServer {
         ...(scrubbedKeychain !== undefined
           ? { keychainServices: scrubbedKeychain }
           : {}),
+        ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1530,6 +1762,95 @@ export class HeronMCPServer {
         completed_at: completedAt,
       },
     };
+  }
+
+  // ─── report_mcp_tools_list (AAP-82) ──────────────────────────────────
+
+  private async handleReportMcpToolsList(
+    rawInput: ReportMcpToolsListInput,
+  ): Promise<MCPServerResult<ReportMcpToolsListOutput>> {
+    const parsed = reportMcpToolsListInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return {
+        ok: false,
+        error: {
+          kind: 'invalid_input',
+          field: issue?.path?.[0]?.toString() ?? 'unknown',
+          message: issue?.message ?? 'invalid input',
+        },
+      };
+    }
+
+    const { session_id: sessionId, server_name: serverName, raw_response: rawResponse } = parsed.data;
+    const session = await getSession(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'session_not_found',
+          message: `Session not found: ${sessionId}`,
+        },
+      };
+    }
+
+    // Parse + classify before persisting so the cached `enumeration`
+    // field is always in sync with the raw response. The parser never
+    // throws — failure collapses to `state: 'failed'` with a parse-error
+    // reason, which we still persist so the dashboard can render "agent
+    // forwarded a malformed response" instead of silently dropping it.
+    //
+    // AAP-82 Blocker 2 Option A (Codex post-review): the parser drops
+    // `inputSchema` / `annotations` from each projected tool, and the
+    // storage layer no longer persists the raw response verbatim. Only
+    // the projected `enumeration` (names + descriptions + classification)
+    // lands on disk; `rawResponse` is consumed locally to compute the
+    // projection and then discarded.
+    const enumeration = parseAgentReportedToolsList(serverName, rawResponse);
+    const receivedAt = enumeration.attemptedAt;
+
+    let stored: ReportedMcpToolsRecord;
+    try {
+      stored = await saveReportedMcpToolsList(sessionId, {
+        serverName,
+        receivedAt,
+        enumeration,
+      });
+    } catch (err) {
+      if (err instanceof ReportedMcpToolsPerSessionCapExceeded) {
+        return {
+          ok: false,
+          error: {
+            kind: 'tool_failure',
+            cause: 'per_session_tool_cap_exceeded',
+            message: err.message,
+          },
+        };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'storage_error',
+          message: `Failed to persist reported tools list: ${message}`,
+        },
+      };
+    }
+
+    const state: 'ok' | 'failed' = enumeration.state === 'ok' ? 'ok' : 'failed';
+    const toolCount = enumeration.tools?.length ?? 0;
+    const output: ReportMcpToolsListOutput = {
+      session_id: sessionId,
+      server_name: serverName,
+      state,
+      tool_count: toolCount,
+      received_at: receivedAt,
+    };
+    if (enumeration.reason !== undefined) output.reason = enumeration.reason;
+    if (stored.replacedPrevious) output.replaced_previous = true;
+    return { ok: true, value: output };
   }
 
   private handleGetReport(rawInput: GetReportInput): MCPServerResult<GetReportOutput> {

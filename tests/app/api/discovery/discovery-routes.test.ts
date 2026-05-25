@@ -210,5 +210,108 @@ describe('discovery API routes', () => {
       );
       expect(res.status).toBe(400);
     });
+
+    it('overlays agent-forwarded tools/list records onto discovery output (AAP-82 Blocker 1)', async () => {
+      // The dashboard scan route's counterpart of the start_verification
+      // integration test. Proves the wiring is symmetric — both code
+      // paths must call `listReportedMcpTools` after `runDiscovery` and
+      // overlay through `overlayAgentReportedToolEnumerations` so the
+      // persisted `localAgentDiscovery` reflects the agent-forwarded
+      // tools and the verdict ramp picks them up.
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, {
+          method: 'POST',
+          body: { agentName: 'aap82-dashboard-overlay' },
+        }),
+      );
+      const { id } = (await readJson(created)) as { id: string };
+      await reportPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}/report`, {
+          method: 'POST',
+          body: {
+            markdown: '# x',
+            json: {
+              summary: 's',
+              agentPurpose: 'p',
+              systems: [],
+              risks: [],
+              recommendations: [],
+              overallRiskLevel: 'low',
+            },
+          },
+        }),
+        { params: Promise.resolve({ id }) } as never,
+      );
+
+      // Pre-stage the agent-forwarded tools BEFORE the scan runs (the
+      // real protocol is "interview directive → report_mcp_tools_list →
+      // scan"). Direct call to the storage helper because we don't have
+      // the MCP server harness in this test.
+      const { saveReportedMcpToolsList } = await import('@/src/storage/sessions');
+      const { parseAgentReportedToolsList } = await import('@/src/discovery/mcp-tools-enumerator');
+      const enumeration = parseAgentReportedToolsList('github', {
+        tools: [
+          { name: 'get_pull_request', description: 'Read a PR.' },
+          { name: 'create_issue', description: 'Open an issue.' },
+          { name: 'merge_pull_request', description: 'Merge.' },
+        ],
+      });
+      await saveReportedMcpToolsList(id, {
+        serverName: 'github',
+        receivedAt: enumeration.attemptedAt,
+        enumeration,
+      });
+
+      // Fixture: declare the github server in the codex config so the
+      // discovery readers know about it.
+      await mkdir(join(homeDir, '.codex'), { recursive: true });
+      await writeFile(
+        join(homeDir, '.codex/config.toml'),
+        '[mcp_servers.github]\n' +
+          'url = "https://api.githubcopilot.com/mcp"\n' +
+          '[mcp_servers.github.env]\n' +
+          'GITHUB_TOKEN = "ghp-DO-NOT-LEAK"\n',
+      );
+      await consentPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/consent`, {
+          method: 'POST',
+          body: { workspace: workspaceDir, decision: 'allow-for-workspace' },
+        }),
+      );
+
+      const res = await scanPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+          method: 'POST',
+          body: { sessionId: id, workspaceRoot: workspaceDir },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const result = (await readJson(res)) as {
+        agents: Array<{
+          runtime: string;
+          mcpServers: Array<{
+            name: string;
+            toolEnumeration?: {
+              state: string;
+              source?: string;
+              tools?: Array<{ name: string; source?: string; classification: string }>;
+            };
+          }>;
+        }>;
+      };
+
+      // Overlay applied: the github server now carries an
+      // agent-reported enumeration with 3 tools.
+      const githubServer = result.agents
+        .flatMap((a) => a.mcpServers)
+        .find((s) => s.name === 'github');
+      expect(githubServer).toBeDefined();
+      expect(githubServer!.toolEnumeration?.state).toBe('ok');
+      expect(githubServer!.toolEnumeration?.source).toBe('agent-reported');
+      expect(githubServer!.toolEnumeration?.tools).toHaveLength(3);
+      for (const t of githubServer!.toolEnumeration?.tools ?? []) {
+        expect(t.source).toBe('agent-reported');
+      }
+    }, 20_000);
   });
 });

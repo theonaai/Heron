@@ -115,9 +115,10 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
 
       // ── 6. Loop submit_answer until status === 'complete' ────────────
       // Compliance-flavoured answers so the protocol's vagueness /
-      // stale detectors don't reject them. We use 20 unique strings to
-      // out-run the dedup logic (planner walks 15 core questions; some
-      // bookkeeping may surface a few extra turns).
+      // stale detectors don't reject them. We use 20+ unique strings to
+      // out-run the dedup logic (planner walks 16 core questions after
+      // AAP-82's mcp_tools_forward_directive landed; some bookkeeping
+      // may surface a few extra turns).
       const answers = [
         'I am the HR-Sync bot. I copy candidate profiles from Greenhouse into Workday.',
         'I read Greenhouse via OAuth scope greenhouse.candidates.read; I write to Workday via SOAP API.',
@@ -133,6 +134,7 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
         'Single-customer deployment. I do not retain context across customers.',
         'I invoke a fixed set of three internal tools: fetch_candidate, post_workday, log_event.',
         'I do not call MCP servers or A2A agents.',
+        'n/a — no HTTP or SSE MCP servers configured.',
         'Reasoning model: Claude 3 Haiku. APIs: Greenhouse REST, Workday SOAP, internal logger.',
         'extra answer slot 16', 'extra answer slot 17', 'extra answer slot 18',
         'extra answer slot 19', 'extra answer slot 20',
@@ -264,11 +266,11 @@ describe('start_audit_session + submit_answer — tool-call E2E (AAP-55)', () =>
         `Connectors are enabled when needed. Workflow ${n} runs as needed. ` +
         `Suffix ${n}-${n * 13}.`;
 
-      // The planner has CORE_QUESTIONS.length (15) core questions +
-      // MAX_FOLLOW_UPS follow-ups budget; the loop must terminate
-      // inside that envelope + a small slack for the planner's
-      // bookkeeping turns.
-      const ceiling = 15 + MAX_FOLLOW_UPS + 2;
+      // The planner has CORE_QUESTIONS.length (16, after AAP-82 added
+      // the mcp_tools_forward_directive) core questions + MAX_FOLLOW_UPS
+      // follow-ups budget; the loop must terminate inside that envelope
+      // + a small slack for the planner's bookkeeping turns.
+      const ceiling = 16 + MAX_FOLLOW_UPS + 2;
       const HARD_STOP = ceiling + 30;
       let turns = 0;
       let status: string | undefined = 'awaiting_answer';

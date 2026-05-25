@@ -29,4 +29,22 @@ describe('questions', () => {
     const uniqueIds = new Set(ids);
     expect(uniqueIds.size).toBe(ids.length);
   });
+
+  it('AAP-82: includes the mcp_tools_forward_directive after mcp_a2a_auth', () => {
+    const sorted = getAllQuestionsSorted();
+    const q14Index = sorted.findIndex((q) => q.id === 'mcp_a2a_auth');
+    const directiveIndex = sorted.findIndex((q) => q.id === 'mcp_tools_forward_directive');
+    expect(q14Index).toBeGreaterThanOrEqual(0);
+    expect(directiveIndex).toBe(q14Index + 1);
+
+    // The directive must explicitly name the report_mcp_tools_list tool
+    // and the "raw_response" forwarding instruction so the agent's LLM
+    // has a concrete tool name + protocol step to follow. This is the
+    // load-bearing change for the audit — without these substrings the
+    // agent has no signal to call the AAP-82 tool at all.
+    const directive = sorted[directiveIndex]!;
+    expect(directive.text).toMatch(/report_mcp_tools_list/);
+    expect(directive.text).toMatch(/tools\/list/);
+    expect(directive.category).toBe('access');
+  });
 });

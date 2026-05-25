@@ -41,8 +41,10 @@ import type {
 } from '../connectors/mcp-types.js';
 import { classifyTool } from './tool-classifier.js';
 import type {
+  DiscoveredCapability,
   DiscoveredMcpServer,
   DiscoveredMcpTool,
+  DiscoveredMcpToolSource,
   McpToolEnumeration,
 } from './types.js';
 
@@ -221,11 +223,12 @@ export async function enumerateMcpServerTools(
         attemptedAt: now().toISOString(),
       };
     }
-    const tools = projectTools(server.name, result.value.tools);
+    const tools = projectTools(server.name, result.value.tools, 'connector');
     return {
       state: 'ok',
       tools,
       attemptedAt: now().toISOString(),
+      source: 'connector',
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -252,10 +255,16 @@ export async function enumerateMcpServerTools(
  * contract: only the documented fields cross over; `_extra` is dropped
  * entirely so unknown forward-compatible MCP fields cannot leak into
  * report.json (where they could contain auth-bearing keys).
+ *
+ * AAP-82 — `source` is stamped onto every projected row so downstream
+ * code can tell connector-sourced enumerations apart from
+ * agent-forwarded ones without re-deriving from the parent
+ * `McpToolEnumeration.source`.
  */
 function projectTools(
   serverName: string,
   rawTools: ToolInventoryRecord['tools'],
+  source: DiscoveredMcpToolSource,
 ): DiscoveredMcpTool[] {
   const out: DiscoveredMcpTool[] = [];
   for (const raw of rawTools) {
@@ -267,6 +276,7 @@ function projectTools(
         ...(raw.description !== undefined ? { description: raw.description } : {}),
         ...(raw.annotations !== undefined ? { annotations: raw.annotations } : {}),
       }),
+      source,
     };
     if (raw.description !== undefined) projected.description = raw.description;
     if (raw.inputSchema !== undefined) projected.inputSchema = raw.inputSchema;
@@ -300,4 +310,279 @@ export async function enumerateAllServers<
     agent.mcpServers = enumerated;
   }
   return agents;
+}
+
+// ─── AAP-82 — agent-forwarded `tools/list` parsing ────────────────────────
+
+/**
+ * AAP-82 — parse a JSON-RPC `tools/list` response that the audited
+ * agent forwarded via the `report_mcp_tools_list` MCP tool, and project
+ * it into the same `McpToolEnumeration` shape `enumerateMcpServerTools`
+ * produces for connector-sourced enumerations.
+ *
+ * The agent forwards the response **verbatim** — we never assume a
+ * specific top-level wrapper. We accept all of the following shapes the
+ * MCP SDK has historically produced, in order of preference:
+ *
+ *   1. Full JSON-RPC envelope: `{ jsonrpc: "2.0", id: 1, result: { tools: [...] } }`
+ *   2. Result-only blob:       `{ result: { tools: [...] } }`
+ *   3. Bare result body:       `{ tools: [...] }`
+ *
+ * Anything else collapses to `state: 'failed'` with `reason: 'parse-error'`.
+ *
+ * Privacy note (Codex post-review, Blocker 2 Option A): the tool
+ * description in `src/interview/questions.ts` promises "Heron never sees
+ * the credentials you use to make these calls. Only the names and
+ * descriptions of the tools each server advertises are kept." To honour
+ * that promise, the parser drops `inputSchema` and `annotations` from
+ * every projected row before classification. The classifier reads
+ * `annotations` ONCE inside this function, then they are discarded — so
+ * `readOnlyHint` / `destructiveHint` still influence the verdict, but
+ * no schema or annotation payload reaches the persisted record. (Schemas
+ * can leak server-internal API shapes; annotations can carry vendor-set
+ * `_extra` fields. Connector-sourced enumerations are subject to the
+ * same trust contract through L2's whitelist projection.)
+ *
+ * Never throws — the result-style contract matches `enumerateMcpServerTools`.
+ */
+export interface ParseAgentReportedOptions {
+  /** Override the wall-clock used for `attemptedAt`. Tests only. */
+  now?: () => Date;
+}
+
+export function parseAgentReportedToolsList(
+  serverName: string,
+  rawResponse: unknown,
+  opts: ParseAgentReportedOptions = {},
+): McpToolEnumeration {
+  const now = opts.now ?? (() => new Date());
+  const attemptedAt = now().toISOString();
+
+  if (rawResponse === null || typeof rawResponse !== 'object' || Array.isArray(rawResponse)) {
+    return {
+      state: 'failed',
+      reason: 'parse-error: raw_response must be a JSON object',
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  // Unwrap to the result body. We tolerate a JSON-RPC error envelope by
+  // collapsing it onto `state: 'failed'` rather than attempting to read
+  // the agent-side error payload (it can carry HTTP body fragments we
+  // don't want to relay into report.json verbatim).
+  const obj = rawResponse as Record<string, unknown>;
+  if (obj.error !== undefined) {
+    return {
+      state: 'failed',
+      reason: 'parse-error: agent forwarded a JSON-RPC error envelope (no tools to project)',
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  let body: Record<string, unknown> = obj;
+  const result = obj.result;
+  if (result !== undefined) {
+    if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+      return {
+        state: 'failed',
+        reason: 'parse-error: `result` must be a JSON object when present',
+        attemptedAt,
+        source: 'agent-reported',
+      };
+    }
+    body = result as Record<string, unknown>;
+  }
+
+  const toolsField = body.tools;
+  if (!Array.isArray(toolsField)) {
+    return {
+      state: 'failed',
+      reason: 'parse-error: `tools` array missing from forwarded response',
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  // AAP-82 Blocker 2 Option A (Codex post-review): only `name` and
+  // `description` cross the trust boundary into persisted records. The
+  // classifier needs `annotations` (`readOnlyHint` / `destructiveHint`
+  // change classification) so we keep them on the local `classifierInput`
+  // and discard them after the call — they never reach the returned
+  // `DiscoveredMcpTool`.
+  const projectedTools: DiscoveredMcpTool[] = [];
+  let candidateCount = 0;
+  for (const entry of toolsField) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    candidateCount += 1;
+    const row = entry as Record<string, unknown>;
+    const name = row.name;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const description = typeof row.description === 'string' ? row.description : undefined;
+    const annotationsRaw =
+      row.annotations && typeof row.annotations === 'object' && !Array.isArray(row.annotations)
+        ? (row.annotations as Record<string, unknown>)
+        : undefined;
+    const classifierInput: Parameters<typeof classifyTool>[0] = {
+      serverName,
+      toolName: name,
+    };
+    if (description !== undefined) classifierInput.description = description;
+    if (annotationsRaw !== undefined) classifierInput.annotations = annotationsRaw;
+    const projected: DiscoveredMcpTool = {
+      name,
+      classification: classifyTool(classifierInput),
+      source: 'agent-reported',
+    };
+    if (description !== undefined) projected.description = description;
+    // NOTE: inputSchema and annotations are intentionally NOT copied
+    // onto the projected row. Option A of the Codex Blocker 2 fix —
+    // persist only what the tool description promises ("names and
+    // descriptions").
+    projectedTools.push(projected);
+  }
+
+  if (projectedTools.length === 0) {
+    // AAP-82 Bonus 6 (Codex post-review): a non-empty `tools` array where
+    // every entry is malformed (missing `name`, wrong type, etc.) must
+    // not silently report `state: 'ok'` with zero tools. That swallowed
+    // the "the agent forwarded garbage" signal entirely. Only the truly
+    // empty `tools: []` case stays `ok`.
+    //
+    // Codex final review caught: previous condition only fired on object
+    // entries (via `candidateCount`). Primitive-only arrays like
+    // `[null, "x", []]` still returned `ok`. Use `toolsField.length` so
+    // ANY non-empty malformed array fails.
+    if (toolsField.length > 0) {
+      return {
+        state: 'failed',
+        reason: 'parse-error: all-entries-malformed (every tool entry missing a string `name`)',
+        attemptedAt,
+        source: 'agent-reported',
+      };
+    }
+    // An empty `tools[]` is a valid `tools/list` response — the server
+    // legitimately advertises no tools. Keep `state: 'ok'` so the verdict
+    // ramp sees a clean "agent reported zero tools" signal instead of
+    // treating this as a parse failure.
+    return {
+      state: 'ok',
+      tools: [],
+      attemptedAt,
+      source: 'agent-reported',
+    };
+  }
+
+  return {
+    state: 'ok',
+    tools: projectedTools,
+    attemptedAt,
+    source: 'agent-reported',
+  };
+}
+
+// ─── AAP-82 — overlay agent-reported records onto discovery output ────────
+
+/**
+ * AAP-82 Blocker 1 (Codex post-review): merge agent-forwarded `tools/list`
+ * records into a fresh `DiscoveryResult.agents[]` produced by
+ * `runDiscovery()`. Without this step the records persisted via
+ * `report_mcp_tools_list` sit on disk under `<session>/reported-mcp-tools.json`
+ * but never influence the diff, the verdict ramp, the markdown render,
+ * or the dashboard — the tool description's promise to "merge into the
+ * discovery report" was unfulfilled.
+ *
+ * Match policy (case-insensitive on `serverName`):
+ *   1. For every reported record with `enumeration.state === 'ok'`,
+ *      look for a discovered server whose `name` matches the record's
+ *      `serverName`. The first agent + first server that matches wins
+ *      so a server declared on multiple agents (claude-code + codex)
+ *      gets the overlay applied to the first occurrence — that mirrors
+ *      how connector-sourced enumerations already merge.
+ *   2. When a record carries `state === 'failed'`, we still apply the
+ *      overlay so the dashboard can render the "agent forwarded a
+ *      malformed response" state next to the server. The tool list is
+ *      empty but the `reason` survives.
+ *   3. Records whose serverName has no match in the discovered inventory
+ *      are returned to the caller as `unmatched` so the caller can
+ *      surface "the agent reported a server Heron did not discover"
+ *      diagnostics. They do not silently disappear.
+ *
+ * Side effect: existing `toolEnumeration` set by a connector-sourced
+ * enumeration is OVERLAID with `source: 'agent-reported'` — the agent's
+ * own enumeration is the higher-trust source for HTTP MCP servers
+ * (Heron lacks the credential, the agent does not). Connector-sourced
+ * stdio results stay intact unless an agent explicitly forwarded for
+ * the same server name.
+ *
+ * Mutates `agents` in place AND keeps `capabilities[]` mirrors in sync
+ * (matching the discipline `runDiscovery` already uses after the
+ * AAP-75 enumeration pass).
+ */
+export interface OverlayAgentReportedResult {
+  /** Server names that matched a discovered server and were overlaid. */
+  applied: string[];
+  /** Server names that had no matching discovered server. */
+  unmatched: string[];
+}
+
+export interface OverlayAgentReportedInput {
+  serverName: string;
+  enumeration: McpToolEnumeration;
+}
+
+export function overlayAgentReportedToolEnumerations<
+  A extends {
+    mcpServers: DiscoveredMcpServer[];
+    capabilities?: DiscoveredCapability[];
+  },
+>(
+  agents: A[],
+  records: OverlayAgentReportedInput[],
+): OverlayAgentReportedResult {
+  const applied: string[] = [];
+  const unmatched: string[] = [];
+  for (const record of records) {
+    const targetName = record.serverName.toLowerCase();
+    let matched = false;
+    for (const agent of agents) {
+      for (let i = 0; i < agent.mcpServers.length; i++) {
+        const server = agent.mcpServers[i];
+        if (!server) continue;
+        if (server.name.toLowerCase() !== targetName) continue;
+        const overlay: McpToolEnumeration = {
+          ...record.enumeration,
+          source: 'agent-reported',
+        };
+        const overlaidServer: DiscoveredMcpServer = {
+          ...server,
+          toolEnumeration: overlay,
+        };
+        agent.mcpServers[i] = overlaidServer;
+        // Re-sync the capability mirror so verdict / render paths reading
+        // through `agent.capabilities` see the same overlay (consistent
+        // with the post-enumeration sync `runDiscovery` already does).
+        if (agent.capabilities) {
+          for (let c = 0; c < agent.capabilities.length; c++) {
+            const cap = agent.capabilities[c];
+            if (!cap) continue;
+            if (cap.kind !== 'mcp_server') continue;
+            if (
+              cap.name.toLowerCase() === targetName &&
+              cap.transport === server.transport
+            ) {
+              agent.capabilities[c] = { ...overlaidServer, kind: 'mcp_server' };
+            }
+          }
+        }
+        matched = true;
+        break;
+      }
+      if (matched) break;
+    }
+    if (matched) applied.push(record.serverName);
+    else unmatched.push(record.serverName);
+  }
+  return { applied, unmatched };
 }

@@ -54,8 +54,13 @@ import {
 import { consumeAllowOnce, getConsent } from '@/src/discovery/consent';
 import { diffAgainstTranscript } from '@/src/discovery/diff';
 import { runDiscovery } from '@/src/discovery/index';
+import { overlayAgentReportedToolEnumerations } from '@/src/discovery/mcp-tools-enumerator';
 import { secretlintScrub } from '@/src/discovery/secretlint-scrub';
-import { getSession, patchReportJson } from '@/src/storage/sessions';
+import {
+  getSession,
+  listReportedMcpTools,
+  patchReportJson,
+} from '@/src/storage/sessions';
 import { publishSessionEvent } from '@/src/storage/session-events';
 import {
   computeVerdictFromArtifacts,
@@ -318,6 +323,28 @@ export async function POST(request: Request): Promise<Response> {
       enableKeychain: true,
       enableMcpToolEnumeration,
     });
+
+    // AAP-82 Blocker 1 (Codex post-review): merge any agent-forwarded
+    // `tools/list` records the audited agent posted via
+    // `report_mcp_tools_list`. Without this step the records sit on disk
+    // under `<session>/reported-mcp-tools.json` and never reach the
+    // diff, the verdict ramp, the markdown render, or the dashboard. We
+    // overlay BEFORE secretlintScrub so the agent-reported names and
+    // descriptions go through the same redaction pass as connector-
+    // sourced ones. Unmatched records (the agent reported a server
+    // Heron did not discover) are deliberately not silently dropped —
+    // they're surfaced via the `localAgentDiscovery.findings` later via
+    // `diffAgainstTranscript` (which already flags servers that aren't
+    // in the transcript) plus a dedicated warning emitted here.
+    const reportedRecords = await listReportedMcpTools(body.data.sessionId);
+    const overlayed = overlayAgentReportedToolEnumerations(
+      result.agents,
+      reportedRecords.map((r) => ({
+        serverName: r.serverName,
+        enumeration: r.enumeration,
+      })),
+    );
+
     // Layer 4 — secretlint scan over the projected inventory. Catches
     // inline tokens that survived Layer 2/3 scrubbers (JWT in URL, GCP
     // service-account markers, private keys, Slack webhooks, etc.).
@@ -335,6 +362,21 @@ export async function POST(request: Request): Promise<Response> {
       ? await secretlintScrub(result.keychainServices)
       : undefined;
     const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+    // AAP-82 Blocker 1: surface "agent reported a server Heron did not
+    // discover" via the existing warnings channel. The diff is already
+    // wired to flag servers that aren't in the transcript; this catches
+    // the inverse case — the agent forwarded an inventory for a server
+    // Heron's filesystem readers never saw.
+    const overlayWarnings: string[] = [];
+    if (overlayed.unmatched.length > 0) {
+      overlayWarnings.push(
+        `agent-reported tools/list referenced servers not present in discovery: ${overlayed.unmatched.join(', ')}`,
+      );
+    }
+    const mergedWarnings = [
+      ...(result.warnings ?? []),
+      ...overlayWarnings,
+    ];
     finalResult = {
       ...result,
       agents: scrubbedAgents,
@@ -342,6 +384,7 @@ export async function POST(request: Request): Promise<Response> {
       ...(scrubbedOsCredentials !== undefined ? { osCredentials: scrubbedOsCredentials } : {}),
       ...(scrubbedWorkspaceEnv !== undefined ? { workspaceEnv: scrubbedWorkspaceEnv } : {}),
       ...(scrubbedKeychain !== undefined ? { keychainServices: scrubbedKeychain } : {}),
+      ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
     } as DiscoveryPayload;
   }
 
