@@ -11,10 +11,8 @@
 
 import { describe, it, expect } from 'vitest';
 
-import {
-  isHRAgent,
-} from '../../../src/verification/frameworks/router.js';
-import type { VerificationSignals } from '../../../src/verification/frameworks/router.js';
+import { isHRAgent } from '../../../src/verification/frameworks/classify.js';
+import type { VerificationSignals } from '../../../src/verification/frameworks/envelope.js';
 import {
   detectAutoRejectionWithoutDisclosure,
   detectATSWriteScopeSprawl,

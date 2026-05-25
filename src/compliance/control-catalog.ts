@@ -9,12 +9,14 @@
  *     fire over interview transcript text. Drives the LLM-grounded
  *     compliance section of every audit report.
  *
- *   - `DETECTOR_ENTRIES` (src/verification/frameworks/router.ts) —
- *     AAP-49 deterministic router. 4 frameworks (no ISO 42001), 12
- *     controls. Typed-evidence detection: pure functions consume
- *     `VerificationSignals` (diffs, inventories, approval chain) and
- *     return a `ControlVerdict`. Was CLI-only; never wired into the
- *     dashboard mapper.
+ *   - The 12 framework detectors (now in
+ *     `src/verification/frameworks/detectors.ts`, originally the
+ *     standalone driver lifted out in AAP-86) — AAP-49 deterministic
+ *     router. 4 frameworks (no ISO 42001), 12 controls. Typed-evidence
+ *     detection: pure functions consume `VerificationSignals` (diffs,
+ *     inventories, approval chain) and return a `ControlVerdict`.
+ *     Pre-AAP-83 CLI-only; AAP-83 wired them into the dashboard mapper
+ *     via `router-adapter.ts`.
  *
  * The catalog gives each entry a stable identity (`stableKey`) plus an
  * optional `deterministicDetector` slot. Per-control, the mapper can pick

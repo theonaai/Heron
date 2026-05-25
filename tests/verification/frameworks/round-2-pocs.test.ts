@@ -21,9 +21,9 @@ import {
   detectAIUC1_D003,
   detectEUAIAct_Article14,
   detectGDPR_Article22,
-} from '../../../src/verification/frameworks/router.js';
+} from '../../../src/verification/frameworks/detectors.js';
 import { appendEntry } from '../../../src/approvals/store.js';
-import type { VerificationSignals } from '../../../src/verification/frameworks/router.js';
+import type { VerificationSignals } from '../../../src/verification/frameworks/envelope.js';
 import type { ApprovalChain } from '../../../src/approvals/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

@@ -1,19 +1,21 @@
 /**
- * AAP-83 Phase 2 — absorb the router's 12 detectors into the
+ * AAP-83 Phase 2 — absorb the 12 framework detectors into the
  * compliance catalog.
  *
  * Strategy: the detector function bodies in
- * `src/verification/frameworks/router.ts` are well-tested (router.test.ts,
- * golden.test.ts, round-2-fixes.test.ts, section-placement.test.ts,
- * orchestrator-integration.test.ts — ~6 test files, 60+ test cases).
- * Rewriting them in-place under `src/compliance/detectors/*` risks
- * regressions. Instead this adapter wraps each detector so it speaks
- * the new `TypedDetector` signature (envelope-in, ControlResult-out)
- * while delegating to the existing FrameworkControl-producing function.
+ * `src/verification/frameworks/detectors.ts` (AAP-86 location; lifted
+ * out of the standalone driver module) are well-tested
+ * (router.test.ts, golden.test.ts, round-2-fixes.test.ts,
+ * section-placement.test.ts, orchestrator-integration.test.ts — ~6
+ * test files, 60+ test cases). Rewriting them in-place under
+ * `src/compliance/detectors/*` risks regressions. Instead this adapter
+ * wraps each detector so it speaks the new `TypedDetector` signature
+ * (envelope-in, ControlResult-out) while delegating to the existing
+ * FrameworkControl-producing function.
  *
- * Phase 9 will delete the wrapped router.ts top-level
- * `runFrameworkMapping` driver and (optionally) inline the detectors
- * here. Phase 2 only re-routes them through a unified contract.
+ * AAP-86 deleted the standalone framework-mapping driver (its registry
+ * was only ever consumed by the CLI). The CLI now reaches the same
+ * detectors through this adapter via `mapFindings`.
  *
  * Mapping (router.ts identity → catalog (findingType, frameworkId, controlId)):
  *   aiuc-1:A003        → excessive-access: aiuc-1 / A003.3 + A003.4
@@ -49,8 +51,8 @@ import {
   detectGDPR_Article5,
   detectNIST_Measure,
   detectNIST_Manage,
-  type VerificationSignals,
-} from '../../verification/frameworks/router.js';
+} from '../../verification/frameworks/detectors.js';
+import type { VerificationSignals } from '../../verification/frameworks/envelope.js';
 import type {
   FrameworkControl as RouterFrameworkControl,
   ControlVerdict as RouterVerdict,
@@ -155,16 +157,16 @@ function makeAdapter(args: {
 // ─── Adapter registry ──────────────────────────────────────────────────────
 
 /**
- * The 12 router detectors lifted into typed-evidence shape. Each row
+ * The 12 framework detectors lifted into typed-evidence shape. Each row
  * names the catalog entry the detector lights up and the surface it
- * reads from. Order mirrors `DETECTOR_ENTRIES` in router.ts so any
+ * reads from. Order mirrors the original detector-table order so any
  * downstream snapshot that depended on order survives.
  *
- * Some router detectors light multiple catalog entries (A003 fires for
- * both excessive-access:aiuc-1:A003.3 and excessive-access:aiuc-1:A003.4
+ * Some framework detectors light multiple catalog entries (A003 fires
+ * for both excessive-access:aiuc-1:A003.3 and excessive-access:aiuc-1:A003.4
  * — they're paired least-privilege controls). We register one adapter
- * per (router detector, catalog entry) pair so the verdict propagates
- * to every applicable entry.
+ * per (framework detector, catalog entry) pair so the verdict
+ * propagates to every applicable entry.
  */
 export const ROUTER_DETECTOR_ADAPTERS: ReadonlyArray<{
   findingType: FindingType;

@@ -1,8 +1,9 @@
 /**
  * Type contract for the AAP-51 HR vertical pack.
  *
- * The 12 framework detectors in `src/verification/frameworks/router.ts`
- * (AAP-49) are generic — they fire on any scope or tool misalignment
+ * The 12 framework detectors in `src/verification/frameworks/detectors.ts`
+ * (AAP-49, lifted out of the deleted `router.ts` in AAP-86) are generic —
+ * they fire on any scope or tool misalignment
  * regardless of vertical. The HR pack adds 7 detectors specific to HR
  * agent failure modes documented in the brain (see
  * `agent-access-platform-brain/custdevs/signals/
@@ -105,14 +106,15 @@ export interface HRSignal {
  * Aggregate output of `runHRPack`.
  *
  *  - `isHRAgent` mirrors the `isHRAgent` boolean from the framework
- *    router. Callers branch on this to omit the entire HR section
- *    when the agent is not HR-class.
+ *    classifier (`src/verification/frameworks/classify.ts`). Callers
+ *    branch on this to omit the entire HR section when the agent is
+ *    not HR-class.
  *  - `signals` is the ordered list of 7 detector results (when
  *    `isHRAgent === true`) or `[]` (when false / disabled).
  *  - `summary` is a counter rollup, convenient for the renderer.
  *
  * The ordering of `signals` is stable (matches the order in
- * `HR_DETECTOR_ENTRIES`) so snapshot tests do not depend on Map
+ * `HR_DETECTOR_TABLE`) so snapshot tests do not depend on Map
  * iteration order.
  */
 export interface HRPackResult {
