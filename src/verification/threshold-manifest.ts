@@ -855,7 +855,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectAIUC1_A003' }],
     rationale:
       'AIUC-1 A003 is the least-privilege test. Any unexplained broad-read scope is a fail; absence of inventory means we cannot assert verified.',
-    source: 'AIUC-1 A003 (Limit Data Access) — Heron specific pattern list is internal',
+    source: 'AIUC-1 A003 (limit data access) — Heron broad-read pattern list + extra-scope verdict gate is internal heuristic',
     affects: ['ControlResult for AIUC-1 A003', 'GDPR Art. 5 (via detectGDPR_Article5 reuse)'],
   },
   frameworks_b006_failOnActionExtra: {
@@ -865,7 +865,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectAIUC1_B006' }],
     rationale:
       'AIUC-1 B006 catches agents that can perform writes beyond their declared mandate. Pattern list focuses on widely-used scope vocabularies.',
-    source: 'AIUC-1 B006 (Unauthorized Actions) — Heron specific pattern list is internal',
+    source: 'AIUC-1 B006 (unauthorized actions) — Heron action-class pattern list + extra-scope verdict gate is internal heuristic',
     affects: ['ControlResult for AIUC-1 B006'],
   },
   frameworks_d003_unsafeToolGate: {
@@ -875,7 +875,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectAIUC1_D003' }],
     rationale:
       'AIUC-1 D003 requires per-call validation for risky tools. Annotation is the operator-declared "I know this is risky and accept it" signal. Round-2 Fix 2 widened the pattern set to catch short forms (del_, rm_), table verbs (drop_, truncate_), and lifecycle-management verbs.',
-    source: 'AIUC-1 D003 (Unsafe Tool Calls) — Heron pattern list is internal',
+    source: 'AIUC-1 D003 (unsafe tool calls) — Heron RISKY_TOOL_NAME_PATTERNS / RISKY_TOOL_DESCRIPTION_PATTERNS + acknowledgement-annotation gate is internal heuristic',
     affects: ['ControlResult for AIUC-1 D003'],
   },
   frameworks_e004_accountabilityGate: {
@@ -885,7 +885,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectAIUC1_E004' }],
     rationale:
       'AIUC-1 E004 requires a named owner with documented approval evidence. Broken hash chain elevates to critical severity (audit trail cannot be trusted).',
-    source: 'AIUC-1 E004 (Assigned Accountability)',
+    source: 'AIUC-1 E004 (assigned accountability) — Heron approval-chain integrity + named-actor evidence gate is internal heuristic',
     affects: ['ControlResult for AIUC-1 E004'],
   },
   frameworks_e015_loggingGate: {
@@ -895,7 +895,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectAIUC1_E015' }],
     rationale:
       'AIUC-1 E015 — the approval chain is the load-bearing record. Broken hash chain means the trail cannot be trusted.',
-    source: 'AIUC-1 E015 (System Activity Logging)',
+    source: 'AIUC-1 E015 (system activity logging) — Heron approval-chain integrity gate is internal heuristic',
     affects: ['ControlResult for AIUC-1 E015'],
   },
   frameworks_annexIII4_dependsOnCompanion: {
@@ -905,7 +905,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectEUAIAct_AnnexIII4' }],
     rationale:
       'Annex III §4 high-risk obligations are carried by underlying controls (least-privilege, unauthorized actions, unsafe tool calls, accountability). Reusing companion verdicts avoids double-counting.',
-    source: 'EU AI Act Annex III §4 (employment, workers management)',
+    source: 'EU AI Act Annex III §4 (employment, workers management) — Heron companion-control composition (A003+B006+D003+E004) is internal heuristic',
     affects: ['ControlResult for EU AI Act Annex III §4'],
   },
   frameworks_article14_distinctActorRequired: {
@@ -915,7 +915,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectEUAIAct_Article14' }],
     rationale:
       'Round-2 Fix 3 (MEDIUM-1): Article 14 requires two-person oversight. If every reviewer overlaps every approver, the chain has only one human and Article 14 is not satisfied. Email is the strongest distinctness signal; name+role catches actors without an email.',
-    source: 'EU AI Act Article 14 (Human Oversight)',
+    source: 'EU AI Act Article 14 (human oversight) — Heron distinct-actor evidence gate is internal heuristic',
     affects: ['ControlResult for EU AI Act Article 14'],
   },
   frameworks_article12_minChainEntries: {
@@ -925,7 +925,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectEUAIAct_Article12' }],
     rationale:
       'EU AI Act Article 12 (Record-Keeping): chain with 2+ entries → `verified` (spans at least one lifecycle step). 1 entry → `partial` (record-keeping started but incomplete). No chain → `fail`.',
-    source: 'EU AI Act Article 12 (Record-Keeping for high-risk systems)',
+    source: 'EU AI Act Article 12 (record-keeping for high-risk systems) — Heron "2+ entries" evidence gate is internal heuristic',
     affects: ['ControlResult for EU AI Act Article 12'],
   },
   frameworks_article22_substantiveReviewGate: {
@@ -935,7 +935,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectGDPR_Article22' }],
     rationale:
       'Round-2 Fix 4 (MEDIUM-2): a bare reviewed row with no comment and no evidenceRefs is a rubber-stamp signature, not a substantive review. Article 22 prohibits decisions based solely on automated processing — rubber-stamps do not count.',
-    source: 'GDPR Article 22 (Automated decision-making)',
+    source: 'GDPR Article 22 (automated decision-making) — Heron "substantive review = evidence OR comment" gate is internal heuristic',
     affects: ['ControlResult for GDPR Article 22'],
   },
   frameworks_article5_reusesA003: {
@@ -945,7 +945,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectGDPR_Article5' }],
     rationale:
       'GDPR Art. 5(1)(c) data minimisation maps 1:1 onto AIUC-1 A003 least-privilege. Reusing the verdict avoids drift between two controls measuring the same thing.',
-    source: 'GDPR Article 5(1)(c) — data minimisation',
+    source: 'GDPR Article 5(1)(c) (data minimisation) — Heron choice to reuse AIUC-1 A003 verdict is internal heuristic',
     affects: ['ControlResult for GDPR Article 5'],
   },
   frameworks_nistMeasure_inventoryGate: {
@@ -955,7 +955,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectNIST_Measure' }],
     rationale:
       'MEASURE function in NIST AI RMF is about evidencing trustworthy-AI characteristics. Running any verification source is sufficient evidence; nothing run means we cannot evidence measurement.',
-    source: 'NIST AI RMF MEASURE (2.1, 2.2, 2.3)',
+    source: 'NIST AI RMF MEASURE (2.1, 2.2, 2.3) — Heron "any inventory OR any diffs" evidence gate is internal heuristic',
     affects: ['ControlResult for NIST AI RMF MEASURE'],
   },
   frameworks_nistManage_approvalGate: {
@@ -965,7 +965,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/frameworks/detectors.ts', symbol: 'detectNIST_Manage' }],
     rationale:
       'MANAGE function requires structured risk-management process. Approval chain is the closest deterministic signal Heron has for "process exists".',
-    source: 'NIST AI RMF MANAGE (2.1, 4.1)',
+    source: 'NIST AI RMF MANAGE (2.1, 4.1) — Heron "approval chain present = verified" evidence gate is internal heuristic',
     affects: ['ControlResult for NIST AI RMF MANAGE'],
   },
 
@@ -1015,7 +1015,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectAutoRejectionWithoutDisclosure' }],
     rationale:
       'AAP-51: trust signal, not behavioural assertion. Disclosure keywords in declared purpose disarm the detector — known limitation: keyword stuffing or negation can bypass. Documented at file top; out of scope for OSS verification engine.',
-    source: 'GDPR Article 22 + NYC LL 144 (disclosure obligations) — keyword bank is internal',
+    source: 'GDPR Article 22 + NYC LL 144 (disclosure obligations) — Heron rejection-tool vocabulary + DISCLOSURE_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D1'],
   },
   hrPack_d2_atsWriteSprawlGate: {
@@ -1025,7 +1025,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectATSWriteScopeSprawl' }],
     rationale:
       'AAP-51: AIUC-1 B006 reframed for HR. ATS write scopes (candidates:write, applications:write, jobs:write, offers:write) are high-value targets — operator must either narrow or document.',
-    source: 'AIUC-1 B006 (least-privilege)',
+    source: 'AIUC-1 B006 (least-privilege) — Heron ATS-scope vocabulary + WRITE_ACTION_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D2'],
   },
   hrPack_d3_piiLogsGate: {
@@ -1035,7 +1035,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectCandidatePIIInLogs' }],
     rationale:
       'AAP-51: surfaces risk surface, does NOT inspect log content. GDPR Art. 5 retention obligations are the regulatory anchor.',
-    source: 'GDPR Article 5 (retention / minimisation)',
+    source: 'GDPR Article 5 (retention / minimisation) — Heron PII-scope vocabulary + LOGGING_POLICY_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D3'],
   },
   hrPack_d4_scoringNoCriteriaGate: {
@@ -1045,7 +1045,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectScoringWithoutCriteria' }],
     rationale:
       'AAP-51: EU AI Act Annex III §4 transparency obligation requires published scoring criteria. Tool-name-based detection (^score, ^rank, ^match).',
-    source: 'EU AI Act Annex III §4 (employment transparency)',
+    source: 'EU AI Act Annex III §4 (employment transparency) — Heron scoring-tool regex + SCORING_CRITERIA_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D4'],
   },
   hrPack_d5_dncBypassGate: {
@@ -1055,7 +1055,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectDoNotContactBypass' }],
     rationale:
       'AAP-51: CAN-SPAM + GDPR Article 21 (right to object) obligations. Disarm via "do-not-contact", "DNC", "consent", "opt-out", "unsubscribe".',
-    source: 'CAN-SPAM + GDPR Article 21',
+    source: 'CAN-SPAM + GDPR Article 21 (right to object) — Heron outreach-capability vocabulary + DNC_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D5'],
   },
   hrPack_d6_offerNoApprovalGate: {
@@ -1065,7 +1065,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectOfferLetterOutOfRange' }],
     rationale:
       'AAP-51: Heron cannot read offer values; flags the capability, not specific dollar amounts. Disarm via salary-band / approval-workflow keywords.',
-    source: 'Compensation policy (organisational, not regulatory)',
+    source: 'Compensation policy (organisational, not regulatory) — Heron offer-tool vocabulary + SALARY_BAND_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D6'],
   },
   hrPack_d7_subAgentExpansionGate: {
@@ -1075,7 +1075,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/verification/hr-pack/detectors.ts', symbol: 'detectSubAgentScopeExpansion' }],
     rationale:
       'AAP-51: AIUC-1 D003 reframed for HR sub-agent risk. Sub-agents may inherit parent OAuth scopes without explicit narrowing — operator must document the architecture.',
-    source: 'AIUC-1 D003 (Unsafe Tool Calls)',
+    source: 'AIUC-1 D003 (unsafe tool calls) — Heron sub-agent orchestration-tool vocabulary + SUBAGENT_ARCH_KEYWORDS disarm gate is internal heuristic',
     affects: ['HRSignal for D7'],
   },
 
@@ -1090,7 +1090,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/compliance/detectors/discovery-detectors.ts', symbol: 'makeSensitiveDataDetector' }],
     rationale:
       'AAP-83 Phase 5: typed evidence detector — reads DiscoveryResult directly instead of synthesising prose. Fail is the default verdict because presence of a sensitive credential without compensating controls is a GDPR Art. 6 / 35 / 33 trigger.',
-    source: 'GDPR Articles 5, 6, 33, 35; AIUC-1 A006 — Heron credential-key vocabulary is internal',
+    source: 'GDPR Articles 5, 6, 33, 35; AIUC-1 A006 — Heron credential-key vocabulary + sensitive-PII fail-by-default verdict gate is internal heuristic',
     affects: ['ControlResult for GDPR Art. 6, Art. 35, Art. 33, AIUC-1 A006'],
   },
   discovery_externalProcessor_partial: {
@@ -1100,7 +1100,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     sites: [{ file: 'src/compliance/detectors/discovery-detectors.ts', symbol: 'makeProcessorDetector' }],
     rationale:
       'AAP-83 Phase 5: third-party processor presence is partial, not fail — it activates Art. 28 DPA obligations but is not a violation on its own. International transfer (cloud provider) escalates rationale text but not verdict.',
-    source: 'GDPR Article 28 (processor obligations) — Heron credential-key vocabulary is internal',
+    source: 'GDPR Article 28 (processor obligations) — Heron credential-key vocabulary + processor-detected-as-partial verdict gate is internal heuristic',
     affects: ['ControlResult for AIUC-1 A001 (Input data policy)'],
   },
   discovery_classifier_singleSource: {
