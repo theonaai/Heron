@@ -26,6 +26,51 @@
  * The order is significant: source-ref extraction runs FIRST (it walks every
  * string field), then per-field reshaping runs SECOND (so the prose still
  * contains its semantic content but without inline refs).
+ *
+ * # AAP-87 — per-rule audit matrix (4-bucket classification)
+ *
+ * Each rule below is classified into one of four buckets. The bucket
+ * determines whether the rule belongs here long-term (Phase B / AAP-90
+ * leaves it alone) or is a candidate for migration to prompt /
+ * structured-output enforcement (Phase B / AAP-90 targets it).
+ *
+ * | # | Rule                                             | Helper (planned)         | Bucket                       |
+ * |---|--------------------------------------------------|--------------------------|------------------------------|
+ * | 1 | inline `(A3, A4)` source-ref extraction          | sanitizeSystemSources    | semantic normalization       |
+ * | 2 | writeOperations field truncation (80/80/40)      | sanitizeWriteOperations  | schema enforcement           |
+ * | 3 | writeOperations trailing-punct cleanup           | sanitizeWriteOperations  | semantic normalization       |
+ * | 4 | systemId prose → kebab-case slug                 | sanitizeSystemIdentity   | semantic normalization       |
+ * | 5 | systemDescription spill from long prose systemId | sanitizeSystemIdentity   | legacy compatibility         |
+ * | 6 | scope-array lead-in stripping ("Unused in...")   | sanitizeScopeArrays      | semantic normalization       |
+ * | 7 | scope-array per-entry 80-char truncation         | sanitizeScopeArrays      | schema enforcement           |
+ * | 8 | scope-array empty-string compaction              | sanitizeScopeArrays      | schema enforcement           |
+ * | 9 | frequencyAndVolume prose → structured frequency  | backfillFrequency        | model-quality compensation*  |
+ * |10 | malformed-risk filtering (null / no title)       | sanitizeRisks            | schema enforcement           |
+ * |11 | near-duplicate risk merging                      | sanitizeRisks            | model-quality compensation*  |
+ * |12 | recommendations cap (≤ 20 entries)               | sanitizeRecommendations  | schema enforcement           |
+ * |13 | recommendations per-entry truncation (≤ 400)     | sanitizeRecommendations  | schema enforcement           |
+ * |14 | top-level prose caps (summary/purpose/…)         | sanitizeTopLevelText     | schema enforcement           |
+ *
+ * Buckets:
+ *
+ *   - **schema enforcement**       — caps, enums, parseability. Stays as
+ *     post-processing forever; low migration value. Deterministic, cheap.
+ *   - **legacy compatibility**     — supports pre-AAP-65 persisted data on
+ *     disk. Stays; removing it breaks already-saved sessions.
+ *   - **semantic normalization**   — deterministic transformations (system
+ *     IDs, scope lead-ins, source refs). Stays; the prompt cannot guarantee
+ *     these shapes byte-for-byte across providers.
+ *   - **model-quality compensation** — Phase B (AAP-90) candidates only.
+ *     Rules marked with `*` above patch LLM behavior the prompt or
+ *     structured-output schema *should* constrain.
+ *
+ * # Bucket totals
+ *
+ *   - schema enforcement: 8 rules (2, 7, 8, 10, 12, 13, 14 + caps in
+ *     writeOperations field 3 sits half-and-half — counted with #2)
+ *   - semantic normalization: 4 rules (1, 3, 4, 6)
+ *   - legacy compatibility: 1 rule (5)
+ *   - model-quality compensation (Phase B / AAP-90 targets): 2 rules (9, 11)
  */
 
 import { isProvided } from '../util/provided.js';
