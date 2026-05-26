@@ -44,7 +44,7 @@
  * | 6 | scope-array lead-in stripping ("Unused in...")   | sanitizeScopeArrays     | semantic normalization       |
  * | 7 | scope-array per-entry 80-char truncation         | sanitizeScopeArrays     | schema enforcement           |
  * | 8 | scope-array empty-string compaction              | sanitizeScopeArrays     | schema enforcement           |
- * | 9 | frequencyAndVolume prose → structured frequency  | backfillFrequency       | model-quality compensation*  |
+ * | 9 | frequencyAndVolume prose → structured frequency  | backfillFrequency       | model-quality compensation* + legacy compatibility† |
  * |10 | malformed-risk filtering (null / no title)       | sanitizeRisks           | schema enforcement           |
  * |11 | near-duplicate risk merging                      | sanitizeRisks           | model-quality compensation*  |
  * |12 | recommendations cap (≤ 20 entries)               | sanitizeRecommendations | schema enforcement           |
@@ -64,12 +64,36 @@
  *     Rules marked with `*` above patch LLM behavior the prompt or
  *     structured-output schema *should* constrain.
  *
+ *   † Rule 9 is dual-bucket: primary classification is model-quality
+ *     compensation (counted in that total), but it ALSO carries a legacy
+ *     compatibility load — `frequencyAndVolume` is the pre-AAP-65 on-disk
+ *     shape (see `src/report/types.ts` lines 68-72, 103-106), so even if
+ *     Phase B (AAP-90) constrains NEW LLM outputs to emit `frequency`
+ *     directly, the `backfillFrequency` helper STAYS to load pre-AAP-65
+ *     sessions from disk. Phase B target for rule 9 is "stop new LLM
+ *     outputs needing this", not "delete the helper".
+ *
  * # Bucket totals
  *
  *   - schema enforcement: 7 rules (2, 7, 8, 10, 12, 13, 14)
  *   - semantic normalization: 4 rules (1, 3, 4, 6)
- *   - legacy compatibility: 1 rule (5)
+ *   - legacy compatibility: 1 rule (5); rule 9 is dual-bucket (see † above)
  *   - model-quality compensation (Phase B / AAP-90 targets): 2 rules (9, 11)
+ *
+ * Total unique rules: 14. Rule 9 is counted once (under model-quality
+ * compensation, its primary bucket) but is cross-referenced from legacy
+ * compatibility via the † footnote.
+ *
+ * # Phase B candidates (for migration to prompt / structured output)
+ *
+ *   - **Rule 9** — `frequencyAndVolume` prose-parse → structured `frequency`.
+ *     Phase B target: stop NEW LLM outputs needing this (prompt /
+ *     structured-output schema requires `frequency` directly). Helper STAYS
+ *     for legacy pre-AAP-65 session input loaded from disk.
+ *   - **Rule 11** — near-duplicate risk merge. Phase B target: removable IF
+ *     structured-output / prompt evals prove stable dedup across providers
+ *     (no cross-provider regressions on the risk-dedup corpus). Until then
+ *     the helper STAYS.
  *
  * # Ordering
  *
@@ -576,9 +600,13 @@ export function sanitizeScopeArrays(sys: Record<string, unknown>): void {
  * into the structured `frequency` shape. If parsing yields nothing
  * meaningful, leave `frequency` unset.
  *
- * Bucket: model-quality compensation. **Phase B (AAP-90) candidate** —
- * the prompt or structured-output schema should require the model to
- * emit `frequency` directly.
+ * Buckets: model-quality compensation + legacy compatibility.
+ * **Phase B (AAP-90) target: stop NEW LLM outputs needing this** — the
+ * prompt or structured-output schema should require the model to emit
+ * `frequency` directly. The helper itself STAYS regardless: pre-AAP-65
+ * sessions persisted to disk only have the prose `frequencyAndVolume`
+ * field (see `src/report/types.ts` lines 68-72, 103-106), so the report
+ * viewer needs `backfillFrequency` to keep loading historical data.
  */
 export function backfillFrequency(sys: Record<string, unknown>): void {
   if (sys.frequency && typeof sys.frequency === 'object') return;
@@ -605,8 +633,10 @@ export function backfillFrequency(sys: Record<string, unknown>): void {
  * {@link mergeDuplicateRisks}.
  *
  * Buckets: schema enforcement (malformed filter) + model-quality
- * compensation (near-duplicate merge — **Phase B (AAP-90) candidate**,
- * the prompt should constrain the model to not emit dupes).
+ * compensation (near-duplicate merge — **Phase B (AAP-90) candidate**:
+ * removable IF structured-output / prompt evals prove stable dedup across
+ * providers. Until then the helper STAYS — the prompt cannot yet
+ * guarantee the model won't emit dupes).
  */
 export function sanitizeRisks(obj: Record<string, unknown>): void {
   if (!Array.isArray(obj.risks)) return;
