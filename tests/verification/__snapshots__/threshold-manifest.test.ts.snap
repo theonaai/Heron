@@ -84,6 +84,70 @@ exports[`THRESHOLD_MANIFEST snapshot > matches snapshot of all verdict threshold
     "type": "categorical",
     "value": "Sensitive-PII detector: \`fail\` (severity high) when discovery surface contains sensitive PII credential names (stripe / plaid / SSN / passport / national ID / tax) or medical (hipaa / phi / patient).",
   },
+  "execSummary_headlineFindings_topN": {
+    "affects": [
+      "Executive Summary headline findings list",
+    ],
+    "name": "execSummary_headlineFindings_topN",
+    "rationale": "Top 5 issues (HR signals + framework fails, severity-sorted) render in the DPO Executive Summary headline list. Five mirrors the html-renderer headline count and the recommended-actions limit — a one-page DPO memo cannot absorb more than five top-line items without losing scannability.",
+    "sites": [
+      {
+        "file": "src/verification/hr-pack/exec-summary.ts",
+        "symbol": "renderHeadlineFindings",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 5,
+  },
+  "execSummary_posture_cleanGate": {
+    "affects": [
+      "Executive Summary compliance-posture line",
+    ],
+    "name": "execSummary_posture_cleanGate",
+    "rationale": "Clean requires absence of detected signals AND fail-verdict controls. Partial verdicts on framework controls do NOT block Clean because partial is itself a calibrated half-claim (some evidence ran); the posture line speaks only to detected issues / fails.",
+    "sites": [
+      {
+        "file": "src/verification/hr-pack/exec-summary.ts",
+        "symbol": "renderCompliancePosture",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "categorical",
+    "value": "No HR-pack detections AND no framework FAILs → "Clean — no critical issues detected" verdict line.",
+  },
+  "execSummary_posture_criticalGate": {
+    "affects": [
+      "Executive Summary compliance-posture line",
+    ],
+    "name": "execSummary_posture_criticalGate",
+    "rationale": "Critical-severity issues dominate the headline verdict. A single critical issue calls the entire compliance posture into question, so the headline surfaces critical count even when other detected counts are higher.",
+    "sites": [
+      {
+        "file": "src/verification/hr-pack/exec-summary.ts",
+        "symbol": "renderCompliancePosture",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "categorical",
+    "value": "Any HR-pack critical detected OR any framework FAIL with critical severity → "Partial compliance — N critical issues" verdict line.",
+  },
+  "execSummary_posture_partialGate": {
+    "affects": [
+      "Executive Summary compliance-posture line",
+    ],
+    "name": "execSummary_posture_partialGate",
+    "rationale": "Any detected HR signal or fail-verdict framework control downgrades the posture to Partial. Heron does not claim "compliant" while any signal is open — Partial is the honest middle ground.",
+    "sites": [
+      {
+        "file": "src/verification/hr-pack/exec-summary.ts",
+        "symbol": "renderCompliancePosture",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "categorical",
+    "value": "Any HR-pack detected OR any framework FAIL (with no critical) → "Partial compliance — N issues" verdict line.",
+  },
   "frameworks_a003_failOnBroadExtra": {
     "affects": [
       "ControlResult for AIUC-1 A003",
@@ -1270,6 +1334,198 @@ exports[`THRESHOLD_MANIFEST snapshot > matches snapshot of all verdict threshold
     "source": "Heron internal heuristic, design-partner feedback pending",
     "type": "numeric",
     "value": 15,
+  },
+  "templates_blastRadius_crossTenant": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_blastRadius_crossTenant",
+    "rationale": "Blast radius "cross-tenant" contributes 4 — one below the HIGH band threshold. Any additional risk factor pushes the system into HIGH.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 4,
+  },
+  "templates_blastRadius_orgWide": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_blastRadius_orgWide",
+    "rationale": "Blast radius "org-wide" contributes 3 — the MEDIUM band entry point on blast radius alone. Adding irreversible writes (+2) pushes the system into HIGH.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 3,
+  },
+  "templates_blastRadius_singleRecord": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_blastRadius_singleRecord",
+    "rationale": "Blast radius "single-record" contributes 0 to the per-system risk score — the lowest blast-radius tier. A misconfig affecting one record is not, on its own, a system-card-level risk.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 0,
+  },
+  "templates_blastRadius_singleUser": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_blastRadius_singleUser",
+    "rationale": "Blast radius "single-user" contributes 1 — the default tier when no blast-radius is provided. One unit above baseline so risk-score lifts predictably as blast radius widens.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 1,
+  },
+  "templates_blastRadius_teamScope": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_blastRadius_teamScope",
+    "rationale": "Blast radius "team-scope" contributes 2 — one above single-user. Combined with one other risk factor (extra scopes OR sensitive data) reaches the MEDIUM band threshold.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 2,
+  },
+  "templates_dataQuality_goodBoundary": {
+    "affects": [
+      "Markdown report Data Quality label",
+    ],
+    "name": "templates_dataQuality_goodBoundary",
+    "rationale": "Data-quality score >= 70 renders the "Good" label in the report header. Boundary picked so an interview that captured most key fields (systemId, scopes, sensitivity, blastRadius) lands as Good, while one missing several required fields drops to Partial.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "renderDataQuality",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 70,
+  },
+  "templates_dataQuality_partialBoundary": {
+    "affects": [
+      "Markdown report Data Quality label",
+    ],
+    "name": "templates_dataQuality_partialBoundary",
+    "rationale": "Data-quality score in [40, 70) renders "Partial"; below 40 renders "Poor". Below 40 the interview captured fewer than half of the required fields, so the report cannot be relied upon for go/no-go.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "renderDataQuality",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 40,
+  },
+  "templates_systemRisk_excessiveScopesContribution": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_systemRisk_excessiveScopesContribution",
+    "rationale": "Any non-empty scopesDelta contributes 1 to the per-system risk score. Binary signal — counting individual extra scopes would double-count what the per-control verdicts already capture; the markdown card just needs a single bump.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 1,
+  },
+  "templates_systemRisk_highBand": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_systemRisk_highBand",
+    "rationale": "Per-system risk score >= 5 renders "HIGH" on the system card. Score is the sum of blast-radius points + 1 (excessive scopes) + 2 (irreversible writes) + 1 (sensitive data). Five matches an org-wide blast radius with irreversible writes, or cross-tenant blast radius plus any other risk factor.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 5,
+  },
+  "templates_systemRisk_irreversibleWritesContribution": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_systemRisk_irreversibleWritesContribution",
+    "rationale": "Any irreversible write contributes 2 — heaviest single contribution besides cross-tenant blast radius. Irreversible writes are the canonical "cannot rollback" risk and earn the largest bump.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 2,
+  },
+  "templates_systemRisk_mediumBand": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_systemRisk_mediumBand",
+    "rationale": "Per-system risk score in [3, 5) renders "MEDIUM"; below 3 renders "LOW". Three matches a team-scope blast radius with one risk factor (extra scopes OR sensitive data) plus the baseline blast-radius score.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 3,
+  },
+  "templates_systemRisk_sensitiveDataContribution": {
+    "affects": [
+      "Markdown report per-system risk band",
+    ],
+    "name": "templates_systemRisk_sensitiveDataContribution",
+    "rationale": "Sensitive data class (PII / personal / health / financial / credit, case-insensitive regex) contributes 1. Binary lift; downstream framework controls (GDPR Art. 5, A006) carry the substantive verdict.",
+    "sites": [
+      {
+        "file": "src/report/templates.ts",
+        "symbol": "computeSystemRisk",
+      },
+    ],
+    "source": "Heron internal heuristic, design-partner feedback pending",
+    "type": "numeric",
+    "value": 1,
   },
   "verdict_discoveryRisk_highEscalate": {
     "affects": [

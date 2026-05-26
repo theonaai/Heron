@@ -330,6 +330,9 @@ function renderScopeAndMethodology(report: AuditReport): string {
 function renderDataQuality(dq: DataQuality): string {
   const provided = dq.fieldsProvided.length;
   const total = provided + dq.fieldsMissing.length;
+  // AAP-88: thresholds `templates_dataQuality_goodBoundary` = 70 and
+  // `templates_dataQuality_partialBoundary` = 40 documented in
+  // src/verification/threshold-manifest.ts.
   const qualityLabel = dq.score >= 70 ? 'Good' : dq.score >= 40 ? 'Partial' : 'Poor';
 
   const fieldDescriptions: Record<string, string> = {
@@ -479,6 +482,11 @@ No systems were identified in the interview.`;
 ${cards}`;
 }
 
+// AAP-88: per-system risk scoring rubric. Point values (blast-radius
+// tiers, excessive-scopes / irreversible-writes / sensitive-data
+// contributions) and band thresholds (`templates_systemRisk_highBand`,
+// `templates_systemRisk_mediumBand`) documented in
+// src/verification/threshold-manifest.ts.
 function computeSystemRisk(sys: SystemAssessment): string {
   let score = 0;
   // Blast radius

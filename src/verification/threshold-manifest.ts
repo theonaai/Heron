@@ -1113,4 +1113,174 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     source: INTERNAL_HEURISTIC,
     affects: ['All discovery-detector verdicts'],
   },
+
+  // ──────────────────────────────────────────────────────────────────────
+  // src/report/templates.ts — markdown report renderer presentation bands
+  // ──────────────────────────────────────────────────────────────────────
+
+  templates_dataQuality_goodBoundary: {
+    name: 'templates_dataQuality_goodBoundary',
+    value: 70,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'renderDataQuality' }],
+    rationale:
+      'Data-quality score >= 70 renders the "Good" label in the report header. Boundary picked so an interview that captured most key fields (systemId, scopes, sensitivity, blastRadius) lands as Good, while one missing several required fields drops to Partial.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report Data Quality label'],
+  },
+  templates_dataQuality_partialBoundary: {
+    name: 'templates_dataQuality_partialBoundary',
+    value: 40,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'renderDataQuality' }],
+    rationale:
+      'Data-quality score in [40, 70) renders "Partial"; below 40 renders "Poor". Below 40 the interview captured fewer than half of the required fields, so the report cannot be relied upon for go/no-go.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report Data Quality label'],
+  },
+  templates_systemRisk_highBand: {
+    name: 'templates_systemRisk_highBand',
+    value: 5,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Per-system risk score >= 5 renders "HIGH" on the system card. Score is the sum of blast-radius points + 1 (excessive scopes) + 2 (irreversible writes) + 1 (sensitive data). Five matches an org-wide blast radius with irreversible writes, or cross-tenant blast radius plus any other risk factor.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_systemRisk_mediumBand: {
+    name: 'templates_systemRisk_mediumBand',
+    value: 3,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Per-system risk score in [3, 5) renders "MEDIUM"; below 3 renders "LOW". Three matches a team-scope blast radius with one risk factor (extra scopes OR sensitive data) plus the baseline blast-radius score.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_blastRadius_singleRecord: {
+    name: 'templates_blastRadius_singleRecord',
+    value: 0,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Blast radius "single-record" contributes 0 to the per-system risk score — the lowest blast-radius tier. A misconfig affecting one record is not, on its own, a system-card-level risk.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_blastRadius_singleUser: {
+    name: 'templates_blastRadius_singleUser',
+    value: 1,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Blast radius "single-user" contributes 1 — the default tier when no blast-radius is provided. One unit above baseline so risk-score lifts predictably as blast radius widens.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_blastRadius_teamScope: {
+    name: 'templates_blastRadius_teamScope',
+    value: 2,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Blast radius "team-scope" contributes 2 — one above single-user. Combined with one other risk factor (extra scopes OR sensitive data) reaches the MEDIUM band threshold.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_blastRadius_orgWide: {
+    name: 'templates_blastRadius_orgWide',
+    value: 3,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Blast radius "org-wide" contributes 3 — the MEDIUM band entry point on blast radius alone. Adding irreversible writes (+2) pushes the system into HIGH.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_blastRadius_crossTenant: {
+    name: 'templates_blastRadius_crossTenant',
+    value: 4,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Blast radius "cross-tenant" contributes 4 — one below the HIGH band threshold. Any additional risk factor pushes the system into HIGH.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_systemRisk_excessiveScopesContribution: {
+    name: 'templates_systemRisk_excessiveScopesContribution',
+    value: 1,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Any non-empty scopesDelta contributes 1 to the per-system risk score. Binary signal — counting individual extra scopes would double-count what the per-control verdicts already capture; the markdown card just needs a single bump.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_systemRisk_irreversibleWritesContribution: {
+    name: 'templates_systemRisk_irreversibleWritesContribution',
+    value: 2,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Any irreversible write contributes 2 — heaviest single contribution besides cross-tenant blast radius. Irreversible writes are the canonical "cannot rollback" risk and earn the largest bump.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+  templates_systemRisk_sensitiveDataContribution: {
+    name: 'templates_systemRisk_sensitiveDataContribution',
+    value: 1,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'computeSystemRisk' }],
+    rationale:
+      'Sensitive data class (PII / personal / health / financial / credit, case-insensitive regex) contributes 1. Binary lift; downstream framework controls (GDPR Art. 5, A006) carry the substantive verdict.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report per-system risk band'],
+  },
+
+  // ──────────────────────────────────────────────────────────────────────
+  // src/verification/hr-pack/exec-summary.ts — DPO-readable headline
+  // ──────────────────────────────────────────────────────────────────────
+
+  execSummary_headlineFindings_topN: {
+    name: 'execSummary_headlineFindings_topN',
+    value: 5,
+    type: 'numeric',
+    sites: [{ file: 'src/verification/hr-pack/exec-summary.ts', symbol: 'renderHeadlineFindings' }],
+    rationale:
+      'Top 5 issues (HR signals + framework fails, severity-sorted) render in the DPO Executive Summary headline list. Five mirrors the html-renderer headline count and the recommended-actions limit — a one-page DPO memo cannot absorb more than five top-line items without losing scannability.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Executive Summary headline findings list'],
+  },
+  execSummary_posture_criticalGate: {
+    name: 'execSummary_posture_criticalGate',
+    value: 'Any HR-pack critical detected OR any framework FAIL with critical severity → "Partial compliance — N critical issues" verdict line.',
+    type: 'categorical',
+    sites: [{ file: 'src/verification/hr-pack/exec-summary.ts', symbol: 'renderCompliancePosture' }],
+    rationale:
+      'Critical-severity issues dominate the headline verdict. A single critical issue calls the entire compliance posture into question, so the headline surfaces critical count even when other detected counts are higher.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Executive Summary compliance-posture line'],
+  },
+  execSummary_posture_partialGate: {
+    name: 'execSummary_posture_partialGate',
+    value: 'Any HR-pack detected OR any framework FAIL (with no critical) → "Partial compliance — N issues" verdict line.',
+    type: 'categorical',
+    sites: [{ file: 'src/verification/hr-pack/exec-summary.ts', symbol: 'renderCompliancePosture' }],
+    rationale:
+      'Any detected HR signal or fail-verdict framework control downgrades the posture to Partial. Heron does not claim "compliant" while any signal is open — Partial is the honest middle ground.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Executive Summary compliance-posture line'],
+  },
+  execSummary_posture_cleanGate: {
+    name: 'execSummary_posture_cleanGate',
+    value: 'No HR-pack detections AND no framework FAILs → "Clean — no critical issues detected" verdict line.',
+    type: 'categorical',
+    sites: [{ file: 'src/verification/hr-pack/exec-summary.ts', symbol: 'renderCompliancePosture' }],
+    rationale:
+      'Clean requires absence of detected signals AND fail-verdict controls. Partial verdicts on framework controls do NOT block Clean because partial is itself a calibrated half-claim (some evidence ran); the posture line speaks only to detected issues / fails.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Executive Summary compliance-posture line'],
+  },
 };
