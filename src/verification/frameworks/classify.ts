@@ -129,6 +129,9 @@ function hasHRKeyword(d: DeclaredInventory | undefined): boolean {
  * "hire a car" in a travel-booking agent).
  */
 export function isHRAgent(sig: VerificationSignals): boolean {
+  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+  //   - classify_hrAgent_minSignals (>=2 of {connector, scope, keyword})
+  //   - classify_hrConnector_exactMatch (exact lowercased equality)
   const d = sig.declaredInventory;
   if (!d) return false;
 

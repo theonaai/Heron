@@ -64,7 +64,12 @@ import type {
 } from '../compliance/control-catalog.js';
 import type { FrameworkId } from '../compliance/types.js';
 
-/** Verdicts that count toward the gap counter. */
+/**
+ * Verdicts that count toward the gap counter.
+ *
+ * AAP-88: categorical threshold `projection_gapVerdicts_set` documented in
+ * src/verification/threshold-manifest.ts.
+ */
 export const GAP_VERDICTS: ReadonlySet<ControlResultVerdict> = new Set<ControlResultVerdict>([
   'fail',
   'partial',
@@ -83,6 +88,8 @@ export function isGapVerdict(v: ControlResultVerdict): boolean {
  * filtering here keeps the renderer honest.
  */
 export function dedupeControlResults(results: readonly ControlResult[]): ControlResult[] {
+  // AAP-88: categorical threshold `projection_dedup_byStableKey` documented
+  // in src/verification/threshold-manifest.ts.
   const seen = new Set<string>();
   const out: ControlResult[] = [];
   for (const r of results) {
@@ -112,6 +119,8 @@ export function resultsForFramework(
  * `severityOrder` in templates.ts but operates on ControlResultSeverity
  * instead of the legacy flag-severity vocabulary.
  */
+// AAP-88: categorical threshold `projection_severityRank` documented in
+// src/verification/threshold-manifest.ts.
 const CR_SEVERITY_RANK: Record<ControlResultSeverity, number> = {
   critical: 5,
   high: 4,
@@ -148,6 +157,12 @@ export function worstSeverity(
 export function statusLabelFromControlResults(
   results: readonly ControlResult[],
 ): string {
+  // AAP-88: categorical thresholds documented in
+  // src/verification/threshold-manifest.ts.
+  //   - projection_statusLabel_actionRequiredOnFail
+  //   - projection_statusLabel_needsClarificationOnPartial
+  //   - projection_statusLabel_reviewOnUnverified
+  //   - projection_statusLabel_notTriggered
   const deduped = dedupeControlResults(results);
   if (deduped.length === 0) return 'Not Triggered';
   if (deduped.some((r) => r.verdict === 'fail')) return 'Action Required';

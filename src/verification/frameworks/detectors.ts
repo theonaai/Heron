@@ -8,6 +8,21 @@
  * detector into the typed-detector envelope contract that `mapFindings`
  * consumes per catalog entry.
  *
+ * AAP-88: categorical threshold entries documented in
+ * src/verification/threshold-manifest.ts for each detector below:
+ *   - frameworks_a003_failOnBroadExtra (detectAIUC1_A003)
+ *   - frameworks_b006_failOnActionExtra (detectAIUC1_B006)
+ *   - frameworks_d003_unsafeToolGate (detectAIUC1_D003)
+ *   - frameworks_e004_accountabilityGate (detectAIUC1_E004)
+ *   - frameworks_e015_loggingGate (detectAIUC1_E015)
+ *   - frameworks_annexIII4_dependsOnCompanion (detectEUAIAct_AnnexIII4)
+ *   - frameworks_article14_distinctActorRequired (detectEUAIAct_Article14)
+ *   - frameworks_article12_minChainEntries (detectEUAIAct_Article12)
+ *   - frameworks_article22_substantiveReviewGate (detectGDPR_Article22)
+ *   - frameworks_article5_reusesA003 (detectGDPR_Article5)
+ *   - frameworks_nistMeasure_inventoryGate (detectNIST_Measure)
+ *   - frameworks_nistManage_approvalGate (detectNIST_Manage)
+ *
  * Why the file split (legacy single-file module → detectors.ts +
  * classify.ts + envelope.ts):
  *   - Phase 9 deletes the standalone framework-mapping driver and its
@@ -638,6 +653,8 @@ export function detectEUAIAct_Article12(sig: VerificationSignals): FrameworkCont
       severity: 'high',
     };
   }
+  // AAP-88: threshold `frameworks_article12_minChainEntries` = 2.
+  // See src/verification/threshold-manifest.ts.
   const entries = sig.approvalChain.entries.length;
   if (entries >= 2) {
     return {

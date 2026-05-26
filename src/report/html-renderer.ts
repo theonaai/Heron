@@ -131,6 +131,14 @@ function nl2br(s: string): string {
  * cannot honestly score the agent — return FAILED with score 0 rather
  * than fabricate a passing verdict. The cover surfaces this explicitly
  * via the executive summary's fallback text.
+ *
+ * AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+ *   - htmlRenderer_complianceScore_threshold (PARTIAL/PASSED threshold = 70)
+ *   - htmlRenderer_complianceScore_passedThreshold (PASSED threshold = 85)
+ *   - htmlRenderer_complianceScore_partialMaxHighFails (PARTIAL max highs = 3)
+ *   - htmlRenderer_complianceScore_zeroCriticalForPassed (categorical gate)
+ *   - htmlRenderer_complianceScore_partialCounts (partial counts 0.5x)
+ *   - htmlRenderer_complianceScore_emptyMappingFailed (categorical gate)
  */
 export function computeComplianceScore(report: VerificationReport): ComplianceScoreResult {
   const threshold = 70;
@@ -475,6 +483,8 @@ function renderHeadlineFindingsBlock(rows: HeadlineRow[]): string {
   <p class="muted">No critical or high-severity issues detected.</p>
 </div>`;
   }
+  // AAP-88: threshold `htmlRenderer_headlineFindings_topN` = 5.
+  // See src/verification/threshold-manifest.ts.
   const top = rows.slice(0, 5);
   const items = top
     .map((r) => {
@@ -550,6 +560,8 @@ function renderRecommendedActionsBlock(report: VerificationReport, hr?: HRPackRe
   <p class="muted">No corrective actions required.</p>
 </div>`;
   }
+  // AAP-88: threshold `htmlRenderer_recommendedActions_topN` = 5.
+  // See src/verification/threshold-manifest.ts.
   const items = recs.slice(0, 5).map((r) => `    <li>${escapeHtml(r)}</li>`).join('\n');
   return `<div class="exec-sub">
   <h3>Recommended Actions</h3>

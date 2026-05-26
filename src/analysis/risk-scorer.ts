@@ -12,6 +12,11 @@ export interface RiskScore {
 }
 
 // ─── Rubric weights ─────────────────────────────────────────────────────────
+// AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+//   - riskScorer_weight_excessiveAccess (0.35)
+//   - riskScorer_weight_writeRisk (0.30)
+//   - riskScorer_weight_sensitiveData (0.20)
+//   - riskScorer_weight_scopeCreep (0.15)
 
 const WEIGHTS = {
   excessiveAccess: 0.35,
@@ -21,6 +26,12 @@ const WEIGHTS = {
 } as const;
 
 // ─── Blast radius severity multiplier ────────────────────────────────────────
+// AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+//   - riskScorer_blastRadius_singleRecord (0.2)
+//   - riskScorer_blastRadius_singleUser (0.4)
+//   - riskScorer_blastRadius_teamScope (0.6)
+//   - riskScorer_blastRadius_orgWide (0.85)
+//   - riskScorer_blastRadius_crossTenant (1.0)
 
 const BLAST_RADIUS_MULTIPLIER: Record<BlastRadius, number> = {
   'single-record': 0.2,
@@ -86,7 +97,10 @@ export function computeRiskScore(
     breakdown.sensitiveData * WEIGHTS.sensitiveData +
     breakdown.scopeCreep * WEIGHTS.scopeCreep;
 
-  // Escalation: if multiple HIGH-severity risks from LLM analysis, bump up
+  // Escalation: if multiple HIGH-severity risks from LLM analysis, bump up.
+  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+  //   - riskScorer_escalation_highLLMRisks (count threshold = 2)
+  //   - riskScorer_escalation_addPoints (bump amount = +10)
   const highOrCriticalRisks = risks.filter(r => r.severity === 'high' || r.severity === 'critical');
   const escalation = highOrCriticalRisks.length >= 2 ? 10 : 0;
 
@@ -133,6 +147,10 @@ function scoreWriteRisk(systems: SystemAssessment[]): number {
     const multiplier = BLAST_RADIUS_MULTIPLIER[sys.blastRadius] ?? 0.5;
 
     for (const write of sys.writeOperations) {
+      // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+      //   - riskScorer_writeRisk_baseScore (40)
+      //   - riskScorer_writeRisk_irreversiblePenalty (30)
+      //   - riskScorer_writeRisk_noApprovalPenalty (15)
       let writeScore = 40; // base: writes exist
 
       if (!write.reversible) writeScore += 30;         // irreversible: +30
@@ -162,6 +180,8 @@ function scoreSensitiveData(systems: SystemAssessment[]): number {
     if (hitCount === 0) continue;
 
     const multiplier = BLAST_RADIUS_MULTIPLIER[sys.blastRadius] ?? 0.5;
+    // AAP-88: threshold `riskScorer_sensitivity_perKeywordPoints` = 25.
+    // See src/verification/threshold-manifest.ts.
     const sensitivityScore = Math.min(100, hitCount * 25) * multiplier;
     maxScore = Math.max(maxScore, sensitivityScore);
   }
@@ -183,6 +203,8 @@ function scoreScopeCreep(systems: SystemAssessment[]): number {
     totalNeeded += sys.scopesNeeded.length;
   }
 
+  // AAP-88: categorical threshold `riskScorer_scopeCreep_ratioBands` —
+  // bands documented in src/verification/threshold-manifest.ts.
   if (totalNeeded === 0) return totalRequested > 0 ? 75 : 0;
 
   const ratio = totalRequested / totalNeeded;
@@ -194,6 +216,11 @@ function scoreScopeCreep(systems: SystemAssessment[]): number {
 }
 
 function scoreToLevel(score: number): Severity {
+  // AAP-88: severity ladder thresholds documented in
+  // src/verification/threshold-manifest.ts.
+  //   - riskScorer_severityLadder_lowMax (20)
+  //   - riskScorer_severityLadder_mediumMax (45)
+  //   - riskScorer_severityLadder_highMax (70)
   if (score <= 20) return 'low';
   if (score <= 45) return 'medium';
   if (score <= 70) return 'high';
@@ -258,7 +285,9 @@ export function computeSeveritySignals(
   // contacts, etc.) combined with either an explicit large-volume marker or
   // an org-wide/cross-tenant blast radius. Either indicator alone is weak;
   // the combination is the shape reviewers called HIGH on the LinkedIn ICP
-  // reference case.
+  // reference case. AAP-88: categorical threshold
+  // `riskScorer_publicPII_volumeKeywords` — see
+  // src/verification/threshold-manifest.ts.
   const hasPublicPIIAtScale = systems.some(s => {
     const haystack =
       `${s.dataSensitivity} ${s.frequencyAndVolume} ${s.systemId}`.toLowerCase();
@@ -306,6 +335,8 @@ function severityFloor(kind: RiskKind, signals: SeveritySignals): Severity {
     hasPublicPIIAtScale,
   } = signals;
 
+  // AAP-88: categorical threshold `riskScorer_severityFloor_decisionsHigh` —
+  // see src/verification/threshold-manifest.ts.
   if (kind === 'decisions' && hasDecisionsAboutPeople) return 'high';
 
   // Excessive permissions paired with PII of any kind at scale is HIGH.
@@ -377,6 +408,10 @@ export function calibrateOverallRiskLevel(
   overall: Severity,
   recommendation: Recommendation | undefined,
 ): Severity {
+  // AAP-88: categorical thresholds documented in
+  // src/verification/threshold-manifest.ts.
+  //   - riskScorer_calibrate_denyMinHigh
+  //   - riskScorer_calibrate_approveMaxHigh
   if (recommendation === 'DENY') {
     // Floor at HIGH. Preserve CRITICAL if the rubric reached it.
     return SEVERITY_ORDER[overall] >= SEVERITY_ORDER.high ? overall : 'high';
