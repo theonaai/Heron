@@ -191,6 +191,12 @@ export function reportVerificationStatusFromVerdict(
   verdict: Verdict,
   options: { surface2Attempted?: boolean } = {},
 ): ReportVerificationStatus {
+  // AAP-88: categorical thresholds documented in
+  // src/verification/threshold-manifest.ts:
+  //   - verdict_pipeline_verifiedMapping
+  //   - verdict_pipeline_partialMapping
+  //   - verdict_pipeline_interrogationOnlyMapping
+  //   - verdict_pipeline_verificationFailedMapping
   if (verdict.status === 'verified') return 'verified';
   if (verdict.status === 'partial') return 'partially-verified';
   // verdict.status === 'unverified'

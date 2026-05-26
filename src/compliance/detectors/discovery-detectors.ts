@@ -53,6 +53,9 @@ interface KeyClassification {
  * source of truth for credential-key → category mapping. Future
  * additions (new payment processor, new HRIS, etc.) only need to land
  * here.
+ *
+ * AAP-88: categorical threshold `discovery_classifier_singleSource`
+ * documented in src/verification/threshold-manifest.ts.
  */
 function classifyKeyName(rawKey: string): KeyClassification {
   const key = rawKey.toLowerCase();
@@ -169,6 +172,10 @@ function walkDiscovery(discovery: DiscoveryResult): Aggregate {
 
 // ─── Detector — sensitive-data on the discovery surface ────────────────────
 
+/**
+ * AAP-88: categorical threshold `discovery_sensitivePII_fail` documented in
+ * src/verification/threshold-manifest.ts.
+ */
 function makeSensitiveDataDetector(
   frameworkId: FrameworkId,
   controlId: string,
@@ -201,6 +208,10 @@ function makeSensitiveDataDetector(
   };
 }
 
+/**
+ * AAP-88: categorical threshold `discovery_externalProcessor_partial` documented
+ * in src/verification/threshold-manifest.ts.
+ */
 function makeProcessorDetector(
   frameworkId: FrameworkId,
   controlId: string,

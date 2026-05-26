@@ -66,6 +66,8 @@ export function classifyDecisionImpact(
   details?: string,
 ): DecisionImpact {
   if (!decidesAboutPeople) return 'none';
+  // AAP-88: threshold `mapper_decisionImpact_minDetailsLen` = 10 chars.
+  // See src/verification/threshold-manifest.ts.
   if (!details || details === 'NOT PROVIDED' || details.trim().length < 10)
     return 'unclear';
 
@@ -213,6 +215,10 @@ const ANNEX_III_KEYWORDS_RE =
 const NEGATION_HEAD =
   '\\b(?:no|not|never|do(?:es)?\\s+not|don\'?t|doesn\'?t|won\'?t|without|cannot|can\'?t)\\b';
 const ANNEX_KEYWORDS_INNER = ANNEX_III_KEYWORDS_RE.source.replace(/\\b/g, '');
+// AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+//   - mapper_negationWindow_filler (80 chars head filler)
+//   - mapper_negationWindow_trailingChain (40 chars inter-keyword filler)
+//   - mapper_negationWindow_trailingMax (6 trailing keywords cap)
 const NEGATION_WINDOW_RE = new RegExp(
   NEGATION_HEAD +
     '[^.!?]{0,80}?' +
@@ -225,6 +231,9 @@ const NEGATION_WINDOW_RE = new RegExp(
 
 // Five Annex III category labels enumerated together → meta-list.
 const META_CATEGORY = '(?:biometric|education|employment|essential\\s+services|law\\s+enforcement)';
+// AAP-88: threshold `mapper_metaList_minCategories` = 3 (the `{2,}` repeats
+// the meta-category twice MORE so the total run is 3+ categories).
+// See src/verification/threshold-manifest.ts.
 const META_LIST_RE = new RegExp(
   `\\b${META_CATEGORY}\\b(?:[\\s,;/]+(?:and|or|,)?\\s*\\b${META_CATEGORY}\\b){2,}`,
   'gi',
@@ -357,6 +366,8 @@ export function detectSignals(
   //   - "not used for recruiting"
   //   - "never hires"
   //   - "this agent is not about hiring"
+  // AAP-88: threshold `mapper_employment_negationFiller` = 3 filler words.
+  // See src/verification/threshold-manifest.ts.
   const EMPLOYMENT_KW = '(?:hir(?:e|ing)?|recruit(?:er|ing)?|employ(?:ee|er|ment)?|candidates?|resumes?|applicants?)';
   const FILL = '(?:\\w+(?:[- ]\\w+){0,2}\\s+){0,3}';
   const negationStrippingRegex = new RegExp(
@@ -374,6 +385,8 @@ export function detectSignals(
     typeof decisionMakingDetails === 'string' &&
     decisionMakingDetails.length > 0 &&
     employmentRegex.test(decisionMakingDetails.replace(negationStrippingRegex, ' '));
+  // AAP-88: threshold `mapper_decisionsAboutPeople_minDetailsLen` = 10 chars.
+  // See src/verification/threshold-manifest.ts.
   const detailsExplicitlyNonEmployment =
     typeof decisionMakingDetails === 'string' &&
     decisionMakingDetails.length > 10 &&
@@ -444,6 +457,8 @@ export function detectSignals(
 
   const hasExternalProcessors = businessSystems.length > 0;
 
+  // AAP-88: threshold `mapper_largeScale_minBusinessSystems` = 3.
+  // See src/verification/threshold-manifest.ts.
   const hasLargeScaleProcessing =
     businessSystems.length >= 3 ||
     businessSystems.some((s) => s.blastRadius === 'org-wide' || s.blastRadius === 'cross-tenant');
@@ -722,6 +737,17 @@ export interface ClassifyEUAIActInput {
  * biometric / financial credential names) elevate classification when
  * the prose is ambiguous, without ever overriding an explicit prose
  * negation.
+ */
+/**
+ * AAP-88: categorical thresholds documented in
+ * src/verification/threshold-manifest.ts:
+ *   - mapper_annexIII_biometricGate (§1)
+ *   - mapper_annexIII_educationGate (§3)
+ *   - mapper_annexIII_employmentGate (§4)
+ *   - mapper_annexIII_essentialServicesGate (§5)
+ *   - mapper_annexIII_lawEnforcementGate (§6)
+ *   - mapper_typed_elevateNotOverride (ELEVATE invariant)
+ *   - mapper_categoryNegation_perCategory (per-category negation honoured)
  */
 export function classifyEUAIAct(
   input: ComplianceSignals | ClassifyEUAIActInput,

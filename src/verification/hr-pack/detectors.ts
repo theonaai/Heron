@@ -217,6 +217,17 @@ const SUBAGENT_ARCH_KEYWORDS: readonly RegExp[] = [
  * PR #22 round-2 LOW fix. Not applied to `declared.agent.purpose`
  * because the agent-declaration source already caps purpose length
  * upstream.
+ *
+ * AAP-88: threshold `hrPack_truncCap` = 128. Documented in
+ * src/verification/threshold-manifest.ts. Each of the 7 detectors below
+ * (D1..D7) has its own categorical gate entry there:
+ *   - hrPack_d1_keywordDisarmGate (auto-rejection-without-disclosure)
+ *   - hrPack_d2_atsWriteSprawlGate (ats-write-scope-sprawl)
+ *   - hrPack_d3_piiLogsGate (candidate-pii-in-logs)
+ *   - hrPack_d4_scoringNoCriteriaGate (scoring-without-criteria)
+ *   - hrPack_d5_dncBypassGate (do-not-contact-bypass)
+ *   - hrPack_d6_offerNoApprovalGate (offer-letter-out-of-range)
+ *   - hrPack_d7_subAgentExpansionGate (sub-agent-scope-expansion)
  */
 const MAX_DETECTOR_FIELD_LEN = 128;
 

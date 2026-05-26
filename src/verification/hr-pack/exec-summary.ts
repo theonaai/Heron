@@ -147,6 +147,10 @@ function collectHeadlineItems(
  *     critical severity → "Partial compliance — N critical issues".
  *   - Any HR-pack detected OR any framework FAIL → "Partial".
  *   - Else → "Clean".
+ *
+ * AAP-88: categorical thresholds `execSummary_posture_criticalGate`,
+ * `execSummary_posture_partialGate`, `execSummary_posture_cleanGate`
+ * documented in src/verification/threshold-manifest.ts.
  */
 function renderCompliancePosture(hr: HRPackResult, report: VerificationReport): string {
   const fmFails = report.frameworkMapping
@@ -170,6 +174,8 @@ function renderHeadlineFindings(items: HeadlineItem[]): string {
   if (items.length === 0) {
     return '## Headline Findings\n\n_No critical or high-severity issues detected._';
   }
+  // AAP-88: threshold `execSummary_headlineFindings_topN` = 5 documented
+  // in src/verification/threshold-manifest.ts.
   const top = items.slice(0, 5);
   const lines: string[] = ['## Headline Findings', ''];
   for (let i = 0; i < top.length; i++) {

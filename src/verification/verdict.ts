@@ -90,6 +90,10 @@ function discoveryRiskLevel(findings: DiscoveryFinding[]): RiskLevel {
   if (findings.length === 0) return 'low';
   const highCount = findings.filter((f) => f.severity === 'HIGH').length;
   const mediumCount = findings.filter((f) => f.severity === 'MEDIUM').length;
+  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+  //   - verdict_discoveryRisk_highEscalate (3 HIGH → high)
+  //   - verdict_discoveryRisk_highToMedium (1 HIGH → medium)
+  //   - verdict_discoveryRisk_mediumEscalate (3 MEDIUM → medium)
   if (highCount >= 3) return 'high';
   if (highCount >= 1) return 'medium';
   if (mediumCount >= 3) return 'medium';
@@ -103,6 +107,9 @@ function discoveryRiskLevel(findings: DiscoveryFinding[]): RiskLevel {
  * resolve, but the verdict ramp stays conservative.
  */
 function countWriteTools(agents: DiscoveredAgent[]): number {
+  // AAP-88: categorical threshold `verdict_writeTools_excludeUnknown` —
+  // `unknown`-classified tools are NOT counted toward the write-tool ramp.
+  // See src/verification/threshold-manifest.ts.
   let n = 0;
   for (const agent of agents) {
     for (const server of agent.mcpServers) {
@@ -131,6 +138,11 @@ function countWriteTools(agents: DiscoveredAgent[]): number {
  * `high`, the write-tool ramp doesn't drop it back to `medium`.
  */
 function liftForWriteTools(baseline: RiskLevel, writeToolCount: number): RiskLevel {
+  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+  //   - verdict_writeTools_noLift (0 tools → no-op)
+  //   - verdict_writeTools_highLift (>=5 tools → lift to high)
+  //   - verdict_writeTools_mediumLift (>=1 tool → lift to medium)
+  //   - verdict_writeTools_noDowngrade (never downgrade — implemented via maxRisk)
   if (writeToolCount === 0) return baseline;
   if (writeToolCount >= 5) return maxRisk(baseline, 'high');
   return maxRisk(baseline, 'medium');
@@ -146,6 +158,11 @@ function oauthRiskLevel(verifications: SourceVerification[]): RiskLevel {
     for (const d of v.diffs) diffs.push(d);
   }
   if (diffs.length === 0) return 'low';
+  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
+  //   - verdict_oauthRisk_criticalToHigh (1 critical → high)
+  //   - verdict_oauthRisk_highEscalate (3 high → high)
+  //   - verdict_oauthRisk_highToMedium (1 high → medium)
+  //   - verdict_oauthRisk_mediumEscalate (3 medium → medium)
   const critical = diffs.filter((d) => d.severity === 'critical').length;
   if (critical >= 1) return 'high';
   const high = diffs.filter((d) => d.severity === 'high').length;
@@ -254,6 +271,8 @@ function detectDiscrepancies(
     if (lowered.length === 0) return;
     const idx = text.indexOf(lowered);
     if (idx < 0) return;
+    // AAP-88: window-chars threshold `verdict_discrepancy_windowChars` = 80.
+    // See src/verification/threshold-manifest.ts.
     const start = Math.max(0, idx - 80);
     const end = Math.min(text.length, idx + lowered.length + 80);
     const window = text.slice(start, end);
@@ -322,13 +341,17 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
   const discoveryFindings = inputs.discoveryFindings ?? [];
   const oauthVerifications = inputs.oauthVerifications ?? [];
 
-  // Status semantics:
-  //   - 'verified' iff BOTH Surface 2 sources ran (discovery AND oauth)
-  //     AND both produced clean evidence. Missing OAuth introspection
-  //     is by design today (token-capture UX is AAP-64) — sessions
-  //     therefore land on 'partial' for the foreseeable future even
-  //     when discovery returns zero findings.
-  //   - 'partial' otherwise (at least one Surface 2 source ran).
+  // Status semantics — AAP-88 categorical thresholds documented in
+  // src/verification/threshold-manifest.ts:
+  //   - verdict_status_verifiedRequiresBoth: 'verified' iff BOTH Surface 2
+  //     sources ran (discovery AND oauth) AND both produced clean evidence.
+  //     Missing OAuth introspection is by design today (token-capture UX is
+  //     AAP-64) — sessions therefore land on 'partial' for the foreseeable
+  //     future even when discovery returns zero findings.
+  //   - verdict_status_partialWhenAny: 'partial' otherwise (at least one
+  //     Surface 2 source ran).
+  //   - verdict_status_unverifiedNoSurface2: 'unverified' when neither
+  //     Surface 2 source ran (handled by the early-return above).
   const discoveryClean = hasDiscovery && discoveryFindings.length === 0;
   const oauthClean =
     hasOauth &&
