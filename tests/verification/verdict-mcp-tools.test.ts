@@ -15,6 +15,7 @@ import type {
   DiscoveredMcpServer,
   DiscoveredMcpTool,
 } from '../../src/discovery/types.js';
+import type { Risk } from '../../src/report/types.js';
 
 function makeAgent(serverTools: DiscoveredMcpTool[]): DiscoveredAgent {
   const server: DiscoveredMcpServer = {
@@ -151,5 +152,63 @@ describe('computeVerdict — AAP-75 write-tool ramp', () => {
       discoveredAgents: [agent],
     });
     expect(verdict.deterministicRiskLevel).toBe('low');
+  });
+});
+
+describe('computeVerdict — AAP-91 Surface 2 gate includes discoveredAgents', () => {
+  // The Surface 2 presence gate (`!hasDiscovery && !hasOauth && !hasAgents`)
+  // must accept `discoveredAgents` as deterministic evidence even when no
+  // discovery diff or OAuth introspection ran. Status ceiling stays at
+  // 'partial' for agents-only paths (no declared-vs-actual comparison
+  // possible — see Decision 1 in AAP-91).
+
+  // Case A: only discoveredAgents present with write-classified tools.
+  it('Case A: agents-only with write tools passes the gate (status=partial, deterministic source, lifted risk)', () => {
+    const agents = [makeAgent([tool('write_file', 'write'), tool('read_file', 'read')])];
+    const verdict = computeVerdict({ discoveredAgents: agents });
+    expect(verdict.status).not.toBe('unverified');
+    expect(verdict.status).toBe('partial');
+    expect(verdict.primaryRiskLevel).toBe('medium');
+    expect(verdict.primaryRiskSource).toBe('deterministic');
+    expect(verdict.deterministicRiskLevel).toBe('medium');
+  });
+
+  // Case B: discoveredAgents + interviewFindings, no other Surface 2.
+  it('Case B: agents + interview reconcile (status=partial, deterministic primary, interview surfaced separately)', () => {
+    const agents = [makeAgent([tool('write_file', 'write')])];
+    const interviewFindings: Risk[] = [
+      { severity: 'high', title: 'broad scope', description: 'too much' },
+    ];
+    const verdict = computeVerdict({
+      discoveredAgents: agents,
+      interviewFindings,
+    });
+    expect(verdict.status).toBe('partial');
+    expect(verdict.primaryRiskSource).toBe('deterministic');
+    expect(verdict.primaryRiskLevel).toBe('medium');
+    expect(verdict.deterministicRiskLevel).toBe('medium');
+    expect(verdict.interviewRiskLevel).toBe('high');
+  });
+
+  // Case C: agents-only with successful enumeration but empty tools list.
+  // Confirms gate passes on inventory presence (not on tool count) AND
+  // liftForWriteTools('low', 0) is a no-op (does NOT over-promote).
+  it('Case C: agents-only with successful zero-tool enumeration still passes gate (partial, low, deterministic)', () => {
+    const agents = [makeAgent([])];
+    const verdict = computeVerdict({ discoveredAgents: agents });
+    expect(verdict.status).toBe('partial');
+    expect(verdict.primaryRiskLevel).toBe('low');
+    expect(verdict.primaryRiskSource).toBe('deterministic');
+    expect(verdict.deterministicRiskLevel).toBe('low');
+  });
+
+  // Case D: discoveredAgents: [] (empty array, not undefined) → still unverified.
+  // Locks the `(length ?? 0) > 0` semantics: undefined AND [] both miss the gate.
+  it('Case D: empty discoveredAgents array stays unverified (locks empty-array semantics)', () => {
+    const verdict = computeVerdict({ discoveredAgents: [] });
+    expect(verdict.status).toBe('unverified');
+    expect(verdict.primaryRiskLevel).toBe('unverified');
+    expect(verdict.primaryRiskSource).toBe('no-evidence');
+    expect(verdict.deterministicRiskLevel).toBeUndefined();
   });
 });
