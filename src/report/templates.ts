@@ -658,6 +658,9 @@ function inferFindingType(risk: Risk): string | undefined {
 /**
  * Get framework basis string for a finding type from the compliance flags.
  * Returns top 3 mandatory framework controls, formatted as "GDPR Art. 25, EU AI Act Art. 10".
+ *
+ * AAP-88: threshold `templates_getFrameworkBasis_topN` = 3 documented in
+ * src/verification/threshold-manifest.ts.
  */
 function getFrameworkBasis(findingType: string, compliance?: StructuredCompliance): string {
   if (!compliance) return '—';
@@ -672,10 +675,12 @@ function getFrameworkBasis(findingType: string, compliance?: StructuredComplianc
       (f: TypedRegulatoryFlag) => f.triggeredBy === findingType,
     );
     if (volFlags.length === 0) return '—';
+    // AAP-88: top-N = 3 — see templates_getFrameworkBasis_topN.
     return volFlags.slice(0, 3).map(f => `${f.frameworkId === 'eu-ai-act' ? 'EU AI Act' : f.framework.split(' — ')[0]}`).join(', ');
   }
 
   // Show top 3 mandatory, framework name + first control ID
+  // AAP-88: top-N = 3 — see templates_getFrameworkBasis_topN.
   return flags.slice(0, 3).map(f => {
     const name = f.frameworkId === 'eu-ai-act' ? 'EU AI Act' : f.framework.split(' — ')[0];
     const ctrl = (f.controlIds ?? [])[0] ?? '';
@@ -688,6 +693,9 @@ function renderFindings(risks: Risk[], compliance?: StructuredCompliance): strin
     return `## Findings\n\n_No risks identified._`;
   }
 
+  // AAP-88: severity rank mapping `templates_severityOrder_rankMapping`
+  // (critical=4 > high=3 > medium=2 > low=1 > default=0) drives the sort;
+  // see src/verification/threshold-manifest.ts.
   const sorted = [...risks].sort((a, b) => severityOrder(b.severity) - severityOrder(a.severity));
 
   const renderRow = (r: Risk, i: number): string => {
@@ -705,6 +713,9 @@ function renderFindings(risks: Risk[], compliance?: StructuredCompliance): strin
   // is equal weight." A senior auditor triages: here's the real issue, and
   // here's the long tail. Split at 3; fold the rest into a collapsed section
   // so readers still have access without being buried.
+  // AAP-88: top-N threshold `templates_renderFindings_topN` = 3 (also pinned
+  // to the "Top 3 Findings" label below). Documented in
+  // src/verification/threshold-manifest.ts.
   if (sorted.length <= 3) {
     const rows = sorted.map(renderRow).join('\n');
     return `## Findings\n\n${tableHeader}\n${rows}`;
@@ -1708,6 +1719,11 @@ function renderDisclaimer(): string {
 *This report was generated automatically by [Heron](https://github.com/theonaai/Heron), an open-source AI agent auditor. It is based on the agent's self-reported information obtained through a structured interview. This is not a formal security audit, penetration test, or compliance certification. Claims have not been independently verified against tool manifests, runtime behavior, or system configurations. Findings should be independently verified before making access control decisions.*`;
 }
 
+// AAP-88: rank mapping `templates_severityOrder_rankMapping` (critical=4,
+// high=3, medium=2, low=1, default=0) — categorical rank ordering used to
+// sort findings before the Top-N triage split in `renderFindings` and to
+// sort discovery diffs in `renderVerificationSection`. Documented in
+// src/verification/threshold-manifest.ts.
 function severityOrder(severity: string): number {
   switch (severity) {
     case 'critical': return 4;

@@ -1238,6 +1238,36 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
     source: INTERNAL_HEURISTIC,
     affects: ['Markdown report per-system risk band'],
   },
+  templates_getFrameworkBasis_topN: {
+    name: 'templates_getFrameworkBasis_topN',
+    value: 3,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'getFrameworkBasis' }],
+    rationale:
+      'Top 3 framework controls (mandatory if present, otherwise voluntary) render in the Framework Basis cell of each finding row. Three is the column-width budget for "GDPR Art. 25, EU AI Act Art. 10, AIUC-1 A003" before the cell wraps and breaks the table layout — and three named frameworks is enough to anchor the finding against the most-cited regulations without burying the reader.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report Findings table Framework Basis column'],
+  },
+  templates_renderFindings_topN: {
+    name: 'templates_renderFindings_topN',
+    value: 3,
+    type: 'numeric',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'renderFindings' }],
+    rationale:
+      'AAP-43 P2 #7 — Top-3 triage split. When there are 4+ findings, the 3 most-severe render in the prominent "Top 3 Findings" table and the rest collapse into a `<details>` block. Three is the senior-auditor "real issue" count: flat 4+ tables read as "everything is equal weight"; three creates a clear hierarchy between headline issues and the long tail without hiding the tail. The "Top 3 Findings" label and the threshold are coupled — changing the threshold requires changing the label.',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report Findings section Top-N split', 'Markdown report "Top 3 Findings" / "Additional findings" labels'],
+  },
+  templates_severityOrder_rankMapping: {
+    name: 'templates_severityOrder_rankMapping',
+    value: 'severityOrder rank mapping for sorting findings before the Top-N triage split: critical=4, high=3, medium=2, low=1, default=0. Higher rank sorts earlier (descending sort in `renderFindings`). Reused by `renderVerificationSection` to sort discovery diffs by severity.',
+    type: 'categorical',
+    sites: [{ file: 'src/report/templates.ts', symbol: 'severityOrder' }],
+    rationale:
+      'Categorical rank ordering, not a single numeric cutoff: the integer gaps are arbitrary but the *order* (critical > high > medium > low > anything else) is the audit-grade convention shared across the verdict pipeline, html-renderer, and exec-summary. Default=0 means an unknown severity sorts to the bottom rather than crashing the sort — defensive default since severities are stringly-typed at this layer. Changing the ordering would reshuffle which findings land in the Top 3 triage slice (see `templates_renderFindings_topN`).',
+    source: INTERNAL_HEURISTIC,
+    affects: ['Markdown report Findings table sort order', 'Markdown report Verification section findings sort order', 'Top-N triage selection in renderFindings'],
+  },
 
   // ──────────────────────────────────────────────────────────────────────
   // src/verification/hr-pack/exec-summary.ts — DPO-readable headline
