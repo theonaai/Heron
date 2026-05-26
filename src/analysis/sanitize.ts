@@ -1,5 +1,9 @@
 /**
- * AAP-65: post-LLM sanitization pass.
+ * AAP-65 — post-LLM sanitization pass.
+ * AAP-87 — Phase A decomposition: orchestration split into eight purpose-
+ * named helpers with explicit ordering. ZERO behavior change vs the
+ * pre-decomposition implementation (locked down by
+ * `tests/analysis/sanitizer-golden.test.ts`).
  *
  * The LLM's analyzer output frequently violates the tightened
  * `analysisResultSchema` shape (e.g. it dumps a 297-character sentence into
@@ -23,9 +27,106 @@
  *   - frequencyAndVolume prose → structured `frequency` object
  *   - risks[] near-duplicates → merged into one with higher severity
  *
- * The order is significant: source-ref extraction runs FIRST (it walks every
- * string field), then per-field reshaping runs SECOND (so the prose still
- * contains its semantic content but without inline refs).
+ * # AAP-87 — per-rule audit matrix (4-bucket classification)
+ *
+ * Each rule below is classified into one of four buckets. The bucket
+ * determines whether the rule belongs here long-term (Phase B / AAP-90
+ * leaves it alone) or is a candidate for migration to prompt /
+ * structured-output enforcement (Phase B / AAP-90 targets it).
+ *
+ * | # | Rule                                             | Helper                  | Bucket                       |
+ * |---|--------------------------------------------------|-------------------------|------------------------------|
+ * | 1 | inline `(A3, A4)` source-ref extraction          | sanitizeSystemSources   | semantic normalization       |
+ * | 2 | writeOperations field truncation (80/80/40)      | sanitizeWriteOperations | schema enforcement           |
+ * | 3 | writeOperations trailing-punct cleanup           | sanitizeWriteOperations | semantic normalization       |
+ * | 4 | systemId prose → kebab-case slug                 | sanitizeSystemIdentity  | semantic normalization       |
+ * | 5 | systemDescription spill from long prose systemId | sanitizeSystemIdentity  | legacy compatibility         |
+ * | 6 | scope-array lead-in stripping ("Unused in...")   | sanitizeScopeArrays     | semantic normalization       |
+ * | 7 | scope-array per-entry 80-char truncation         | sanitizeScopeArrays     | schema enforcement           |
+ * | 8 | scope-array empty-string compaction              | sanitizeScopeArrays     | schema enforcement           |
+ * | 9 | frequencyAndVolume prose → structured frequency  | backfillFrequency       | model-quality compensation* + legacy compatibility† |
+ * |10 | malformed-risk filtering (null / no title)       | sanitizeRisks           | schema enforcement           |
+ * |11 | near-duplicate risk merging                      | sanitizeRisks           | model-quality compensation*  |
+ * |12 | recommendations cap (≤ 20 entries)               | sanitizeRecommendations | schema enforcement           |
+ * |13 | recommendations per-entry truncation (≤ 400)     | sanitizeRecommendations | schema enforcement           |
+ * |14 | top-level prose caps (summary/purpose/…)         | sanitizeTopLevelText    | schema enforcement           |
+ *
+ * Buckets:
+ *
+ *   - **schema enforcement**       — caps, enums, parseability. Stays as
+ *     post-processing forever; low migration value. Deterministic, cheap.
+ *   - **legacy compatibility**     — supports pre-AAP-65 persisted data on
+ *     disk. Stays; removing it breaks already-saved sessions.
+ *   - **semantic normalization**   — deterministic transformations (system
+ *     IDs, scope lead-ins, source refs). Stays; the prompt cannot guarantee
+ *     these shapes byte-for-byte across providers.
+ *   - **model-quality compensation** — Phase B (AAP-90) candidates only.
+ *     Rules marked with `*` above patch LLM behavior the prompt or
+ *     structured-output schema *should* constrain.
+ *
+ *   † Rule 9 is dual-bucket: primary classification is model-quality
+ *     compensation (counted in that total), but it ALSO carries a legacy
+ *     compatibility load — `frequencyAndVolume` is the pre-AAP-65 on-disk
+ *     shape (see `src/report/types.ts` lines 68-72, 103-106), so even if
+ *     Phase B (AAP-90) constrains NEW LLM outputs to emit `frequency`
+ *     directly, the `backfillFrequency` helper STAYS to load pre-AAP-65
+ *     sessions from disk. Phase B target for rule 9 is "stop new LLM
+ *     outputs needing this", not "delete the helper".
+ *
+ * # Bucket totals
+ *
+ *   - schema enforcement: 7 rules (2, 7, 8, 10, 12, 13, 14)
+ *   - semantic normalization: 4 rules (1, 3, 4, 6)
+ *   - legacy compatibility: 1 rule (5); rule 9 is dual-bucket (see † above)
+ *   - model-quality compensation (Phase B / AAP-90 targets): 2 rules (9, 11)
+ *
+ * Total unique rules: 14. Rule 9 is counted once (under model-quality
+ * compensation, its primary bucket) but is cross-referenced from legacy
+ * compatibility via the † footnote.
+ *
+ * # Phase B candidates (for migration to prompt / structured output)
+ *
+ *   - **Rule 9** — `frequencyAndVolume` prose-parse → structured `frequency`.
+ *     Phase B target: stop NEW LLM outputs needing this (prompt /
+ *     structured-output schema requires `frequency` directly). Helper STAYS
+ *     for legacy pre-AAP-65 session input loaded from disk.
+ *   - **Rule 11** — near-duplicate risk merge. Phase B target: removable IF
+ *     structured-output / prompt evals prove stable dedup across providers
+ *     (no cross-provider regressions on the risk-dedup corpus). Until then
+ *     the helper STAYS.
+ *
+ * # Ordering
+ *
+ * Ordering matters and is asserted by
+ * `tests/analysis/sanitize-ordering.test.ts`. In particular:
+ *
+ *   1. `sanitizeSystemSources` MUST run first. It walks every string field
+ *      on every system and pulls inline `(A3, A4)` refs into a
+ *      sibling `sources[]` array. If it ran after `sanitizeSystemIdentity`
+ *      the refs would already have been baked into a slug; if it ran after
+ *      `backfillFrequency` the refs would already have been embedded in
+ *      `frequency.notes`.
+ *   2. `sanitizeWriteOperations` runs after step 1 so the truncation logic
+ *      operates on already-deref'd strings.
+ *   3. `sanitizeSystemIdentity` runs after step 1 for the same reason.
+ *   4. `sanitizeScopeArrays` runs after step 1 so the trailing `(A11).`
+ *      pattern has already been stripped from array entries — the lead-in
+ *      regex stack then operates on clean tokens.
+ *   5. `backfillFrequency` runs after step 1 so the parsed `notes` field
+ *      no longer contains inline refs.
+ *   6. `sanitizeRisks` runs at the top level (not per-system) and is
+ *      independent of steps 1–5.
+ *   7. `sanitizeRecommendations` runs at the top level, independent.
+ *   8. `sanitizeTopLevelText` runs LAST so the cap operates on whatever
+ *      shape the previous helpers produced.
+ *
+ * # Invariants the implementer MUST NOT touch (AAP-65 load-bearing)
+ *
+ *   - `sanitizeAnalyzerOutput` runs BEFORE Zod parse, mutates the input
+ *     object IN PLACE. Each helper preserves this — none of them return
+ *     new objects.
+ *   - The shape must support pre-AAP-65 sessions on disk (the report
+ *     viewer cannot break on historical data).
  */
 
 import { isProvided } from '../util/provided.js';
@@ -347,144 +448,280 @@ export function mergeDuplicateRisks<R extends { severity: string; title: string;
   return result;
 }
 
+// ─── AAP-87 — eight purpose-named helpers ────────────────────────────────
+//
+// Each helper mutates its target IN PLACE. None of them allocate or return
+// a new top-level object — the AAP-65 invariant (sanitize runs BEFORE Zod
+// against the parsed JSON value the caller holds) requires it.
+//
+// Helpers that operate per-system (1–5) all take the parsed analyzer
+// `systems[]` array element and mutate it in place. Helpers 6–8 operate on
+// the top-level analyzer object.
+
+const WRITE_OP_FIELD_CAPS: ReadonlyArray<readonly [string, number]> = [
+  ['operation', 80],
+  ['target', 80],
+  ['volumePerDay', 40],
+];
+
+const SCOPE_ARRAY_KEYS = ['scopesDelta', 'scopesNeeded', 'scopesRequested'] as const;
+const SCOPE_ENTRY_MAX_LEN = 80;
+const RECOMMENDATIONS_MAX_COUNT = 20;
+const RECOMMENDATION_ENTRY_MAX_LEN = 400;
+
+const TOP_LEVEL_PROSE_CAPS: ReadonlyArray<readonly [string, number]> = [
+  ['summary', 800],
+  ['agentPurpose', 600],
+  ['agentTrigger', 200],
+  ['agentOwner', 200],
+  ['decisionMakingDetails', 800],
+];
+
+/**
+ * Truncate `s` to at most `max` chars by replacing the tail with `…`.
+ * Drops orphan trailing whitespace / punctuation that would otherwise
+ * butt up against the ellipsis.
+ */
+function truncateWithEllipsis(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1).replace(/[\s.,;]+$/, '') + '…';
+}
+
+/**
+ * Helper 1 — `sanitizeSystemSources`.
+ *
+ * Walks every string field on every system and pulls inline `(A3, A4)`
+ * source-ref markers into a sibling `sources[]` array on the system.
+ *
+ * MUST run before {@link sanitizeWriteOperations}, {@link sanitizeSystemIdentity},
+ * {@link sanitizeScopeArrays}, and {@link backfillFrequency} — those helpers
+ * operate on the ALREADY-DEREF'D strings.
+ *
+ * Bucket: semantic normalization.
+ */
+export function sanitizeSystemSources(systems: unknown[]): void {
+  for (const sys of systems) {
+    if (sys && typeof sys === 'object') {
+      extractInlineSourceRefs(sys as Record<string, unknown>);
+    }
+  }
+}
+
+/**
+ * Helper 2 — `sanitizeWriteOperations`.
+ *
+ * Per-system: caps each `writeOperations[].operation` / `.target` to 80
+ * chars and `.volumePerDay` to 40, replacing the tail with `…`. Strips
+ * trailing punctuation left over from {@link sanitizeSystemSources}'s
+ * source-ref extraction (e.g. "endpoint ." → "endpoint").
+ *
+ * Buckets: schema enforcement (caps) + semantic normalization
+ * (trailing-punct cleanup).
+ */
+export function sanitizeWriteOperations(sys: Record<string, unknown>): void {
+  if (!Array.isArray(sys.writeOperations)) return;
+  for (const woRaw of sys.writeOperations) {
+    if (!woRaw || typeof woRaw !== 'object') continue;
+    const wo = woRaw as Record<string, unknown>;
+    for (const [key, max] of WRITE_OP_FIELD_CAPS) {
+      const v = wo[key];
+      if (typeof v === 'string') {
+        // Drop orphan trailing punctuation from upstream source-ref stripping.
+        const cleaned = v.replace(/\s*[.,;]+\s*$/, '').trim();
+        wo[key] = truncateWithEllipsis(cleaned, max);
+      }
+    }
+  }
+}
+
+/**
+ * Helper 3 — `sanitizeSystemIdentity`.
+ *
+ * Per-system: if `systemId` is not a valid kebab-case slug (or is too
+ * long), reshape it into one and spill the original prose into
+ * `systemDescription` (when not already populated). Preserves AAP-65's
+ * "long prose ⇒ description" contract — pre-AAP-65 sessions on disk
+ * remain renderable.
+ *
+ * Buckets: semantic normalization (slug reshape) + legacy compatibility
+ * (description spill).
+ */
+export function sanitizeSystemIdentity(sys: Record<string, unknown>): void {
+  const id = typeof sys.systemId === 'string' ? sys.systemId : '';
+  // NB: parenthesization matches the pre-AAP-87 expression exactly. The
+  // intended condition reads "(id is non-empty AND id is malformed) OR id
+  // is too long". Phase A must preserve this byte-for-byte even though
+  // refactoring opportunity exists — see AAP-90.
+  if (id && !SYSTEM_ID_REGEX.test(id) || id.length > MAX_SYSTEM_ID_LEN) {
+    const shortId = toShortSystemId(id);
+    // Preserve the full prose in systemDescription if not already populated.
+    if (
+      !sys.systemDescription ||
+      typeof sys.systemDescription !== 'string' ||
+      (sys.systemDescription as string).trim().length === 0
+    ) {
+      sys.systemDescription = id;
+    }
+    sys.systemId = shortId;
+  }
+}
+
+/**
+ * Helper 4 — `sanitizeScopeArrays`.
+ *
+ * Per-system: for each of `scopesDelta`, `scopesNeeded`, `scopesRequested`:
+ *   1. strip the "Unused in this audit task so far:" lead-in
+ *   2. truncate each entry to ≤ 80 chars
+ *   3. drop empty strings (compaction)
+ *
+ * Buckets: semantic normalization (lead-in strip) + schema enforcement
+ * (cap + empty-string drop).
+ */
+export function sanitizeScopeArrays(sys: Record<string, unknown>): void {
+  for (const key of SCOPE_ARRAY_KEYS) {
+    const arr = sys[key];
+    if (Array.isArray(arr)) {
+      sys[key] = arr
+        .map((s) => {
+          if (typeof s !== 'string') return s;
+          const cleaned = stripScopeLeadIn(s);
+          return truncateWithEllipsis(cleaned, SCOPE_ENTRY_MAX_LEN);
+        })
+        .filter((s) => s !== '');
+    }
+  }
+}
+
+/**
+ * Helper 5 — `backfillFrequency`.
+ *
+ * Per-system: if `frequency` is absent (or not an object), and
+ * `frequencyAndVolume` is a provided non-empty string, parse the prose
+ * into the structured `frequency` shape. If parsing yields nothing
+ * meaningful, leave `frequency` unset.
+ *
+ * Buckets: model-quality compensation + legacy compatibility.
+ * **Phase B (AAP-90) target: stop NEW LLM outputs needing this** — the
+ * prompt or structured-output schema should require the model to emit
+ * `frequency` directly. The helper itself STAYS regardless: pre-AAP-65
+ * sessions persisted to disk only have the prose `frequencyAndVolume`
+ * field (see `src/report/types.ts` lines 68-72, 103-106), so the report
+ * viewer needs `backfillFrequency` to keep loading historical data.
+ */
+export function backfillFrequency(sys: Record<string, unknown>): void {
+  if (sys.frequency && typeof sys.frequency === 'object') return;
+  const prose =
+    typeof sys.frequencyAndVolume === 'string' && sys.frequencyAndVolume.trim().length > 0
+      ? sys.frequencyAndVolume
+      : '';
+  if (!prose || !isProvided(prose)) return;
+  const parsed = parseFrequencyProse(prose);
+  const hasContent =
+    parsed.runsLastWeek !== undefined ||
+    parsed.callsPerRun !== undefined ||
+    parsed.batchSize !== undefined ||
+    parsed.concurrency !== undefined ||
+    (parsed.notes !== undefined && parsed.notes.length > 0);
+  if (hasContent) sys.frequency = parsed;
+}
+
+/**
+ * Helper 6 — `sanitizeRisks`.
+ *
+ * Top-level: filter the `risks[]` array to well-shaped entries (object
+ * with a string `title`), then merge near-duplicates via
+ * {@link mergeDuplicateRisks}.
+ *
+ * Buckets: schema enforcement (malformed filter) + model-quality
+ * compensation (near-duplicate merge — **Phase B (AAP-90) candidate**:
+ * removable IF structured-output / prompt evals prove stable dedup across
+ * providers. Until then the helper STAYS — the prompt cannot yet
+ * guarantee the model won't emit dupes).
+ */
+export function sanitizeRisks(obj: Record<string, unknown>): void {
+  if (!Array.isArray(obj.risks)) return;
+  obj.risks = mergeDuplicateRisks(
+    obj.risks.filter(
+      (r): r is { severity: string; title: string; description: string; mitigation?: string } =>
+        !!r && typeof r === 'object' && typeof (r as Record<string, unknown>).title === 'string',
+    ),
+  );
+}
+
+/**
+ * Helper 7 — `sanitizeRecommendations`.
+ *
+ * Top-level: cap the `recommendations[]` array to 20 entries, then
+ * truncate each string entry to 400 chars.
+ *
+ * Bucket: schema enforcement.
+ */
+export function sanitizeRecommendations(obj: Record<string, unknown>): void {
+  if (!Array.isArray(obj.recommendations)) return;
+  // Snapshot into a local so TS keeps the narrowed `unknown[]` shape across
+  // the in-place reassignment to `obj.recommendations` below.
+  let recs: unknown[] = obj.recommendations;
+  if (recs.length > RECOMMENDATIONS_MAX_COUNT) {
+    recs = recs.slice(0, RECOMMENDATIONS_MAX_COUNT);
+  }
+  obj.recommendations = recs.map((r) =>
+    typeof r === 'string' && r.length > RECOMMENDATION_ENTRY_MAX_LEN
+      ? truncateWithEllipsis(r, RECOMMENDATION_ENTRY_MAX_LEN)
+      : r,
+  );
+}
+
+/**
+ * Helper 8 — `sanitizeTopLevelText`.
+ *
+ * Top-level: cap each prose field at its per-field schema limit.
+ * Currently covers `summary` (800), `agentPurpose` (600), `agentTrigger`
+ * (200), `agentOwner` (200), `decisionMakingDetails` (800).
+ *
+ * Bucket: schema enforcement.
+ */
+export function sanitizeTopLevelText(obj: Record<string, unknown>): void {
+  for (const [key, max] of TOP_LEVEL_PROSE_CAPS) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.length > max) {
+      obj[key] = truncateWithEllipsis(v, max);
+    }
+  }
+}
+
 /**
  * Top-level entry point. Walks the parsed analyzer JSON and reshapes it
  * to the AAP-65 schema. Mutates in place. Safe to call on shapes that
  * already conform.
+ *
+ * AAP-87 — thin orchestrator. See the helper docs above for ordering
+ * rationale. The sequence below is asserted by
+ * `tests/analysis/sanitize-ordering.test.ts`.
  */
 export function sanitizeAnalyzerOutput(raw: unknown): void {
   if (!raw || typeof raw !== 'object') return;
   const obj = raw as Record<string, unknown>;
 
-  // Pull source refs out of every nested string first — this avoids them
-  // leaking into the systemId slug or polluting the frequency notes.
+  // 1. Source-ref extraction MUST run first (sets up clean strings for
+  //    every downstream per-system helper).
   if (Array.isArray(obj.systems)) {
-    for (const sys of obj.systems) {
-      if (sys && typeof sys === 'object') {
-        extractInlineSourceRefs(sys as Record<string, unknown>);
-      }
-    }
+    sanitizeSystemSources(obj.systems);
   }
 
+  // 2–5. Per-system helpers operate on already-deref'd strings.
   if (Array.isArray(obj.systems)) {
     for (const sysRaw of obj.systems) {
       if (!sysRaw || typeof sysRaw !== 'object') continue;
       const sys = sysRaw as Record<string, unknown>;
-
-      // 0. Truncate over-long fields inside writeOperations[] so schema
-      //    validation does not reject the whole system. AAP-65: in real
-      //    LLM output, operation/target/volumePerDay regularly carry prose
-      //    + source refs that exceed the 80 / 40-char caps. Strip refs
-      //    first (extractInlineSourceRefs ran above), then truncate.
-      if (Array.isArray(sys.writeOperations)) {
-        for (const woRaw of sys.writeOperations) {
-          if (!woRaw || typeof woRaw !== 'object') continue;
-          const wo = woRaw as Record<string, unknown>;
-          for (const [key, max] of [
-            ['operation', 80],
-            ['target', 80],
-            ['volumePerDay', 40],
-          ] as const) {
-            const v = wo[key];
-            if (typeof v === 'string') {
-              // Drop orphan trailing punctuation from upstream source-ref stripping.
-              let cleaned = v.replace(/\s*[.,;]+\s*$/, '').trim();
-              if (cleaned.length > max) {
-                cleaned = cleaned.slice(0, max - 1).replace(/[\s.,;]+$/, '') + '…';
-              }
-              wo[key] = cleaned;
-            }
-          }
-        }
-      }
-
-      // 1. systemId reshape — kebab-case + spill prose into systemDescription.
-      const id = typeof sys.systemId === 'string' ? sys.systemId : '';
-      if (id && !SYSTEM_ID_REGEX.test(id) || id.length > MAX_SYSTEM_ID_LEN) {
-        const shortId = toShortSystemId(id);
-        // Preserve the full prose in systemDescription if not already populated.
-        if (!sys.systemDescription || typeof sys.systemDescription !== 'string' || (sys.systemDescription as string).trim().length === 0) {
-          sys.systemDescription = id;
-        }
-        sys.systemId = shortId;
-      }
-
-      // 2. scopesDelta + scopesNeeded + scopesRequested: strip lead-ins,
-      //    then truncate to the 80-char cap (defensive — pre-AAP-65 data
-      //    on disk can carry sentence-shaped "scopes" we have to fit).
-      for (const key of ['scopesDelta', 'scopesNeeded', 'scopesRequested'] as const) {
-        const arr = sys[key];
-        if (Array.isArray(arr)) {
-          sys[key] = arr
-            .map((s) => {
-              if (typeof s !== 'string') return s;
-              let cleaned = stripScopeLeadIn(s);
-              if (cleaned.length > 80) {
-                cleaned = cleaned.slice(0, 79).replace(/[\s.,;]+$/, '') + '…';
-              }
-              return cleaned;
-            })
-            .filter((s) => s !== '');
-        }
-      }
-
-      // 3. frequency: parse prose into structured shape if absent.
-      if (!sys.frequency || typeof sys.frequency !== 'object') {
-        const prose =
-          typeof sys.frequencyAndVolume === 'string' && sys.frequencyAndVolume.trim().length > 0
-            ? sys.frequencyAndVolume
-            : '';
-        if (prose && isProvided(prose)) {
-          const parsed = parseFrequencyProse(prose);
-          // Only attach if we extracted *something* — pure "NOT PROVIDED"
-          // shouldn't materialize as an empty object.
-          const hasContent =
-            parsed.runsLastWeek !== undefined ||
-            parsed.callsPerRun !== undefined ||
-            parsed.batchSize !== undefined ||
-            parsed.concurrency !== undefined ||
-            (parsed.notes !== undefined && parsed.notes.length > 0);
-          if (hasContent) sys.frequency = parsed;
-        }
-      }
+      sanitizeWriteOperations(sys);
+      sanitizeSystemIdentity(sys);
+      sanitizeScopeArrays(sys);
+      backfillFrequency(sys);
     }
   }
 
-  // 4. Merge near-duplicate risks.
-  if (Array.isArray(obj.risks)) {
-    obj.risks = mergeDuplicateRisks(
-      obj.risks.filter(
-        (r): r is { severity: string; title: string; description: string; mitigation?: string } =>
-          !!r && typeof r === 'object' && typeof (r as Record<string, unknown>).title === 'string',
-      ),
-    );
-  }
-
-  // 5. Cap recommendations array length defensively.
-  if (Array.isArray(obj.recommendations) && obj.recommendations.length > 20) {
-    obj.recommendations = obj.recommendations.slice(0, 20);
-  }
-  // Truncate over-long recommendations entries (≤400 chars each).
-  if (Array.isArray(obj.recommendations)) {
-    obj.recommendations = obj.recommendations.map((r) =>
-      typeof r === 'string' && r.length > 400
-        ? r.slice(0, 399).replace(/[\s.,;]+$/, '') + '…'
-        : r,
-    );
-  }
-
-  // 6. Truncate over-long top-level prose fields defensively.
-  const topLevelCaps: Array<readonly [string, number]> = [
-    ['summary', 800],
-    ['agentPurpose', 600],
-    ['agentTrigger', 200],
-    ['agentOwner', 200],
-    ['decisionMakingDetails', 800],
-  ];
-  for (const [key, max] of topLevelCaps) {
-    const v = obj[key];
-    if (typeof v === 'string' && v.length > max) {
-      obj[key] = v.slice(0, max - 1).replace(/[\s.,;]+$/, '') + '…';
-    }
-  }
+  // 6–8. Top-level helpers.
+  sanitizeRisks(obj);
+  sanitizeRecommendations(obj);
+  sanitizeTopLevelText(obj);
 }
