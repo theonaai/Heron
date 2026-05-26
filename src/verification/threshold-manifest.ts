@@ -210,7 +210,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
   },
   verdict_status_verifiedRequiresBoth: {
     name: 'verdict_status_verifiedRequiresBoth',
-    value: '`verified` requires BOTH discovery AND OAuth introspection ran AND both produced clean evidence. Missing OAuth (token-capture UX deferred to AAP-64) means sessions land on `partial` for the foreseeable future even when discovery returns zero findings.',
+    value: '`verified` requires BOTH discovery AND OAuth introspection ran AND both produced clean evidence. Missing OAuth (token-capture UX deferred to AAP-64) means sessions land on `partial` for the foreseeable future even when discovery returns zero findings. AAP-91: any single-source Surface 2 case (e.g., `discoveredAgents`-only enumeration without discovery diff or OAuth) also lands on `partial` even when sources are clean — `hasAgents` participates ONLY in the Surface 2 presence gate, never in the verified gate.',
     type: 'categorical',
     sites: [{ file: 'src/verification/verdict.ts', symbol: 'computeVerdict' }],
     rationale:
@@ -220,7 +220,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
   },
   verdict_status_partialWhenAny: {
     name: 'verdict_status_partialWhenAny',
-    value: '`partial` when at least one Surface 2 source ran (discovery OR OAuth) but the verified-requires-both gate fails.',
+    value: '`partial` when at least one Surface 2 source ran (discovery, OAuth, OR discoveredAgents — AAP-91) but the verified-requires-both gate fails.',
     type: 'categorical',
     sites: [{ file: 'src/verification/verdict.ts', symbol: 'computeVerdict' }],
     rationale:
@@ -230,7 +230,7 @@ export const THRESHOLD_MANIFEST: Record<string, ThresholdEntry> = {
   },
   verdict_status_unverifiedNoSurface2: {
     name: 'verdict_status_unverifiedNoSurface2',
-    value: '`unverified` when neither Surface 2 source ran. Falls back to "no-evidence" verdict with `primaryRiskLevel: \'unverified\'`.',
+    value: '`unverified` when none of the Surface 2 sources ran (no discovery, no OAuth, no discoveredAgents — AAP-91). Falls back to "no-evidence" verdict with `primaryRiskLevel: \'unverified\'`.',
     type: 'categorical',
     sites: [{ file: 'src/verification/verdict.ts', symbol: 'computeVerdict' }],
     rationale:

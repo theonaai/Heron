@@ -322,9 +322,16 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
 
   const hasDiscovery = inputs.discoveryFindings !== undefined;
   const hasOauth = (inputs.oauthVerifications?.length ?? 0) > 0;
+  // AAP-91 — `discoveredAgents` is also deterministic Surface 2 evidence
+  // (L1 MCP server enumeration / AAP-82 forwarded `tools/list` responses).
+  // It must participate in the Surface 2 presence gate; otherwise an
+  // agents-only enumeration (no discovery diff, no OAuth introspection)
+  // would falsely fall through to `unverified` despite carrying
+  // deterministic write-tool evidence.
+  const hasAgents = (inputs.discoveredAgents?.length ?? 0) > 0;
 
   // No Surface 2 at all → unverified.
-  if (!hasDiscovery && !hasOauth) {
+  if (!hasDiscovery && !hasOauth && !hasAgents) {
     const base: Verdict = {
       status: 'unverified',
       primaryRiskLevel: 'unverified',
@@ -347,11 +354,15 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
   //     sources ran (discovery AND oauth) AND both produced clean evidence.
   //     Missing OAuth introspection is by design today (token-capture UX is
   //     AAP-64) — sessions therefore land on 'partial' for the foreseeable
-  //     future even when discovery returns zero findings.
+  //     future even when discovery returns zero findings. AAP-91: an
+  //     agents-only path (only `discoveredAgents` present, no discovery
+  //     diff and no OAuth) also lands on 'partial' — enumeration carries
+  //     deterministic Surface 2 evidence but cannot perform a declared-vs-
+  //     actual comparison, so the structural ceiling stays at 'partial'.
   //   - verdict_status_partialWhenAny: 'partial' otherwise (at least one
-  //     Surface 2 source ran).
-  //   - verdict_status_unverifiedNoSurface2: 'unverified' when neither
-  //     Surface 2 source ran (handled by the early-return above).
+  //     Surface 2 source ran — discovery, OAuth, OR discoveredAgents).
+  //   - verdict_status_unverifiedNoSurface2: 'unverified' when none of the
+  //     Surface 2 sources ran (handled by the early-return above).
   const discoveryClean = hasDiscovery && discoveryFindings.length === 0;
   const oauthClean =
     hasOauth &&
