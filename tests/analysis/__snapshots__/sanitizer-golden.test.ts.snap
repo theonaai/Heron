@@ -1,0 +1,162 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`sanitizeAnalyzerOutput — golden snapshots (Phase A regression backstop) > Fixture A — real Codex session (all-stops): full-object snapshot 1`] = `
+{
+  "agentOwner": "Heron eng team",
+  "agentPurpose": "Conduct security audits via the Heron interrogator.",
+  "agentTrigger": "Operator runs \`heron interview\` from a local terminal.",
+  "overallRiskLevel": "medium",
+  "recommendations": [
+    "Restrict shell exec to operator-controlled commands.",
+  ],
+  "risks": [],
+  "summary": "Codex desktop agent — audit run end-to-end with all rule groups in play.",
+  "systems": [
+    {
+      "blastRadius": "single-user",
+      "dataSensitivity": "Non-PII technical metadata about the audit session itself.",
+      "frequency": {
+        "batchSize": 1,
+        "callsPerRun": "10-15",
+        "concurrency": "sequential",
+        "notes": "For this deployment instance: 1 audit run on 2026-05-20; historical runs in the last week were not observable; typical API/tool calls were not observable historically; this audit run had used 1 tool-discovery call, 1 audit-session start call, and 8 answer-submission calls before A10, with an expected total of about 10-15 tool calls; processing is primarily one-at-a-time with batch size usually ...",
+        "runsLastWeek": null,
+      },
+      "frequencyAndVolume": "For this deployment instance: 1 audit run on 2026-05-20; historical runs in the last week were not observable; typical API/tool calls were not observable historically; this audit run had used 1 tool-discovery call, 1 audit-session start call, and 8 answer-submission calls before A10, with an expected total of about 10-15 tool calls; processing is primarily one-at-a-time with batch size usually 1 user request or 1 audit question.",
+      "scopesDelta": [
+        "local filesystem read/write through shell or apply_patch",
+        "arbitrary shell command execution",
+        "external internet/web browsing",
+      ],
+      "scopesNeeded": [],
+      "scopesRequested": [],
+      "sources": [
+        "A3",
+        "A4",
+        "A10",
+        "A11",
+      ],
+      "systemDescription": "Codex desktop app local agent session -> OpenAI-hosted Codex/ChatGPT backend for model inference; exact API endpoint and authentication token are not visible; authentication appears handled by the Codex desktop app/user account session; no customer-managed OpenAI API key is visible to the agent.",
+      "systemId": "codex-desktop-app-local-agent-session",
+      "writeOperations": [],
+    },
+  ],
+}
+`;
+
+exports[`sanitizeAnalyzerOutput — golden snapshots (Phase A regression backstop) > Fixture B — caps + malformed-risk filtering: full-object snapshot 1`] = `
+{
+  "agentOwner": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq…",
+  "agentPurpose": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy…",
+  "agentTrigger": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz…",
+  "decisionMakingDetails": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd…",
+  "overallRiskLevel": "high",
+  "recommendations": [
+    "Recommendation 1",
+    "Recommendation 2",
+    "Recommendation 3",
+    "Recommendation 4",
+    "Recommendation 5",
+    "Recommendation 6",
+    "Recommendation 7",
+    "Recommendation 8",
+    "Recommendation 9",
+    "Recommendation 10",
+    "Recommendation 11",
+    "Recommendation 12",
+    "Recommendation 13",
+    "Recommendation 14",
+    "Recommendation 15",
+    "Recommendation 16",
+    "Recommendation 17",
+    "Recommendation 18",
+    "Recommendation 19",
+    "Recommendation 20",
+  ],
+  "risks": [
+    {
+      "description": "API key checked into the repository.",
+      "mitigation": "Rotate and move to a secrets manager.",
+      "severity": "high",
+      "title": "Stored secrets in plaintext",
+    },
+  ],
+  "summary": "Bursting at the seams: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+  "systems": [
+    {
+      "blastRadius": "team-scope",
+      "dataSensitivity": "PII",
+      "frequency": {
+        "callsPerRun": "~50",
+        "notes": "~50 calls per run, 7 runs per week.",
+        "runsLastWeek": 7,
+      },
+      "frequencyAndVolume": "~50 calls per run, 7 runs per week.",
+      "scopesDelta": [],
+      "scopesNeeded": [
+        "candidates.read",
+      ],
+      "scopesRequested": [
+        "candidates.read",
+      ],
+      "systemId": "greenhouse-prod",
+      "writeOperations": [
+        {
+          "approvalRequired": false,
+          "operation": "create candidate record with full profile metadata including all observed prior…",
+          "reversible": false,
+          "target": "Greenhouse Harvest API /v1/candidates endpoint serving the production hiring pi…",
+          "volumePerDay": "about 200 to 500 records per business d…",
+        },
+      ],
+    },
+  ],
+}
+`;
+
+exports[`sanitizeAnalyzerOutput — golden snapshots (Phase A regression backstop) > Fixture C — dedup + idempotent on already-clean: full-object snapshot 1`] = `
+{
+  "agentPurpose": "Hire candidates with human oversight.",
+  "overallRiskLevel": "medium",
+  "recommendations": [
+    "Drop to repo:read.",
+  ],
+  "risks": [
+    {
+      "description": "Agent has repo:write but only needs repo:read. Agent has full repo write but only reads pull requests.",
+      "mitigation": "Drop to repo:read.; Restrict to repo:read scope.",
+      "severity": "high",
+      "title": "Excessive GitHub access",
+    },
+    {
+      "description": "Cold start ~2s on first request.",
+      "severity": "low",
+      "title": "Slow startup latency",
+    },
+  ],
+  "summary": "Clean shape, dedup-only exercise.",
+  "systems": [
+    {
+      "blastRadius": "org-wide",
+      "dataSensitivity": "Source code",
+      "frequency": {
+        "callsPerRun": "5",
+        "concurrency": "parallel",
+        "notes": "pre-existing",
+      },
+      "frequencyAndVolume": "ignored because frequency is already set",
+      "scopesDelta": [
+        "repo:write",
+      ],
+      "scopesNeeded": [
+        "repo:read",
+      ],
+      "scopesRequested": [
+        "repo:read",
+      ],
+      "systemId": "github-prod",
+      "writeOperations": [],
+    },
+  ],
+}
+`;
