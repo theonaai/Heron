@@ -121,6 +121,44 @@ describe('diffAgainstTranscript — AAP-93', () => {
     expect(extraTheona!.sourcePath).toBe('/home/test/.codex/config.toml');
   });
 
+  it('Codex round 4 P2: short affirmative answer to a service-named prompt credits the service', () => {
+    // "Do you use Slack?" / "Yes" — the agent affirmed Slack, so a
+    // discovered Slack server should NOT surface as EXTRA, and a
+    // claimed-but-undiscovered Slack should still trigger MISSING.
+    const transcript = [
+      {
+        category: 'access',
+        question: 'Do you use Slack?',
+        answer: 'Yes.',
+      },
+    ];
+    // No slack server in this agent → expect MISSING slack since
+    // the answer affirmed it.
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const missingSlack = findings.find(
+      (f) => f.kind === 'MISSING' && f.serverName === 'slack',
+    );
+    expect(missingSlack).toBeDefined();
+  });
+
+  it('Codex round 4 P2: short affirmative does NOT cause MISSING false positives for unrelated services in the same prompt', () => {
+    // Question mentions Slack as an example only; answer affirms
+    // something else. Slack should still not be credited.
+    const transcript = [
+      {
+        category: 'access',
+        question: 'Do you use any messaging tool like Slack?',
+        answer: 'No, only email.',
+      },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const missingSlack = findings.find(
+      (f) => f.kind === 'MISSING' && f.serverName === 'slack',
+    );
+    // "No, only email" is not affirmative, so Slack stays uncredited.
+    expect(missingSlack).toBeUndefined();
+  });
+
   it('M3: MISSING findings have no sourcePath (absence-evidence)', () => {
     const transcript = [
       {

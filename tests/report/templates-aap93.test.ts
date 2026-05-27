@@ -121,6 +121,17 @@ describe('AAP-93 Codex post-review fixes', () => {
       /UNVERIFIED — Surface 2 deterministic sources have not run yet/,
     );
     expect(md).toContain('Filesystem discovery (Surface 2)');
+    // Codex round 4 P2: persisted `verified` must NOT downgrade to PARTIAL.
+    expect(md).toContain('**Verification status:** VERIFIED');
+    expect(md).not.toContain('**Verification status:** PARTIAL');
+  });
+
+  it('Codex round 4 P2: persisted `partially-verified` report rendered without verdict context shows PARTIAL', () => {
+    const report = makeReport({
+      verification: { status: 'partially-verified' },
+    });
+    const md = renderMarkdownReport(report);
+    expect(md).toContain('**Verification status:** PARTIAL');
   });
 
   it('P3: MISSING findings (runtime sentinel `—`) do not trigger the cross-runtime callout', () => {
@@ -336,6 +347,38 @@ describe('AAP-93 M3 — Source column in deterministic findings table', () => {
     });
     expect(md).toContain('| Kind | Severity | Server / Runtime | Source | Description |');
     expect(md).toContain('/home/u/.codex/config.toml');
+  });
+
+  it('Codex round 4 P3: source path containing `|` does NOT split the table row', () => {
+    const verdict: Verdict = {
+      status: 'partial',
+      deterministicRiskLevel: 'high',
+      primaryRiskLevel: 'high',
+      primaryRiskSource: 'deterministic',
+      discrepancies: [],
+    };
+    const discoveryFindings: DiscoveryFinding[] = [
+      {
+        kind: 'EXTRA',
+        severity: 'HIGH',
+        serverName: 'leak',
+        runtime: 'codex',
+        description: 'undisclosed server',
+        sourcePath: '/home/u/path|with|pipes/config.toml',
+      },
+    ];
+    const md = renderMarkdownReport(makeReport(), {
+      verdict,
+      discoveryFindings,
+    });
+    const rowLine = md
+      .split('\n')
+      .find((l) => l.includes('leak') && l.startsWith('| '));
+    expect(rowLine).toBeDefined();
+    // Count `|` separators in the row — should be exactly 6 (5 columns +
+    // bookends), regardless of pipe characters in the source path.
+    const pipes = (rowLine ?? '').match(/(?<!\\)\|/g) ?? [];
+    expect(pipes).toHaveLength(6);
   });
 });
 

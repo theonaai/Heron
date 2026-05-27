@@ -1011,13 +1011,19 @@ function renderVerificationStatusSection(
   // text which already reads the persisted field. When the persisted
   // status says verification happened, the section pivots to the
   // per-source table even without a verdict in context.
+  //
+  // Codex round 4 fix (P2): map persisted `'verified'` → `'verified'`
+  // and `'partially-verified'` → `'partial'` so the section header
+  // doesn't downgrade a persisted verified report to PARTIAL on
+  // re-render.
   const verdictStatus = verdict?.status;
-  const persistedAttempted =
-    reportVerificationStatus === 'verified' ||
-    reportVerificationStatus === 'partially-verified';
-  const status =
-    verdictStatus ??
-    (persistedAttempted ? 'partial' : 'unverified');
+  let persistedFallback: 'unverified' | 'partial' | 'verified' | undefined;
+  if (reportVerificationStatus === 'verified') {
+    persistedFallback = 'verified';
+  } else if (reportVerificationStatus === 'partially-verified') {
+    persistedFallback = 'partial';
+  }
+  const status = verdictStatus ?? persistedFallback ?? 'unverified';
   const lines: string[] = ['## Verification Status', ''];
   if (status === 'unverified') {
     lines.push(
@@ -1206,11 +1212,16 @@ function renderFindingsSplit(
     // AAP-93 M3 — `Source` column carries the evidence path so a
     // reviewer can verify each finding against the underlying config
     // file. MISSING findings (absence-evidence) render `—`.
+    //
+    // Codex round 4 fix (P3): `escapeInlineCode` does NOT escape pipe
+    // characters, so a config path containing `|` would split the
+    // table row into extra cells. Wrap the rendered cell in
+    // `escapeCell` for table-safety.
     lines.push('| Kind | Severity | Server / Runtime | Source | Description |');
     lines.push('| --- | --- | --- | --- | --- |');
     for (const f of discoveryFindings) {
       const source = f.sourcePath
-        ? `\`${escapeInlineCode(f.sourcePath)}\``
+        ? escapeCell(`\`${escapeInlineCode(f.sourcePath)}\``)
         : '—';
       lines.push(
         `| ${escapeCell(f.kind)} | ${f.severity} | ${escapeCell(f.serverName)} / ${escapeCell(f.runtime)} | ${source} | ${escapeCell(f.description)} |`,

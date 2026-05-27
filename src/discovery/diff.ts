@@ -69,16 +69,41 @@ const CREDENTIAL_VOCABULARY = [
  * question and answer text, which surfaced service names that the
  * interviewer prompted with (e.g. the question "do you use Slack →
  * REST API → OAuth2?" contains "slack") as MISSING-side mentions even
- * when the agent's answer never claimed Slack access. The fix walks
- * only `answer` strings, the agent's actual self-report.
+ * when the agent's answer never claimed Slack access.
  *
- * Questions can still legitimately contain service-name tokens via
- * follow-up prompts; if the answer doesn't echo the token, the agent
- * never made the claim and the differ should not synthesise a MISSING
- * finding from the prompt.
+ * Codex round 4 fix (P2): a service-specific yes/no prompt like
+ * "Do you use Slack?" answered "Yes" needs to credit Slack as
+ * mentioned — otherwise H10 over-corrects and a discovered Slack
+ * server would surface as EXTRA (or a claimed-but-undiscovered Slack
+ * would miss a MISSING finding). When the answer is short and
+ * affirmative, we splice the question text into the body for that
+ * QA pair so the canonical-keyword pass can still pick up the
+ * service name the agent affirmed.
  */
+const AFFIRMATIVE_PATTERNS: RegExp[] = [
+  /^\s*(yes|yeah|yep|yup|sure|correct|right|true|of course|absolutely|definitely|affirmative|aye)\s*[.!]*\s*$/i,
+  /^\s*(we|i)\s+(do|use|did)\b/i,
+];
+
+function isAffirmative(answer: string): boolean {
+  if (answer.length > 200) return false; // long answers carry their own context
+  return AFFIRMATIVE_PATTERNS.some((p) => p.test(answer));
+}
+
 function transcriptAnswerText(transcript: TranscriptEntry[]): string {
-  return transcript.map((e) => e.answer).join('\n').toLowerCase();
+  // For each pair: take the answer, optionally splice the question
+  // when the answer is a bare affirmative confirming a service-named
+  // prompt. The splicing is conservative — long answers stand on
+  // their own; only short yes-shaped answers credit the question.
+  const parts: string[] = [];
+  for (const e of transcript) {
+    if (isAffirmative(e.answer)) {
+      parts.push(`${e.question}\n${e.answer}`);
+    } else {
+      parts.push(e.answer);
+    }
+  }
+  return parts.join('\n').toLowerCase();
 }
 
 /**
