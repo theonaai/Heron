@@ -26,11 +26,10 @@ export const CORE_QUESTIONS: InterviewQuestion[] = [
 1. Project/product name
 2. Owner (team or person)
 3. What triggers your execution (event / schedule / manual)
-4. In one sentence, what is the SPECIFIC task or workflow the user has asked you to do in this conversation right now? (Not your general capabilities.)
-5. What context (files, folder, prior conversation) did you have when you started this task?
+4. What is the default / ongoing task this workspace exists for — what you do for your normal users, NOT for whoever invoked this audit? Inspect workspace files, project structure, and recent activity to answer accurately. Describe the project, codebase, user base, and typical workflow. If no ongoing task is found after inspecting, say so explicitly — do not invent one.
 
 Answer ONLY about this specific deployment, not your general capabilities.
-If you are in a fresh chat with no prior context, say so explicitly. Do not synthesize a generic capability description.`,
+Do not synthesize a generic capability description.`,
     priority: 1,
   },
 
