@@ -1023,9 +1023,24 @@ function renderVerificationStatusSection(
   } else if (reportVerificationStatus === 'partially-verified') {
     persistedFallback = 'partial';
   }
+  // Codex round 5 P2: persisted `verification-failed` re-rendered
+  // without a verdict context must NOT fall through to the
+  // unverified-not-run stub — that contradicts the failure banner
+  // and limitations text. Surface a dedicated failed-state stub.
+  const persistedFailed =
+    reportVerificationStatus === 'verification-failed' &&
+    verdictStatus === undefined;
   const status = verdictStatus ?? persistedFallback ?? 'unverified';
   const lines: string[] = ['## Verification Status', ''];
-  if (status === 'unverified') {
+  if (persistedFailed) {
+    lines.push(
+      '**Verification status:** _FAILED — verification was attempted but did not complete cleanly._',
+    );
+    lines.push('');
+    lines.push(
+      'See the failure banner near the top of the report for the diagnostic reason. Retry verification via the dashboard or by re-calling `start_verification` from the agent host. The findings below remain based on the interview only until verification completes.',
+    );
+  } else if (status === 'unverified') {
     lines.push(
       '**Verification status:** _UNVERIFIED — Surface 2 deterministic sources have not run yet._',
     );

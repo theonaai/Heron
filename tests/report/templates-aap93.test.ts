@@ -134,6 +134,17 @@ describe('AAP-93 Codex post-review fixes', () => {
     expect(md).toContain('**Verification status:** PARTIAL');
   });
 
+  it('Codex round 5 P2: persisted `verification-failed` rendered without verdict context shows FAILED, not UNVERIFIED', () => {
+    const report = makeReport({
+      verification: { status: 'verification-failed', reason: 'demo' },
+    });
+    const md = renderMarkdownReport(report);
+    expect(md).toContain('FAILED');
+    expect(md).not.toMatch(
+      /UNVERIFIED — Surface 2 deterministic sources have not run yet/,
+    );
+  });
+
   it('P3: MISSING findings (runtime sentinel `—`) do not trigger the cross-runtime callout', () => {
     const verdict: Verdict = {
       status: 'partial',

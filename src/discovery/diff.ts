@@ -80,14 +80,20 @@ const CREDENTIAL_VOCABULARY = [
  * QA pair so the canonical-keyword pass can still pick up the
  * service name the agent affirmed.
  */
-const AFFIRMATIVE_PATTERNS: RegExp[] = [
-  /^\s*(yes|yeah|yep|yup|sure|correct|right|true|of course|absolutely|definitely|affirmative|aye)\s*[.!]*\s*$/i,
-  /^\s*(we|i)\s+(do|use|did)\b/i,
-];
+// Codex round 4 P2 — only truly bare affirmatives credit the question
+// text. `we use X` would falsely splice when the answer claims a
+// different service ("we use Teams, not Slack"); keep this list to
+// answers that are PURELY confirmation without naming a different
+// service. Includes pronoun confirmations like "yes we do" / "we do".
+//
+// Codex round 5 P2 — dropped `we use|i use|we do|i do` patterns and
+// kept only the pure-affirmative anchored regex.
+const AFFIRMATIVE_PATTERN: RegExp =
+  /^\s*(yes|yeah|yep|yup|sure|correct|right|true|of course|absolutely|definitely|affirmative|aye|we do|i do|we did|i did)\b[\s.,!]*\s*$/i;
 
 function isAffirmative(answer: string): boolean {
-  if (answer.length > 200) return false; // long answers carry their own context
-  return AFFIRMATIVE_PATTERNS.some((p) => p.test(answer));
+  if (answer.length > 80) return false; // bare yes-shaped replies are short
+  return AFFIRMATIVE_PATTERN.test(answer);
 }
 
 function transcriptAnswerText(transcript: TranscriptEntry[]): string {
