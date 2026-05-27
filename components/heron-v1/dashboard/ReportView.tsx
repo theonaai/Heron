@@ -11,6 +11,8 @@ import {
   LocalDiscoverySection as LocalDiscoverySectionComponent,
   OAuthScopeVerificationSection as OAuthScopeVerificationSectionComponent,
 } from './McpSections';
+import { calibrateVerdictLabel } from '@/src/analysis/risk-scorer';
+import type { Recommendation } from '@/src/report/types';
 import type {
   McpInventorySection as McpInventoryData,
   DeclaredDiffSection as DeclaredDiffData,
@@ -2065,8 +2067,29 @@ export default function ReportView({
     );
   }
 
-  let verdict = json.recommendation ?? 'APPROVE WITH CONDITIONS';
-  if (verdict === 'APPROVE') verdict = 'APPROVE WITH CONDITIONS';
+  // AAP-96 — dashboard banner must use the same calibrated verdict as
+  // the markdown body, otherwise the header shows the raw LLM
+  // recommendation (`APPROVE WITH CONDITIONS`) while the body shows the
+  // honest matrix output (`DO NOT APPROVE WITHOUT REMEDIATION`). Mirror
+  // the matrix from `renderVerdict` in `src/report/templates.ts` —
+  // hasHighFindings combines self-reported HIGH/CRITICAL risks + Surface
+  // 2 HIGH discovery findings. (Verdict.deterministicRiskLevel from
+  // OAuth-only paths is not exposed on report.json today; covered cases
+  // are dominated by filesystem discovery + self-report streams.)
+  const hasHighSelfReported = json.risks.some(
+    (r) => r.severity === 'high' || r.severity === 'critical',
+  );
+  const localDiscoveryFindings =
+    (json.localAgentDiscovery as { findings?: Array<{ severity?: string }> } | undefined)
+      ?.findings ?? [];
+  const hasHighDeterministic = localDiscoveryFindings.some(
+    (f) => f.severity === 'HIGH',
+  );
+  const verdict = calibrateVerdictLabel({
+    recommendation: json.recommendation as Recommendation | undefined,
+    verificationStatus: json.verification?.status,
+    hasHighFindings: hasHighSelfReported || hasHighDeterministic,
+  });
 
   const sortedRisks = [...json.risks].sort(
     (a, b) => severityOrder(b.severity) - severityOrder(a.severity),
@@ -2210,8 +2233,24 @@ export default function ReportView({
         </dd>
         <dt>Limitations</dt>
         <dd className="muted" style={{ fontStyle: 'italic' }}>
-          Based on self-reported information. No runtime analysis, code review, or network traffic
-          inspection performed.
+          {/* AAP-96 — mirror conditional Limitations text from templates.ts.
+              Pre-fix the dashboard always showed the interrogation-only string
+              even on partially-verified / verified sessions, contradicting the
+              filesystem-discovery findings rendered below. */}
+          {(() => {
+            const vstatus = json.verification?.status;
+            if (vstatus === 'verified') {
+              return 'Combines self-reported interview answers with filesystem discovery and OAuth scope introspection. Runtime behaviour, code review, and network traffic remain out of scope.';
+            }
+            if (vstatus === 'partially-verified') {
+              return 'Combines self-reported interview answers with filesystem discovery. OAuth introspection skipped — runtime behaviour, code review, and network traffic remain out of scope.';
+            }
+            if (vstatus === 'verification-failed') {
+              return 'Verification attempted but did not complete cleanly. See Verification Status below.';
+            }
+            // interrogation-only / undefined / legacy
+            return 'Based on self-reported information. No runtime analysis, code review, or network traffic inspection performed.';
+          })()}
         </dd>
       </dl>
 
