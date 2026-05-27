@@ -1,0 +1,139 @@
+/**
+ * AAP-93 H10 + M1 + M3 — discovery diff fixes:
+ *   - H10: entity extraction reads `answer` only, not `question` prompt
+ *   - M1: dedup duplicate findings by composite key
+ *   - M3: sourcePath propagated from agent.configPath onto each row
+ */
+
+import { describe, it, expect } from 'vitest';
+
+import { diffAgainstTranscript } from '../../src/discovery/diff.js';
+import type { DiscoveredAgent } from '../../src/discovery/types.js';
+
+const codexAgent: DiscoveredAgent = {
+  runtime: 'codex',
+  configPath: '/home/test/.codex/config.toml',
+  mcpServers: [
+    {
+      name: 'theona',
+      transport: 'stdio',
+      hasCredentials: false,
+      redactedEnvKeys: [],
+    },
+  ],
+};
+
+describe('diffAgainstTranscript — AAP-93', () => {
+  it('H10: MISSING is NOT synthesised from question-only mentions of a canonical keyword', () => {
+    // The question prompt explicitly names "Slack" and "Drive" as
+    // examples; the agent's ANSWER never claims those services. The
+    // differ must not emit MISSING slack / MISSING drive findings
+    // off the back of the question text alone.
+    const transcript = [
+      {
+        category: 'access',
+        question:
+          'Examples: Slack → REST API → OAuth2. Google Drive → REST API → OAuth2. Which external systems do you connect to?',
+        answer: 'I only call openai-codex-runtime tools. No external systems.',
+      },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const kinds = new Set(findings.map((f) => `${f.kind}|${f.serverName}`));
+    expect(kinds.has('MISSING|slack')).toBe(false);
+    expect(kinds.has('MISSING|drive')).toBe(false);
+  });
+
+  it('H10: MISSING still surfaces when the answer claims the canonical keyword', () => {
+    const transcript = [
+      {
+        category: 'access',
+        question: 'Which services do you use?',
+        answer: 'I use Slack for notifications.',
+      },
+    ];
+    // The agent (codex) has NO slack-named MCP server on disk, so
+    // Slack-claimed-but-not-discovered should fire MISSING.
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const missingSlack = findings.find(
+      (f) => f.kind === 'MISSING' && f.serverName === 'slack',
+    );
+    expect(missingSlack).toBeDefined();
+  });
+
+  it('M1: duplicate findings on the same key collapse to one row', () => {
+    // Two distinct agents from different config files but emitting
+    // the same server name (Heron's own MCP entry, for instance,
+    // could leak into both a Codex auth file and a Claude Code config
+    // depending on test setup). Pre-fix this produced two rows in
+    // the report; post-fix dedup is by `kind|runtime|serverName|sourcePath`.
+    const dupAgents: DiscoveredAgent[] = [
+      {
+        runtime: 'codex',
+        configPath: '/home/test/.codex/config.toml',
+        mcpServers: [
+          {
+            name: 'heron',
+            transport: 'stdio',
+            hasCredentials: false,
+            redactedEnvKeys: [],
+          },
+        ],
+      },
+      {
+        runtime: 'codex',
+        configPath: '/home/test/.codex/config.toml',
+        mcpServers: [
+          {
+            name: 'heron',
+            transport: 'stdio',
+            hasCredentials: false,
+            redactedEnvKeys: [],
+          },
+        ],
+      },
+    ];
+    const transcript = [
+      {
+        category: 'access',
+        question: 'What do you use?',
+        // The answer must not mention "heron" — otherwise the server
+        // is considered mentioned and EXTRA is suppressed.
+        answer: 'I only use openai-codex-runtime tools.',
+      },
+    ];
+    const findings = diffAgainstTranscript(dupAgents, transcript);
+    const heronExtra = findings.filter(
+      (f) => f.kind === 'EXTRA' && f.serverName === 'heron',
+    );
+    // Both agents would have emitted EXTRA heron; dedup leaves one.
+    expect(heronExtra).toHaveLength(1);
+  });
+
+  it('M3: EXTRA findings carry the agent configPath as sourcePath', () => {
+    const transcript = [
+      { category: 'access', question: 'q', answer: 'no mention.' },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const extraTheona = findings.find(
+      (f) => f.kind === 'EXTRA' && f.serverName === 'theona',
+    );
+    expect(extraTheona).toBeDefined();
+    expect(extraTheona!.sourcePath).toBe('/home/test/.codex/config.toml');
+  });
+
+  it('M3: MISSING findings have no sourcePath (absence-evidence)', () => {
+    const transcript = [
+      {
+        category: 'access',
+        question: 'q',
+        answer: 'I use Slack for messaging.',
+      },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const missingSlack = findings.find(
+      (f) => f.kind === 'MISSING' && f.serverName === 'slack',
+    );
+    expect(missingSlack).toBeDefined();
+    expect(missingSlack!.sourcePath).toBeUndefined();
+  });
+});

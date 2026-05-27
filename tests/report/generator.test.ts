@@ -121,8 +121,13 @@ describe('report templates', () => {
   });
 
   it('renders recommendation verdict', () => {
+    // AAP-93 H8 — the calibrated verdict label is computed from
+    // `verification.status` + `hasHighFindings`. The sample report has
+    // no `verification.status` (defaults to interrogation-only) and
+    // a HIGH finding, so the renderer picks
+    // `PROVISIONAL — VERIFY HIGH FINDINGS BEFORE APPROVAL`.
     const md = renderMarkdownReport(sampleReport);
-    expect(md).toContain('APPROVE WITH CONDITIONS');
+    expect(md).toContain('PROVISIONAL');
   });
 
   it('renders risks sorted by severity', () => {

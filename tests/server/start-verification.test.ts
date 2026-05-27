@@ -300,7 +300,10 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
       expect(renderedMd).not.toContain(
         'UNVERIFIED — Surface 2 deterministic sources have not run yet',
       );
-      expect(renderedMd).toContain('Risk Level (Partially Verified)');
+      // AAP-93 M5 — header splits Risk Level and Verification onto
+      // distinct fields.
+      expect(renderedMd).toContain('**Verification**: Partial');
+      expect(renderedMd).not.toContain('Risk Level (Partially Verified)');
       expect(renderedMd).not.toContain('Risk Level (Verified)');
       // The amber AAP-80 banner copy renders for the partial state.
       expect(renderedMd).toContain('Partially verified.');

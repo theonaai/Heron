@@ -224,6 +224,15 @@ export interface DiscoveryFinding {
   serverName: string;
   runtime: string;
   description: string;
+  /**
+   * AAP-93 M3 — absolute path of the config file or evidence source
+   * that produced this finding. Surfaced in the report's Findings
+   * table so a reviewer can verify each row against the underlying
+   * file. Optional for back-compat with legacy report.json blobs
+   * persisted before the field existed; MISSING findings legitimately
+   * have no sourcePath (the evidence is the ABSENCE of the file).
+   */
+  sourcePath?: string;
 }
 
 export interface DiscoveryResult {

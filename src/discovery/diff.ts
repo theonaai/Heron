@@ -64,7 +64,30 @@ const CREDENTIAL_VOCABULARY = [
   'oauth',
 ];
 
-function transcriptText(transcript: TranscriptEntry[]): string {
+/**
+ * AAP-93 H10 — entity-extraction body. Pre-fix this concatenated BOTH
+ * question and answer text, which surfaced service names that the
+ * interviewer prompted with (e.g. the question "do you use Slack →
+ * REST API → OAuth2?" contains "slack") as MISSING-side mentions even
+ * when the agent's answer never claimed Slack access. The fix walks
+ * only `answer` strings, the agent's actual self-report.
+ *
+ * Questions can still legitimately contain service-name tokens via
+ * follow-up prompts; if the answer doesn't echo the token, the agent
+ * never made the claim and the differ should not synthesise a MISSING
+ * finding from the prompt.
+ */
+function transcriptAnswerText(transcript: TranscriptEntry[]): string {
+  return transcript.map((e) => e.answer).join('\n').toLowerCase();
+}
+
+/**
+ * Joint body (question + answer). Used by HIDDEN-CREDENTIALS detection
+ * because "did anyone discuss credentials anywhere in the conversation"
+ * is a different question from "did the agent self-report using X" —
+ * the former tolerates the question prompt mentioning "credentials".
+ */
+function transcriptJointText(transcript: TranscriptEntry[]): string {
   return transcript.map((e) => `${e.question}\n${e.answer}`).join('\n').toLowerCase();
 }
 
@@ -92,8 +115,12 @@ export function diffAgainstTranscript(
   agents: DiscoveredAgent[],
   transcript: TranscriptEntry[],
 ): DiscoveryFinding[] {
-  const body = transcriptText(transcript);
-  const credentialsDiscussed = transcriptMentionsCredentials(body);
+  // AAP-93 H10 — body used for mention checks is ANSWER-only. The
+  // joint body (question + answer) is reserved for credential-vocab
+  // detection, which doesn't synthesise findings from question text.
+  const body = transcriptAnswerText(transcript);
+  const jointBody = transcriptJointText(transcript);
+  const credentialsDiscussed = transcriptMentionsCredentials(jointBody);
   const findings: DiscoveryFinding[] = [];
 
   // Build set of all discovered server names (lowercased) for
@@ -116,6 +143,8 @@ export function diffAgainstTranscript(
           description: server.hasCredentials
             ? `Discovered MCP server "${server.name}" (${agent.runtime}) with credentials configured was not mentioned in the interview.`
             : `Discovered MCP server "${server.name}" (${agent.runtime}) was not mentioned in the interview.`,
+          // AAP-93 M3 — surface the config file that produced this row.
+          sourcePath: agent.configPath,
         });
         continue;
       }
@@ -126,6 +155,7 @@ export function diffAgainstTranscript(
           serverName: server.name,
           runtime: agent.runtime,
           description: `MCP server "${server.name}" (${agent.runtime}) has credentials configured (${server.redactedEnvKeys.join(', ')}) but the interview never discussed credentials or authentication.`,
+          sourcePath: agent.configPath,
         });
       }
     }
@@ -162,6 +192,9 @@ export function diffAgainstTranscript(
         runtime: agent.runtime,
         description:
           `Discovered Codex/host plugin "${cap.name}" (${agent.runtime}) was not mentioned in the interview.`,
+        // AAP-93 M3 — plugins are read from the same config file as the
+        // MCP-server block; reuse the agent's configPath.
+        sourcePath: cap.configPath ?? agent.configPath,
       });
     }
   }
@@ -205,9 +238,36 @@ export function diffAgainstTranscript(
         serverName: kw,
         runtime: '—',
         description: `The interview mentioned "${kw}" but no MCP server or plugin with that name was discovered on disk.`,
+        // MISSING findings have no sourcePath — the evidence is the
+        // absence of a config file, not the presence of one.
       });
     }
   }
 
-  return findings;
+  return dedupeFindings(findings);
+}
+
+/**
+ * AAP-93 M1 — composite-key dedup so duplicate findings emitted by
+ * overlapping readers (Heron itself appearing in both Codex auth and
+ * Claude Code auth files; the same plugin enumerated under two
+ * runtimes during a multi-runtime scan) collapse to a single row.
+ *
+ * Key composition: `kind` + `runtime` + `serverName` + `sourcePath`.
+ * MISSING findings have no `sourcePath` so their key folds in the
+ * empty-string fallback — duplicate MISSING for the same keyword from
+ * a single transcript pass cannot happen by construction (the canonical
+ * keyword loop iterates each keyword once), but the dedup costs
+ * nothing and protects against future regressions.
+ */
+function dedupeFindings(findings: DiscoveryFinding[]): DiscoveryFinding[] {
+  const seen = new Set<string>();
+  const out: DiscoveryFinding[] = [];
+  for (const f of findings) {
+    const key = `${f.kind}|${f.runtime}|${f.serverName.toLowerCase()}|${f.sourcePath ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }

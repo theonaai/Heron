@@ -1,4 +1,5 @@
 import type { Risk, SystemAssessment, Severity, BlastRadius, Recommendation } from '../report/types.js';
+import type { ReportVerificationStatus } from '../report/types.js';
 
 export interface RiskScore {
   overall: Severity;
@@ -422,4 +423,70 @@ export function calibrateOverallRiskLevel(
     return 'high';
   }
   return overall;
+}
+
+// ─── AAP-93 H8 — verdict-string calibration ────────────────────────────
+//
+// The legacy `Recommendation` enum has three values: APPROVE,
+// APPROVE WITH CONDITIONS, DENY. Pre-AAP-93 the report would render
+// `APPROVE WITH CONDITIONS` for ANY combination of state + findings
+// that wasn't outright DENY-worthy, including the partial-verification
+// + HIGH self-reported finding case. Codex review flagged that as
+// rubber-stamping risky deployments — the partial-verified + high-
+// finding combination needs to be visibly louder than "APPROVE WITH
+// CONDITIONS".
+//
+// `calibrateVerdictLabel` is a renderer-side decoration: it takes the
+// analyzer's recommendation, the persisted verification status, and a
+// `hasHighFindings` flag (derived from `report.risks` PLUS Surface 2
+// HIGH discovery findings), and produces a stronger label string when
+// the combination calls for it. The original `recommendation` field on
+// the report stays untouched so the JSON contract for downstream
+// consumers (dashboard, CLI) doesn't change.
+//
+// Matrix from AAP-93 H8:
+//   verified            && no HIGH findings → APPROVE
+//   verified            && HIGH findings    → APPROVE WITH CONDITIONS
+//   partially-verified  && no HIGH findings → PROVISIONAL — VERIFY MISSING SOURCES
+//   partially-verified  && HIGH findings    → DO NOT APPROVE WITHOUT REMEDIATION
+//   verification-failed                     → BLOCKED — VERIFICATION REQUIRED
+//   interrogation-only  && no HIGH findings → APPROVE WITH CONDITIONS (self-report only)
+//   interrogation-only  && HIGH findings    → PROVISIONAL — VERIFY HIGH FINDINGS BEFORE APPROVAL
+export type CalibratedVerdictLabel =
+  | 'APPROVE'
+  | 'APPROVE WITH CONDITIONS'
+  | 'PROVISIONAL — VERIFY MISSING SOURCES'
+  | 'PROVISIONAL — VERIFY HIGH FINDINGS BEFORE APPROVAL'
+  | 'DO NOT APPROVE WITHOUT REMEDIATION'
+  | 'BLOCKED — VERIFICATION REQUIRED'
+  | 'DENY';
+
+export function calibrateVerdictLabel(args: {
+  recommendation: Recommendation | undefined;
+  verificationStatus: ReportVerificationStatus | undefined;
+  hasHighFindings: boolean;
+}): CalibratedVerdictLabel {
+  // Explicit DENY from the analyzer always wins — analyst intent takes
+  // precedence over the calibration matrix.
+  if (args.recommendation === 'DENY') return 'DENY';
+
+  switch (args.verificationStatus) {
+    case 'verified':
+      return args.hasHighFindings ? 'APPROVE WITH CONDITIONS' : 'APPROVE';
+    case 'partially-verified':
+      return args.hasHighFindings
+        ? 'DO NOT APPROVE WITHOUT REMEDIATION'
+        : 'PROVISIONAL — VERIFY MISSING SOURCES';
+    case 'verification-failed':
+      return 'BLOCKED — VERIFICATION REQUIRED';
+    case 'interrogation-only':
+    default:
+      // Self-report only. HIGH findings stay "PROVISIONAL — verify
+      // first"; clean self-report keeps the legacy "APPROVE WITH
+      // CONDITIONS" guard rail (we never bare-APPROVE without
+      // Surface 2 evidence).
+      return args.hasHighFindings
+        ? 'PROVISIONAL — VERIFY HIGH FINDINGS BEFORE APPROVAL'
+        : 'APPROVE WITH CONDITIONS';
+  }
 }
