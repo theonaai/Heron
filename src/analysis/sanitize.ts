@@ -626,6 +626,45 @@ export function backfillFrequency(sys: Record<string, unknown>): void {
 }
 
 /**
+ * Helper 5b — `sanitizeFrequencyFields`.
+ *
+ * Truncates LLM-emitted `frequency` object string fields to fit the Zod
+ * schema caps (`src/report/types.ts` frequencyShapeSchema):
+ *   - `callsPerRun` ≤ 40 chars
+ *   - `batchSize` (when string) ≤ 20 chars
+ *   - `notes` ≤ 400 chars
+ *
+ * Also caps `sys.sources` at 20 entries (sources max length per
+ * systemAssessmentSchema).
+ *
+ * AAP-95: side-effect of AAP-94 — richer Codex deployment-task answers
+ * produce more detailed per-system frequency descriptions that exceed
+ * the schema caps, causing Zod to reject and `analyzeTranscript` to
+ * fail with "String must contain at most N character(s)" errors. This
+ * helper truncates BEFORE Zod validation so the audit completes
+ * gracefully on long but legitimate operational metrics.
+ *
+ * Bucket: schema enforcement.
+ */
+export function sanitizeFrequencyFields(sys: Record<string, unknown>): void {
+  if (sys.frequency && typeof sys.frequency === 'object') {
+    const freq = sys.frequency as Record<string, unknown>;
+    if (typeof freq.callsPerRun === 'string' && freq.callsPerRun.length > 40) {
+      freq.callsPerRun = truncateWithEllipsis(freq.callsPerRun, 40);
+    }
+    if (typeof freq.batchSize === 'string' && freq.batchSize.length > 20) {
+      freq.batchSize = truncateWithEllipsis(freq.batchSize, 20);
+    }
+    if (typeof freq.notes === 'string' && freq.notes.length > 400) {
+      freq.notes = truncateWithEllipsis(freq.notes, 400);
+    }
+  }
+  if (Array.isArray(sys.sources) && sys.sources.length > 20) {
+    sys.sources = sys.sources.slice(0, 20);
+  }
+}
+
+/**
  * Helper 6 — `sanitizeRisks`.
  *
  * Top-level: filter the `risks[]` array to well-shaped entries (object
@@ -717,6 +756,7 @@ export function sanitizeAnalyzerOutput(raw: unknown): void {
       sanitizeSystemIdentity(sys);
       sanitizeScopeArrays(sys);
       backfillFrequency(sys);
+      sanitizeFrequencyFields(sys);
     }
   }
 
