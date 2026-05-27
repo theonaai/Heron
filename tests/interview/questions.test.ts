@@ -30,26 +30,34 @@ describe('questions', () => {
     expect(uniqueIds.size).toBe(ids.length);
   });
 
-  it('AAP-92: context_anchor (Q01) asks about the current task and starting context, and tells fresh-chat agents to say so', () => {
-    // Pre-AAP-92 Q01 prompted "what you specifically do in this project",
-    // which fresh-chat Codex sessions interpreted as their general
-    // capability surface (no current task in context). The rewrite asks
-    // about the SPECIFIC current task plus the starting context, and
-    // tells the agent to declare a fresh chat rather than synthesise.
+  it('AAP-94: context_anchor (Q01) asks about the default deployment task and instructs the agent to inspect the workspace', () => {
+    // AAP-92 moved the prompt away from "what you specifically do in this project"
+    // (which produced generic capability answers from fresh-chat Codex sessions).
+    // AAP-94 takes the next step: the AAP-92 wording asked about the task the
+    // user asked you to do IN THIS CHAT — which then surfaces the audit itself,
+    // a recursive and useless answer. We now ask about the agent's DEPLOYMENT
+    // task — what it does for its normal users, regardless of who invoked this
+    // audit. The agent is instructed to actively inspect workspace files, not
+    // synthesise from generic capability knowledge, and to admit there is no
+    // ongoing task if inspection finds none.
     const q01 = CORE_QUESTIONS.find((q) => q.id === 'context_anchor');
     expect(q01).toBeDefined();
     expect(q01!.text).toMatch(
-      /SPECIFIC task or workflow the user has asked you to do in this conversation right now/,
+      /default \/ ongoing task this workspace exists for/,
     );
     expect(q01!.text).toMatch(
-      /What context \(files, folder, prior conversation\) did you have when you started this task\?/,
+      /what you do for your normal users, NOT for whoever invoked this audit/,
     );
     expect(q01!.text).toMatch(
-      /If you are in a fresh chat with no prior context, say so explicitly\. Do not synthesize a generic capability description\./,
+      /Inspect workspace files, project structure, and recent activity/,
     );
-    // The legacy phrasing must be gone — leaving it in would re-open
-    // the same fresh-chat capability-list answer the audit hit.
+    expect(q01!.text).toMatch(
+      /If no ongoing task is found after inspecting, say so explicitly — do not invent one/,
+    );
+    expect(q01!.text).toMatch(/Do not synthesize a generic capability description\./);
+    // Pre-AAP-92 / pre-AAP-94 phrasings must be gone.
     expect(q01!.text).not.toMatch(/what you specifically do in this project/);
+    expect(q01!.text).not.toMatch(/the user has asked you to do in this conversation right now/);
   });
 
   it('AAP-82: includes the mcp_tools_forward_directive after mcp_a2a_auth', () => {
