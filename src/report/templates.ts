@@ -1068,7 +1068,7 @@ function renderVerificationStatusSection(
     );
   } else if (status === 'unverified') {
     lines.push(
-      '**Verification status:** _UNVERIFIED — Surface 2 deterministic sources have not run yet._',
+      '**Verification status:** _UNVERIFIED — deterministic evidence sources have not run yet._',
     );
     lines.push('');
     lines.push(
@@ -1081,7 +1081,7 @@ function renderVerificationStatusSection(
     lines.push('| --- | --- |');
     const discoveryStatus = normalizeStatus(context.discoveryStatus ?? 'ran');
     lines.push(
-      `| Filesystem discovery (Surface 2) | ${formatStatusCell(discoveryStatus)} |`,
+      `| Filesystem discovery | ${formatStatusCell(discoveryStatus)} |`,
     );
     const oauthRows = context.oauthIntrospectionStatus ?? [];
     if (oauthRows.length === 0) {
@@ -1091,7 +1091,7 @@ function renderVerificationStatusSection(
       // (token-capture UX is AAP-64); callers can override by passing
       // an explicit `{status, reason}` row.
       lines.push(
-        '| OAuth introspection (Surface 2) | skipped (reason: no OAuth credentials configured for this session) |',
+        '| OAuth introspection | skipped (reason: no OAuth credentials configured for this session) |',
       );
     } else {
       for (const r of oauthRows) {
@@ -1114,10 +1114,10 @@ function renderDiscrepanciesSection(verdict: Verdict | undefined): string {
   if (!verdict || verdict.discrepancies.length === 0) return '';
   const lines: string[] = ['## Discrepancies', ''];
   lines.push(
-    'Surface 2 evidence contradicts a self-reported claim from the interview. Each row pairs the interview claim with the deterministic finding so a reviewer can decide whether the agent was misconfigured, misunderstood, or misrepresenting its own behaviour.',
+    'Deterministic evidence contradicts a self-reported claim from the interview. Each row pairs the interview claim with the deterministic finding so a reviewer can decide whether the agent was misconfigured, misunderstood, or misrepresenting its own behaviour.',
   );
   lines.push('');
-  lines.push('| Severity | Interview claim | Surface 2 evidence |');
+  lines.push('| Severity | Interview claim | Deterministic evidence |');
   lines.push('| --- | --- | --- |');
   for (const d of verdict.discrepancies) {
     lines.push(
@@ -1219,7 +1219,7 @@ function renderFindingsSplit(
   const lines: string[] = ['## Findings', ''];
 
   // ── Deterministic (Surface 2) ────────────────────────────────────
-  lines.push('### Deterministic Findings (Surface 2)');
+  lines.push('### Deterministic Findings');
   lines.push('');
   if (discoveryFindings.length === 0) {
     lines.push('_No deterministic findings — either the discovery scan has not run yet, or it ran and found no inconsistencies. Re-run discovery if the agent configuration has changed._');
@@ -1272,10 +1272,10 @@ function renderFindingsSplit(
   lines.push('');
 
   // ── Self-Reported (Surface 1) ────────────────────────────────────
-  lines.push('### Self-Reported Findings (Surface 1)');
+  lines.push('### Self-Reported Findings');
   lines.push('');
   lines.push(
-    '_These findings are derived from the agent\'s interview answers and should be verified against Surface 2 evidence. They are supplementary narrative, not the primary verdict._',
+    '_These findings are derived from the agent\'s interview answers and should be verified against deterministic evidence. They are supplementary narrative, not the primary verdict._',
   );
   lines.push('');
   lines.push(renderFindings(risks, compliance).replace(/^## Findings\n\n/, ''));

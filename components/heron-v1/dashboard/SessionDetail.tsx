@@ -362,7 +362,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
     : 'deterministic';
   const primaryTooltip =
     primaryRiskSource === 'deterministic'
-      ? 'Risk derived from deterministic Surface 2 evidence (discovery / OAuth introspection).'
+      ? 'Risk derived from deterministic evidence (filesystem discovery / OAuth introspection).'
       : 'No deterministic evidence yet — run discovery from below to verify the agent against actual config files.';
 
   const analysisError: AnalysisErrorRecord | null | undefined = liveSession.analysisError;
@@ -426,7 +426,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
               {liveSession.status === 'complete' && hasInterviewPill && (
                 <span
                   className={`sev ${interviewSev}`}
-                  title="Risk inferred from the agent's interview answers (Surface 1). Supplementary — the primary verdict above is the deterministic source of truth."
+                  title="Risk inferred from the agent's interview answers (self-reported). Supplementary — the primary verdict above is the deterministic source of truth."
                   style={{ fontSize: 10, opacity: 0.85 }}
                 >
                   self-report: {interviewRaw}

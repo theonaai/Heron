@@ -2287,14 +2287,14 @@ export default function ReportView({
         reason={json.verification?.reason}
         sources={[
           {
-            name: 'Filesystem discovery (Surface 2)',
+            name: 'Filesystem discovery',
             status: json.localAgentDiscovery ? 'ran' : 'skipped',
             ...(json.localAgentDiscovery
               ? {}
               : { reason: 'no filesystem discovery recorded for this session' }),
           },
           {
-            name: 'OAuth introspection (Surface 2)',
+            name: 'OAuth introspection',
             status: 'skipped',
             reason: 'no OAuth credentials configured for this session',
           },

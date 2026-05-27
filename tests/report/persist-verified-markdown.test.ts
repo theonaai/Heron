@@ -148,10 +148,10 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     // discovery.
     expect(rendered).toContain('## Verification Status');
     expect(rendered).toContain('Filesystem discovery');
-    expect(rendered).not.toMatch(/UNVERIFIED.+Surface 2 deterministic sources have not run/i);
+    expect(rendered).not.toMatch(/UNVERIFIED.+deterministic evidence sources have not run/i);
     // The discovery finding propagated into the deterministic findings
     // table.
-    expect(rendered).toContain('### Deterministic Findings (Surface 2)');
+    expect(rendered).toContain('### Deterministic Findings');
     expect(rendered).toContain('slack');
   });
 
