@@ -155,9 +155,11 @@ describe('POST /api/discovery/scan — AAP-79 markdown re-render', () => {
     // The per-source Verification Status table is in place.
     expect(after).toContain('## Verification Status');
     expect(after).toContain('Filesystem discovery');
-    // The header risk-level line now carries the Partially Verified
-    // prefix (AAP-80).
-    expect(after).toContain('Risk Level (Partially Verified)');
+    // AAP-93 M5 — Risk Level and Verification render as distinct
+    // header fields. The partial verification state surfaces in the
+    // Verification field rather than as a parenthetical on Risk Level.
+    expect(after).toContain('**Verification**: Partial');
+    expect(after).not.toContain('Risk Level (Partially Verified)');
     expect(after).not.toContain('Risk Level (Verified)');
     // The amber AAP-80 banner copy renders for the partial state.
     expect(after).toContain('Partially verified.');

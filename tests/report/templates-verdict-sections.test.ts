@@ -142,6 +142,9 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
   });
 
   it('header risk-level label shows "UNVERIFIED" when verdict is unverified', () => {
+    // AAP-93 M5 — header splits Risk Level and Verification onto
+    // separate fields. An interrogation-only verdict renders the
+    // self-report-only callout in the Verification field.
     const verdict: Verdict = {
       status: 'unverified',
       primaryRiskLevel: 'unverified',
@@ -150,13 +153,14 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     };
     const md = renderMarkdownReport(baseReport(), { verdict });
     expect(md).toContain('UNVERIFIED');
-    expect(md).toContain('self-reported only');
+    expect(md).toContain('run discovery to verify');
   });
 
-  it('AAP-80: header risk-level label shows "Verified" prefix when report.verification.status is verified', () => {
-    // AAP-80 — the header label is now driven by
-    // `report.verification.status`, not `verdict.primaryRiskSource`.
-    // A verified report carries the Verified prefix.
+  it('AAP-93 M5: header shows split Risk Level + Verification when report.verification.status is verified', () => {
+    // AAP-93 M5 — Risk Level and Verification render as distinct
+    // fields. A `'verified'` report shows `**Verification**: Verified`
+    // instead of the legacy parenthetical "(Verified)" on the risk
+    // label.
     const verdict: Verdict = {
       status: 'verified',
       deterministicRiskLevel: 'high',
@@ -172,15 +176,13 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       },
     };
     const md = renderMarkdownReport(report, { verdict });
-    expect(md).toContain('Risk Level (Verified)');
+    expect(md).toContain('**Risk Level**: HIGH');
+    expect(md).toContain('**Verification**: Verified');
+    expect(md).not.toContain('Risk Level (Verified)');
     expect(md).not.toContain('Risk Level (Partially Verified)');
-    expect(md).toContain('HIGH');
   });
 
-  it('AAP-80: header risk-level label shows "Partially Verified" when report.verification.status is partially-verified', () => {
-    // AAP-80 — discovery-only runs (the steady state pre-AAP-64) yield
-    // a partial verdict and a `'partially-verified'` field. Header
-    // label moves with it.
+  it('AAP-93 M5: header shows split fields when report.verification.status is partially-verified', () => {
     const verdict: Verdict = {
       status: 'partial',
       deterministicRiskLevel: 'high',
@@ -196,14 +198,14 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       },
     };
     const md = renderMarkdownReport(report, { verdict });
-    expect(md).toContain('Risk Level (Partially Verified)');
-    expect(md).not.toContain('Risk Level (Verified)');
-    expect(md).toContain('HIGH');
-    // The amber AAP-80 banner copy is present.
+    expect(md).toContain('**Risk Level**: HIGH');
+    expect(md).toContain('**Verification**: Partial');
+    expect(md).not.toContain('Risk Level (Partially Verified)');
+    // The amber AAP-80 banner copy is still present.
     expect(md).toContain('Partially verified.');
   });
 
-  it('AAP-80: header risk-level label shows "Unverified" when report.verification.status is verification-failed', () => {
+  it('AAP-93 M5: header shows split fields when report.verification.status is verification-failed', () => {
     const verdict: Verdict = {
       status: 'unverified',
       primaryRiskLevel: 'unverified',
@@ -219,19 +221,16 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       },
     };
     const md = renderMarkdownReport(report, { verdict });
-    expect(md).toContain('Risk Level (Unverified)');
+    expect(md).toContain('**Verification**: Failed');
+    expect(md).not.toContain('Risk Level (Unverified)');
     // The failure banner copy renders for verification-failed.
     expect(md).toContain('Verification failed.');
   });
 
-  it('AAP-80: header falls back to "UNVERIFIED" when verdict attached but verification field absent (interrogation-only)', () => {
-    // Pre-AAP-80 behaviour: a verdict attached AND no
-    // `verification.status` on the report produced "Risk Level
-    // (Verified)" if the verdict had any Surface 2 evidence. AAP-80
-    // routes the label through `verification.status`, so the absence of
-    // that field falls back to the interrogation-only copy regardless
-    // of the verdict shape — exactly what callers that never patched
-    // the report-level field should now see.
+  it('AAP-93 M5: header falls back to Unverified verification field when verdict attached but verification field absent (interrogation-only)', () => {
+    // AAP-93 M5 — the header now always splits Risk Level from
+    // Verification. Without a `report.verification.status`, the
+    // Verification field reads `Unverified — run discovery to verify`.
     const verdict: Verdict = {
       status: 'partial',
       deterministicRiskLevel: 'medium',
@@ -240,16 +239,19 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       discrepancies: [],
     };
     const md = renderMarkdownReport(baseReport(), { verdict });
-    expect(md).toContain('UNVERIFIED');
-    expect(md).toContain('self-reported only');
+    expect(md).toContain('**Verification**: Unverified');
+    expect(md).toContain('run discovery to verify');
     expect(md).not.toContain('Risk Level (Verified)');
     expect(md).not.toContain('Risk Level (Partially Verified)');
   });
 
   it('back-compat: report renders without verdict context', () => {
     const md = renderMarkdownReport(baseReport());
-    // Legacy single-column risk table still appears.
-    expect(md).toContain('| Risk | Systems | Findings |');
+    // AAP-93 H3 — Findings cell now splits into Deterministic +
+    // Self-reported streams. Without verdict context, the legacy
+    // single-column layout still surfaces but with the split
+    // findings columns.
+    expect(md).toContain('| Risk | Systems | Deterministic findings | Self-reported findings |');
     // But the unverified status callout is also there.
     expect(md).toContain('## Verification Status');
   });

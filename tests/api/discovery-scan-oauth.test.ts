@@ -312,7 +312,9 @@ describe('POST /api/discovery/scan — L6 OAuth wire-up (AAP-74)', () => {
     expect(md).not.toContain(
       'UNVERIFIED — Surface 2 deterministic sources have not run yet',
     );
-    expect(md).toContain('Risk Level (Partially Verified)');
+    // AAP-93 M5 — header now splits Risk Level and Verification.
+    expect(md).toContain('**Verification**: Partial');
+    expect(md).not.toContain('Risk Level (Partially Verified)');
     // Per-source table reflects "filesystem: skipped" honestly.
     expect(md).toContain('Filesystem discovery');
     expect(md).toMatch(/Filesystem discovery.*skipped/i);

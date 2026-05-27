@@ -64,7 +64,133 @@ const CREDENTIAL_VOCABULARY = [
   'oauth',
 ];
 
-function transcriptText(transcript: TranscriptEntry[]): string {
+/**
+ * AAP-93 H10 — entity-extraction body. Pre-fix this concatenated BOTH
+ * question and answer text, which surfaced service names that the
+ * interviewer prompted with (e.g. the question "do you use Slack →
+ * REST API → OAuth2?" contains "slack") as MISSING-side mentions even
+ * when the agent's answer never claimed Slack access.
+ *
+ * Codex round 4 fix (P2): a service-specific yes/no prompt like
+ * "Do you use Slack?" answered "Yes" needs to credit Slack as
+ * mentioned — otherwise H10 over-corrects and a discovered Slack
+ * server would surface as EXTRA (or a claimed-but-undiscovered Slack
+ * would miss a MISSING finding). When the answer is short and
+ * affirmative, we splice the question text into the body for that
+ * QA pair so the canonical-keyword pass can still pick up the
+ * service name the agent affirmed.
+ */
+// Codex round 4 P2 — only truly bare affirmatives credit the question
+// text. `we use X` would falsely splice when the answer claims a
+// different service ("we use Teams, not Slack"); keep this list to
+// answers that are PURELY confirmation without naming a different
+// service. Includes pronoun confirmations like "yes we do" / "we do".
+//
+// Codex round 5 P2 — dropped `we use|i use|we do|i do` patterns and
+// kept only the pure-affirmative anchored regex.
+const AFFIRMATIVE_PATTERN: RegExp =
+  /^\s*(yes|yeah|yep|yup|sure|correct|right|true|of course|absolutely|definitely|affirmative|aye|we do|i do|we did|i did)\b[\s.,!]*\s*$/i;
+
+function isAffirmative(answer: string): boolean {
+  if (answer.length > 80) return false; // bare yes-shaped replies are short
+  return AFFIRMATIVE_PATTERN.test(answer);
+}
+
+/**
+ * Codex round 6 P2 — only splice the question when the prompt names
+ * exactly ONE service entity (canonical keyword OR a discovered
+ * server / plugin name) and isn't an "examples" / "such as"
+ * sentence. A prompt like `Do you use any messaging tool like Slack?`
+ * with a `Yes` answer would otherwise credit Slack even though the
+ * agent was confirming the category, not the service.
+ *
+ * Codex round 7 P2 — extended the entity set to include discovered
+ * server / plugin names so a bare affirmative to
+ * `Do you use theona?` still credits the custom server name.
+ */
+const EXAMPLE_QUALIFIER_PATTERNS: RegExp[] = [
+  /\b(examples?|such as|including|like|e\.?g\.?|i\.?e\.?|for instance|or any|or other|or similar|including but|either|any of)\b/i,
+];
+
+function countEntityTokensInQuestion(
+  question: string,
+  extraEntities: ReadonlySet<string>,
+): number {
+  const lowered = question.toLowerCase();
+  const matched = new Set<string>();
+  for (const kw of CANONICAL_KEYWORDS) {
+    if (lowered.includes(kw)) matched.add(kw);
+  }
+  for (const name of extraEntities) {
+    const n = name.toLowerCase();
+    if (n.length === 0) continue;
+    if (lowered.includes(n)) matched.add(n);
+  }
+  return matched.size;
+}
+
+function shouldSpliceQuestion(
+  question: string,
+  extraEntities: ReadonlySet<string>,
+): boolean {
+  // Conservative gate: splice only when the prompt names exactly one
+  // entity (canonical OR discovered) AND isn't framed as an examples-
+  // style prompt.
+  if (EXAMPLE_QUALIFIER_PATTERNS.some((p) => p.test(question))) return false;
+  return countEntityTokensInQuestion(question, extraEntities) === 1;
+}
+
+function collectDiscoveredEntityNames(
+  agents: DiscoveredAgent[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const agent of agents) {
+    for (const s of agent.mcpServers) {
+      const n = s.name.toLowerCase();
+      if (n.length > 0) out.add(n);
+    }
+    for (const cap of agent.capabilities ?? []) {
+      if (cap.kind === 'plugin') {
+        const lowered = cap.name.toLowerCase();
+        const bare = lowered.split('@')[0] ?? '';
+        if (lowered.length > 0) out.add(lowered);
+        if (bare && bare !== lowered) out.add(bare);
+      }
+    }
+  }
+  return out;
+}
+
+function transcriptAnswerText(
+  transcript: TranscriptEntry[],
+  discoveredEntities: ReadonlySet<string>,
+): string {
+  // For each pair: take the answer, optionally splice the question
+  // when the answer is a bare affirmative confirming a service-named
+  // prompt. The splicing is conservative — long answers stand on
+  // their own; only short yes-shaped answers credit the question,
+  // AND only when the question names exactly one entity.
+  const parts: string[] = [];
+  for (const e of transcript) {
+    if (
+      isAffirmative(e.answer) &&
+      shouldSpliceQuestion(e.question, discoveredEntities)
+    ) {
+      parts.push(`${e.question}\n${e.answer}`);
+    } else {
+      parts.push(e.answer);
+    }
+  }
+  return parts.join('\n').toLowerCase();
+}
+
+/**
+ * Joint body (question + answer). Used by HIDDEN-CREDENTIALS detection
+ * because "did anyone discuss credentials anywhere in the conversation"
+ * is a different question from "did the agent self-report using X" —
+ * the former tolerates the question prompt mentioning "credentials".
+ */
+function transcriptJointText(transcript: TranscriptEntry[]): string {
   return transcript.map((e) => `${e.question}\n${e.answer}`).join('\n').toLowerCase();
 }
 
@@ -92,8 +218,17 @@ export function diffAgainstTranscript(
   agents: DiscoveredAgent[],
   transcript: TranscriptEntry[],
 ): DiscoveryFinding[] {
-  const body = transcriptText(transcript);
-  const credentialsDiscussed = transcriptMentionsCredentials(body);
+  // AAP-93 H10 — body used for mention checks is ANSWER-only. The
+  // joint body (question + answer) is reserved for credential-vocab
+  // detection, which doesn't synthesise findings from question text.
+  //
+  // Codex round 7 P2: the affirmative-question splice gate also reads
+  // the discovered entity names so a bare "Yes" to "Do you use
+  // theona?" still credits the custom server name.
+  const discoveredEntities = collectDiscoveredEntityNames(agents);
+  const body = transcriptAnswerText(transcript, discoveredEntities);
+  const jointBody = transcriptJointText(transcript);
+  const credentialsDiscussed = transcriptMentionsCredentials(jointBody);
   const findings: DiscoveryFinding[] = [];
 
   // Build set of all discovered server names (lowercased) for
@@ -116,6 +251,8 @@ export function diffAgainstTranscript(
           description: server.hasCredentials
             ? `Discovered MCP server "${server.name}" (${agent.runtime}) with credentials configured was not mentioned in the interview.`
             : `Discovered MCP server "${server.name}" (${agent.runtime}) was not mentioned in the interview.`,
+          // AAP-93 M3 — surface the config file that produced this row.
+          sourcePath: agent.configPath,
         });
         continue;
       }
@@ -126,6 +263,7 @@ export function diffAgainstTranscript(
           serverName: server.name,
           runtime: agent.runtime,
           description: `MCP server "${server.name}" (${agent.runtime}) has credentials configured (${server.redactedEnvKeys.join(', ')}) but the interview never discussed credentials or authentication.`,
+          sourcePath: agent.configPath,
         });
       }
     }
@@ -162,6 +300,9 @@ export function diffAgainstTranscript(
         runtime: agent.runtime,
         description:
           `Discovered Codex/host plugin "${cap.name}" (${agent.runtime}) was not mentioned in the interview.`,
+        // AAP-93 M3 — plugins are read from the same config file as the
+        // MCP-server block; reuse the agent's configPath.
+        sourcePath: cap.configPath ?? agent.configPath,
       });
     }
   }
@@ -205,9 +346,36 @@ export function diffAgainstTranscript(
         serverName: kw,
         runtime: '—',
         description: `The interview mentioned "${kw}" but no MCP server or plugin with that name was discovered on disk.`,
+        // MISSING findings have no sourcePath — the evidence is the
+        // absence of a config file, not the presence of one.
       });
     }
   }
 
-  return findings;
+  return dedupeFindings(findings);
+}
+
+/**
+ * AAP-93 M1 — composite-key dedup so duplicate findings emitted by
+ * overlapping readers (Heron itself appearing in both Codex auth and
+ * Claude Code auth files; the same plugin enumerated under two
+ * runtimes during a multi-runtime scan) collapse to a single row.
+ *
+ * Key composition: `kind` + `runtime` + `serverName` + `sourcePath`.
+ * MISSING findings have no `sourcePath` so their key folds in the
+ * empty-string fallback — duplicate MISSING for the same keyword from
+ * a single transcript pass cannot happen by construction (the canonical
+ * keyword loop iterates each keyword once), but the dedup costs
+ * nothing and protects against future regressions.
+ */
+function dedupeFindings(findings: DiscoveryFinding[]): DiscoveryFinding[] {
+  const seen = new Set<string>();
+  const out: DiscoveryFinding[] = [];
+  for (const f of findings) {
+    const key = `${f.kind}|${f.runtime}|${f.serverName.toLowerCase()}|${f.sourcePath ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }

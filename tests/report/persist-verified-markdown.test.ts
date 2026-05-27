@@ -133,8 +133,13 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     const mdPath = join(getSessionsDir(), id, 'report.md');
     const rendered = readFileSync(mdPath, 'utf8');
 
-    // AAP-80 — partial verdict ⇒ "Partially Verified" header marker.
-    expect(rendered).toContain('Risk Level (Partially Verified)');
+    // AAP-93 M5 — Risk Level and Verification are distinct header
+    // fields. A partially-verified report shows
+    // `**Verification**: Partial — …` instead of the legacy
+    // parenthetical `Risk Level (Partially Verified)`.
+    expect(rendered).toContain('**Risk Level**: MEDIUM');
+    expect(rendered).toContain('**Verification**: Partial');
+    expect(rendered).not.toContain('Risk Level (Partially Verified)');
     expect(rendered).not.toContain('Risk Level (Verified)');
     // The amber AAP-80 banner copy renders for `partially-verified`.
     expect(rendered).toContain('Partially verified.');

@@ -1,4 +1,5 @@
 import type { AnalyzeFailureReason } from '../analysis/analyzer.js';
+import { calibrateVerdictLabel } from '../analysis/risk-scorer.js';
 import type { AuditReport, QAPair, DataQuality, Risk, SystemAssessment, WriteOperation, StructuredCompliance, RegulatoryFlag } from './types.js';
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import type { ControlResult } from '../compliance/control-catalog.js';
@@ -12,7 +13,13 @@ import {
   worstSeverity,
 } from './control-results-projection.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
-import { isBusinessSystem } from '../util/systems.js';
+import {
+  isBusinessSystem,
+  categorizeSystem,
+  systemCategoryLabel,
+  systemCategoryRationale,
+  type SystemCategory,
+} from '../util/systems.js';
 import {
   escapeText,
   escapeInlineCode,
@@ -140,9 +147,31 @@ function summarizeOverallStatusFromLegacy(c: StructuredCompliance): string {
 export interface RenderMarkdownReportContext {
   verdict?: Verdict;
   discoveryFindings?: DiscoveryFinding[];
-  /** Optional per-source verification status for the report header. */
-  discoveryStatus?: 'ran' | 'skipped' | 'failed';
-  oauthIntrospectionStatus?: Array<{ provider: string; status: 'ran' | 'skipped' | 'failed' }>;
+  /**
+   * Optional per-source verification status for the report header.
+   *
+   * AAP-93 M4 — accepts a discriminated `{status, reason?}` object so
+   * the Verification Status table can render the reason alongside a
+   * `skipped` / `failed` row. The bare-string form is preserved for
+   * back-compat (legacy callers that don't have a reason to surface);
+   * the renderer normalises both shapes internally.
+   */
+  discoveryStatus?:
+    | 'ran'
+    | 'skipped'
+    | 'failed'
+    | { status: 'ran' | 'skipped' | 'failed'; reason?: string };
+  oauthIntrospectionStatus?: Array<{
+    provider: string;
+    /** `'ran' | 'skipped' | 'failed'` — same back-compat dual shape as discoveryStatus. */
+    status:
+      | 'ran'
+      | 'skipped'
+      | 'failed'
+      | { status: 'ran' | 'skipped' | 'failed'; reason?: string };
+    /** Free-text reason — only consumed when `status` is the bare string form. */
+    reason?: string;
+  }>;
   /**
    * AAP-67 — L3/L4/L5 discovery sections to render alongside the
    * existing Surface 2 findings. When absent, the section block is
@@ -174,9 +203,13 @@ export function renderMarkdownReport(
     renderInterrogationOnlyBanner(report),
     // AAP-63 — Verification Status sits near the top so an auditor sees
     // "deterministic or not?" before reading any findings.
-    renderVerificationStatusSection(verdict, context),
-    renderScopeAndMethodology(report),
-    renderSummary(report, verdict),
+    renderVerificationStatusSection(
+      verdict,
+      context,
+      report.verification?.status,
+    ),
+    renderScopeAndMethodology(report, context),
+    renderSummary(report, verdict, discoveryFindings),
     renderAgentProfile(report),
     // AAP-63 — discrepancies between Surface 1 claims and Surface 2
     // evidence appear above the findings tables so the reviewer is
@@ -189,8 +222,8 @@ export function renderMarkdownReport(
       discoveryFindings,
     ),
     renderSystems(report.systems),
-    renderPositiveFindings(report),
-    renderVerdict(report),
+    renderPositiveFindings(report, discoveryFindings),
+    renderVerdict(report, discoveryFindings, verdict),
     report.compliance ? renderRegulatoryCompliance(report.compliance as StructuredCompliance, report) : null,
     report.dataQuality ? renderDataQuality(report.dataQuality) : null,
     renderTranscript(report.transcript),
@@ -228,18 +261,29 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
   const primaryRisk =
     verdict?.primaryRiskLevel ?? report.overallRiskLevel;
   const verificationStatus = report.verification?.status;
+  // AAP-93 M5 — Risk Level and Verification rendered as DISTINCT
+  // fields on the header line. Pre-fix the verification state was a
+  // parenthetical on the risk label (`**Risk Level (Partially
+  // Verified)**: MEDIUM`) which conflated two orthogonal axes. The
+  // dashboard already keeps them separate; the markdown header now
+  // matches that contract.
   let riskLine: string;
+  let verificationLine = '';
   if (!verdict) {
     riskLine = `**Risk Level**: ${report.overallRiskLevel.toUpperCase()}`;
   } else if (verificationStatus === 'verified') {
-    riskLine = `**Risk Level (Verified)**: ${primaryRisk.toUpperCase()}`;
+    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
+    verificationLine = ' | **Verification**: Verified';
   } else if (verificationStatus === 'partially-verified') {
-    riskLine = `**Risk Level (Partially Verified)**: ${primaryRisk.toUpperCase()}`;
+    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
+    verificationLine = ' | **Verification**: Partial — see Verification Status section';
   } else if (verificationStatus === 'verification-failed') {
-    riskLine = `**Risk Level (Unverified)**: ${primaryRisk.toUpperCase()}`;
+    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
+    verificationLine = ' | **Verification**: Failed — see Verification Status section';
   } else {
     // 'interrogation-only' or absent (legacy session pre-AAP-79).
-    riskLine = `**Risk Level**: UNVERIFIED (self-reported only — run discovery to verify)`;
+    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
+    verificationLine = ' | **Verification**: Unverified — run discovery to verify';
   }
 
   // AAP-43 P1 #5: single overall regulatory status label (replaces
@@ -255,7 +299,7 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
 
   return `# Agent Access Audit Report
 
-**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${riskLine}${dqPart}${regLine}`;
+**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${riskLine}${verificationLine}${dqPart}${regLine}`;
 }
 
 // ─── AAP-79 — interrogation-only banner ────────────────────────────────────
@@ -315,14 +359,72 @@ function renderInterrogationOnlyBanner(report: AuditReport): string {
 
 // ─── Scope & Methodology ────────────────────────────────────────────────────
 
-function renderScopeAndMethodology(report: AuditReport): string {
+/**
+ * AAP-93 H1 — `Limitations` text is conditional on
+ * `report.verification.status`. Pre-fix the line always claimed "based
+ * solely on self-reported information / no runtime analysis", which
+ * contradicted itself once Surface 2 had run (the same report carried
+ * 10 deterministic findings AND a Verification Status table showing
+ * filesystem discovery ran). Each lifecycle state now picks the text
+ * that is honest at that state.
+ *
+ * Codex post-review fix (P2 #1): partial verification can mean
+ * either filesystem-only (OAuth skipped) OR OAuth-only (filesystem
+ * skipped via the `skipFilesystem: true` dashboard path). The text
+ * inspects the per-source status when partially-verified so the
+ * methodology actually agrees with the Verification Status table.
+ */
+function limitationsTextForVerification(
+  report: AuditReport,
+  context: RenderMarkdownReportContext = {},
+): string {
+  const status = report.verification?.status;
+  switch (status) {
+    case 'verified':
+      return "Combines self-reported interview answers with filesystem discovery and OAuth scope introspection. Runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.";
+    case 'partially-verified': {
+      // Inspect per-source state. `discoveryStatus` defaults to 'ran'
+      // (legacy behaviour); `oauthIntrospectionStatus` defaults to
+      // an empty rows array which the renderer treats as the
+      // structural skip.
+      const fsStatus = normalizeStatus(context.discoveryStatus ?? 'ran').status;
+      const oauthRows = context.oauthIntrospectionStatus ?? [];
+      const oauthRan = oauthRows.some(
+        (r) => normalizeStatus(r.status, r.reason).status === 'ran',
+      );
+      const fsRan = fsStatus === 'ran';
+      if (fsRan && oauthRan) {
+        return 'Combines self-reported interview answers with filesystem discovery and OAuth scope introspection (partial coverage — see Verification Status section). Runtime behaviour, code review, and network traffic remain out of scope.';
+      }
+      if (oauthRan && !fsRan) {
+        return 'Combines self-reported interview answers with OAuth scope introspection. Filesystem discovery skipped — runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.';
+      }
+      if (fsRan && !oauthRan) {
+        return 'Combines self-reported interview answers with filesystem discovery. OAuth introspection skipped — runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.';
+      }
+      // Neither source actually ran but report flipped to partial —
+      // honest fallback.
+      return 'Verification was attempted but no deterministic source completed cleanly. See Verification Status section.';
+    }
+    case 'verification-failed':
+      return 'Verification attempted but did not complete cleanly. See the Verification Status section below. The report below remains based on the interview only and should be re-verified once the underlying source is reachable.';
+    case 'interrogation-only':
+    default:
+      return "This assessment is based solely on the agent's self-reported information. No runtime analysis, code review, or network traffic inspection was performed. Findings should be verified against actual system configurations.";
+  }
+}
+
+function renderScopeAndMethodology(
+  report: AuditReport,
+  context: RenderMarkdownReportContext = {},
+): string {
   return `## Scope & Methodology
 
 **Assessment type**: Automated structured interview
 
 **Method**: Heron conducted a ${report.metadata.questionsAsked}-question interview covering agent purpose, data access, permissions, write operations, and operational frequency. **Duration**: ${Math.round(report.metadata.interviewDuration / 1000)}s.
 
-**Limitations**: This assessment is based solely on the agent's self-reported information. No runtime analysis, code review, or network traffic inspection was performed. Findings should be verified against actual system configurations.`;
+**Limitations**: ${limitationsTextForVerification(report, context)}`;
 }
 
 // ─── Data Quality Badge ──────────────────────────────────────────────────────
@@ -364,28 +466,121 @@ ${rows.join('\n')}`;
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
-function renderSummary(report: AuditReport, verdict?: Verdict): string {
-  // Dashboard: finding counts by severity
-  const allRisks = report.risks;
-  const countBySeverity = (sev: string) => allRisks.filter(r => r.severity === sev).length;
-  const critical = countBySeverity('critical');
-  const high = countBySeverity('high');
-  const medium = countBySeverity('medium');
-  const low = countBySeverity('low');
+/**
+ * AAP-93 H3 — count Surface 2 findings by severity for the Executive
+ * Summary's "Deterministic findings" stream. `DiscoveryFinding` uses
+ * the upper-case ladder (HIGH / MEDIUM / LOW); the summary table
+ * renders them in title case alongside the analyzer's stream.
+ *
+ * Codex round 7 P2 — on the OAuth-only path discoveryFindings is
+ * empty but OAuth diffs (the verdict's `discrepancies` array — kept
+ * loose-typed via DiscoveryFinding-shaped rows from
+ * persist-verified-markdown.ts callers — OR a deterministicRiskLevel
+ * lift on the verdict) still represent Surface 2 evidence. The
+ * summary now respects a `verdict.deterministicRiskLevel` lift even
+ * when discoveryFindings is empty: when the verdict says HIGH/CRITICAL
+ * but the per-row stream is empty, we surface "see Verification
+ * Status" instead of "None" so the cell doesn't lie.
+ */
+function countDeterministicFindings(
+  discoveryFindings: ReadonlyArray<DiscoveryFinding>,
+): { critical: number; high: number; medium: number; low: number } {
+  const out = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of discoveryFindings) {
+    switch (f.severity) {
+      case 'HIGH':
+        out.high++;
+        break;
+      case 'MEDIUM':
+        out.medium++;
+        break;
+      case 'LOW':
+        out.low++;
+        break;
+      case 'INFO':
+        out.low++;
+        break;
+    }
+  }
+  return out;
+}
 
-  const findingsParts: string[] = [];
-  if (critical > 0) findingsParts.push(`${critical} Critical`);
-  if (high > 0) findingsParts.push(`${high} High`);
-  if (medium > 0) findingsParts.push(`${medium} Medium`);
-  if (low > 0) findingsParts.push(`${low} Low`);
-  if (findingsParts.length === 0) findingsParts.push('None');
+function formatFindingsCount(counts: {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}): string {
+  const parts: string[] = [];
+  if (counts.critical > 0) parts.push(`${counts.critical} Critical`);
+  if (counts.high > 0) parts.push(`${counts.high} High`);
+  if (counts.medium > 0) parts.push(`${counts.medium} Medium`);
+  if (counts.low > 0) parts.push(`${counts.low} Low`);
+  if (parts.length === 0) parts.push('None');
+  return parts.join(', ');
+}
 
-  const systemCount = report.systems.filter(isBusinessSystem).length;
+function renderSummary(
+  report: AuditReport,
+  verdict?: Verdict,
+  discoveryFindings: ReadonlyArray<DiscoveryFinding> = [],
+): string {
+  // AAP-93 H3 — self-reported counts come from the analyzer's `risks`
+  // array. Deterministic counts come from the Surface 2 discovery
+  // findings passed through render context. Pre-fix the summary
+  // collapsed everything into a single "Findings" cell driven by
+  // `report.risks` alone — which dropped the 10 discovery MEDIUMs the
+  // Findings section below was actively rendering. The two streams
+  // are different evidence sources; collapsing them undercounted in
+  // the reviewer's eye.
+  const selfReportedCounts = {
+    critical: report.risks.filter((r) => r.severity === 'critical').length,
+    high: report.risks.filter((r) => r.severity === 'high').length,
+    medium: report.risks.filter((r) => r.severity === 'medium').length,
+    low: report.risks.filter((r) => r.severity === 'low').length,
+  };
+  const deterministicCounts = countDeterministicFindings(discoveryFindings);
+  const selfReportedFindings = formatFindingsCount(selfReportedCounts);
+  // Codex round 7 P2 — if the verdict's deterministicRiskLevel is
+  // HIGH/CRITICAL but the per-row stream is empty (OAuth-only path),
+  // the "None" cell would lie. Pivot to a "see Verification Status"
+  // pointer so the cell doesn't undersell deterministic evidence.
+  const allZero =
+    deterministicCounts.critical === 0 &&
+    deterministicCounts.high === 0 &&
+    deterministicCounts.medium === 0 &&
+    deterministicCounts.low === 0;
+  const verdictDeterministicRaised =
+    verdict?.deterministicRiskLevel === 'high' ||
+    verdict?.deterministicRiskLevel === 'critical' ||
+    verdict?.deterministicRiskLevel === 'medium';
+  const deterministicFindings =
+    allZero && verdictDeterministicRaised
+      ? `See Verification Status (${verdict!.deterministicRiskLevel!.toUpperCase()} verdict)`
+      : formatFindingsCount(deterministicCounts);
 
-  // AAP-63 — the executive-summary dashboard now carries TWO risk
-  // columns: "Verified Risk" (deterministic Surface 2) and
-  // "Self-reported Risk" (LLM Surface 1, italicised). When no verdict
-  // is attached we fall back to the legacy single-column layout.
+  // AAP-93 H4 — Systems count now reflects every category, not only
+  // the business filter. A `5 systems (3 business, 1 host runtime, 1
+  // audit infrastructure)` summary makes the categorisation visible
+  // at a glance. Pre-fix this rendered "1" for the codex audit case
+  // because everything else was silently filtered.
+  const systemsByCategory = groupSystemsByCategory(report.systems);
+  const businessCount = systemsByCategory.get('business')?.length ?? 0;
+  const auditCount = systemsByCategory.get('audit-infrastructure')?.length ?? 0;
+  const hostCount = systemsByCategory.get('host-runtime')?.length ?? 0;
+  const unknownCount = systemsByCategory.get('unknown')?.length ?? 0;
+  const totalSystems = businessCount + auditCount + hostCount + unknownCount;
+  const breakdownParts: string[] = [];
+  if (businessCount > 0) breakdownParts.push(`${businessCount} business`);
+  if (hostCount > 0) breakdownParts.push(`${hostCount} host runtime`);
+  if (auditCount > 0) breakdownParts.push(`${auditCount} audit infra`);
+  if (unknownCount > 0) breakdownParts.push(`${unknownCount} other`);
+  const systemsCell =
+    breakdownParts.length > 1
+      ? `${totalSystems} (${breakdownParts.join(', ')})`
+      : String(totalSystems);
+
+  // AAP-93 H3 — split Findings cell into Deterministic + Self-reported.
   let dashboard: string;
   if (verdict) {
     const verifiedCell =
@@ -395,13 +590,13 @@ function renderSummary(report: AuditReport, verdict?: Verdict): string {
     const selfReportedCell = verdict.interviewRiskLevel
       ? `_${verdict.interviewRiskLevel.toUpperCase()} (self-report only)_`
       : '_n/a_';
-    dashboard = `| Verified Risk | Self-reported Risk | Systems | Findings |
-|------|------|---------|----------|
-| ${verifiedCell} | ${selfReportedCell} | ${systemCount} | ${findingsParts.join(', ')} |`;
+    dashboard = `| Verified Risk | Self-reported Risk | Systems | Deterministic findings | Self-reported findings |
+|------|------|---------|---------|---------|
+| ${verifiedCell} | ${selfReportedCell} | ${systemsCell} | ${deterministicFindings} | ${selfReportedFindings} |`;
   } else {
-    dashboard = `| Risk | Systems | Findings |
-|------|---------|----------|
-| **${report.overallRiskLevel.toUpperCase()}** | ${systemCount} | ${findingsParts.join(', ')} |`;
+    dashboard = `| Risk | Systems | Deterministic findings | Self-reported findings |
+|------|---------|---------|---------|
+| **${report.overallRiskLevel.toUpperCase()}** | ${systemsCell} | ${deterministicFindings} | ${selfReportedFindings} |`;
   }
 
   let methodology = '';
@@ -466,20 +661,66 @@ ${rows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
 
 // ─── Per-System Cards ────────────────────────────────────────────────────────
 
-function renderSystems(systems: SystemAssessment[]): string {
-  const businessSystems = systems.filter(isBusinessSystem);
+/**
+ * AAP-93 H4 — group every assessed system by `categorizeSystem` rather
+ * than silently filtering everything that isn't `'business'`. Returns
+ * a Map keyed on category in stable iteration order
+ * (`business → host-runtime → audit-infrastructure → unknown`). Pre-fix
+ * this was an in-place `.filter(isBusinessSystem)` that dropped audit
+ * tooling, host runtime, and any unrecognised system from the report.
+ */
+function groupSystemsByCategory(
+  systems: SystemAssessment[],
+): Map<SystemCategory, SystemAssessment[]> {
+  const out = new Map<SystemCategory, SystemAssessment[]>();
+  out.set('business', []);
+  out.set('host-runtime', []);
+  out.set('audit-infrastructure', []);
+  out.set('unknown', []);
+  for (const s of systems) {
+    const cat = categorizeSystem(s);
+    out.get(cat)!.push(s);
+  }
+  return out;
+}
 
-  if (businessSystems.length === 0) {
+function renderSystems(systems: SystemAssessment[]): string {
+  const grouped = groupSystemsByCategory(systems);
+
+  // AAP-93 H4/H5 — render every non-empty category. The Systems section
+  // is the audit's structural surface; hiding categories made the
+  // Findings section's HERON-001 (unrestricted local shell + file
+  // writes) "float" with nowhere to attach.
+  const sections: string[] = [];
+  for (const [cat, list] of grouped) {
+    if (list.length === 0) continue;
+    const label = systemCategoryLabel(cat);
+    const rationale = systemCategoryRationale(cat);
+    const cards = list.map(renderSystemCard).join('\n\n');
+    sections.push(`### ${label}\n\n_${rationale}_\n\n${cards}`);
+  }
+
+  if (sections.length === 0) {
     return `## Systems & Access
 
 No systems were identified in the interview.`;
   }
 
-  const cards = businessSystems.map(renderSystemCard).join('\n\n');
+  // AAP-93 H6 — single-line explanation of how per-system risk relates
+  // to overall risk. Pre-fix the systems table could show `Risk: LOW`
+  // for every system while the header carried `Risk Level: MEDIUM`,
+  // with no clarification of why those two fields don't track each
+  // other. The note below grounds the disconnect: per-system risk is
+  // access-pattern only; overall risk also reads agent-behaviour
+  // findings. See Verdict & Recommendations for aggregation.
+  const explanation =
+    "_Per-system risk shown below scores the system's own access pattern (blast radius + excessive scopes + irreversible writes + data sensitivity). Overall deployment risk also incorporates findings about the agent's behaviour around the system and the verification verdict. See **Verdict & Recommendations** for aggregation._";
 
   return `## Systems & Access
 
-${cards}`;
+${explanation}
+
+${sections.join('\n\n')}`;
 }
 
 // AAP-88: per-system risk scoring rubric. Point values (blast-radius
@@ -748,13 +989,84 @@ ${rest}
  * context is attached we render a minimal "not yet run" stub so the
  * report makes the gap explicit instead of hiding it.
  */
+/**
+ * AAP-93 M4 — normalise the dual shape of `discoveryStatus` /
+ * `oauthIntrospectionStatus` entries into a `{status, reason}` tuple.
+ * Bare strings are forward-compat shims for legacy callers; the new
+ * `{status, reason}` shape is the canonical form.
+ */
+function normalizeStatus(
+  s:
+    | 'ran'
+    | 'skipped'
+    | 'failed'
+    | { status: 'ran' | 'skipped' | 'failed'; reason?: string }
+    | undefined,
+  legacyReason?: string,
+): { status: 'ran' | 'skipped' | 'failed'; reason?: string } {
+  if (s === undefined) return { status: 'ran' };
+  if (typeof s === 'string') return legacyReason ? { status: s, reason: legacyReason } : { status: s };
+  return s;
+}
+
+function formatStatusCell(s: { status: string; reason?: string }): string {
+  // AAP-93 M4 — render `skipped (reason: …)` so a reviewer can tell
+  // "we don't have OAuth credentials" from "user denied consent" from
+  // "intentionally not part of this audit". Pre-fix the cell just
+  // said `skipped` with no metadata, which read as Heron silently
+  // dropping a source.
+  if (s.reason && (s.status === 'skipped' || s.status === 'failed')) {
+    return `${s.status} (reason: ${escapeCell(s.reason)})`;
+  }
+  return s.status;
+}
+
 function renderVerificationStatusSection(
   verdict: Verdict | undefined,
   context: RenderMarkdownReportContext,
+  reportVerificationStatus?:
+    | 'interrogation-only'
+    | 'partially-verified'
+    | 'verified'
+    | 'verification-failed',
 ): string {
-  const status = verdict?.status ?? 'unverified';
+  // Codex round 3 fix (P2): consult `report.verification.status` as a
+  // secondary source. A persisted `verified` / `partially-verified`
+  // report re-rendered without a `verdict` in context would otherwise
+  // surface the UNVERIFIED stub here, contradicting the Limitations
+  // text which already reads the persisted field. When the persisted
+  // status says verification happened, the section pivots to the
+  // per-source table even without a verdict in context.
+  //
+  // Codex round 4 fix (P2): map persisted `'verified'` → `'verified'`
+  // and `'partially-verified'` → `'partial'` so the section header
+  // doesn't downgrade a persisted verified report to PARTIAL on
+  // re-render.
+  const verdictStatus = verdict?.status;
+  let persistedFallback: 'unverified' | 'partial' | 'verified' | undefined;
+  if (reportVerificationStatus === 'verified') {
+    persistedFallback = 'verified';
+  } else if (reportVerificationStatus === 'partially-verified') {
+    persistedFallback = 'partial';
+  }
+  // Codex round 5 P2: persisted `verification-failed` re-rendered
+  // without a verdict context must NOT fall through to the
+  // unverified-not-run stub — that contradicts the failure banner
+  // and limitations text. Surface a dedicated failed-state stub.
+  const persistedFailed =
+    reportVerificationStatus === 'verification-failed' &&
+    verdictStatus === undefined;
+  const status = verdictStatus ?? persistedFallback ?? 'unverified';
   const lines: string[] = ['## Verification Status', ''];
-  if (status === 'unverified') {
+  if (persistedFailed) {
+    lines.push(
+      '**Verification status:** _FAILED — verification was attempted but did not complete cleanly._',
+    );
+    lines.push('');
+    lines.push(
+      'See the failure banner near the top of the report for the diagnostic reason. Retry verification via the dashboard or by re-calling `start_verification` from the agent host. The findings below remain based on the interview only until verification completes.',
+    );
+  } else if (status === 'unverified') {
     lines.push(
       '**Verification status:** _UNVERIFIED — Surface 2 deterministic sources have not run yet._',
     );
@@ -767,14 +1079,26 @@ function renderVerificationStatusSection(
     lines.push('');
     lines.push('| Source | Status |');
     lines.push('| --- | --- |');
-    const discoveryStatus = context.discoveryStatus ?? 'ran';
-    lines.push(`| Filesystem discovery (Surface 2) | ${discoveryStatus} |`);
+    const discoveryStatus = normalizeStatus(context.discoveryStatus ?? 'ran');
+    lines.push(
+      `| Filesystem discovery (Surface 2) | ${formatStatusCell(discoveryStatus)} |`,
+    );
     const oauthRows = context.oauthIntrospectionStatus ?? [];
     if (oauthRows.length === 0) {
-      lines.push(`| OAuth introspection (Surface 2) | skipped |`);
+      // AAP-93 M4 — even with no per-provider rows, surface a default
+      // skip reason so the table doesn't lie about a source that never
+      // executed. The OAuth introspection skip is structural today
+      // (token-capture UX is AAP-64); callers can override by passing
+      // an explicit `{status, reason}` row.
+      lines.push(
+        '| OAuth introspection (Surface 2) | skipped (reason: no OAuth credentials configured for this session) |',
+      );
     } else {
       for (const r of oauthRows) {
-        lines.push(`| OAuth introspection — ${escapeCell(r.provider)} | ${r.status} |`);
+        const normalized = normalizeStatus(r.status, r.reason);
+        lines.push(
+          `| OAuth introspection — ${escapeCell(r.provider)} | ${formatStatusCell(normalized)} |`,
+        );
       }
     }
   }
@@ -900,11 +1224,48 @@ function renderFindingsSplit(
   if (discoveryFindings.length === 0) {
     lines.push('_No deterministic findings — either the discovery scan has not run yet, or it ran and found no inconsistencies. Re-run discovery if the agent configuration has changed._');
   } else {
-    lines.push('| Kind | Severity | Server / Runtime | Description |');
-    lines.push('| --- | --- | --- | --- |');
+    // AAP-93 M2 — when discovery findings span more than one runtime
+    // (Codex + Claude Code on the same machine), surface a note so
+    // the reader doesn't read it as "the Codex audit somehow knows
+    // about Claude Code". The discovery scan is host-machine wide;
+    // each row's Runtime column tells the reader which runtime's
+    // config produced the evidence.
+    //
+    // Codex post-review fix (P3): MISSING findings carry the sentinel
+    // `runtime: '—'` (no file source); excluding it stops the
+    // cross-runtime callout from firing on a single-runtime audit
+    // that happens to have one EXTRA + one MISSING row.
+    const runtimesSeen = new Set<string>();
     for (const f of discoveryFindings) {
+      if (f.runtime && f.runtime !== '—') runtimesSeen.add(f.runtime);
+    }
+    if (runtimesSeen.size > 1) {
+      const runtimeList = [...runtimesSeen]
+        .filter((r) => r !== '—')
+        .sort()
+        .join(', ');
       lines.push(
-        `| ${escapeCell(f.kind)} | ${f.severity} | ${escapeCell(f.serverName)} / ${escapeCell(f.runtime)} | ${escapeCell(f.description)} |`,
+        `_Findings cover all AI-runtime configs present on the host machine (${runtimeList}). Each row's **Runtime** column identifies the runtime whose config produced the evidence — findings tagged with a runtime other than the audited agent indicate cross-runtime artefacts on the same workstation._`,
+      );
+      lines.push('');
+    }
+
+    // AAP-93 M3 — `Source` column carries the evidence path so a
+    // reviewer can verify each finding against the underlying config
+    // file. MISSING findings (absence-evidence) render `—`.
+    //
+    // Codex round 4 fix (P3): `escapeInlineCode` does NOT escape pipe
+    // characters, so a config path containing `|` would split the
+    // table row into extra cells. Wrap the rendered cell in
+    // `escapeCell` for table-safety.
+    lines.push('| Kind | Severity | Server / Runtime | Source | Description |');
+    lines.push('| --- | --- | --- | --- | --- |');
+    for (const f of discoveryFindings) {
+      const source = f.sourcePath
+        ? escapeCell(`\`${escapeInlineCode(f.sourcePath)}\``)
+        : '—';
+      lines.push(
+        `| ${escapeCell(f.kind)} | ${f.severity} | ${escapeCell(f.serverName)} / ${escapeCell(f.runtime)} | ${source} | ${escapeCell(f.description)} |`,
       );
     }
   }
@@ -924,7 +1285,10 @@ function renderFindingsSplit(
 
 // ─── Positive Findings ─────────────────────────────────────────────────────
 
-function renderPositiveFindings(report: AuditReport): string {
+function renderPositiveFindings(
+  report: AuditReport,
+  discoveryFindings: ReadonlyArray<DiscoveryFinding> = [],
+): string {
   const positives: string[] = [];
   const systems = report.systems.filter(isBusinessSystem);
 
@@ -944,13 +1308,26 @@ function renderPositiveFindings(report: AuditReport): string {
   // Gate the positive on BOTH: zero scopesDelta entries AND no high-
   // severity risk that the finding-type inferrer classifies as access /
   // excessive-permissions / scope-creep.
+  //
+  // AAP-93 H7 — additionally gate on `discoveryFindings.kind === 'EXTRA'`.
+  // A Surface 2 EXTRA finding means an MCP server or plugin was
+  // discovered that the agent did NOT declare in the interview; that
+  // is, by definition, excess permission surface. The positive
+  // "follows least-privilege principle" must not coexist with even
+  // one EXTRA discovery finding.
   const totalExcessive = systems.reduce((n, s) => n + s.scopesDelta.length, 0);
   const hasAccessRisk = report.risks.some((r) => {
     if (r.severity !== 'high' && r.severity !== 'critical') return false;
     const t = inferFindingType(r);
     return t === 'excessive-access' || t === 'scope-creep';
   });
-  if (totalExcessive === 0 && systems.length > 0 && !hasAccessRisk) {
+  const extraFindings = discoveryFindings.filter((f) => f.kind === 'EXTRA');
+  if (
+    totalExcessive === 0 &&
+    systems.length > 0 &&
+    !hasAccessRisk &&
+    extraFindings.length === 0
+  ) {
     positives.push('No excessive permissions detected — follows least-privilege principle');
   }
 
@@ -1011,19 +1388,77 @@ function recommendationTitle(body: string): string {
   return `${head.trim()}.`;
 }
 
-function renderVerdict(report: AuditReport): string {
-  // Never allow bare APPROVE for self-reported interview — always at least "WITH CONDITIONS"
-  let verdict = report.recommendation ?? 'APPROVE WITH CONDITIONS';
-  if (verdict === 'APPROVE') {
-    verdict = 'APPROVE WITH CONDITIONS';
-  }
+function renderVerdict(
+  report: AuditReport,
+  discoveryFindings: ReadonlyArray<DiscoveryFinding> = [],
+  verdictContext?: Verdict,
+): string {
+  // AAP-93 H8 — verdict label is calibrated against the verification
+  // status and the combined HIGH-finding stream (Surface 1 risks +
+  // Surface 2 discovery HIGHs + verdict-level deterministic HIGH).
+  // Pre-fix `APPROVE WITH CONDITIONS` would fire for partial-verified
+  // + 1 HIGH self-reported, which reads as Heron rubber-stamping a
+  // risky deployment. The new matrix lives in `calibrateVerdictLabel`;
+  // the analyzer's original `report.recommendation` is preserved on
+  // the JSON for back-compat.
+  //
+  // Codex round 6 P2: discoveryFindings can be empty when only OAuth
+  // ran (the `skipFilesystem: true` path) but OAuth introspection
+  // can still produce a deterministic HIGH. The verdict's
+  // `deterministicRiskLevel` captures the combined Surface 2 ramp
+  // (discovery + OAuth) so we read it here as a third HIGH-finding
+  // source.
+  const hasHighSelfReported = report.risks.some(
+    (r) => r.severity === 'high' || r.severity === 'critical',
+  );
+  const hasHighDeterministic = discoveryFindings.some(
+    (f) => f.severity === 'HIGH',
+  );
+  const verdictDeterministicHigh =
+    verdictContext?.deterministicRiskLevel === 'high' ||
+    verdictContext?.deterministicRiskLevel === 'critical';
+  const verdict = calibrateVerdictLabel({
+    recommendation: report.recommendation,
+    verificationStatus: report.verification?.status,
+    hasHighFindings:
+      hasHighSelfReported || hasHighDeterministic || verdictDeterministicHigh,
+  });
   const recs = report.recommendations;
 
   // Ensure standard condition is always present
   const standardCondition = 'Verify self-reported claims against actual system configurations before granting production access';
-  const allRecs = recs.some(r => /verify.*self.reported|verify.*claim/i.test(r))
+  let allRecs = recs.some(r => /verify.*self.reported|verify.*claim/i.test(r))
     ? recs
     : [standardCondition, ...recs];
+
+  // AAP-93 H7 — when Surface 2 EXTRA findings exist (MCP servers or
+  // plugins the agent never mentioned in the interview), inject a
+  // concrete remediation recommendation. Pre-fix the report could
+  // simultaneously claim "follows least-privilege principle" AND list
+  // 8 EXTRA findings — a direct internal contradiction. With this
+  // recommendation in place, even if the "no excessive permissions"
+  // positive accidentally surfaces, the Verdict section names the
+  // gap explicitly.
+  const extras = discoveryFindings.filter((f) => f.kind === 'EXTRA');
+  if (extras.length > 0) {
+    const mcpExtra = extras.filter((f) =>
+      /mcp server/i.test(f.description),
+    ).length;
+    const pluginExtra = extras.filter((f) =>
+      /plugin/i.test(f.description),
+    ).length;
+    const counts: string[] = [];
+    if (mcpExtra > 0) counts.push(`${mcpExtra} MCP server${mcpExtra === 1 ? '' : 's'}`);
+    if (pluginExtra > 0) counts.push(`${pluginExtra} plugin${pluginExtra === 1 ? '' : 's'}`);
+    const breakdown = counts.length > 0 ? counts.join(' and ') : `${extras.length} item${extras.length === 1 ? '' : 's'}`;
+    const extraRec =
+      `Reduce tool surface to declared scope. ${breakdown} were discovered but not mentioned in the interview — review whether they are required for this deployment.`;
+    // Prepend if not already present (a verify-claims rec is usually
+    // first; we want the Surface 2 specific item above generic prose).
+    if (!allRecs.some((r) => /reduce tool surface to declared scope/i.test(r))) {
+      allRecs = [extraRec, ...allRecs];
+    }
+  }
 
   let body = `**${verdict}**`;
 
@@ -1037,13 +1472,25 @@ function renderVerdict(report: AuditReport): string {
       allRecs
         .map(r => {
           const title = recommendationTitle(r);
+          const trimmed = r.trim();
           // Strip the title prefix from the body if it's the same span
           // (avoid "Foo. Foo. ..." duplication when title IS the body).
-          const sameTitle = title === r.trim() || title === `${r.trim()}.`;
+          const sameTitle = title === trimmed || title === `${trimmed}.`;
           if (sameTitle) {
             return `> **${title}**`;
           }
-          return `> **${title}** ${r.trim()}`;
+          // AAP-93 polish: when the title is a prefix of the body
+          // (e.g. title "Reduce tool surface to declared scope." +
+          // body "Reduce tool surface to declared scope. 8 plugins …"),
+          // emit the title once and drop the prefix from the body so
+          // the card doesn't read as duplicated.
+          const lowerTitle = title.toLowerCase();
+          const lowerBody = trimmed.toLowerCase();
+          if (lowerBody.startsWith(lowerTitle)) {
+            const rest = trimmed.slice(title.length).trimStart();
+            return rest.length > 0 ? `> **${title}** ${rest}` : `> **${title}**`;
+          }
+          return `> **${title}** ${trimmed}`;
         })
         .join('\n>\n');
   }
@@ -1655,7 +2102,21 @@ function renderObligationsChecklist(c: StructuredCompliance, report?: AuditRepor
 
     // ── Processor contracts ─────────────────────────────────────────────
     if (signals.hasPII && signals.hasExternalProcessors) {
-      rows.push({ obligation: 'GDPR Art. 28', action: 'Sign data processing contracts with every service you send data to (Google, Apify, etc.)' });
+      // AAP-93 H9 — name actual systems in the obligation copy. Pre-fix
+      // hardcoded "(Google, Apify, etc.)" even for audits that touched
+      // neither, which read as off-the-shelf boilerplate.
+      const procNames = (report?.systems ?? [])
+        .filter(isBusinessSystem)
+        .map((s) => s.systemId)
+        .slice(0, 3);
+      const procClause =
+        procNames.length > 0
+          ? `(e.g. ${procNames.join(', ')})`
+          : '(every external service receiving personal data)';
+      rows.push({
+        obligation: 'GDPR Art. 28',
+        action: `Sign data processing contracts with every service you send data to ${procClause}.`,
+      });
     }
 
     // ── DPIA: large-scale OR decisions OR sensitive PII ─────────────────
@@ -1665,7 +2126,20 @@ function renderObligationsChecklist(c: StructuredCompliance, report?: AuditRepor
 
     // ── International transfer ──────────────────────────────────────────
     if (signals.hasPII && signals.hasInternationalTransfer) {
-      rows.push({ obligation: 'GDPR Arts. 44-49', action: 'Data leaves the EU (e.g. to US-based Google/Apify) — you need a legal basis for that transfer (SCCs, adequacy decision, etc.)' });
+      // AAP-93 H9 — name the actual destination systems instead of the
+      // legacy "Google/Apify" boilerplate.
+      const intlNames = (report?.systems ?? [])
+        .filter(isBusinessSystem)
+        .map((s) => s.systemId)
+        .slice(0, 3);
+      const intlClause =
+        intlNames.length > 0
+          ? `(e.g. ${intlNames.join(', ')})`
+          : '(non-EU processors)';
+      rows.push({
+        obligation: 'GDPR Arts. 44-49',
+        action: `Data leaves the EU to non-EU processors ${intlClause} — you need a legal basis for that transfer (SCCs, adequacy decision, etc.).`,
+      });
     }
 
     // ── Art. 22 automated-decisions safeguard ───────────────────────────
@@ -1676,7 +2150,26 @@ function renderObligationsChecklist(c: StructuredCompliance, report?: AuditRepor
 
   // Always applicable — baseline operational obligations
   rows.push({ obligation: 'Credentials', action: 'Store API keys/tokens in a secrets manager (not in code or env files), rotate them regularly' });
-  rows.push({ obligation: 'Platform ToS', action: 'Check you are not violating the rules of LinkedIn, Google, or other connected services (scraping, rate limits, usage policies)' });
+  // AAP-93 H9 — Platform ToS row is gated on the systems present in the
+  // audit. Pre-fix the row hardcoded "LinkedIn, Google, or other
+  // connected services (scraping, rate limits, usage policies)" even
+  // for audits whose systems didn't touch any of those — that read as
+  // boilerplate pollution. The row only renders when at least one
+  // business system is present, and the example list is drawn from
+  // the actual systems names so the obligation cites real vendors.
+  const businessSystems = (report?.systems ?? []).filter(isBusinessSystem);
+  if (businessSystems.length > 0) {
+    const sysNames = businessSystems
+      .map((s) => s.systemId)
+      .slice(0, 3)
+      .join(', ');
+    const sysClause =
+      sysNames.length > 0 ? `(e.g. ${sysNames})` : '(connected platforms)';
+    rows.push({
+      obligation: 'Platform ToS',
+      action: `Check you are not violating the rules of the connected platforms ${sysClause} — usage limits, rate limits, prohibited use cases.`,
+    });
+  }
   rows.push({ obligation: 'Incident response', action: 'Have a plan: if data leaks, who do you notify and within what timeframe? (EU: 72 hours to regulator)' });
 
   if (rows.length === 0) return '';
