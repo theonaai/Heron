@@ -21,6 +21,7 @@ import {
   type QuestionPlanner,
 } from '../interview/question-planner.js';
 import { generateReportOutcome } from '../report/generator.js';
+import { getSession } from '../storage/sessions.js';
 import type {
   SamplingInterviewRunner,
   AnalyzeAndRenderReport,
@@ -83,10 +84,33 @@ export async function buildSamplingDeps(
   };
 
   const analyzeAndRenderReport: AnalyzeAndRenderReport = async ({ sessionId, transcript, agentName }) => {
+    // AAP-92 — fix `interviewDuration: 0s` on every MCP-driven report.
+    // The pre-fix code stamped both `startedAt` and `completedAt` with
+    // `new Date()` at analyze time, so the generator's
+    // `completedAt - startedAt` arithmetic always produced 0.
+    // The session's actual start time is `meta.createdAt`, captured by
+    // `createSession()` when start_audit_session first ran.
+    // `completedAt` stays `new Date()` — it's the moment the interview
+    // finished and analysis kicked off, which is the right wall-clock
+    // boundary for the duration banner in the report.
+    const completedAt = new Date();
+    let startedAt = completedAt;
+    try {
+      const meta = await getSession(sessionId);
+      if (meta?.createdAt) {
+        const parsed = new Date(meta.createdAt);
+        if (!Number.isNaN(parsed.getTime())) {
+          startedAt = parsed;
+        }
+      }
+    } catch {
+      // Storage read failures are non-fatal — fall through to the
+      // legacy 0-duration behaviour rather than aborting the report.
+    }
     const interviewSession = {
       transcript,
-      startedAt: new Date(),
-      completedAt: new Date(),
+      startedAt,
+      completedAt,
       questionsAsked: transcript.length,
       id: sessionId,
     };

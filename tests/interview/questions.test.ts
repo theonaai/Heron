@@ -30,6 +30,28 @@ describe('questions', () => {
     expect(uniqueIds.size).toBe(ids.length);
   });
 
+  it('AAP-92: context_anchor (Q01) asks about the current task and starting context, and tells fresh-chat agents to say so', () => {
+    // Pre-AAP-92 Q01 prompted "what you specifically do in this project",
+    // which fresh-chat Codex sessions interpreted as their general
+    // capability surface (no current task in context). The rewrite asks
+    // about the SPECIFIC current task plus the starting context, and
+    // tells the agent to declare a fresh chat rather than synthesise.
+    const q01 = CORE_QUESTIONS.find((q) => q.id === 'context_anchor');
+    expect(q01).toBeDefined();
+    expect(q01!.text).toMatch(
+      /SPECIFIC task or workflow the user has asked you to do in this conversation right now/,
+    );
+    expect(q01!.text).toMatch(
+      /What context \(files, folder, prior conversation\) did you have when you started this task\?/,
+    );
+    expect(q01!.text).toMatch(
+      /If you are in a fresh chat with no prior context, say so explicitly\. Do not synthesize a generic capability description\./,
+    );
+    // The legacy phrasing must be gone — leaving it in would re-open
+    // the same fresh-chat capability-list answer the audit hit.
+    expect(q01!.text).not.toMatch(/what you specifically do in this project/);
+  });
+
   it('AAP-82: includes the mcp_tools_forward_directive after mcp_a2a_auth', () => {
     const sorted = getAllQuestionsSorted();
     const q14Index = sorted.findIndex((q) => q.id === 'mcp_a2a_auth');

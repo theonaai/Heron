@@ -45,6 +45,45 @@ const POLL_INTERVAL_MS = 3000;
 
 type Tab = 'report' | 'transcript' | 'diff';
 
+// ────────────────────────────────────────────────────────────────
+// AAP-92 — auto-flip the active tab to "report" when an in-flight
+// audit completes.
+//
+// Pre-AAP-92 the tab was seeded once via `useState<Tab>(hasReport ?
+// 'report' : 'transcript')`. The initializer runs only at mount, so a
+// session opened mid-audit (status=analyzing, hasReport=false) stayed
+// pinned to Transcript even after the SSE `status-change` event flipped
+// status to 'complete' and the report blob landed. Operators had to
+// navigate away and back to see the rendered report.
+//
+// Decision rule:
+//   - Flip ONLY on the single transition from a live status (analyzing
+//     / interviewing / awaiting_answer) to 'complete' while a report
+//     exists.
+//   - Never flip if the user has clicked a tab manually (tracked via a
+//     ref outside React state so it survives re-renders without
+//     triggering re-runs).
+//   - Never flip when arriving at a session that was ALREADY complete
+//     on mount — the initializer already set the right tab.
+//
+// `shouldAutoFlipToReport` is exported for unit tests. The hook itself
+// stays inline in the component because it owns the userTabChosen ref.
+// ────────────────────────────────────────────────────────────────
+export function shouldAutoFlipToReport(input: {
+  prevStatus: string | undefined;
+  nextStatus: string;
+  hasReport: boolean;
+  userTabChosen: boolean;
+}): boolean {
+  if (input.userTabChosen) return false;
+  if (!input.hasReport) return false;
+  if (input.nextStatus !== 'complete') return false;
+  const liveStatuses = new Set(['interviewing', 'analyzing', 'awaiting_answer']);
+  if (!input.prevStatus) return false;
+  if (!liveStatuses.has(input.prevStatus)) return false;
+  return true;
+}
+
 export default function SessionDetail({ session }: { session: AuditSessionDetail }) {
   // AAP-52: live state. The initial value is the SSR snapshot; while the
   // session is still 'interviewing' or 'analyzing' we replace it from the
@@ -75,6 +114,40 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const [diff, setDiff] = useState<VersionDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // AAP-92 — once the user clicks any tab, never auto-flip again. Kept
+  // in a ref so writing to it from a tab click doesn't trigger a render
+  // and so the value survives across the live → complete transition.
+  const userTabChosenRef = useRef<boolean>(false);
+  // AAP-92 — previous status snapshot for the auto-flip transition gate.
+  // Stored in a ref so the comparison happens once per status change
+  // and updating it doesn't cause extra renders.
+  const prevStatusRef = useRef<string | undefined>(undefined);
+
+  // AAP-92 — auto-flip the active tab to "report" the moment an
+  // in-flight audit completes. See `shouldAutoFlipToReport` for the
+  // exact decision rule.
+  useEffect(() => {
+    const prevStatus = prevStatusRef.current;
+    const nextStatus = liveSession.status;
+    if (
+      shouldAutoFlipToReport({
+        prevStatus,
+        nextStatus,
+        hasReport,
+        userTabChosen: userTabChosenRef.current,
+      })
+    ) {
+      setTab('report');
+    }
+    prevStatusRef.current = nextStatus;
+  }, [liveSession.status, hasReport]);
+
+  // AAP-92 — wrap setTab so manual tab clicks mark the user-chose ref.
+  // Once flipped to true the auto-flip useEffect above becomes a no-op.
+  const handleTabClick = (next: Tab): void => {
+    userTabChosenRef.current = true;
+    setTab(next);
+  };
 
   const { sessions: allSessions } = useSessions();
   const [consentOpen, setConsentOpen] = useState(false);
@@ -187,14 +260,14 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
 
   const handleViewDiff = async () => {
     if (diff) {
-      setTab('diff');
+      handleTabClick('diff');
       return;
     }
     setDiffLoading(true);
     const d = await fetchVersionDiff(liveSession.id);
     setDiff(d);
     setDiffLoading(false);
-    if (d) setTab('diff');
+    if (d) handleTabClick('diff');
   };
 
   const handleDownload = () => {
@@ -408,7 +481,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
           <button
             type="button"
             className={`tab ${tab === 'report' ? 'active' : ''}`}
-            onClick={() => setTab('report')}
+            onClick={() => handleTabClick('report')}
           >
             Report
           </button>
@@ -416,7 +489,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
         <button
           type="button"
           className={`tab ${tab === 'transcript' ? 'active' : ''}`}
-          onClick={() => setTab('transcript')}
+          onClick={() => handleTabClick('transcript')}
         >
           Transcript ({liveSession.transcript.length})
         </button>
@@ -424,7 +497,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
           <button
             type="button"
             className={`tab ${tab === 'diff' ? 'active' : ''}`}
-            onClick={() => setTab('diff')}
+            onClick={() => handleTabClick('diff')}
           >
             Compare
           </button>
