@@ -110,6 +110,30 @@ describe('categorizeSystem (AAP-93 H4/H5)', () => {
     ).toBe('audit-infrastructure');
   });
 
+  it('Codex P2 (round 2): description-only mentions of Heron / audit / interview do NOT trigger audit-infra reclassification', () => {
+    // A legitimate Stripe integration whose prose says "Heron sends
+    // billing data to Stripe" — pre-fix the haystack match against
+    // `systemDescription` reclassified this as audit-infrastructure
+    // and dropped it from compliance mapping. The categorisation now
+    // reads `systemId` only.
+    expect(
+      categorizeSystem(
+        makeSys({
+          systemId: 'stripe-api',
+          systemDescription: 'Heron sends billing data to Stripe via the REST API.',
+        }),
+      ),
+    ).toBe('business');
+    expect(
+      categorizeSystem(
+        makeSys({
+          systemId: 'google-workspace',
+          systemDescription: 'Audited weekly. Interview platform pulls usage data here.',
+        }),
+      ),
+    ).toBe('business');
+  });
+
   it('isBusinessSystem back-compat: returns true only for business + unknown', () => {
     expect(
       isBusinessSystem(makeSys({ systemId: 'google-workspace' })),

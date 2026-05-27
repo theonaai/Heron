@@ -95,20 +95,26 @@ const HOST_LOCAL_STORAGE_PATTERNS: RegExp[] = [
  * (a Heron-branded log file is still Heron's, not a generic host store),
  * which in turn wins over `business` (a local-disk SQLite store is host,
  * not a SaaS).
+ *
+ * Codex post-review fix (P2): categorisation matches against `systemId`
+ * ONLY, never against the prose `systemDescription`. The description
+ * is free-text the analyser writes; a legitimate Stripe integration
+ * might describe itself as "Heron sends billing data to Stripe" and
+ * would otherwise re-classify as audit-infrastructure on the
+ * `\bheron\b` rule. The identifier (kebab-case, ≤50 chars, enforced
+ * by zod) is the only stable categorisation signal.
  */
 export function categorizeSystem(s: SystemAssessment): SystemCategory {
   const id = s.systemId.toLowerCase();
-  const descr = (s.systemDescription ?? '').toLowerCase();
-  const haystack = `${id} ${descr}`;
 
-  // Audit infrastructure (Heron + audit plumbing).
+  // Audit infrastructure (Heron + audit plumbing). systemId only.
   for (const p of AUDIT_INFRA_PATTERNS) {
-    if (p.test(haystack)) return 'audit-infrastructure';
+    if (p.test(id)) return 'audit-infrastructure';
   }
 
   // Host runtime — explicit host-runtime markers first.
   for (const p of HOST_RUNTIME_PATTERNS) {
-    if (p.test(haystack)) return 'host-runtime';
+    if (p.test(id)) return 'host-runtime';
   }
   // Then local-storage / env / idempotency variants the legacy
   // `isBusinessSystem` filter recognised — these are host capabilities.
