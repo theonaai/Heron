@@ -62,6 +62,82 @@ function makeReport(
   } as AuditReport;
 }
 
+describe('AAP-93 Codex post-review fixes', () => {
+  it('P2 #1: partially-verified + OAuth-only (filesystem skipped) limitation text says filesystem skipped', () => {
+    // Skip-filesystem dashboard path: discoveryStatus skipped, OAuth ran.
+    const verdict: Verdict = {
+      status: 'partial',
+      primaryRiskLevel: 'medium',
+      primaryRiskSource: 'deterministic',
+      deterministicRiskLevel: 'medium',
+      discrepancies: [],
+    };
+    const report = makeReport({
+      verification: { status: 'partially-verified' },
+    });
+    const md = renderMarkdownReport(report, {
+      verdict,
+      discoveryStatus: { status: 'skipped', reason: 'skipFilesystem flag' },
+      oauthIntrospectionStatus: [
+        { provider: 'google', status: { status: 'ran' } },
+      ],
+    });
+    expect(md).toContain('Filesystem discovery skipped');
+    expect(md).toContain('OAuth scope introspection');
+  });
+
+  it('P2 #1: partially-verified + filesystem-only (OAuth skipped) limitation text says OAuth skipped', () => {
+    const verdict: Verdict = {
+      status: 'partial',
+      primaryRiskLevel: 'medium',
+      primaryRiskSource: 'deterministic',
+      deterministicRiskLevel: 'medium',
+      discrepancies: [],
+    };
+    const report = makeReport({
+      verification: { status: 'partially-verified' },
+    });
+    const md = renderMarkdownReport(report, {
+      verdict,
+      discoveryStatus: 'ran',
+    });
+    expect(md).toContain('Combines self-reported interview answers with filesystem discovery');
+    expect(md).toContain('OAuth introspection skipped');
+  });
+
+  it('P3: MISSING findings (runtime sentinel `—`) do not trigger the cross-runtime callout', () => {
+    const verdict: Verdict = {
+      status: 'partial',
+      primaryRiskLevel: 'medium',
+      primaryRiskSource: 'deterministic',
+      deterministicRiskLevel: 'medium',
+      discrepancies: [],
+    };
+    const discoveryFindings: DiscoveryFinding[] = [
+      {
+        kind: 'EXTRA',
+        severity: 'MEDIUM',
+        serverName: 'extra-server',
+        runtime: 'codex',
+        description: 'Discovered MCP server',
+        sourcePath: '/p',
+      },
+      {
+        kind: 'MISSING',
+        severity: 'MEDIUM',
+        serverName: 'slack',
+        runtime: '—',
+        description: 'slack mentioned but not discovered',
+      },
+    ];
+    const md = renderMarkdownReport(makeReport(), {
+      verdict,
+      discoveryFindings,
+    });
+    expect(md).not.toContain('Findings cover all AI-runtime configs present on the host machine');
+  });
+});
+
 describe('AAP-93 H1 — Limitations text is conditional on verification.status', () => {
   it('interrogation-only: legacy self-report-only copy', () => {
     const md = renderMarkdownReport(makeReport());

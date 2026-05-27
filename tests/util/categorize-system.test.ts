@@ -80,6 +80,36 @@ describe('categorizeSystem (AAP-93 H4/H5)', () => {
     ).toBe('business');
   });
 
+  it('Codex P2 #2: legitimate orchestration platforms are NOT classified as audit-infrastructure', () => {
+    // Pre-fix the bare `\borchestrat(or|ion)\b` pattern caught Workato,
+    // Temporal, Zapier orchestration API and silently dropped them
+    // from compliance mapping.
+    expect(categorizeSystem(makeSys({ systemId: 'workato' }))).toBe('business');
+    expect(
+      categorizeSystem(makeSys({ systemId: 'temporal-orchestration' })),
+    ).toBe('business');
+    expect(
+      categorizeSystem(
+        makeSys({
+          systemId: 'zapier',
+          systemDescription: 'Workflow orchestration platform',
+        }),
+      ),
+    ).toBe('business');
+  });
+
+  it('Codex P2 #2: Heron-/internal-/audit-qualified orchestration tokens stay audit-infrastructure', () => {
+    expect(
+      categorizeSystem(makeSys({ systemId: 'heron-orchestration' })),
+    ).toBe('audit-infrastructure');
+    expect(
+      categorizeSystem(makeSys({ systemId: 'audit-orchestrator' })),
+    ).toBe('audit-infrastructure');
+    expect(
+      categorizeSystem(makeSys({ systemId: 'internal-orchestration' })),
+    ).toBe('audit-infrastructure');
+  });
+
   it('isBusinessSystem back-compat: returns true only for business + unknown', () => {
     expect(
       isBusinessSystem(makeSys({ systemId: 'google-workspace' })),

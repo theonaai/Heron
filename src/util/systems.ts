@@ -64,7 +64,18 @@ const AUDIT_INFRA_PATTERNS: RegExp[] = [
   // Codex tool-discovery / orchestration plumbing the interviewed agent
   // talks to BUT which is itself part of Heron's evidence pipeline.
   /\bcodex.?tool.?discovery\b/i,
-  /\borchestrat(or|ion)\b/i,
+  // Codex post-review fix (P2 #2): bare `\borchestrat(or|ion)\b` was
+  // too broad — it matched legitimate orchestration platforms (Workato,
+  // Temporal, Zapier orchestration API) and silently re-classified
+  // them as audit infrastructure, which made `isBusinessSystem` return
+  // false and dropped them from compliance mapping and obligations.
+  // The audit-infra path narrows to internal / Heron / interview /
+  // audit qualifiers (already covered above) and the explicit
+  // `heron-orchestration` token.
+  /\bheron[- _]?orchestrat(or|ion)\b/i,
+  /\binternal[- _]?orchestrat(or|ion)\b/i,
+  /\baudit[- _]?orchestrat(or|ion)\b/i,
+  /\binterview[- _]?orchestrat(or|ion)\b/i,
 ];
 
 // Local-only storage / logging / env-var components — these belong under

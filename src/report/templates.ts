@@ -204,7 +204,7 @@ export function renderMarkdownReport(
     // AAP-63 — Verification Status sits near the top so an auditor sees
     // "deterministic or not?" before reading any findings.
     renderVerificationStatusSection(verdict, context),
-    renderScopeAndMethodology(report),
+    renderScopeAndMethodology(report, context),
     renderSummary(report, verdict, discoveryFindings),
     renderAgentProfile(report),
     // AAP-63 — discrepancies between Surface 1 claims and Surface 2
@@ -363,14 +363,45 @@ function renderInterrogationOnlyBanner(report: AuditReport): string {
  * 10 deterministic findings AND a Verification Status table showing
  * filesystem discovery ran). Each lifecycle state now picks the text
  * that is honest at that state.
+ *
+ * Codex post-review fix (P2 #1): partial verification can mean
+ * either filesystem-only (OAuth skipped) OR OAuth-only (filesystem
+ * skipped via the `skipFilesystem: true` dashboard path). The text
+ * inspects the per-source status when partially-verified so the
+ * methodology actually agrees with the Verification Status table.
  */
-function limitationsTextForVerification(report: AuditReport): string {
+function limitationsTextForVerification(
+  report: AuditReport,
+  context: RenderMarkdownReportContext = {},
+): string {
   const status = report.verification?.status;
   switch (status) {
     case 'verified':
       return "Combines self-reported interview answers with filesystem discovery and OAuth scope introspection. Runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.";
-    case 'partially-verified':
-      return "Combines self-reported interview answers with filesystem discovery. OAuth introspection skipped — runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.";
+    case 'partially-verified': {
+      // Inspect per-source state. `discoveryStatus` defaults to 'ran'
+      // (legacy behaviour); `oauthIntrospectionStatus` defaults to
+      // an empty rows array which the renderer treats as the
+      // structural skip.
+      const fsStatus = normalizeStatus(context.discoveryStatus ?? 'ran').status;
+      const oauthRows = context.oauthIntrospectionStatus ?? [];
+      const oauthRan = oauthRows.some(
+        (r) => normalizeStatus(r.status, r.reason).status === 'ran',
+      );
+      const fsRan = fsStatus === 'ran';
+      if (fsRan && oauthRan) {
+        return 'Combines self-reported interview answers with filesystem discovery and OAuth scope introspection (partial coverage — see Verification Status section). Runtime behaviour, code review, and network traffic remain out of scope.';
+      }
+      if (oauthRan && !fsRan) {
+        return 'Combines self-reported interview answers with OAuth scope introspection. Filesystem discovery skipped — runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.';
+      }
+      if (fsRan && !oauthRan) {
+        return 'Combines self-reported interview answers with filesystem discovery. OAuth introspection skipped — runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.';
+      }
+      // Neither source actually ran but report flipped to partial —
+      // honest fallback.
+      return 'Verification was attempted but no deterministic source completed cleanly. See Verification Status section.';
+    }
     case 'verification-failed':
       return 'Verification attempted but did not complete cleanly. See the Verification Status section below. The report below remains based on the interview only and should be re-verified once the underlying source is reachable.';
     case 'interrogation-only':
@@ -379,14 +410,17 @@ function limitationsTextForVerification(report: AuditReport): string {
   }
 }
 
-function renderScopeAndMethodology(report: AuditReport): string {
+function renderScopeAndMethodology(
+  report: AuditReport,
+  context: RenderMarkdownReportContext = {},
+): string {
   return `## Scope & Methodology
 
 **Assessment type**: Automated structured interview
 
 **Method**: Heron conducted a ${report.metadata.questionsAsked}-question interview covering agent purpose, data access, permissions, write operations, and operational frequency. **Duration**: ${Math.round(report.metadata.interviewDuration / 1000)}s.
 
-**Limitations**: ${limitationsTextForVerification(report)}`;
+**Limitations**: ${limitationsTextForVerification(report, context)}`;
 }
 
 // ─── Data Quality Badge ──────────────────────────────────────────────────────
@@ -1127,8 +1161,15 @@ function renderFindingsSplit(
     // about Claude Code". The discovery scan is host-machine wide;
     // each row's Runtime column tells the reader which runtime's
     // config produced the evidence.
+    //
+    // Codex post-review fix (P3): MISSING findings carry the sentinel
+    // `runtime: '—'` (no file source); excluding it stops the
+    // cross-runtime callout from firing on a single-runtime audit
+    // that happens to have one EXTRA + one MISSING row.
     const runtimesSeen = new Set<string>();
-    for (const f of discoveryFindings) runtimesSeen.add(f.runtime);
+    for (const f of discoveryFindings) {
+      if (f.runtime && f.runtime !== '—') runtimesSeen.add(f.runtime);
+    }
     if (runtimesSeen.size > 1) {
       const runtimeList = [...runtimesSeen]
         .filter((r) => r !== '—')
