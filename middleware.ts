@@ -14,6 +14,7 @@
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import * as logger from './src/util/logger.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
@@ -33,6 +34,15 @@ function isLoopbackHost(host: string | null): boolean {
 }
 
 export function middleware(request: NextRequest): NextResponse {
+  // AAP-92 — log every incoming request. Runs BEFORE the host check so
+  // we capture even off-loopback 403s (which is the most useful signal
+  // for "why is something hitting Heron from outside loopback"). Format
+  // is `METHOD pathname` so a tail of /tmp/heron-startup.log shows the
+  // MCP traffic mid-audit. Response status / duration are out of scope:
+  // Next.js middleware cannot see the downstream response without a
+  // wrapper, and the ticket explicitly defers that to a future fix.
+  logger.log(`${request.method} ${request.nextUrl.pathname}`);
+
   const host = request.headers.get('host');
   if (!isLoopbackHost(host)) {
     return new NextResponse(

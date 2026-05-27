@@ -25,6 +25,7 @@ import {
   type ReportDiffer,
 } from '@/src/server/mcp-server';
 import { buildSamplingDeps } from '@/src/server/sampling-factory';
+import * as logger from '@/src/util/logger';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -51,20 +52,58 @@ const stubDiffer: ReportDiffer = {
   },
 };
 
+/**
+ * AAP-92 — best-effort MCP tool name extraction for request logging.
+ *
+ * The dashboard sees a stream of `POST /mcp` lines in middleware logs.
+ * Without the tool name, debugging "which tool failed" requires reading
+ * session files post-hoc. We peek at the JSON-RPC body (cloned, so the
+ * SDK transport still sees the original stream) and surface the tool
+ * name on `tools/call` and the method itself on everything else.
+ *
+ * Never throws — malformed bodies, non-JSON payloads, and missing fields
+ * all fall through to a quiet no-op. Logging is supplementary; the SDK
+ * transport handles the actual protocol.
+ */
+async function logMcpInvocation(req: Request, body: unknown): Promise<void> {
+  try {
+    if (req.method !== 'POST' || !body || typeof body !== 'object') return;
+    const rpc = body as { method?: unknown; params?: unknown };
+    const method = typeof rpc.method === 'string' ? rpc.method : undefined;
+    if (!method) return;
+    if (method === 'tools/call') {
+      const params = rpc.params as { name?: unknown } | undefined;
+      const toolName =
+        params && typeof params.name === 'string' ? params.name : '<unknown>';
+      logger.log(`mcp tools/call name=${toolName}`);
+    } else {
+      logger.log(`mcp method=${method}`);
+    }
+  } catch {
+    // Logging must never break the dispatch path.
+  }
+}
+
 async function dispatch(req: Request): Promise<Response> {
   const sessionHeader = req.headers.get('mcp-session-id') ?? undefined;
   let transport = sessionHeader ? transports.get(sessionHeader) : undefined;
 
+  // AAP-92 — peek at the body once for both the initialize-or-not branch
+  // below and the request-log line. We always clone before reading so
+  // the SDK transport sees an untouched stream.
+  let parsedBody: unknown = undefined;
+  if (req.method === 'POST') {
+    try {
+      parsedBody = await req.clone().json();
+    } catch {
+      // Body might be empty (GET/DELETE never enter this branch); leave undefined.
+    }
+  }
+  await logMcpInvocation(req, parsedBody);
+
   if (!transport) {
     // No session yet — must be an initialize POST.
-    let body: unknown = undefined;
-    if (req.method === 'POST') {
-      try {
-        body = await req.clone().json();
-      } catch {
-        // Body might be empty (GET/DELETE never enter this branch); leave undefined.
-      }
-    }
+    const body = parsedBody;
     if (req.method !== 'POST' || !body || !isInitializeRequest(body)) {
       return new Response(
         JSON.stringify({
