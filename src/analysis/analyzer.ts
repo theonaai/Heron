@@ -262,6 +262,16 @@ async function tryParse(
     for (const sys of result.systems) {
       sys.scopesDelta = sys.scopesDelta.filter((s) => !isNegativeScope(s));
       sys.scopesNeeded = sys.scopesNeeded.filter((s) => !isNegativeScope(s));
+      // AAP-97 — a scope cannot logically be both NEEDED and EXCESSIVE.
+      // The analyzer LLM occasionally emits the same string in both
+      // `scopesNeeded` and `scopesDelta` (e.g. for `google-drive` it put
+      // `https://www.googleapis.com/auth/drive` in both, producing a
+      // self-contradicting "you need this AND can revoke this" pair in
+      // the Systems table). Strip the overlap by post-processing
+      // `scopesDelta` against `scopesNeeded`. This runs after the
+      // negative-scope filter so neither stage leaks into the other.
+      const neededSet = new Set(sys.scopesNeeded);
+      sys.scopesDelta = sys.scopesDelta.filter((s) => !neededSet.has(s));
     }
 
     return { ok: true, result };

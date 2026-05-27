@@ -705,17 +705,39 @@ function VerdictBanner({ verdict, meta }: { verdict: string; meta?: React.ReactN
  * optional `onRunVerification` callback so the caller can wire its
  * existing button if desired.
  */
+export interface VerificationSourceRow {
+  name: string;
+  status: 'ran' | 'skipped' | 'failed';
+  reason?: string;
+}
+
 export function InterrogationOnlyBanner({
   status,
   reason,
   onRunVerification,
+  sources,
 }: {
   status?: 'interrogation-only' | 'verified' | 'partially-verified' | 'verification-failed';
   reason?: string;
   onRunVerification?: () => void;
+  /** Per-source state for the partially-verified expanded view (AAP-97). */
+  sources?: VerificationSourceRow[];
 }) {
+  // AAP-97 — collapsible per-source detail inside the partial banner.
+  // Defaults closed so the banner stays compact; user clicks "Show
+  // detail" to see which source skipped / failed and why. Mirrors the
+  // Verification Status section's content so the reader doesn't have
+  // to scroll for the explanation.
+  const [expanded, setExpanded] = useState(false);
+
   if (status === 'verified') return null;
   if (status === 'partially-verified') {
+    const hasSources = sources && sources.length > 0;
+    const statusColor: Record<VerificationSourceRow['status'], string> = {
+      ran: '#166534',
+      skipped: '#a16207',
+      failed: '#991b1b',
+    };
     return (
       <div
         role="status"
@@ -735,10 +757,56 @@ export function InterrogationOnlyBanner({
       >
         <div>
           <strong style={{ fontWeight: 700 }}>Partially verified.</strong>{' '}
-          One or more deterministic evidence sources did not run or did not
-          complete cleanly. See the Verification Status section below for
-          per-source detail.
+          Not all evidence sources were available.
+          {hasSources && (
+            <>
+              {' '}
+              <button
+                type="button"
+                onClick={() => setExpanded((e) => !e)}
+                aria-expanded={expanded}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  margin: 0,
+                  color: '#7c2d12',
+                  fontWeight: 600,
+                  textDecoration: 'underline',
+                  cursor: 'pointer',
+                  font: 'inherit',
+                }}
+              >
+                {expanded ? 'Hide per-source detail' : 'Show per-source detail'}
+              </button>
+            </>
+          )}
         </div>
+        {expanded && hasSources && (
+          <div
+            style={{
+              background: '#fffbeb',
+              border: '1px solid #fcd34d',
+              borderRadius: 4,
+              padding: '10px 12px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            {sources!.map((s, i) => (
+              <div key={i}>
+                <span style={{ fontWeight: 600 }}>{s.name}:</span>{' '}
+                <span style={{ color: statusColor[s.status], fontWeight: 600 }}>
+                  {s.status}
+                </span>
+                {s.reason && (
+                  <span style={{ color: '#7c2d12', opacity: 0.85 }}> — {s.reason}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         {onRunVerification && (
           <div>
             <button
@@ -2207,9 +2275,30 @@ export default function ReportView({
           the banner doesn't lie about an already-completed discovery run.
           A session with neither field gets the default
           'interrogation-only' rendering (correct: nothing has run). */}
+      {/* AAP-97 — compose per-source state for the collapsible banner.
+          Mirrors the markdown template's Verification Status table: if
+          localAgentDiscovery dict is present, filesystem ran; OAuth
+          introspection defaults to skipped with the same reason string
+          the template uses (token-capture UX is AAP-64).  Once
+          per-source state lives on reportJson directly (proper data
+          model fix), this heuristic can be replaced with json.<field>. */}
       <InterrogationOnlyBanner
         status={inferBannerStatus(json)}
         reason={json.verification?.reason}
+        sources={[
+          {
+            name: 'Filesystem discovery (Surface 2)',
+            status: json.localAgentDiscovery ? 'ran' : 'skipped',
+            ...(json.localAgentDiscovery
+              ? {}
+              : { reason: 'no filesystem discovery recorded for this session' }),
+          },
+          {
+            name: 'OAuth introspection (Surface 2)',
+            status: 'skipped',
+            reason: 'no OAuth credentials configured for this session',
+          },
+        ]}
         {...(onRunVerification ? { onRunVerification } : {})}
       />
 
