@@ -467,10 +467,20 @@ ${rows.join('\n')}`;
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 /**
- * AAP-93 H3 — count discovery findings by severity for the Executive
+ * AAP-93 H3 — count Surface 2 findings by severity for the Executive
  * Summary's "Deterministic findings" stream. `DiscoveryFinding` uses
  * the upper-case ladder (HIGH / MEDIUM / LOW); the summary table
  * renders them in title case alongside the analyzer's stream.
+ *
+ * Codex round 7 P2 — on the OAuth-only path discoveryFindings is
+ * empty but OAuth diffs (the verdict's `discrepancies` array — kept
+ * loose-typed via DiscoveryFinding-shaped rows from
+ * persist-verified-markdown.ts callers — OR a deterministicRiskLevel
+ * lift on the verdict) still represent Surface 2 evidence. The
+ * summary now respects a `verdict.deterministicRiskLevel` lift even
+ * when discoveryFindings is empty: when the verdict says HIGH/CRITICAL
+ * but the per-row stream is empty, we surface "see Verification
+ * Status" instead of "None" so the cell doesn't lie.
  */
 function countDeterministicFindings(
   discoveryFindings: ReadonlyArray<DiscoveryFinding>,
@@ -531,7 +541,23 @@ function renderSummary(
   };
   const deterministicCounts = countDeterministicFindings(discoveryFindings);
   const selfReportedFindings = formatFindingsCount(selfReportedCounts);
-  const deterministicFindings = formatFindingsCount(deterministicCounts);
+  // Codex round 7 P2 — if the verdict's deterministicRiskLevel is
+  // HIGH/CRITICAL but the per-row stream is empty (OAuth-only path),
+  // the "None" cell would lie. Pivot to a "see Verification Status"
+  // pointer so the cell doesn't undersell deterministic evidence.
+  const allZero =
+    deterministicCounts.critical === 0 &&
+    deterministicCounts.high === 0 &&
+    deterministicCounts.medium === 0 &&
+    deterministicCounts.low === 0;
+  const verdictDeterministicRaised =
+    verdict?.deterministicRiskLevel === 'high' ||
+    verdict?.deterministicRiskLevel === 'critical' ||
+    verdict?.deterministicRiskLevel === 'medium';
+  const deterministicFindings =
+    allZero && verdictDeterministicRaised
+      ? `See Verification Status (${verdict!.deterministicRiskLevel!.toUpperCase()} verdict)`
+      : formatFindingsCount(deterministicCounts);
 
   // AAP-93 H4 — Systems count now reflects every category, not only
   // the business filter. A `5 systems (3 business, 1 host runtime, 1

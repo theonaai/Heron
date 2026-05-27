@@ -280,6 +280,29 @@ describe('AAP-93 Codex round 6 — verdict reads OAuth-only deterministic HIGH',
     expect(md).toContain('DO NOT APPROVE WITHOUT REMEDIATION');
     expect(md).not.toContain('PROVISIONAL — VERIFY MISSING SOURCES');
   });
+
+  it('Codex round 7 P2: Executive Summary deterministic cell does NOT show "None" when verdict.deterministicRiskLevel is HIGH but discoveryFindings is empty', () => {
+    const verdict: Verdict = {
+      status: 'partial',
+      deterministicRiskLevel: 'high',
+      primaryRiskLevel: 'high',
+      primaryRiskSource: 'deterministic',
+      discrepancies: [],
+    };
+    const report = makeReport({
+      risks: [],
+      verification: { status: 'partially-verified' },
+    });
+    const md = renderMarkdownReport(report, {
+      verdict,
+      discoveryFindings: [],
+    });
+    // The exec summary's Deterministic findings cell now reads
+    // "See Verification Status (HIGH verdict)".
+    expect(md).toContain('See Verification Status (HIGH verdict)');
+    // Not the misleading "None".
+    expect(md).not.toMatch(/Deterministic findings.*\|.*None/);
+  });
 });
 
 describe('AAP-93 H6 — Systems section explains per-system vs overall risk', () => {

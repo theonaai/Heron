@@ -98,40 +98,84 @@ function isAffirmative(answer: string): boolean {
 
 /**
  * Codex round 6 P2 — only splice the question when the prompt names
- * exactly ONE canonical service and isn't an "examples" / "such as"
+ * exactly ONE service entity (canonical keyword OR a discovered
+ * server / plugin name) and isn't an "examples" / "such as"
  * sentence. A prompt like `Do you use any messaging tool like Slack?`
  * with a `Yes` answer would otherwise credit Slack even though the
  * agent was confirming the category, not the service.
+ *
+ * Codex round 7 P2 — extended the entity set to include discovered
+ * server / plugin names so a bare affirmative to
+ * `Do you use theona?` still credits the custom server name.
  */
 const EXAMPLE_QUALIFIER_PATTERNS: RegExp[] = [
   /\b(examples?|such as|including|like|e\.?g\.?|i\.?e\.?|for instance|or any|or other|or similar|including but|either|any of)\b/i,
 ];
 
-function countCanonicalKeywordsInQuestion(question: string): number {
+function countEntityTokensInQuestion(
+  question: string,
+  extraEntities: ReadonlySet<string>,
+): number {
   const lowered = question.toLowerCase();
-  let n = 0;
+  const matched = new Set<string>();
   for (const kw of CANONICAL_KEYWORDS) {
-    if (lowered.includes(kw)) n++;
+    if (lowered.includes(kw)) matched.add(kw);
   }
-  return n;
+  for (const name of extraEntities) {
+    const n = name.toLowerCase();
+    if (n.length === 0) continue;
+    if (lowered.includes(n)) matched.add(n);
+  }
+  return matched.size;
 }
 
-function shouldSpliceQuestion(question: string): boolean {
+function shouldSpliceQuestion(
+  question: string,
+  extraEntities: ReadonlySet<string>,
+): boolean {
   // Conservative gate: splice only when the prompt names exactly one
-  // canonical service AND isn't framed as an examples-style prompt.
+  // entity (canonical OR discovered) AND isn't framed as an examples-
+  // style prompt.
   if (EXAMPLE_QUALIFIER_PATTERNS.some((p) => p.test(question))) return false;
-  return countCanonicalKeywordsInQuestion(question) === 1;
+  return countEntityTokensInQuestion(question, extraEntities) === 1;
 }
 
-function transcriptAnswerText(transcript: TranscriptEntry[]): string {
+function collectDiscoveredEntityNames(
+  agents: DiscoveredAgent[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const agent of agents) {
+    for (const s of agent.mcpServers) {
+      const n = s.name.toLowerCase();
+      if (n.length > 0) out.add(n);
+    }
+    for (const cap of agent.capabilities ?? []) {
+      if (cap.kind === 'plugin') {
+        const lowered = cap.name.toLowerCase();
+        const bare = lowered.split('@')[0] ?? '';
+        if (lowered.length > 0) out.add(lowered);
+        if (bare && bare !== lowered) out.add(bare);
+      }
+    }
+  }
+  return out;
+}
+
+function transcriptAnswerText(
+  transcript: TranscriptEntry[],
+  discoveredEntities: ReadonlySet<string>,
+): string {
   // For each pair: take the answer, optionally splice the question
   // when the answer is a bare affirmative confirming a service-named
   // prompt. The splicing is conservative — long answers stand on
   // their own; only short yes-shaped answers credit the question,
-  // AND only when the question names exactly one canonical service.
+  // AND only when the question names exactly one entity.
   const parts: string[] = [];
   for (const e of transcript) {
-    if (isAffirmative(e.answer) && shouldSpliceQuestion(e.question)) {
+    if (
+      isAffirmative(e.answer) &&
+      shouldSpliceQuestion(e.question, discoveredEntities)
+    ) {
       parts.push(`${e.question}\n${e.answer}`);
     } else {
       parts.push(e.answer);
@@ -177,7 +221,12 @@ export function diffAgainstTranscript(
   // AAP-93 H10 — body used for mention checks is ANSWER-only. The
   // joint body (question + answer) is reserved for credential-vocab
   // detection, which doesn't synthesise findings from question text.
-  const body = transcriptAnswerText(transcript);
+  //
+  // Codex round 7 P2: the affirmative-question splice gate also reads
+  // the discovered entity names so a bare "Yes" to "Do you use
+  // theona?" still credits the custom server name.
+  const discoveredEntities = collectDiscoveredEntityNames(agents);
+  const body = transcriptAnswerText(transcript, discoveredEntities);
   const jointBody = transcriptJointText(transcript);
   const credentialsDiscussed = transcriptMentionsCredentials(jointBody);
   const findings: DiscoveryFinding[] = [];

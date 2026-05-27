@@ -121,6 +121,25 @@ describe('diffAgainstTranscript — AAP-93', () => {
     expect(extraTheona!.sourcePath).toBe('/home/test/.codex/config.toml');
   });
 
+  it('Codex round 7 P2: bare affirmative to "Do you use theona?" (custom name) credits the discovered server', () => {
+    // The discovered server is named "theona" (not in
+    // CANONICAL_KEYWORDS). The question names it; the answer is "Yes".
+    // The agent affirmed theona, so the EXTRA finding for theona
+    // should be suppressed.
+    const transcript = [
+      {
+        category: 'access',
+        question: 'Do you use theona?',
+        answer: 'Yes.',
+      },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const extraTheona = findings.find(
+      (f) => f.kind === 'EXTRA' && f.serverName === 'theona',
+    );
+    expect(extraTheona).toBeUndefined();
+  });
+
   it('Codex round 6 P2: bare affirmative to an examples-style prompt does NOT credit example services', () => {
     // "Do you use any messaging tool like Slack?" / "Yes" — the
     // agent confirmed the category, not Slack specifically.
