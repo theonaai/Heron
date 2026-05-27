@@ -121,6 +121,47 @@ describe('diffAgainstTranscript — AAP-93', () => {
     expect(extraTheona!.sourcePath).toBe('/home/test/.codex/config.toml');
   });
 
+  it('Codex round 6 P2: bare affirmative to an examples-style prompt does NOT credit example services', () => {
+    // "Do you use any messaging tool like Slack?" / "Yes" — the
+    // agent confirmed the category, not Slack specifically.
+    const transcript = [
+      {
+        category: 'access',
+        question: 'Do you use any messaging tool like Slack?',
+        answer: 'Yes.',
+      },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    const missingSlack = findings.find(
+      (f) => f.kind === 'MISSING' && f.serverName === 'slack',
+    );
+    // The prompt has "like Slack" — the EXAMPLE_QUALIFIER_PATTERNS
+    // gate refuses to splice, so Slack stays uncredited and no
+    // MISSING fires from this prompt.
+    expect(missingSlack).toBeUndefined();
+  });
+
+  it('Codex round 6 P2: bare affirmative to a multi-service prompt does NOT credit individual services', () => {
+    const transcript = [
+      {
+        category: 'access',
+        question: 'Do you use Slack, Drive, or GitHub?',
+        answer: 'Yes.',
+      },
+    ];
+    const findings = diffAgainstTranscript([codexAgent], transcript);
+    // Multiple canonical keywords in the prompt — splice refused.
+    expect(
+      findings.some((f) => f.kind === 'MISSING' && f.serverName === 'slack'),
+    ).toBe(false);
+    expect(
+      findings.some((f) => f.kind === 'MISSING' && f.serverName === 'drive'),
+    ).toBe(false);
+    expect(
+      findings.some((f) => f.kind === 'MISSING' && f.serverName === 'github'),
+    ).toBe(false);
+  });
+
   it('Codex round 4 P2: short affirmative answer to a service-named prompt credits the service', () => {
     // "Do you use Slack?" / "Yes" — the agent affirmed Slack, so a
     // discovered Slack server should NOT surface as EXTRA, and a

@@ -223,7 +223,7 @@ export function renderMarkdownReport(
     ),
     renderSystems(report.systems),
     renderPositiveFindings(report, discoveryFindings),
-    renderVerdict(report, discoveryFindings),
+    renderVerdict(report, discoveryFindings, verdict),
     report.compliance ? renderRegulatoryCompliance(report.compliance as StructuredCompliance, report) : null,
     report.dataQuality ? renderDataQuality(report.dataQuality) : null,
     renderTranscript(report.transcript),
@@ -1365,24 +1365,37 @@ function recommendationTitle(body: string): string {
 function renderVerdict(
   report: AuditReport,
   discoveryFindings: ReadonlyArray<DiscoveryFinding> = [],
+  verdictContext?: Verdict,
 ): string {
   // AAP-93 H8 — verdict label is calibrated against the verification
   // status and the combined HIGH-finding stream (Surface 1 risks +
-  // Surface 2 discovery HIGHs). Pre-fix `APPROVE WITH CONDITIONS`
-  // would fire for partial-verified + 1 HIGH self-reported, which
-  // reads as Heron rubber-stamping a risky deployment. The new
-  // matrix lives in `calibrateVerdictLabel`; the analyzer's original
-  // `report.recommendation` is preserved on the JSON for back-compat.
+  // Surface 2 discovery HIGHs + verdict-level deterministic HIGH).
+  // Pre-fix `APPROVE WITH CONDITIONS` would fire for partial-verified
+  // + 1 HIGH self-reported, which reads as Heron rubber-stamping a
+  // risky deployment. The new matrix lives in `calibrateVerdictLabel`;
+  // the analyzer's original `report.recommendation` is preserved on
+  // the JSON for back-compat.
+  //
+  // Codex round 6 P2: discoveryFindings can be empty when only OAuth
+  // ran (the `skipFilesystem: true` path) but OAuth introspection
+  // can still produce a deterministic HIGH. The verdict's
+  // `deterministicRiskLevel` captures the combined Surface 2 ramp
+  // (discovery + OAuth) so we read it here as a third HIGH-finding
+  // source.
   const hasHighSelfReported = report.risks.some(
     (r) => r.severity === 'high' || r.severity === 'critical',
   );
   const hasHighDeterministic = discoveryFindings.some(
     (f) => f.severity === 'HIGH',
   );
+  const verdictDeterministicHigh =
+    verdictContext?.deterministicRiskLevel === 'high' ||
+    verdictContext?.deterministicRiskLevel === 'critical';
   const verdict = calibrateVerdictLabel({
     recommendation: report.recommendation,
     verificationStatus: report.verification?.status,
-    hasHighFindings: hasHighSelfReported || hasHighDeterministic,
+    hasHighFindings:
+      hasHighSelfReported || hasHighDeterministic || verdictDeterministicHigh,
   });
   const recs = report.recommendations;
 

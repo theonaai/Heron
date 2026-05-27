@@ -96,14 +96,42 @@ function isAffirmative(answer: string): boolean {
   return AFFIRMATIVE_PATTERN.test(answer);
 }
 
+/**
+ * Codex round 6 P2 — only splice the question when the prompt names
+ * exactly ONE canonical service and isn't an "examples" / "such as"
+ * sentence. A prompt like `Do you use any messaging tool like Slack?`
+ * with a `Yes` answer would otherwise credit Slack even though the
+ * agent was confirming the category, not the service.
+ */
+const EXAMPLE_QUALIFIER_PATTERNS: RegExp[] = [
+  /\b(examples?|such as|including|like|e\.?g\.?|i\.?e\.?|for instance|or any|or other|or similar|including but|either|any of)\b/i,
+];
+
+function countCanonicalKeywordsInQuestion(question: string): number {
+  const lowered = question.toLowerCase();
+  let n = 0;
+  for (const kw of CANONICAL_KEYWORDS) {
+    if (lowered.includes(kw)) n++;
+  }
+  return n;
+}
+
+function shouldSpliceQuestion(question: string): boolean {
+  // Conservative gate: splice only when the prompt names exactly one
+  // canonical service AND isn't framed as an examples-style prompt.
+  if (EXAMPLE_QUALIFIER_PATTERNS.some((p) => p.test(question))) return false;
+  return countCanonicalKeywordsInQuestion(question) === 1;
+}
+
 function transcriptAnswerText(transcript: TranscriptEntry[]): string {
   // For each pair: take the answer, optionally splice the question
   // when the answer is a bare affirmative confirming a service-named
   // prompt. The splicing is conservative — long answers stand on
-  // their own; only short yes-shaped answers credit the question.
+  // their own; only short yes-shaped answers credit the question,
+  // AND only when the question names exactly one canonical service.
   const parts: string[] = [];
   for (const e of transcript) {
-    if (isAffirmative(e.answer)) {
+    if (isAffirmative(e.answer) && shouldSpliceQuestion(e.question)) {
       parts.push(`${e.question}\n${e.answer}`);
     } else {
       parts.push(e.answer);
