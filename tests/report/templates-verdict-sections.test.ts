@@ -8,7 +8,7 @@
  *   - "## Discrepancies" section appears iff verdict.discrepancies is
  *     non-empty.
  *   - Findings section is split into "### Deterministic Findings
- *     (Surface 2)" + "### Self-Reported Findings (Surface 1)" with a
+ *     (Surface 2)" + "### Self-Reported Findings" with a
  *     Surface-1 disclaimer.
  *   - Executive Summary table widens from one Risk column to a pair of
  *     Verified Risk + Self-reported Risk columns when verdict is
@@ -50,7 +50,10 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     const md = renderMarkdownReport(baseReport());
     expect(md).toContain('## Verification Status');
     expect(md).toContain('UNVERIFIED');
-    expect(md).toContain('Surface 2');
+    // AAP-98 — the unverified copy no longer says "Surface 2 deterministic
+    // sources have not run yet" (internal jargon); it now says
+    // "deterministic evidence sources have not run yet".
+    expect(md).toContain('deterministic evidence sources have not run');
   });
 
   it('emits "Verified Risk" + "Self-reported Risk" columns when verdict is attached', () => {
@@ -121,8 +124,8 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       discrepancies: [],
     };
     const md = renderMarkdownReport(baseReport(), { verdict, discoveryFindings });
-    expect(md).toContain('### Deterministic Findings (Surface 2)');
-    expect(md).toContain('### Self-Reported Findings (Surface 1)');
+    expect(md).toContain('### Deterministic Findings');
+    expect(md).toContain('### Self-Reported Findings');
     expect(md).toContain('supplementary narrative');
     expect(md).toContain('slack');
   });
@@ -136,8 +139,8 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       discrepancies: [],
     };
     const md = renderMarkdownReport(baseReport(), { verdict, discoveryFindings: [] });
-    expect(md).toContain('### Deterministic Findings (Surface 2)');
-    expect(md).toContain('### Self-Reported Findings (Surface 1)');
+    expect(md).toContain('### Deterministic Findings');
+    expect(md).toContain('### Self-Reported Findings');
     expect(md).toContain('No deterministic findings');
   });
 

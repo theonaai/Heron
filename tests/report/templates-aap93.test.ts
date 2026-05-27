@@ -118,9 +118,9 @@ describe('AAP-93 Codex post-review fixes', () => {
     });
     const md = renderMarkdownReport(report);
     expect(md).not.toMatch(
-      /UNVERIFIED — Surface 2 deterministic sources have not run yet/,
+      /UNVERIFIED — deterministic evidence sources have not run yet/,
     );
-    expect(md).toContain('Filesystem discovery (Surface 2)');
+    expect(md).toContain('Filesystem discovery');
     // Codex round 4 P2: persisted `verified` must NOT downgrade to PARTIAL.
     expect(md).toContain('**Verification status:** VERIFIED');
     expect(md).not.toContain('**Verification status:** PARTIAL');
@@ -141,7 +141,7 @@ describe('AAP-93 Codex post-review fixes', () => {
     const md = renderMarkdownReport(report);
     expect(md).toContain('FAILED');
     expect(md).not.toMatch(
-      /UNVERIFIED — Surface 2 deterministic sources have not run yet/,
+      /UNVERIFIED — deterministic evidence sources have not run yet/,
     );
   });
 
