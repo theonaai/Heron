@@ -203,7 +203,11 @@ export function renderMarkdownReport(
     renderInterrogationOnlyBanner(report),
     // AAP-63 — Verification Status sits near the top so an auditor sees
     // "deterministic or not?" before reading any findings.
-    renderVerificationStatusSection(verdict, context),
+    renderVerificationStatusSection(
+      verdict,
+      context,
+      report.verification?.status,
+    ),
     renderScopeAndMethodology(report, context),
     renderSummary(report, verdict, discoveryFindings),
     renderAgentProfile(report),
@@ -994,8 +998,26 @@ function formatStatusCell(s: { status: string; reason?: string }): string {
 function renderVerificationStatusSection(
   verdict: Verdict | undefined,
   context: RenderMarkdownReportContext,
+  reportVerificationStatus?:
+    | 'interrogation-only'
+    | 'partially-verified'
+    | 'verified'
+    | 'verification-failed',
 ): string {
-  const status = verdict?.status ?? 'unverified';
+  // Codex round 3 fix (P2): consult `report.verification.status` as a
+  // secondary source. A persisted `verified` / `partially-verified`
+  // report re-rendered without a `verdict` in context would otherwise
+  // surface the UNVERIFIED stub here, contradicting the Limitations
+  // text which already reads the persisted field. When the persisted
+  // status says verification happened, the section pivots to the
+  // per-source table even without a verdict in context.
+  const verdictStatus = verdict?.status;
+  const persistedAttempted =
+    reportVerificationStatus === 'verified' ||
+    reportVerificationStatus === 'partially-verified';
+  const status =
+    verdictStatus ??
+    (persistedAttempted ? 'partial' : 'unverified');
   const lines: string[] = ['## Verification Status', ''];
   if (status === 'unverified') {
     lines.push(

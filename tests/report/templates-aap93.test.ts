@@ -105,6 +105,24 @@ describe('AAP-93 Codex post-review fixes', () => {
     expect(md).toContain('OAuth introspection skipped');
   });
 
+  it('Codex round 3 P2: persisted `verified` report rendered without verdict context shows per-source table, not UNVERIFIED stub', () => {
+    // Re-rendering a persisted report.json directly: no `verdict` in
+    // context, but `report.verification.status` is `verified`. The
+    // Verification Status section pivots to the per-source table
+    // instead of the UNVERIFIED stub — so the Limitations text
+    // ("Combines self-reported interview answers with filesystem
+    // discovery and OAuth scope introspection") and this section
+    // both agree that verification ran.
+    const report = makeReport({
+      verification: { status: 'verified' },
+    });
+    const md = renderMarkdownReport(report);
+    expect(md).not.toMatch(
+      /UNVERIFIED — Surface 2 deterministic sources have not run yet/,
+    );
+    expect(md).toContain('Filesystem discovery (Surface 2)');
+  });
+
   it('P3: MISSING findings (runtime sentinel `—`) do not trigger the cross-runtime callout', () => {
     const verdict: Verdict = {
       status: 'partial',
