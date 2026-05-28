@@ -70,6 +70,95 @@ const MITIGATION_FALLBACK =
   'Review the finding details and the cited framework controls; route remediation to the relevant system owner. Contact your security team if the appropriate owner is unclear.';
 
 /**
+ * AAP-105 B6 — per-subcategory SLF mitigation variants.
+ *
+ * The generic `EVIDENCE_SOURCE_HINTS.SLF` line ("ask the deployer for
+ * the MCP config, OAuth scope grant, .env keys, or production audit
+ * log…") was identical across every Self-Attested finding card. On a
+ * 5-finding session this read as boilerplate noise. Each subcategory
+ * here picks a more specific "ask for X" instruction matched against
+ * substrings in the finding title + description.
+ *
+ * Order matters: the first matching pattern wins. Keep more specific
+ * patterns above generic ones. The list is consulted in source order
+ * by `getSlfMitigationHint`.
+ *
+ * The base SLF entry in `EVIDENCE_SOURCE_HINTS` stays as the final
+ * fallback when none of these subcategories match — and so the
+ * existing "every evidence source has a hint" test contract holds.
+ */
+const SLF_SUBCATEGORY_HINTS: Array<{
+  pattern: RegExp;
+  hint: string;
+}> = [
+  {
+    // OAuth scope claims (any provider). Order: this MUST come before the
+    // generic "credential" / "secret" pattern below, because OAuth-scope
+    // findings often contain the word "credentials" in passing ("OAuth
+    // user credentials with spreadsheets, drive scope") and we'd
+    // misclassify them as a secrets-management finding otherwise.
+    pattern: /\b(oauth\s+(?:scope|permission|access|grant|consent|credentials?)|broad\s+(?:google|microsoft|github|slack)\s+oauth|scope\s+grant|spreadsheets\s+scope|drive\s+scope|gmail\s+scope|full\s+drive|drive\s+full|google\s+oauth\s+(?:scope|permission)|excessive\s+(?:scope|oauth))/i,
+    hint: 'How to convert to Verified: ask the deployer for the OAuth scope grant document or the provider consent screen for this account so Heron can compare granted scopes against declared usage. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // Secrets / credentials / .env / API keys. After OAuth — we want the
+    // OAuth-scope class to win when both signals overlap.
+    pattern: /\b(secret|credential\s+file|api[-\s]?key\b|env(?:ironment)?[-\s]?file|\.env\b|token[-\s]?file|service[-\s]account|password|vault|bot\s+token|login\/password)/i,
+    hint: 'How to convert to Verified: ask the deployer for the .env file or credential vault export so Heron can verify which keys are actually deployed and rotate any leaked secrets. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // Bulk write / production audit log of write actions.
+    pattern: /\b(bulk\s+(?:write|publish|upload|patch|create|update)|writes?\s+can\s+affect|catalog\s+writes|mass\s+update|batch\s+writes?|publish\s+(?:lessons|materials|catalogs))/i,
+    hint: 'How to convert to Verified: ask the deployer for the production audit log of write actions in the last quarter so Heron can verify actual blast radius, frequency, and reversibility. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // External vendor / data sent to third-party generation provider.
+    pattern: /\b(sent\s+to\s+(?:generation|external|third[-\s]party|vendor)|vendor[-\s]side|generation\s+vendor|external\s+model|gemini\s+receives|gamma\s+receives|openai\s+receives|llm\s+vendor|retention\s+contract|data[-\s]use\s+control)/i,
+    hint: 'How to convert to Verified: ask the deployer for the vendor data-retention contract and data-use control terms for each external provider so Heron can confirm what the third party can do with sent content. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // Alerting / monitoring / SLA / fail-open / runbook.
+    pattern: /\b(alerting|alerts?\s+fail|fail[-\s]open|notification\s+(?:fails?|stream)|runbook|on[-\s]call|sla\b|monitoring|observability|escalation\s+path)/i,
+    hint: 'How to convert to Verified: ask the deployer for the alerting runbook plus SLA / escalation documentation so Heron can verify that operational failures are actually caught and acted on. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // MCP tool inventory / tool grants the agent has access to.
+    pattern: /\b(mcp\s+(?:config|tool|server)|tool\s+inventory|skill\s+grant|plugin\s+grant|tool[-\s]calling\s+capability)/i,
+    hint: 'How to convert to Verified: ask the deployer for the MCP server config / plugin manifest so Heron can compare declared tools against the live inventory. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // PII / data sensitivity / data minimization.
+    pattern: /\b(pii\b|personal\s+data|personally[-\s]identifiable|data\s+minimization|article\s+(?:6|9)|gdpr\s+art|sensitive\s+data\s+stored|retention\s+polic)/i,
+    hint: 'How to convert to Verified: ask the deployer for the data inventory or DPIA documenting which PII fields the agent actually reads and writes, plus the retention / deletion policy. See https://docs.heron/findings/self-attested',
+  },
+  {
+    // Human-in-the-loop / approval claims.
+    pattern: /\b(human[-\s]in[-\s]the[-\s]loop|hitl|manual\s+review|human\s+(?:reviews?|approves?)|approval\s+gate)/i,
+    hint: 'How to convert to Verified: ask the deployer for the review SOP, throughput numbers, and a sampling audit of recent decisions so Heron can confirm review is meaningful rather than rubber-stamping. See https://docs.heron/findings/self-attested',
+  },
+];
+
+/**
+ * Resolve a 1-line mitigation hint for a Self-Attested (SLF) finding.
+ *
+ * Walks `SLF_SUBCATEGORY_HINTS` against `title + description` and
+ * returns the first matching subcategory's hint. Falls back to the
+ * generic SLF copy in `EVIDENCE_SOURCE_HINTS.SLF` if nothing matches.
+ *
+ * Total — always returns a non-empty string.
+ */
+export function getSlfMitigationHint(finding: {
+  title?: string;
+  description?: string;
+}): string {
+  const text = `${finding.title || ''} ${finding.description || ''}`;
+  for (const entry of SLF_SUBCATEGORY_HINTS) {
+    if (entry.pattern.test(text)) return entry.hint;
+  }
+  return EVIDENCE_SOURCE_HINTS.SLF;
+}
+
+/**
  * Resolve a 1-line mitigation hint for a finding.
  *
  * Lookup order:
@@ -83,6 +172,11 @@ const MITIGATION_FALLBACK =
  * report layer carries `evidenceSource` on every finding (AAP-102),
  * but typed `findingType` only on the subset of findings that flowed
  * through the deterministic detector adapter layer.
+ *
+ * AAP-105 B6 — for SLF findings, callers should prefer
+ * `getSlfMitigationHint` since it applies a subcategory match against
+ * the finding's text. `getMitigationHint` keeps the generic SLF copy
+ * for back-compat with the contract test.
  */
 export function getMitigationHint(
   args: { findingType?: string; evidenceSource?: EvidenceSource } = {},
