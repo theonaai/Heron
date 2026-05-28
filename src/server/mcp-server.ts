@@ -67,6 +67,7 @@ import {
   getSession,
   listReportedMcpTools,
   mergeWorkspaceHints,
+  patchReportAndMeta,
   patchReportJson,
   ReportedMcpToolsPerSessionCapExceeded,
   saveReportedMcpToolsList,
@@ -80,6 +81,7 @@ import {
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
 import {
+  buildVerdictMetaPatch,
   buildVerdictSnapshot,
   computeVerdictFromArtifacts,
   persistVerdict,
@@ -1743,9 +1745,17 @@ export class HeronMCPServer {
       // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
       reportPatch.regulatoryCompliance = compliance;
     }
-    const merged = await patchReportJson(sessionId, reportPatch);
-
-    await persistVerdict(sessionId, verdict);
+    // AAP-105 A2 — atomic write of report.json + meta verdict fields.
+    // Replaces the prior `patchReportJson` + `persistVerdict` pair so
+    // a reader landing between the two renames cannot see report.json
+    // already flipped to `partially-verified` while meta still reads
+    // `unverified`. The combined helper keeps the same fields on each
+    // side; commit ordering is report.json first (canonical), meta
+    // second.
+    const merged = await patchReportAndMeta(sessionId, {
+      reportPatch,
+      metaPatch: buildVerdictMetaPatch(verdict),
+    });
 
     // Re-render the markdown report so the on-disk artefact matches the
     // refreshed compliance + verified banner. Failure to re-render is
