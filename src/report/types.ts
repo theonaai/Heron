@@ -317,6 +317,50 @@ export const reportVerificationSchema = z.object({
 });
 export type ReportVerification = z.infer<typeof reportVerificationSchema>;
 
+// ─── Verdict snapshot for the dashboard (AAP-103) ──────────────────────────
+//
+// The dashboard reads report.json directly, so persisted reports must
+// carry the posture + findings shape the new Vijil-style cards need.
+// `verdictSnapshot` mirrors the subset of `Verdict` that drives display:
+// posture, postureBand, and the findings array (Verified + SLF).
+// Aggregation (FIPS 199 high-water-mark) happens server-side in
+// `computeVerdict`; this snapshot is read-only on the dashboard.
+
+export const severityBandValues = ['informational', 'low', 'medium', 'high', 'critical'] as const;
+export const severityBandSchema = z.enum(severityBandValues);
+export type ReportSeverityBand = typeof severityBandValues[number];
+
+export const verdictFindingSnapshotSchema = z.object({
+  id: z.string(),
+  band: severityBandSchema,
+  severityScore: z.number(),
+  severityComponents: z.object({
+    br: z.number(),
+    ds: z.number(),
+    dm: z.number(),
+    brW: z.number().optional(),
+    brR: z.number().optional(),
+    brA: z.number().optional(),
+  }),
+  evidenceSource: evidenceSourceSchema,
+  title: z.string(),
+  description: z.string(),
+  kind: z.string().optional(),
+});
+export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;
+
+export const verdictSnapshotSchema = z.object({
+  /** Technical execution state: 'verified' / 'partial' / 'unverified'. */
+  status: z.enum(['verified', 'partial', 'unverified']),
+  /** FIPS 199 high-water-mark across Verified findings. 0 when none. */
+  posture: z.number(),
+  /** Coarse band for `posture`. */
+  postureBand: severityBandSchema,
+  /** Every finding (Verified + SLF), with severity + provenance attached. */
+  findings: z.array(verdictFindingSnapshotSchema),
+});
+export type VerdictSnapshot = z.infer<typeof verdictSnapshotSchema>;
+
 // ─── Audit Report ───────────────────────────────────────────────────────────
 
 export const auditReportSchema = z.object({
@@ -362,6 +406,13 @@ export const auditReportSchema = z.object({
    * `'verification-failed'` on error.
    */
   verification: reportVerificationSchema.optional(),
+  /**
+   * AAP-103 — verdict snapshot for the dashboard. Carries posture,
+   * postureBand, and the unified findings list with severity
+   * components + provenance. Populated by the verification pipeline
+   * after Surface 2 evidence is reconciled.
+   */
+  verdict: verdictSnapshotSchema.optional(),
 });
 export type AuditReport = z.infer<typeof auditReportSchema> & {
   compliance?: StructuredCompliance;
@@ -370,4 +421,6 @@ export type AuditReport = z.infer<typeof auditReportSchema> & {
   regulatoryCompliance?: StructuredCompliance;
   /** AAP-79: see reportVerificationSchema. */
   verification?: ReportVerification;
+  /** AAP-103: posture + findings snapshot for the dashboard. */
+  verdict?: VerdictSnapshot;
 };

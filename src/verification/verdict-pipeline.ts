@@ -146,6 +146,51 @@ export async function persistVerdict(sessionId: string, verdict: Verdict): Promi
 }
 
 /**
+ * AAP-103 — distil the full Verdict into the snapshot shape the
+ * dashboard's `report.json` reader needs. The verdict carries some
+ * fields the dashboard does not care about (legacy compile-time
+ * aliases, internal `kind` tags); the snapshot is a stable subset.
+ */
+export function buildVerdictSnapshot(verdict: Verdict): {
+  status: 'verified' | 'partial' | 'unverified';
+  posture: number;
+  postureBand: import('./severity-scoring.js').SeverityBand;
+  findings: Array<{
+    id: string;
+    band: import('./severity-scoring.js').SeverityBand;
+    severityScore: number;
+    severityComponents: {
+      br: number;
+      ds: number;
+      dm: number;
+      brW?: number;
+      brR?: number;
+      brA?: number;
+    };
+    evidenceSource: 'MCP' | 'OAU' | 'ENV' | 'PLG' | 'SLF';
+    title: string;
+    description: string;
+    kind?: string;
+  }>;
+} {
+  return {
+    status: verdict.status,
+    posture: verdict.posture ?? 0,
+    postureBand: verdict.postureBand ?? 'informational',
+    findings: (verdict.findings ?? []).map((f) => ({
+      id: f.id,
+      band: f.band,
+      severityScore: f.severityScore,
+      severityComponents: f.severityComponents,
+      evidenceSource: f.evidenceSource,
+      title: f.title,
+      description: f.description,
+      ...(f.kind !== undefined ? { kind: f.kind } : {}),
+    })),
+  };
+}
+
+/**
  * AAP-102 — map the new posture model back onto the legacy free-form
  * `riskLevel` string for storage-side back-compat. The field on
  * `AuditSession.riskLevel` is `string | undefined` (not the strict

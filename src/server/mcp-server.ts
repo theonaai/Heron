@@ -80,6 +80,7 @@ import {
 } from '../storage/sessions.js';
 import { publishSessionEvent } from '../storage/session-events.js';
 import {
+  buildVerdictSnapshot,
   computeVerdictFromArtifacts,
   persistVerdict,
   reportVerificationStatusFromVerdict,
@@ -1699,6 +1700,11 @@ export class HeronMCPServer {
         status: verificationStatus,
         updatedAt: completedAt,
       },
+      // AAP-103 — persist the verdict snapshot (posture + postureBand
+      // + findings) onto report.json so the dashboard's ReportView can
+      // render the gradient indicator + Vijil-style cards directly
+      // without recomputing the verdict client-side.
+      verdict: buildVerdictSnapshot(verdict),
     };
     if (reportJson && Array.isArray(reportJson.systems)) {
       const analyzerSubset = {
