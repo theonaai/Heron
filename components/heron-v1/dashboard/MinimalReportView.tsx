@@ -1271,6 +1271,307 @@ function BlastRadiusBadge({ tier }: { tier: BlastTier }) {
   );
 }
 
+// ─── Block 3.5: Credentials & secrets ─────────────────────────────────
+//
+// AAP-105 NEW-4: G7 minimal layout cut the entire Local Discovery section,
+// which dropped the env-key inventory (`workspaceEnv[].keys` +
+// `mcpServers[].redactedEnvKeys` + capability `auth_credential` entries)
+// from the report.
+//
+// The wedge sells on "we found 40+ env keys deterministically — the
+// declared scope is a tiny subset". Without the keys visible somewhere
+// the minimal layout has no surface for that evidence.
+//
+// Solution: a compact collapsed block between Systems and Findings that
+// summarises key count + a representative chip row, with a Details ▸
+// toggle that expands to the full grouped list. Closed by default so
+// the layout still reads as minimal.
+//
+// Redaction invariant: every key is a NAME ONLY (see
+// `src/discovery/readers/_shared.ts:redactEnvKeys`). No values, ever.
+// The block surfaces a small "names only" affordance to reinforce that
+// for the reader.
+
+interface MinimalLocalDiscovery {
+  agents?: Array<{
+    runtime?: string;
+    configPath?: string;
+    mcpServers?: Array<{
+      name?: string;
+      redactedEnvKeys?: string[];
+    }>;
+    capabilities?: Array<{
+      kind?: string;
+      provider?: string;
+    }>;
+  }>;
+  workspaceEnv?: Array<{
+    path?: string;
+    workspace?: string;
+    keys?: string[];
+  }>;
+}
+
+/**
+ * Collect every env-key-shaped string from the discovery section and
+ * deduplicate. Sources:
+ *   - workspaceEnv[].keys   (.env / .env.example readers)
+ *   - mcpServers[].redactedEnvKeys (MCP config env passthroughs)
+ *   - capabilities[].provider where kind === 'auth_credential' AND the
+ *     provider looks like an env-key (UPPER_SNAKE_CASE). Some readers
+ *     emit non-env-key provider labels (e.g. "anthropic"), so we filter
+ *     to only ALL-CAPS-with-underscores tokens.
+ */
+function collectEnvKeys(d: MinimalLocalDiscovery): string[] {
+  const set = new Set<string>();
+  const envKeyShape = /^[A-Z][A-Z0-9_]{2,}$/;
+  for (const f of d.workspaceEnv ?? []) {
+    for (const k of f.keys ?? []) {
+      if (typeof k === 'string' && k.length > 0) set.add(k);
+    }
+  }
+  for (const a of d.agents ?? []) {
+    for (const s of a.mcpServers ?? []) {
+      for (const k of s.redactedEnvKeys ?? []) {
+        if (typeof k === 'string' && k.length > 0) set.add(k);
+      }
+    }
+    for (const c of a.capabilities ?? []) {
+      if (c.kind === 'auth_credential' && typeof c.provider === 'string') {
+        if (envKeyShape.test(c.provider)) set.add(c.provider);
+      }
+    }
+  }
+  return Array.from(set).sort();
+}
+
+/**
+ * Family grouping — pick a label from a deterministic prefix match
+ * against the key's first 1-2 underscore-separated tokens. Falls back
+ * to "Other" so unknown providers still surface (count is still
+ * accurate).
+ *
+ * The order here matters: more-specific prefixes come first so e.g.
+ * GOOGLE_OAUTH_TOKEN_FILE doesn't get bucketed as plain "Google" when
+ * "GOOGLE_OAUTH" would be more precise. For demo readability we keep
+ * the buckets coarse (one bucket per provider, not per credential
+ * type), so GOOGLE_API_KEY + GOOGLE_OAUTH_TOKEN_FILE both land in
+ * "Google".
+ */
+const FAMILY_PREFIXES: Array<[RegExp, string]> = [
+  [/^OPENAI(_|$)/, 'OpenAI'],
+  [/^ANTHROPIC(_|$)/, 'Anthropic'],
+  [/^GOOGLE(_|$)/, 'Google'],
+  [/^GEMINI(_|$)/, 'Google'],
+  [/^TELEGRAM(_|$)/, 'Telegram'],
+  [/^SLACK(_|$)/, 'Slack'],
+  [/^GITHUB(_|$)/, 'GitHub'],
+  [/^GITLAB(_|$)/, 'GitLab'],
+  [/^AWS(_|$)/, 'AWS'],
+  [/^AZURE(_|$)/, 'Azure'],
+  [/^GCP(_|$)/, 'GCP'],
+  [/^NOTION(_|$)/, 'Notion'],
+  [/^AIRTABLE(_|$)/, 'Airtable'],
+  [/^SALESFORCE(_|$)/, 'Salesforce'],
+  [/^HUBSPOT(_|$)/, 'HubSpot'],
+  [/^GAMMA(_|$)/, 'Gamma'],
+  [/^WELLKID(_|$)/, 'Wellkid'],
+  [/^LMS(_|$)/, 'LMS'],
+  [/^DB|DATABASE(_|$)/, 'Database'],
+  [/^STRIPE(_|$)/, 'Stripe'],
+];
+
+function groupEnvKeysByFamily(keys: string[]): Array<{ family: string; keys: string[] }> {
+  const groups = new Map<string, string[]>();
+  for (const k of keys) {
+    let family = 'Other';
+    for (const [re, label] of FAMILY_PREFIXES) {
+      if (re.test(k)) {
+        family = label;
+        break;
+      }
+    }
+    if (!groups.has(family)) groups.set(family, []);
+    groups.get(family)!.push(k);
+  }
+  // Sort families by member count desc, then alpha; push "Other" last.
+  return Array.from(groups.entries())
+    .map(([family, ks]) => ({ family, keys: ks.slice().sort() }))
+    .sort((a, b) => {
+      if (a.family === 'Other') return 1;
+      if (b.family === 'Other') return -1;
+      if (b.keys.length !== a.keys.length) return b.keys.length - a.keys.length;
+      return a.family.localeCompare(b.family);
+    });
+}
+
+function CredentialsBlock({ discovery }: { discovery: unknown }) {
+  const initialOpen = useExpandFlag('credentials');
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (initialOpen) setOpen(true);
+  }, [initialOpen]);
+
+  // Narrow `unknown` once at the top. If the field isn't shaped right
+  // we render nothing — keeps minimal layout safe for legacy reports
+  // without a discovery scan.
+  if (!discovery || typeof discovery !== 'object') return null;
+  const d = discovery as MinimalLocalDiscovery;
+  const keys = useMemo(() => collectEnvKeys(d), [d]);
+  const groups = useMemo(() => groupEnvKeysByFamily(keys), [keys]);
+  if (keys.length === 0) return null;
+
+  // Collapsed-state preview: prefer recognizable provider-family keys
+  // first so the reader sees the wedge-shaped evidence (OPENAI_API_KEY,
+  // GOOGLE_API_KEY, TELEGRAM_BOT_TOKEN) before any "Other" bucket noise.
+  // Falls back to plain alpha order when no families are recognized.
+  // Capped at 6 to avoid line wrap on standard widths.
+  const preview = useMemo(() => {
+    const nonOther = groups.filter((g) => g.family !== 'Other');
+    if (nonOther.length === 0) return keys.slice(0, 6);
+    // Pick one key from each family round-robin until we hit 6.
+    const picks: string[] = [];
+    const cursors = nonOther.map(() => 0);
+    while (picks.length < 6) {
+      let advanced = false;
+      for (let i = 0; i < nonOther.length && picks.length < 6; i++) {
+        const g = nonOther[i]!;
+        const c = cursors[i]!;
+        if (c < g.keys.length) {
+          picks.push(g.keys[c]!);
+          cursors[i] = c + 1;
+          advanced = true;
+        }
+      }
+      if (!advanced) break;
+    }
+    return picks;
+  }, [groups, keys]);
+  const hiddenCount = Math.max(0, keys.length - preview.length);
+
+  return (
+    <section
+      style={{
+        margin: '0 0 18px',
+        padding: '18px 22px',
+        background: '#ffffff',
+        border: '1px solid #e5e7eb',
+        borderRadius: 10,
+      }}
+      aria-label="Credentials & secrets"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex',
+          width: '100%',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'transparent',
+          border: 'none',
+          padding: 0,
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+      >
+        <span>
+          <span
+            style={{
+              fontSize: 11,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: '#71717a',
+              fontWeight: 600,
+              marginRight: 10,
+            }}
+          >
+            Credentials &amp; secrets
+          </span>
+          <span style={{ fontSize: 13, color: '#18181b' }}>
+            {keys.length} env key{keys.length === 1 ? '' : 's'} detected
+            {groups.length > 1 && (
+              <>
+                {' · '}
+                {groups.length} provider{groups.length === 1 ? '' : 's'}
+              </>
+            )}
+          </span>
+        </span>
+        <span style={{ fontSize: 12, color: '#1d4ed8', fontWeight: 600 }}>
+          {open ? 'Hide ▾' : 'Details ▸'}
+        </span>
+      </button>
+
+      {!open && (
+        <div style={{ marginTop: 10, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+          {preview.map((k) => (
+            <EnvKeyChip key={k} name={k} />
+          ))}
+          {hiddenCount > 0 && (
+            <span style={{ fontSize: 11.5, color: '#71717a', marginLeft: 4 }}>
+              + {hiddenCount} more
+            </span>
+          )}
+        </div>
+      )}
+
+      {open && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
+          <p style={{ margin: '0 0 12px', fontSize: 11.5, color: '#71717a', lineHeight: 1.55 }}>
+            Variable names only, never values. Collected from <span className="mono">.env</span>{' '}
+            files, MCP server <span className="mono">env</span> passthroughs, and runtime auth
+            credentials.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {groups.map((g) => (
+              <div key={g.family}>
+                <div
+                  style={{
+                    fontSize: 10.5,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    color: '#71717a',
+                    fontWeight: 600,
+                    marginBottom: 5,
+                  }}
+                >
+                  {g.family} <span style={{ color: '#a1a1aa', fontWeight: 500 }}>({g.keys.length})</span>
+                </div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  {g.keys.map((k) => (
+                    <EnvKeyChip key={k} name={k} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function EnvKeyChip({ name }: { name: string }) {
+  return (
+    <span
+      className="mono"
+      title="Name only — value never read"
+      style={{
+        fontSize: 10.5,
+        padding: '2px 7px',
+        background: '#f4f4f5',
+        border: '1px solid #e4e4e7',
+        color: '#3f3f46',
+        borderRadius: 3,
+        wordBreak: 'break-all',
+      }}
+    >
+      {name}
+    </span>
+  );
+}
+
 // ─── Block 4: Findings ────────────────────────────────────────────────
 
 function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
@@ -2004,6 +2305,7 @@ export default function MinimalReportView({
       />
       <PurposeBlock json={reportJson} />
       <SystemsBlock systems={reportJson.systems || []} verdict={reportJson.verdict} />
+      <CredentialsBlock discovery={reportJson.localAgentDiscovery} />
       <FindingsBlock verdict={reportJson.verdict} />
       <ComplianceBlock rc={reportJson.regulatoryCompliance} />
       <FooterToggle onSwitch={onSwitchToFullLayout} />
