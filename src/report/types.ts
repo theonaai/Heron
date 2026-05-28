@@ -345,6 +345,10 @@ export const verdictFindingSnapshotSchema = z.object({
   evidenceSource: evidenceSourceSchema,
   title: z.string(),
   description: z.string(),
+  /** AAP-104 B9 — analyzer-supplied mitigation text (semicolon-joined
+   *  suggestions). Optional; the SLF mitigation renderer prefers this
+   *  over the generic evidence-source fallback when present. */
+  analyzerNotes: z.string().optional(),
   kind: z.string().optional(),
 });
 export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;

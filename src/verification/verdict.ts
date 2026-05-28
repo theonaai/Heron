@@ -117,6 +117,16 @@ export interface VerdictFinding {
   title: string;
   /** Free-form description. */
   description: string;
+  /**
+   * AAP-104 B9 — analyzer-provided actionable notes. The LLM analyzer
+   * generates a `mitigation` field on each Surface 1 risk (semicolon-
+   * separated suggestion list). Pre-fix the verdict pipeline dropped
+   * this on the SLF conversion, so the dashboard fell through to the
+   * generic SLF mitigation hint ("self-reported, not verified"). Now
+   * the field is preserved end-to-end and the renderer prefers it for
+   * SLF findings when present.
+   */
+  analyzerNotes?: string;
   /** Optional kind tag for legacy renderers (discovery / oauth / risk). */
   kind?: string;
 }
@@ -318,6 +328,14 @@ function interviewRiskToVerdictFinding(
   // fall back to a synthetic id when title is missing.
   const titleStr = typeof risk.title === 'string' ? risk.title : `risk-${idx}`;
   const slug = titleStr.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+  // AAP-104 B9 — preserve analyzer-supplied mitigation text. The shape
+  // is intentionally permissive (the verdict pipeline accepts hand-
+  // built JSON from old tests as well as analyzer.ts output) so we
+  // string-check the field before lifting it.
+  const analyzerNotes =
+    typeof risk.mitigation === 'string' && risk.mitigation.trim().length > 0
+      ? risk.mitigation.trim()
+      : undefined;
   return {
     id: `slf-${idx}-${slug}`,
     band: severityBand(result.severity),
@@ -333,6 +351,7 @@ function interviewRiskToVerdictFinding(
     evidenceSource: 'SLF',
     title: titleStr,
     description: typeof risk.description === 'string' ? risk.description : '',
+    ...(analyzerNotes !== undefined && { analyzerNotes }),
     kind: 'risk',
   };
 }
