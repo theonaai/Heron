@@ -1042,8 +1042,6 @@ function SensitivityBadge({ label, tier }: { label: string; tier: 'T1' | 'T2' | 
  * label in SystemRow — the long technical prose is now strictly secondary.
  */
 function SystemDetail({ system }: { system: SystemAssessment }) {
-  const access = classifyAccess(system);
-  const ds = classifyDS(system.dataSensitivity || '');
   const blastRadius = (system.blastRadius || '').trim();
   const blastTier = classifyBlastRadius(blastRadius);
   const requested = system.scopesRequested || [];
@@ -1051,14 +1049,11 @@ function SystemDetail({ system }: { system: SystemAssessment }) {
 
   return (
     <div style={{ padding: '12px 14px', fontSize: 12.5, color: '#3f3f46' }}>
-      {/* Top chip row: access · sensitivity · blast radius */}
+      {/* AAP-105 D3: collapsed row already shows ACCESS + SENSITIVITY in the
+          parent table. Surfacing them again as chips at the top of the
+          expansion duplicated information. Only Blast Radius is genuinely
+          new — render it alone so the chip row carries net-new evidence. */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <ChipLabeled label="Access">
-          <AccessBadge tier={access} />
-        </ChipLabeled>
-        <ChipLabeled label="Sensitivity">
-          <SensitivityBadge label={ds.label} tier={ds.tier} />
-        </ChipLabeled>
         <ChipLabeled label="Blast radius">
           <BlastRadiusBadge tier={blastTier} />
         </ChipLabeled>
