@@ -1,6 +1,6 @@
 import type { AnalyzeFailureReason } from '../analysis/analyzer.js';
 import { calibrateVerdictLabel } from '../analysis/risk-scorer.js';
-import type { AuditReport, QAPair, DataQuality, Risk, SystemAssessment, WriteOperation, StructuredCompliance, RegulatoryFlag } from './types.js';
+import type { AuditReport, EvidenceSource, QAPair, DataQuality, Risk, SystemAssessment, WriteOperation, StructuredCompliance, RegulatoryFlag } from './types.js';
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import type { ControlResult } from '../compliance/control-catalog.js';
 import {
@@ -32,8 +32,20 @@ import type {
   VerificationVerdict,
 } from '../verification/types.js';
 import { renderFrameworkMappingSection } from '../verification/frameworks/render.js';
-import type { Verdict } from '../verification/verdict.js';
+import type { Verdict, VerdictFinding } from '../verification/verdict.js';
 import type { DiscoveryFinding } from '../discovery/types.js';
+import {
+  assignFindingCodes,
+  countVerifiedByBucket,
+  formatSeverityNumber,
+  nearestStop,
+  renderBucketCountsLine,
+  renderSeverityFormula,
+  SEVERITY_BAND_LABEL,
+  SEVERITY_STOPS,
+  type CodedVerdictFinding,
+} from './finding-display.js';
+import { getMitigationHint } from './mitigation-catalog.js';
 
 // ─── AAP-43 P1 #5 / AAP-84 Phase 4 — overall regulatory status ────────────
 
@@ -199,6 +211,12 @@ export function renderMarkdownReport(
     // report cannot miss that the verdict is self-report only. The
     // banner is suppressed once `verification.status === 'verified'`.
     renderInterrogationOnlyBanner(report),
+    // AAP-103 — gradient posture indicator. Sits between the
+    // interrogation-only banner and the Verification Status section so
+    // the reader sees the numeric BR × DS × DM posture immediately
+    // after they learn whether deterministic evidence was even
+    // collected.
+    renderPostureSection(verdict),
     // AAP-63 — Verification Status sits near the top so an auditor sees
     // "deterministic or not?" before reading any findings.
     renderVerificationStatusSection(
@@ -214,11 +232,23 @@ export function renderMarkdownReport(
     // primed to read findings critically.
     renderDiscrepanciesSection(verdict),
     renderLocalDiscoveryExtras(context),
-    renderFindingsSplit(
-      report.risks,
-      report.compliance as StructuredCompliance | undefined,
-      discoveryFindings,
-    ),
+    // AAP-103 — when a verdict is attached, render the new Vijil-style
+    // Failure Pattern cards (code + severity + formula hover + implications
+    // + mitigations callout). Pre-verdict callers (the initial markdown
+    // write before the analyzer finishes) still hit the legacy flat-table
+    // path so back-compat with golden tests is preserved.
+    verdict
+      ? renderFindingsCards(
+          report.risks,
+          report.compliance as StructuredCompliance | undefined,
+          verdict,
+          discoveryFindings,
+        )
+      : renderFindingsSplit(
+          report.risks,
+          report.compliance as StructuredCompliance | undefined,
+          discoveryFindings,
+        ),
     renderSystems(report.systems),
     renderPositiveFindings(report, discoveryFindings),
     renderVerdict(report, discoveryFindings, verdict),
@@ -234,54 +264,28 @@ export function renderMarkdownReport(
 // ─── Header ──────────────────────────────────────────────────────────────────
 
 function renderHeader(report: AuditReport, verdict?: Verdict): string {
-  // Reviewer feedback (2026-04-25): the prior `!!` exclamation marker on
-  // HIGH/CRITICAL headers ("Risk Level: HIGH !!") was called out as
-  // "not a serious-document tone" — CISOs do not want excitement in audit
-  // headers. The `**Risk Level**: HIGH` label itself is already strong;
-  // the riskIcon adds nothing and undercuts credibility. Dropped.
+  // AAP-103 — header simplified to identification + verification state.
+  // The categorical "Risk Level" (low / medium / high / critical) is
+  // replaced by the numeric posture indicator in `renderPostureSection`
+  // below, anchored on BR × DS × DM (FIPS 199 high-water-mark) rather
+  // than the prior heuristic ramp. The verification suffix stays here
+  // because it answers a different question — "did Surface 2 actually
+  // run?" — orthogonal to the posture number itself.
   const dqPart = report.dataQuality ? ` | **Data Quality**: ${report.dataQuality.score}/100` : '';
 
-  // AAP-63 / AAP-80 — the header risk level now comes from the
-  // verdict's `primaryRiskLevel` when supplied. When no verdict is
-  // attached we fall back to the legacy `overallRiskLevel` from the
-  // analyzer for back-compat (e.g. the existing report golden tests
-  // that don't thread a verdict in).
-  //
-  // AAP-80 — the "(Verified)" / "(Partially Verified)" / "(Unverified)"
-  // suffix is derived from `report.verification.status` (the persisted
-  // report-level field), NOT from `verdict.primaryRiskSource`. Pre-fix
-  // the header read `verdict.primaryRiskSource !== 'no-evidence'` and
-  // emitted "Risk Level (Verified)" for any verdict that had Surface 2
-  // evidence at all, even a `partial` one with one source attempted.
-  // That diverged from the banner and the verification field. Routing
-  // through `report.verification.status` lets the header, the banner,
-  // and the persisted field move in lockstep.
-  const primaryRisk =
-    verdict?.primaryRiskLevel ?? report.overallRiskLevel;
   const verificationStatus = report.verification?.status;
-  // AAP-93 M5 — Risk Level and Verification rendered as DISTINCT
-  // fields on the header line. Pre-fix the verification state was a
-  // parenthetical on the risk label (`**Risk Level (Partially
-  // Verified)**: MEDIUM`) which conflated two orthogonal axes. The
-  // dashboard already keeps them separate; the markdown header now
-  // matches that contract.
-  let riskLine: string;
-  let verificationLine = '';
-  if (!verdict) {
-    riskLine = `**Risk Level**: ${report.overallRiskLevel.toUpperCase()}`;
+  let verificationLine: string;
+  if (!verdict && !verificationStatus) {
+    verificationLine = '**Verification**: Unverified — no verdict computed';
   } else if (verificationStatus === 'verified') {
-    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
-    verificationLine = ' | **Verification**: Verified';
+    verificationLine = '**Verification**: Verified';
   } else if (verificationStatus === 'partially-verified') {
-    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
-    verificationLine = ' | **Verification**: Partial — see Verification Status section';
+    verificationLine = '**Verification**: Partial — see Verification Status section';
   } else if (verificationStatus === 'verification-failed') {
-    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
-    verificationLine = ' | **Verification**: Failed — see Verification Status section';
+    verificationLine = '**Verification**: Failed — see Verification Status section';
   } else {
     // 'interrogation-only' or absent (legacy session pre-AAP-79).
-    riskLine = `**Risk Level**: ${primaryRisk.toUpperCase()}`;
-    verificationLine = ' | **Verification**: Unverified — run discovery to verify';
+    verificationLine = '**Verification**: Unverified — run discovery to verify';
   }
 
   // AAP-43 P1 #5: single overall regulatory status label (replaces
@@ -297,8 +301,74 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
 
   return `# Agent Access Audit Report
 
-**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${riskLine}${verificationLine}${dqPart}${regLine}`;
+**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${verificationLine}${dqPart}${regLine}`;
 }
+
+// ─── Posture indicator (AAP-103) ───────────────────────────────────────────
+
+/**
+ * Render the BR × DS × DM posture indicator that sits near the top of
+ * the report. Replaces the prior categorical "Risk Level: MEDIUM" with
+ * a numeric posture (one of 9 stops) + a band label + per-band counts
+ * across the verdict's Verified findings.
+ *
+ * Markdown surface caveat: a real CSS gradient bar lives in the HTML
+ * renderer and the dashboard React. The markdown form renders an ASCII
+ * stop ladder ("1 · 1.5 · 2 · 3 · ⟨4⟩ · 4.5 · 6 · 9 · 13.5") with the
+ * marker stop wrapped in angle brackets, plus a "you are here at <pct>%
+ * along the bar" annotation. That keeps the indicator legible even when
+ * the markdown body is rendered in a plaintext viewer (one common
+ * compliance-officer workflow).
+ *
+ * Counts line shows Verified findings only (see countVerifiedByBucket).
+ * Posture is set to 0 when no Verified findings exist, in which case
+ * the indicator renders with the marker at the very low end and an
+ * explicit "no Verified findings" annotation.
+ */
+function renderPostureSection(verdict: Verdict | undefined): string {
+  if (!verdict) return '';
+
+  const posture = verdict.posture ?? 0;
+  const band = verdict.postureBand ?? 'informational';
+  const bandLabel = SEVERITY_BAND_LABEL[band];
+
+  // Build the ASCII ladder. Wrap the active stop with brackets so the
+  // marker is visible in plain text.
+  const markerStop = nearestStop(posture);
+  const ladder = SEVERITY_STOPS.map((s) => {
+    const label = formatSeverityNumber(s);
+    return s === markerStop ? `⟨${label}⟩` : label;
+  }).join(' · ');
+
+  const counts = countVerifiedByBucket(verdict.findings ?? []);
+  const countsLine = renderBucketCountsLine(counts);
+
+  const postureText =
+    posture === 0
+      ? 'No Verified findings'
+      : `${formatSeverityNumber(posture)} (${bandLabel})`;
+
+  // Posture is grounded — surface the FIPS 199 anchor in copy so the
+  // compliance reader knows the aggregation rule without opening docs.
+  const anchorNote =
+    'Posture aggregates Verified findings via the FIPS 199 high-water-mark rule (max severity, not average). Self-attested findings render below but do not move the gradient.';
+
+  const lines = [
+    '## Posture',
+    '',
+    `**Posture**: ${postureText}  ·  ${countsLine}`,
+    '',
+    '```',
+    `Severity gradient (1 = lowest, 13.5 = highest):`,
+    `  ${ladder}`,
+    `  ^---- Posture marker`,
+    '```',
+    '',
+    `_${anchorNote}_`,
+  ];
+  return lines.join('\n');
+}
+
 
 // ─── AAP-79 — interrogation-only banner ────────────────────────────────────
 
@@ -1172,6 +1242,257 @@ function renderLocalDiscoveryExtras(context: RenderMarkdownReportContext): strin
       lines.push(`- ${escapeText(w)}`);
     }
     lines.push('');
+  }
+
+  return lines.join('\n').trimEnd();
+}
+
+// ─── AAP-103 — Vijil-style Failure Pattern cards ────────────────────────────
+
+/**
+ * Source label per evidenceSource prefix. Surfaced as a one-word tag
+ * on the finding card so the reader sees the provenance without having
+ * to memorise the 3-letter codes.
+ */
+const EVIDENCE_SOURCE_LABEL: Readonly<Record<EvidenceSource, string>> = {
+  MCP: 'MCP server / tool inventory',
+  OAU: 'OAuth scope introspection',
+  ENV: 'Workspace .env / secret material',
+  PLG: 'Plugin / skill / auth credential',
+  SLF: 'Self-attested (interview only)',
+};
+
+/**
+ * Render a single Vijil-style Failure Pattern card for a coded
+ * VerdictFinding. Returns markdown ready to be appended to the
+ * Findings section.
+ *
+ * Structure (matches Frame 09 of the Vijil visual reference):
+ *
+ *   #### MCP-001 — <title>
+ *   **Severity**: 9 (High) · BR 2 × DS 3 × DM 1.5 · _Source: MCP_
+ *
+ *   <description>
+ *
+ *   **Implications**
+ *   - …
+ *
+ *   > **Mitigations**
+ *   > - …
+ *
+ * Implications: derived from the finding's `description` + framework
+ * cross-references when present. Mitigations: lookup via
+ * `getMitigationHint`, fallback to generic copy.
+ */
+function renderFindingCard(
+  finding: CodedVerdictFinding,
+  compliance: StructuredCompliance | undefined,
+  legacyRisk?: Risk,
+): string {
+  const sevText = formatSeverityNumber(finding.severityScore);
+  const bandLabel = SEVERITY_BAND_LABEL[finding.band];
+  const sourceLabel = EVIDENCE_SOURCE_LABEL[finding.evidenceSource];
+
+  // Hover-hint formula. In markdown we emit it as an italic line under
+  // the severity header (no native tooltip; the HTML / dashboard get
+  // a real `title` attribute).
+  const formula = renderSeverityFormula({
+    severity: finding.severityScore,
+    br: finding.severityComponents.br,
+    ds: finding.severityComponents.ds,
+    dm: finding.severityComponents.dm,
+    ...(finding.severityComponents.brW !== undefined && { brW: finding.severityComponents.brW }),
+    ...(finding.severityComponents.brR !== undefined && { brR: finding.severityComponents.brR }),
+    ...(finding.severityComponents.brA !== undefined && { brA: finding.severityComponents.brA }),
+  });
+
+  // Framework cross-references — same legacy lookup the prior flat
+  // table used. When the finding has a typed FindingType (only true
+  // for findings sourced from the analyzer LLM via `risks`), surface
+  // the basis as an "Anchored to:" line. Discovery / OAuth findings
+  // don't carry a typed FindingType yet — they get an empty basis.
+  const findingType = legacyRisk ? inferFindingType(legacyRisk) : undefined;
+  const basis = findingType ? getFrameworkBasis(findingType, compliance) : '';
+  const anchorLine = basis && basis !== '—' ? `\n_Anchored to: ${basis}_\n` : '';
+
+  // Implications — for MVP we extract two simple rules from the
+  // existing data:
+  //   1. Mitigation field on legacyRisk (when present) reads as one
+  //      implication / next step. We surface it here when not used as
+  //      the Mitigations callout below.
+  //   2. Evidence-source-specific implication for surface-source
+  //      findings (OAuth diff → "scope creep", etc.).
+  const implications = renderImplications(finding, legacyRisk);
+
+  // Mitigations callout — 1-line hint + docs link.
+  const mitigationHint = getMitigationHint({
+    ...(findingType ? { findingType } : {}),
+    evidenceSource: finding.evidenceSource,
+  });
+
+  // Use a blockquote-style green callout in markdown (`>`). The HTML
+  // renderer + dashboard map to a proper green-tinted box.
+  const lines: string[] = [
+    `#### ${finding.code} — ${escapeText(finding.title)}`,
+    '',
+    `**Severity**: ${sevText} (${bandLabel}) · _Formula: ${escapeText(formula)}_  ·  **Source**: ${sourceLabel}`,
+  ];
+  if (anchorLine) lines.push(anchorLine.trimEnd());
+  lines.push('');
+  lines.push(escapeText(finding.description));
+  lines.push('');
+  if (implications.length > 0) {
+    lines.push('**Implications**');
+    lines.push('');
+    for (const i of implications) lines.push(`- ${escapeText(i)}`);
+    lines.push('');
+  }
+  // Mitigations as a green-tinted callout — markdown blockquote.
+  lines.push('> **Mitigations**');
+  lines.push(`> - ${escapeText(mitigationHint)}`);
+  return lines.join('\n');
+}
+
+/**
+ * Derive a short Implications bullet list for a finding. MVP: 2-4 short
+ * lines drawn from existing data:
+ *   - The legacy `mitigation` field (if it sounds like a consequence
+ *     statement and we aren't using it as the Mitigations callout)
+ *   - Evidence-source-specific lift ("MCP scope creep increases blast
+ *     radius across all clients of this server.")
+ *   - SLF caveat for self-attested findings
+ */
+function renderImplications(
+  finding: CodedVerdictFinding,
+  legacyRisk?: Risk,
+): string[] {
+  const out: string[] = [];
+
+  // Source-specific implication boilerplate.
+  switch (finding.evidenceSource) {
+    case 'MCP':
+      out.push('Tools registered at runtime that are not declared in the MCP server config expand the agent\'s effective blast radius beyond what reviewers approved.');
+      break;
+    case 'OAU':
+      out.push('OAuth scopes granted at the provider exceed what the agent consumer requested, so the agent can perform actions that were not justified during scope review.');
+      break;
+    case 'ENV':
+      out.push('Credentials in workspace .env files are accessible to anyone with filesystem access; this widens the credential blast radius beyond a secret manager\'s audit boundary.');
+      break;
+    case 'PLG':
+      out.push('Plugin / skill / auth credential grants live outside the MCP scope contract, so the declared scope of the agent does not bound what this artefact can do.');
+      break;
+    case 'SLF':
+      out.push('This claim is self-reported and not verified against deterministic evidence. A reviewer should attach a config file, audit log, or scope record before relying on it.');
+      break;
+  }
+
+  // Include the legacy mitigation prose when it reads as a consequence
+  // (we still produce a Mitigations callout below via the catalog).
+  if (legacyRisk?.mitigation && legacyRisk.mitigation !== 'NOT PROVIDED' && legacyRisk.mitigation !== '—') {
+    out.push(`Analyzer note: ${legacyRisk.mitigation}`);
+  }
+
+  return out;
+}
+
+/**
+ * Render the Findings section as Vijil-style Failure Pattern cards.
+ *
+ * Two streams remain (Verified vs Self-attested per AAP-93 H3) so the
+ * "deterministic before self-report" wedge stays visible, but every
+ * finding inside each stream is now an individual card rather than a
+ * row in a flat table. Findings ordered by severity within each stream.
+ *
+ * Falls back to the legacy `renderFindingsSplit` flat table when no
+ * verdict has been computed yet (the only place that should hit is the
+ * pre-analyzer markdown render — every persisted report goes through
+ * the verdict pipeline).
+ */
+function renderFindingsCards(
+  risks: Risk[],
+  compliance: StructuredCompliance | undefined,
+  verdict: Verdict,
+  discoveryFindings: DiscoveryFinding[],
+): string {
+  // Pair each VerdictFinding to a Risk for FindingType + mitigation
+  // prose lookup. The match is positional: interview risks are
+  // appended to `verdict.findings` in source order by computeVerdict.
+  // We map by `evidenceSource === 'SLF'` rank.
+  //
+  // Defensive: pre-AAP-102 test fixtures may pass a Verdict literal
+  // without the `findings` array. Treat absent as empty so we fall
+  // through to the empty-state copy rather than crash.
+  const verdictFindings = verdict.findings ?? [];
+  const slfFindingsInVerdict = verdictFindings.filter((f) => f.evidenceSource === 'SLF');
+  const slfRiskByIndex = new Map<string, Risk>();
+  slfFindingsInVerdict.forEach((vf, idx) => {
+    const r = risks[idx];
+    if (r) slfRiskByIndex.set(vf.id, r);
+  });
+
+  // Assign Vijil-style codes (MCP-001 / OAU-001 / ...).
+  const coded = assignFindingCodes(verdictFindings);
+
+  // Sort within each stream: highest severity first.
+  const verified = coded
+    .filter((f) => f.evidenceSource !== 'SLF')
+    .slice()
+    .sort((a, b) => b.severityScore - a.severityScore);
+  const selfAttested = coded
+    .filter((f) => f.evidenceSource === 'SLF')
+    .slice()
+    .sort((a, b) => b.severityScore - a.severityScore);
+
+  const lines: string[] = ['## Findings', ''];
+
+  // ── Verified stream ──
+  lines.push('### Verified Findings');
+  lines.push('');
+  lines.push(
+    '_Deterministic evidence: MCP server inventory, OAuth scope introspection, workspace .env scans, plugin / skill / auth credentials. These drive the posture indicator above._',
+  );
+  lines.push('');
+  if (verified.length === 0) {
+    lines.push('_No Verified findings — either the discovery scan has not run yet, or it ran and found no inconsistencies. Re-run discovery if the agent configuration has changed._');
+    lines.push('');
+  } else {
+    for (const f of verified) {
+      lines.push(renderFindingCard(f, compliance));
+      lines.push('');
+    }
+  }
+
+  // ── Cross-runtime note (preserved from AAP-93 M2) ──
+  if (discoveryFindings.length > 0) {
+    const runtimesSeen = new Set<string>();
+    for (const df of discoveryFindings) {
+      if (df.runtime && df.runtime !== '—') runtimesSeen.add(df.runtime);
+    }
+    if (runtimesSeen.size > 1) {
+      const runtimeList = [...runtimesSeen].filter((r) => r !== '—').sort().join(', ');
+      lines.push(
+        `_Findings cover all AI-runtime configs present on the host machine (${runtimeList}). Findings tagged with a runtime other than the audited agent indicate cross-runtime artefacts on the same workstation._`,
+      );
+      lines.push('');
+    }
+  }
+
+  // ── Self-attested stream ──
+  lines.push('### Self-Attested Findings');
+  lines.push('');
+  lines.push(
+    '_These findings are derived from the agent\'s interview answers only. They appear here for transparency but do not move the posture indicator above. Treat each as a working hypothesis until matched to deterministic evidence._',
+  );
+  lines.push('');
+  if (selfAttested.length === 0) {
+    lines.push('_No self-attested findings._');
+  } else {
+    for (const f of selfAttested) {
+      const legacy = slfRiskByIndex.get(f.id);
+      lines.push(renderFindingCard(f, compliance, legacy));
+      lines.push('');
+    }
   }
 
   return lines.join('\n').trimEnd();

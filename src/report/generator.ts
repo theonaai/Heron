@@ -11,6 +11,7 @@ import {
 } from '../analysis/risk-scorer.js';
 import { renderMarkdownReport, renderAnalysisFailedReport } from './templates.js';
 import { computeVerdict } from '../verification/verdict.js';
+import { buildVerdictSnapshot } from '../verification/verdict-pipeline.js';
 import type { LLMClient } from '../llm/client.js';
 import * as logger from '../util/logger.js';
 import { isProvided } from '../util/provided.js';
@@ -178,6 +179,13 @@ async function buildSuccessReport(
   const initialVerdict = computeVerdict({
     interviewFindings: analysis.risks,
   });
+
+  // AAP-103 — persist the verdict snapshot onto the AuditReport so the
+  // dashboard's ReportView can render the gradient indicator + Vijil-
+  // style cards on first load (before Surface 2 runs). The snapshot is
+  // tiny (a few KB worst case) and keeps the dashboard from having to
+  // recompute the verdict client-side.
+  report.verdict = buildVerdictSnapshot(initialVerdict);
 
   // 6. Format output
   const formatted = options.format === 'json'

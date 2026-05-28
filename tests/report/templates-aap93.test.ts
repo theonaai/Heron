@@ -364,63 +364,88 @@ describe('AAP-93 H9 — Obligations table cites actual systems, not boilerplate 
   });
 });
 
-describe('AAP-93 M3 — Source column in deterministic findings table', () => {
-  it('Findings table carries a Source column populated from sourcePath', () => {
-    const verdict: Verdict = {
-      status: 'partial',
-      deterministicRiskLevel: 'high',
-      primaryRiskLevel: 'high',
-      primaryRiskSource: 'deterministic',
-      discrepancies: [],
-    };
+describe('AAP-93 M3 — superseded by AAP-103 Failure Pattern cards', () => {
+  // AAP-103 replaces the flat findings table with per-finding Vijil-style
+  // cards. The "Kind / Severity / Server / Runtime / Source" columns no
+  // longer exist as a markdown table — each finding renders as a heading
+  // + severity line + description + Implications + Mitigations callout.
+  // The M3 contract (source path visible to the reviewer + pipe safety)
+  // moves to the card body (description text). The two tests below
+  // confirm that contract under the new layout.
+
+  it('finding card surfaces the description carrying the sourcePath', () => {
     const discoveryFindings: DiscoveryFinding[] = [
       {
         kind: 'EXTRA',
         severity: 'HIGH',
         serverName: 'leak',
         runtime: 'codex',
-        description: 'undisclosed server',
+        description: 'undisclosed server at /home/u/.codex/config.toml',
         sourcePath: '/home/u/.codex/config.toml',
       },
     ];
+    const verdict: Verdict = {
+      status: 'partial',
+      posture: 9,
+      postureBand: 'high',
+      findings: [
+        {
+          id: 'mcp-0-extra-leak',
+          band: 'high',
+          severityScore: 9,
+          severityComponents: { br: 3, ds: 3, dm: 1 },
+          evidenceSource: 'MCP',
+          title: 'EXTRA leak',
+          description: 'undisclosed server at /home/u/.codex/config.toml',
+          kind: 'discovery',
+        },
+      ],
+      discrepancies: [],
+      primaryRiskLevel: 'high',
+      primaryRiskSource: 'deterministic',
+      deterministicRiskLevel: 'high',
+    };
     const md = renderMarkdownReport(makeReport(), {
       verdict,
       discoveryFindings,
     });
-    expect(md).toContain('| Kind | Severity | Server / Runtime | Source | Description |');
+    expect(md).toMatch(/#### MCP-001 — EXTRA leak/);
     expect(md).toContain('/home/u/.codex/config.toml');
   });
 
-  it('Codex round 4 P3: source path containing `|` does NOT split the table row', () => {
+  it('Codex round 4 P3 carried forward: pipe characters in description do not break card markdown', () => {
     const verdict: Verdict = {
       status: 'partial',
-      deterministicRiskLevel: 'high',
+      posture: 9,
+      postureBand: 'high',
+      findings: [
+        {
+          id: 'mcp-0-extra-leak',
+          band: 'high',
+          severityScore: 9,
+          severityComponents: { br: 3, ds: 3, dm: 1 },
+          evidenceSource: 'MCP',
+          title: 'EXTRA leak',
+          description: 'config at /home/u/path|with|pipes/config.toml',
+          kind: 'discovery',
+        },
+      ],
+      discrepancies: [],
       primaryRiskLevel: 'high',
       primaryRiskSource: 'deterministic',
-      discrepancies: [],
+      deterministicRiskLevel: 'high',
     };
-    const discoveryFindings: DiscoveryFinding[] = [
-      {
-        kind: 'EXTRA',
-        severity: 'HIGH',
-        serverName: 'leak',
-        runtime: 'codex',
-        description: 'undisclosed server',
-        sourcePath: '/home/u/path|with|pipes/config.toml',
-      },
-    ];
     const md = renderMarkdownReport(makeReport(), {
       verdict,
-      discoveryFindings,
+      discoveryFindings: [],
     });
-    const rowLine = md
-      .split('\n')
-      .find((l) => l.includes('leak') && l.startsWith('| '));
-    expect(rowLine).toBeDefined();
-    // Count `|` separators in the row — should be exactly 6 (5 columns +
-    // bookends), regardless of pipe characters in the source path.
-    const pipes = (rowLine ?? '').match(/(?<!\\)\|/g) ?? [];
-    expect(pipes).toHaveLength(6);
+    // Card body is rendered as a paragraph, not a table — pipes are
+    // escaped via escapeText in the rendering helper to keep them out
+    // of accidental table parses.
+    expect(md).toContain('#### MCP-001 — EXTRA leak');
+    expect(md).toContain('path');
+    // No table row exists for this finding any more.
+    expect(md).not.toMatch(/^\| EXTRA \| HIGH \|/m);
   });
 });
 
@@ -459,21 +484,34 @@ describe('AAP-93 M4 — Verification Status row carries a reason', () => {
   });
 });
 
-describe('AAP-93 M5 — Header splits Risk Level and Verification', () => {
-  it('partially-verified: header has Risk Level + Verification as separate fields', () => {
+describe('AAP-93 M5 — superseded by AAP-103 posture indicator', () => {
+  // AAP-103 removes the categorical "Risk Level: HIGH" from the header
+  // and replaces it with a numeric posture indicator (BR × DS × DM)
+  // rendered in its own section right below the header. The header
+  // still carries the verification status as a separate field — the
+  // orthogonality that M5 originally enforced is preserved.
+
+  it('partially-verified: header carries Verification field; posture lives in its own section', () => {
     const verdict: Verdict = {
       status: 'partial',
-      deterministicRiskLevel: 'high',
+      posture: 9,
+      postureBand: 'high',
+      findings: [],
+      discrepancies: [],
       primaryRiskLevel: 'high',
       primaryRiskSource: 'deterministic',
-      discrepancies: [],
+      deterministicRiskLevel: 'high',
     };
     const report = makeReport({
       verification: { status: 'partially-verified' },
     });
     const md = renderMarkdownReport(report, { verdict });
-    expect(md).toContain('**Risk Level**: HIGH');
     expect(md).toContain('**Verification**: Partial');
+    // Posture indicator section renders below the header.
+    expect(md).toContain('## Posture');
+    expect(md).toContain('**Posture**: 9');
+    // The old categorical "Risk Level" line is gone.
+    expect(md).not.toContain('**Risk Level**:');
     expect(md).not.toContain('Risk Level (Partially Verified)');
   });
 });

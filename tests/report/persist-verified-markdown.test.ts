@@ -94,11 +94,26 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
 
     const verdict: Verdict = {
       status: 'partial',
-      deterministicRiskLevel: 'medium',
-      interviewRiskLevel: 'medium',
-      primaryRiskLevel: 'medium',
-      primaryRiskSource: 'deterministic',
+      // AAP-103 — full Verdict shape with posture + findings.
+      posture: 9,
+      postureBand: 'high',
+      findings: [
+        {
+          id: 'mcp-0-extra-slack',
+          band: 'high',
+          severityScore: 9,
+          severityComponents: { br: 3, ds: 3, dm: 1 },
+          evidenceSource: 'MCP',
+          title: 'EXTRA slack',
+          description: 'undisclosed slack server with credentials',
+          kind: 'discovery',
+        },
+      ],
       discrepancies: [],
+      primaryRiskLevel: 'high',
+      primaryRiskSource: 'deterministic',
+      deterministicRiskLevel: 'high',
+      interviewRiskLevel: 'medium',
     };
     const discoveryFindings: DiscoveryFinding[] = [
       {
@@ -133,12 +148,13 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     const mdPath = join(getSessionsDir(), id, 'report.md');
     const rendered = readFileSync(mdPath, 'utf8');
 
-    // AAP-93 M5 — Risk Level and Verification are distinct header
-    // fields. A partially-verified report shows
-    // `**Verification**: Partial — …` instead of the legacy
-    // parenthetical `Risk Level (Partially Verified)`.
-    expect(rendered).toContain('**Risk Level**: MEDIUM');
+    // AAP-103 — the categorical "Risk Level" is replaced by the numeric
+    // posture indicator in its own section. The header still carries
+    // the Verification field separately.
     expect(rendered).toContain('**Verification**: Partial');
+    expect(rendered).toContain('## Posture');
+    expect(rendered).toContain('**Posture**: 9');
+    expect(rendered).not.toContain('**Risk Level**:');
     expect(rendered).not.toContain('Risk Level (Partially Verified)');
     expect(rendered).not.toContain('Risk Level (Verified)');
     // The amber AAP-80 banner copy renders for `partially-verified`.
@@ -149,9 +165,10 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     expect(rendered).toContain('## Verification Status');
     expect(rendered).toContain('Filesystem discovery');
     expect(rendered).not.toMatch(/UNVERIFIED.+deterministic evidence sources have not run/i);
-    // The discovery finding propagated into the deterministic findings
-    // table.
-    expect(rendered).toContain('### Deterministic Findings');
+    // AAP-103 — the discovery finding propagates into a Vijil-style
+    // Failure Pattern card (Verified subsection) rather than a table row.
+    expect(rendered).toContain('### Verified Findings');
+    expect(rendered).toContain('MCP-001');
     expect(rendered).toContain('slack');
   });
 

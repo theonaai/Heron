@@ -105,7 +105,10 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     expect(md).not.toContain('## Discrepancies');
   });
 
-  it('splits Findings into Deterministic + Self-Reported subsections', () => {
+  it('splits Findings into Verified + Self-Attested subsections (AAP-103)', () => {
+    // AAP-103 renames "Deterministic" / "Self-Reported" subsections to
+    // "Verified" / "Self-Attested" and renders each finding as a Vijil-
+    // style Failure Pattern card rather than a row in a flat table.
     const discoveryFindings: DiscoveryFinding[] = [
       {
         kind: 'EXTRA',
@@ -117,31 +120,48 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     ];
     const verdict: Verdict = {
       status: 'partial',
-      deterministicRiskLevel: 'medium',
-      interviewRiskLevel: 'medium',
-      primaryRiskLevel: 'medium',
-      primaryRiskSource: 'deterministic',
+      posture: 9,
+      postureBand: 'high',
+      findings: [
+        {
+          id: 'mcp-0-extra-slack',
+          band: 'high',
+          severityScore: 9,
+          severityComponents: { br: 3, ds: 3, dm: 1 },
+          evidenceSource: 'MCP',
+          title: 'EXTRA slack',
+          description: 'undisclosed slack server with credentials',
+          kind: 'discovery',
+        },
+      ],
       discrepancies: [],
+      primaryRiskLevel: 'high',
+      primaryRiskSource: 'deterministic',
+      deterministicRiskLevel: 'high',
+      interviewRiskLevel: 'medium',
     };
     const md = renderMarkdownReport(baseReport(), { verdict, discoveryFindings });
-    expect(md).toContain('### Deterministic Findings');
-    expect(md).toContain('### Self-Reported Findings');
-    expect(md).toContain('supplementary narrative');
+    expect(md).toContain('### Verified Findings');
+    expect(md).toContain('### Self-Attested Findings');
+    expect(md).toContain('MCP-001');
     expect(md).toContain('slack');
   });
 
-  it('Surface 1 subsection appears even when no Surface 2 findings exist', () => {
+  it('Self-Attested subsection appears even when no Verified findings exist (AAP-103)', () => {
     const verdict: Verdict = {
       status: 'partial',
-      deterministicRiskLevel: 'low',
+      posture: 0,
+      postureBand: 'informational',
+      findings: [],
+      discrepancies: [],
       primaryRiskLevel: 'low',
       primaryRiskSource: 'deterministic',
-      discrepancies: [],
+      deterministicRiskLevel: 'low',
     };
     const md = renderMarkdownReport(baseReport(), { verdict, discoveryFindings: [] });
-    expect(md).toContain('### Deterministic Findings');
-    expect(md).toContain('### Self-Reported Findings');
-    expect(md).toContain('No deterministic findings');
+    expect(md).toContain('### Verified Findings');
+    expect(md).toContain('### Self-Attested Findings');
+    expect(md).toContain('No Verified findings');
   });
 
   it('header risk-level label shows "UNVERIFIED" when verdict is unverified', () => {
@@ -159,17 +179,19 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     expect(md).toContain('run discovery to verify');
   });
 
-  it('AAP-93 M5: header shows split Risk Level + Verification when report.verification.status is verified', () => {
-    // AAP-93 M5 — Risk Level and Verification render as distinct
-    // fields. A `'verified'` report shows `**Verification**: Verified`
-    // instead of the legacy parenthetical "(Verified)" on the risk
-    // label.
+  it('AAP-103: posture indicator renders with verification field when verified', () => {
+    // AAP-103 — header carries the Verification field; posture renders
+    // in its own section. The "Risk Level: HIGH" categorical label is
+    // gone (replaced by the numeric posture).
     const verdict: Verdict = {
       status: 'verified',
-      deterministicRiskLevel: 'high',
+      posture: 9,
+      postureBand: 'high',
+      findings: [],
+      discrepancies: [],
       primaryRiskLevel: 'high',
       primaryRiskSource: 'deterministic',
-      discrepancies: [],
+      deterministicRiskLevel: 'high',
     };
     const report = {
       ...baseReport(),
@@ -179,19 +201,22 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       },
     };
     const md = renderMarkdownReport(report, { verdict });
-    expect(md).toContain('**Risk Level**: HIGH');
     expect(md).toContain('**Verification**: Verified');
-    expect(md).not.toContain('Risk Level (Verified)');
-    expect(md).not.toContain('Risk Level (Partially Verified)');
+    expect(md).toContain('## Posture');
+    expect(md).toContain('**Posture**: 9');
+    expect(md).not.toContain('**Risk Level**:');
   });
 
-  it('AAP-93 M5: header shows split fields when report.verification.status is partially-verified', () => {
+  it('AAP-103: partially-verified report still shows Posture section + amber banner', () => {
     const verdict: Verdict = {
       status: 'partial',
-      deterministicRiskLevel: 'high',
+      posture: 9,
+      postureBand: 'high',
+      findings: [],
+      discrepancies: [],
       primaryRiskLevel: 'high',
       primaryRiskSource: 'deterministic',
-      discrepancies: [],
+      deterministicRiskLevel: 'high',
     };
     const report = {
       ...baseReport(),
@@ -201,9 +226,8 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
       },
     };
     const md = renderMarkdownReport(report, { verdict });
-    expect(md).toContain('**Risk Level**: HIGH');
     expect(md).toContain('**Verification**: Partial');
-    expect(md).not.toContain('Risk Level (Partially Verified)');
+    expect(md).toContain('## Posture');
     // The amber AAP-80 banner copy is still present.
     expect(md).toContain('Partially verified.');
   });

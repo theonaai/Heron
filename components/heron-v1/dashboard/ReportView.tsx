@@ -11,6 +11,7 @@ import {
   LocalDiscoverySection as LocalDiscoverySectionComponent,
   OAuthScopeVerificationSection as OAuthScopeVerificationSectionComponent,
 } from './McpSections';
+import { FailurePatternCards, PostureGradient } from './PostureSection';
 import { calibrateVerdictLabel } from '@/src/analysis/risk-scorer';
 import type { Recommendation } from '@/src/report/types';
 import type {
@@ -288,6 +289,34 @@ interface ReportJson {
     status: 'interrogation-only' | 'verified' | 'partially-verified' | 'verification-failed';
     reason?: string;
     updatedAt?: string;
+  };
+  /**
+   * AAP-103 — verdict snapshot (posture + postureBand + findings).
+   * Populated by the verification pipeline. When present, the dashboard
+   * renders the gradient indicator + Vijil-style Failure Pattern cards
+   * instead of the legacy FindingsByTier table.
+   */
+  verdict?: {
+    status: 'verified' | 'partial' | 'unverified';
+    posture: number;
+    postureBand: 'informational' | 'low' | 'medium' | 'high' | 'critical';
+    findings: Array<{
+      id: string;
+      band: 'informational' | 'low' | 'medium' | 'high' | 'critical';
+      severityScore: number;
+      severityComponents: {
+        br: number;
+        ds: number;
+        dm: number;
+        brW?: number;
+        brR?: number;
+        brA?: number;
+      };
+      evidenceSource: 'MCP' | 'OAU' | 'ENV' | 'PLG' | 'SLF';
+      title: string;
+      description: string;
+      kind?: string;
+    }>;
   };
 }
 
@@ -2302,6 +2331,11 @@ export default function ReportView({
         {...(onRunVerification ? { onRunVerification } : {})}
       />
 
+      {/* AAP-103 — posture indicator. Renders only when a verdict snapshot
+          is persisted on report.json. Falls back silently for legacy
+          sessions persisted before the verdict snapshot landed. */}
+      {json.verdict && <PostureGradient verdict={json.verdict} />}
+
       <AnchorRail items={anchorItems} active={activeAnchor} />
 
       {/* 01 Scope & Methodology */}
@@ -2457,9 +2491,18 @@ export default function ReportView({
         id="sec-findings"
         label="Findings"
         title="Risk-rated issues with remediations"
-        meta={`${findingsWithMeta.length} total`}
+        meta={
+          json.verdict
+            ? `${json.verdict.findings.length} total`
+            : `${findingsWithMeta.length} total`
+        }
       />
-      {findingsWithMeta.length > 0 ? (
+      {json.verdict ? (
+        /* AAP-103 — Vijil-style Failure Pattern cards split into Verified
+           (deterministic, drives posture) + Self-Attested (interview only)
+           subsections. */
+        <FailurePatternCards verdict={json.verdict} />
+      ) : findingsWithMeta.length > 0 ? (
         <FindingsByTier findings={findingsWithMeta} />
       ) : (
         <p style={{ fontSize: 12.5, color: 'var(--r-ink-3)', fontStyle: 'italic' }}>

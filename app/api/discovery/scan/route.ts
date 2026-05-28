@@ -63,6 +63,7 @@ import {
 } from '@/src/storage/sessions';
 import { publishSessionEvent } from '@/src/storage/session-events';
 import {
+  buildVerdictSnapshot,
   computeVerdictFromArtifacts,
   persistVerdict,
   reportVerificationStatusFromVerdict,
@@ -501,6 +502,14 @@ export async function POST(request: Request): Promise<Response> {
       updatedAt: new Date().toISOString(),
     };
   }
+
+  // AAP-103 — always persist the verdict snapshot (posture +
+  // postureBand + findings) onto report.json so the dashboard's
+  // ReportView renders the gradient indicator + Vijil-style cards
+  // against the freshly computed verdict. Independent of
+  // surface2Attempted because even a pre-scan verdict (interrogation-only)
+  // carries SLF findings the dashboard needs to render.
+  patch.verdict = buildVerdictSnapshot(verdict);
 
   const merged = await patchReportJson(body.data.sessionId, patch);
 
