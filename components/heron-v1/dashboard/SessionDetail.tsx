@@ -580,43 +580,28 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             Compare
           </button>
         )}
-        {/* G7 PROTOTYPE — layout toggle. Visible only on the report tab. */}
-        {tab === 'report' && hasReport && (
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#71717a' }}>
-            <span>Layout:</span>
-            <button
-              type="button"
-              onClick={() => toggleLayout('full')}
-              style={{
-                background: layout === 'full' ? '#18181b' : 'transparent',
-                color: layout === 'full' ? '#ffffff' : '#52525b',
-                border: '1px solid #d4d4d8',
-                borderRadius: 4,
-                padding: '3px 10px',
-                fontSize: 11.5,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              Full
-            </button>
-            <button
-              type="button"
-              onClick={() => toggleLayout('minimal')}
-              style={{
-                background: layout === 'minimal' ? '#18181b' : 'transparent',
-                color: layout === 'minimal' ? '#ffffff' : '#52525b',
-                border: '1px solid #d4d4d8',
-                borderRadius: 4,
-                padding: '3px 10px',
-                fontSize: 11.5,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              Minimal (G7)
-            </button>
-          </div>
+        {/* G7 PROTOTYPE — Fix 5: layout toggle removed from the tab row
+            (Minimal/Full looked like a tab). Now lives bottom-right of the
+            minimal report area (see MinimalReportView FooterToggle), and in
+            the full layout footer (see below). */}
+        {tab === 'report' && hasReport && layout === 'full' && (
+          <button
+            type="button"
+            onClick={() => toggleLayout('minimal')}
+            style={{
+              marginLeft: 'auto',
+              background: 'transparent',
+              border: '1px solid #e4e4e7',
+              borderRadius: 4,
+              padding: '3px 10px',
+              fontSize: 11.5,
+              color: '#52525b',
+              cursor: 'pointer',
+              fontWeight: 500,
+            }}
+          >
+            Switch to Minimal layout (G7)
+          </button>
         )}
       </div>
 

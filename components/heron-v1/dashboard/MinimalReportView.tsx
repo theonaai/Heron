@@ -453,8 +453,10 @@ function PurposeBlock({ json }: { json: MinimalReportJson }) {
   }, [initialOpen]);
   const purpose = (json.agentPurpose || '').trim();
   if (!purpose) return null;
-  // Elevator pitch = first 1-2 sentences (cap ~180 chars at sentence boundary).
-  const pitch = useMemo(() => firstSentences(purpose, 180), [purpose]);
+  // Fix 2 / Fix 6: truncate to the first sentence (split on ". " boundary).
+  // If the first sentence runs >300 chars, fall back to char-based cut at
+  // the previous word boundary. Always append the Details ▸ toggle.
+  const pitch = useMemo(() => firstSentence(purpose, 300), [purpose]);
   return (
     <section
       style={{
@@ -531,17 +533,31 @@ function PurposeBlock({ json }: { json: MinimalReportJson }) {
   );
 }
 
-function firstSentences(text: string, max: number): string {
-  if (text.length <= max) return text;
-  const window = text.slice(0, max);
-  const sentenceEnd = Math.max(
-    window.lastIndexOf('. '),
-    window.lastIndexOf('! '),
-    window.lastIndexOf('? '),
-  );
-  if (sentenceEnd > max * 0.5) return text.slice(0, sentenceEnd + 1);
+/**
+ * Fix 2 / Fix 6: split on the first ". " (or "! " / "? ") boundary and
+ * return that first sentence verbatim. If the first sentence is longer
+ * than `charFallback`, fall back to a word-boundary char cut so we don't
+ * dump a 600-char "sentence" into the collapsed view. The collapsed body
+ * always reads as a complete clause, never mid-word.
+ */
+function firstSentence(text: string, charFallback: number): string {
+  const t = text.trim();
+  if (!t) return '';
+  // Prefer the earliest sentence-end marker.
+  const candidates = ['. ', '! ', '? ']
+    .map((m) => t.indexOf(m))
+    .filter((i) => i > 0);
+  if (candidates.length > 0) {
+    const cut = Math.min(...candidates);
+    const first = t.slice(0, cut + 1); // include the period.
+    if (first.length <= charFallback) return first;
+  } else if (t.length <= charFallback) {
+    return t;
+  }
+  // Fallback: char-based, cut at the last whitespace before the limit.
+  const window = t.slice(0, charFallback);
   const ws = window.lastIndexOf(' ');
-  return text.slice(0, ws > 0 ? ws : max) + '…';
+  return t.slice(0, ws > 0 ? ws : charFallback).trimEnd() + '…';
 }
 
 // ─── Block 3: Systems & access ────────────────────────────────────────
@@ -609,7 +625,15 @@ function SystemRow({
   system: SystemAssessment;
   verdict?: VerdictSnapshot;
 }) {
-  const [open, setOpen] = useState(false);
+  // Screenshot helper — `?expandSystem=<systemId>` pre-expands that row.
+  // Used by the headless Chrome capture script. Lives on the client only.
+  const preOpen = (() => {
+    if (typeof window === 'undefined') return false;
+    const p = new URLSearchParams(window.location.search);
+    const list = (p.get('expandSystem') || '').split(',').map((s) => s.trim());
+    return list.includes(system.systemId);
+  })();
+  const [open, setOpen] = useState(preOpen);
   const access = classifyAccess(system);
   const ds = classifyDS(system.dataSensitivity || '');
   const irreversible = hasIrreversibleWrites(system);
@@ -746,70 +770,254 @@ function SensitivityBadge({ label, tier }: { label: string; tier: 'T1' | 'T2' | 
   );
 }
 
+/**
+ * Fix 3 / Fix 7: expanded system row.
+ *
+ * Before: wall of text — long `system` description as the first paragraph,
+ * then Property/Value rows for scopes / data sensitivity / blast radius.
+ *
+ * After:
+ *   - Top row of chips: [access] [sensitivity tier] [blast radius]
+ *   - Scopes block: chip-style monospace list (requested + excessive)
+ *   - Write operations: bulleted list with reversible / approval badges
+ *   - "Implementation notes" (the long `system` / `systemDescription` text)
+ *     pushed to the bottom, italic, smaller font, labeled
+ *
+ * The systemId (e.g. "google-sheets") is already used as the row's primary
+ * label in SystemRow — the long technical prose is now strictly secondary.
+ */
 function SystemDetail({ system }: { system: SystemAssessment }) {
+  const access = classifyAccess(system);
+  const ds = classifyDS(system.dataSensitivity || '');
+  const blastRadius = (system.blastRadius || '').trim();
+  const blastTier = classifyBlastRadius(blastRadius);
+  const requested = system.scopesRequested || [];
+  const excessive = new Set((system.scopesDelta || []).map((s) => s.trim()));
+
   return (
     <div style={{ padding: '12px 14px', fontSize: 12.5, color: '#3f3f46' }}>
-      {system.systemDescription && (
-        <p style={{ margin: '0 0 10px', lineHeight: 1.6 }}>{system.systemDescription}</p>
-      )}
-      <dl
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'max-content 1fr',
-          gap: '4px 14px',
-        }}
-      >
-        {system.scopesRequested.length > 0 && (
-          <>
-            <dt style={{ color: '#71717a', fontWeight: 500 }}>Scopes requested</dt>
-            <dd className="mono" style={{ margin: 0, fontSize: 11.5, wordBreak: 'break-all' }}>
-              {system.scopesRequested.join(' · ')}
-            </dd>
-          </>
-        )}
-        {system.scopesDelta.length > 0 && (
-          <>
-            <dt style={{ color: '#71717a', fontWeight: 500 }}>Excessive scope</dt>
-            <dd className="mono" style={{ margin: 0, fontSize: 11.5, color: '#c2410c', wordBreak: 'break-all' }}>
-              {system.scopesDelta.join(' · ')}
-            </dd>
-          </>
-        )}
-        <dt style={{ color: '#71717a', fontWeight: 500 }}>Data sensitivity</dt>
-        <dd style={{ margin: 0 }}>{system.dataSensitivity || '—'}</dd>
-        <dt style={{ color: '#71717a', fontWeight: 500 }}>Blast radius</dt>
-        <dd style={{ margin: 0 }}>{system.blastRadius || '—'}</dd>
-      </dl>
-      {system.writeOperations.length > 0 && (
-        <div style={{ marginTop: 10 }}>
-          <div
-            style={{
-              fontSize: 11,
-              textTransform: 'uppercase',
-              letterSpacing: '0.04em',
-              color: '#71717a',
-              fontWeight: 600,
-              marginBottom: 4,
-            }}
-          >
-            Write operations
+      {/* Top chip row: access · sensitivity · blast radius */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <ChipLabeled label="Access">
+          <AccessBadge tier={access} />
+        </ChipLabeled>
+        <ChipLabeled label="Sensitivity">
+          <SensitivityBadge label={ds.label} tier={ds.tier} />
+        </ChipLabeled>
+        <ChipLabeled label="Blast radius">
+          <BlastRadiusBadge tier={blastTier} />
+        </ChipLabeled>
+      </div>
+
+      {/* Scopes as chip-style monospace list. Excessive scopes get a red
+          ring + tooltip so they don't need a separate Property/Value row. */}
+      {requested.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <SectionLabel>Scopes</SectionLabel>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+            {requested.map((s, i) => {
+              const isExcess = excessive.has(s.trim());
+              return (
+                <span
+                  key={i}
+                  className="mono"
+                  title={isExcess ? 'Excessive scope — broader than declared usage' : undefined}
+                  style={{
+                    fontSize: 11.5,
+                    padding: '2px 7px',
+                    background: isExcess ? '#fef2f2' : '#f4f4f5',
+                    border: `1px solid ${isExcess ? '#fecaca' : '#e4e4e7'}`,
+                    color: isExcess ? '#991b1b' : '#3f3f46',
+                    borderRadius: 3,
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {s}
+                </span>
+              );
+            })}
           </div>
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5 }}>
+        </div>
+      )}
+
+      {/* Write operations — list with reversible / approval badges (kept). */}
+      {system.writeOperations.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <SectionLabel>Write operations</SectionLabel>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
             {system.writeOperations.map((w, i) => (
-              <li key={i} style={{ marginBottom: 2 }}>
+              <li key={i} style={{ marginBottom: 3 }}>
                 {w.operation} → {w.target}
-                {!w.reversible && (
-                  <span style={{ color: '#991b1b', fontWeight: 600 }}> (irreversible)</span>
-                )}
+                {' '}
+                <WriteOpBadge
+                  text={w.reversible ? 'reversible' : 'irreversible'}
+                  variant={w.reversible ? 'neutral' : 'danger'}
+                />
                 {w.approvalRequired && (
-                  <span style={{ color: '#1d4ed8', fontWeight: 600 }}> (approval required)</span>
+                  <>
+                    {' '}
+                    <WriteOpBadge text="approval required" variant="info" />
+                  </>
                 )}
               </li>
             ))}
           </ul>
         </div>
       )}
+
+      {/* Implementation notes — the long technical `system` / description
+          prose, demoted to italic secondary text at the bottom. */}
+      {(system.systemDescription || system.dataSensitivity || blastRadius) && (
+        <div style={{ marginTop: 8, paddingTop: 10, borderTop: '1px dashed #e5e7eb' }}>
+          <SectionLabel>Implementation notes</SectionLabel>
+          {system.systemDescription && (
+            <p style={{ margin: '4px 0 6px', fontSize: 11.5, lineHeight: 1.55, color: '#52525b', fontStyle: 'italic' }}>
+              {system.systemDescription}
+            </p>
+          )}
+          {system.dataSensitivity && (
+            <p style={{ margin: '4px 0 0', fontSize: 11.5, lineHeight: 1.55, color: '#52525b', fontStyle: 'italic' }}>
+              <strong style={{ fontWeight: 600, fontStyle: 'normal', color: '#71717a' }}>Data sensitivity:</strong>{' '}
+              {system.dataSensitivity}
+            </p>
+          )}
+          {blastRadius && (
+            <p style={{ margin: '4px 0 0', fontSize: 11.5, lineHeight: 1.55, color: '#52525b', fontStyle: 'italic' }}>
+              <strong style={{ fontWeight: 600, fontStyle: 'normal', color: '#71717a' }}>Blast radius:</strong>{' '}
+              {blastRadius}
+            </p>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 10.5,
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        color: '#71717a',
+        fontWeight: 600,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ChipLabeled({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span
+        style={{
+          fontSize: 10.5,
+          textTransform: 'uppercase',
+          letterSpacing: '0.04em',
+          color: '#a1a1aa',
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </span>
+  );
+}
+
+function WriteOpBadge({ text, variant }: { text: string; variant: 'neutral' | 'danger' | 'info' }) {
+  const palette =
+    variant === 'danger'
+      ? { bg: '#fef2f2', bd: '#fecaca', ink: '#991b1b' }
+      : variant === 'info'
+        ? { bg: '#eff6ff', bd: '#bfdbfe', ink: '#1d4ed8' }
+        : { bg: '#f0fdf4', bd: '#bbf7d0', ink: '#15803d' };
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        padding: '0 6px',
+        background: palette.bg,
+        border: `1px solid ${palette.bd}`,
+        color: palette.ink,
+        borderRadius: 3,
+        fontSize: 10,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+        verticalAlign: 'middle',
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
+/**
+ * Blast radius is a normalized enum on the schema (see
+ * `blastRadiusLevels` in src/report/types.ts):
+ *   single-record < single-user < team-scope < org-wide < cross-tenant
+ * We assign a 3-tier palette: cross-tenant/org-wide = danger,
+ * team-scope = warn, single-* = safe.
+ */
+type BlastTier = 'cross-tenant' | 'org-wide' | 'team-scope' | 'single-user' | 'single-record' | 'unknown';
+
+const BLAST_LABELS: Record<BlastTier, string> = {
+  'cross-tenant': 'Cross-tenant',
+  'org-wide': 'Org-wide',
+  'team-scope': 'Team scope',
+  'single-user': 'Single user',
+  'single-record': 'Single record',
+  unknown: 'Unspecified',
+};
+
+function classifyBlastRadius(prose: string): BlastTier {
+  const p = (prose || '').trim().toLowerCase();
+  if (!p) return 'unknown';
+  // Direct canonical match from schema.
+  const canon: BlastTier[] = ['cross-tenant', 'org-wide', 'team-scope', 'single-user', 'single-record'];
+  for (const c of canon) {
+    if (p === c) return c;
+  }
+  // Fuzzy fallback for legacy prose (rare — analyzer normalizes on the way in).
+  if (p.includes('cross') && p.includes('tenant')) return 'cross-tenant';
+  if (p.includes('org')) return 'org-wide';
+  if (p.includes('team')) return 'team-scope';
+  if (p.includes('record')) return 'single-record';
+  if (p.includes('user') || p.includes('self') || p.includes('single')) return 'single-user';
+  return 'unknown';
+}
+
+function BlastRadiusBadge({ tier }: { tier: BlastTier }) {
+  const danger = tier === 'org-wide' || tier === 'cross-tenant';
+  const warn = tier === 'team-scope';
+  const palette = danger
+    ? { bg: '#fef2f2', bd: '#fecaca', ink: '#991b1b' }
+    : warn
+      ? { bg: '#fff4ed', bd: '#fed7aa', ink: '#c2410c' }
+      : tier === 'unknown'
+        ? { bg: '#f4f4f5', bd: '#e4e4e7', ink: '#52525b' }
+        : { bg: '#f0fdf4', bd: '#bbf7d0', ink: '#15803d' };
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        padding: '2px 8px',
+        background: palette.bg,
+        border: `1px solid ${palette.bd}`,
+        color: palette.ink,
+        borderRadius: 4,
+        fontSize: 11,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+      }}
+    >
+      {BLAST_LABELS[tier]}
+    </span>
   );
 }
 
@@ -1133,6 +1341,11 @@ function ComplianceBlock({
 }) {
   const initialOpen = useExpandFlag('compliance');
   const [open, setOpen] = useState(false);
+  const [expandedFw, setExpandedFw] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const p = new URLSearchParams(window.location.search);
+    return p.get('expandFramework') || null;
+  });
   useEffect(() => {
     if (initialOpen) setOpen(true);
   }, [initialOpen]);
@@ -1209,49 +1422,25 @@ function ComplianceBlock({
       </button>
       {open && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: 12,
-            }}
-          >
-            {frameworks.map((fwId) => {
-              const fwResults = controlResults.filter((c) => c.frameworkId === fwId);
-              const fwPartial = fwResults.filter((r) => r.verdict === 'partial').length;
-              const fwVerified = fwResults.filter((r) => r.verdict === 'verified').length;
-              const fwFail = fwResults.filter((r) => r.verdict === 'fail').length;
-              const fwSignals = (rc.all || []).filter((f) => f.frameworkId === fwId).length;
-              return (
-                <div
-                  key={fwId}
-                  style={{
-                    border: '1px solid #e5e7eb',
-                    borderRadius: 6,
-                    padding: '10px 12px',
-                    background: '#fafafa',
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#18181b', marginBottom: 4 }}>
-                    {FRAMEWORK_LABELS[fwId] || fwId}
-                  </div>
-                  <div style={{ fontSize: 11.5, color: '#52525b', lineHeight: 1.6 }}>
-                    {fwResults.length > 0 ? (
-                      <>
-                        {fwVerified} verified · {fwPartial} partial · {fwFail} fail
-                      </>
-                    ) : (
-                      <>{fwSignals} signals (prose only)</>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+          {/* Fix 4: per-framework accordion. Click a card → show its
+              control results (filtered to ones that fired — skip
+              not-applicable). One card expanded at a time. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {frameworks.map((fwId) => (
+              <FrameworkCard
+                key={fwId}
+                fwId={fwId}
+                controlResults={controlResults}
+                signals={rc.all || []}
+                expanded={expandedFw === fwId}
+                onToggle={() => setExpandedFw(expandedFw === fwId ? null : fwId)}
+              />
+            ))}
           </div>
           <p style={{ marginTop: 14, fontSize: 11.5, color: '#71717a', lineHeight: 1.6 }}>
-            Verified = deterministic evidence matches the agent's declaration. Partial = signal
-            present but no typed detector. Self-attested controls and out-of-scope items are not
-            counted here.
+            Verified = deterministic evidence matches the agent&apos;s declaration. Partial =
+            signal present but no typed detector. Out-of-scope controls are hidden by default —
+            toggle in each card to include them.
           </p>
         </div>
       )}
@@ -1259,40 +1448,234 @@ function ComplianceBlock({
   );
 }
 
-// ─── Footer ───────────────────────────────────────────────────────────
+type ControlResult = NonNullable<
+  NonNullable<MinimalReportJson['regulatoryCompliance']>['controlResults']
+>[number];
 
-function FooterLinks({ onSwitch }: { onSwitch?: () => void }) {
-  const linkStyle: React.CSSProperties = {
-    color: '#71717a',
-    fontSize: 11.5,
-    textDecoration: 'none',
-    cursor: 'pointer',
-    background: 'transparent',
-    border: 'none',
-    padding: 0,
-  };
+function FrameworkCard({
+  fwId,
+  controlResults,
+  signals,
+  expanded,
+  onToggle,
+}: {
+  fwId: string;
+  controlResults: ControlResult[];
+  signals: NonNullable<NonNullable<MinimalReportJson['regulatoryCompliance']>['all']>;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const [showOutOfScope, setShowOutOfScope] = useState(false);
+  const fwResults = controlResults.filter((c) => c.frameworkId === fwId);
+  const fwPartial = fwResults.filter((r) => r.verdict === 'partial').length;
+  const fwVerified = fwResults.filter((r) => r.verdict === 'verified').length;
+  const fwFail = fwResults.filter((r) => r.verdict === 'fail').length;
+  const fwOos = fwResults.filter((r) => r.verdict === 'not-applicable').length;
+  const fwSignals = signals.filter((f) => f.frameworkId === fwId).length;
+  const hasControlData = fwResults.length > 0;
+  const visibleControls = fwResults
+    .filter((r) => (showOutOfScope ? true : r.verdict !== 'not-applicable'))
+    .slice()
+    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+
+  return (
+    <div
+      style={{
+        border: '1px solid #e5e7eb',
+        borderRadius: 6,
+        background: expanded ? '#ffffff' : '#fafafa',
+      }}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={!hasControlData}
+        style={{
+          display: 'flex',
+          width: '100%',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'transparent',
+          border: 'none',
+          padding: '10px 14px',
+          textAlign: 'left',
+          cursor: hasControlData ? 'pointer' : 'default',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {hasControlData && (
+            <span style={{ color: '#a1a1aa', fontSize: 11 }}>{expanded ? '▼' : '▸'}</span>
+          )}
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#18181b' }}>
+            {FRAMEWORK_LABELS[fwId] || fwId}
+          </span>
+        </span>
+        <span style={{ fontSize: 11.5, color: '#52525b' }}>
+          {hasControlData ? (
+            <>
+              {fwVerified} verified · {fwPartial} partial · {fwFail} fail
+              {fwOos > 0 && (
+                <span style={{ marginLeft: 6, color: '#a1a1aa' }}>· {fwOos} N/A</span>
+              )}
+            </>
+          ) : (
+            <>{fwSignals} signals (prose only)</>
+          )}
+        </span>
+      </button>
+      {expanded && hasControlData && (
+        <div style={{ padding: '0 14px 12px', borderTop: '1px solid #e5e7eb' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '6px 0' }}>
+            {fwOos > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowOutOfScope((v) => !v)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  fontSize: 11,
+                  color: '#1d4ed8',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {showOutOfScope ? `Hide ${fwOos} out-of-scope` : `Show ${fwOos} out-of-scope`}
+              </button>
+            )}
+          </div>
+          {visibleControls.length === 0 ? (
+            <p style={{ fontSize: 12, color: '#71717a', margin: '4px 0 0' }}>
+              No applicable controls fired for this framework.
+            </p>
+          ) : (
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {visibleControls.map((c, i) => (
+                <ControlRow key={c.controlId + '-' + i} control={c} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function severityRank(s: ControlResult['severity']): number {
+  return s === 'critical' ? 4 : s === 'high' ? 3 : s === 'medium' ? 2 : s === 'low' ? 1 : 0;
+}
+
+function ControlRow({ control }: { control: ControlResult }) {
+  const verdictPalette =
+    control.verdict === 'verified'
+      ? { bg: '#f0fdf4', ink: '#15803d' }
+      : control.verdict === 'fail'
+        ? { bg: '#fef2f2', ink: '#991b1b' }
+        : control.verdict === 'partial'
+          ? { bg: '#fef9c3', ink: '#92400e' }
+          : control.verdict === 'not-applicable'
+            ? { bg: '#f4f4f5', ink: '#71717a' }
+            : { bg: '#eff6ff', ink: '#1d4ed8' };
+  const sevPalette =
+    control.severity === 'critical'
+      ? { bg: '#7f1d1d', ink: '#ffffff' }
+      : control.severity === 'high'
+        ? { bg: '#b91c1c', ink: '#ffffff' }
+        : control.severity === 'medium'
+          ? { bg: '#c2410c', ink: '#ffffff' }
+          : control.severity === 'low'
+            ? { bg: '#facc15', ink: '#3f3f46' }
+            : { bg: '#e5e7eb', ink: '#52525b' };
+  return (
+    <li
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(110px, max-content) 1fr max-content max-content',
+        gap: 10,
+        padding: '5px 0',
+        borderBottom: '1px solid #f1f5f9',
+        alignItems: 'center',
+      }}
+    >
+      <span
+        className="mono"
+        style={{ fontSize: 11.5, color: '#3f3f46', whiteSpace: 'nowrap' }}
+      >
+        {control.controlId}
+      </span>
+      <span style={{ fontSize: 12, color: '#52525b', lineHeight: 1.4 }}>
+        {control.controlName || ''}
+      </span>
+      <span
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.04em',
+          padding: '2px 7px',
+          borderRadius: 3,
+          background: verdictPalette.bg,
+          color: verdictPalette.ink,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {control.verdict}
+      </span>
+      <span
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.04em',
+          padding: '2px 7px',
+          borderRadius: 3,
+          background: sevPalette.bg,
+          color: sevPalette.ink,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {control.severity}
+      </span>
+    </li>
+  );
+}
+
+// ─── Footer ───────────────────────────────────────────────────────────
+//
+// Fix 1: dropped the "References:" row with Transcript / Local Discovery /
+// Methodology links — they were all inactive placeholders.
+// Fix 5: layout toggle no longer lives next to the tabs (where it looked
+// like a tab). It now sits bottom-right of the report as a quiet inline
+// button so "Minimal" reads as a layout choice, not a tab.
+
+function FooterToggle({ onSwitch }: { onSwitch?: () => void }) {
+  if (!onSwitch) return null;
   return (
     <footer
       style={{
         marginTop: 22,
-        padding: '14px 0 8px',
-        borderTop: '1px solid #e5e7eb',
+        padding: '12px 0 4px',
+        borderTop: '1px solid #f1f5f9',
         display: 'flex',
-        gap: 18,
-        flexWrap: 'wrap',
-        fontSize: 11.5,
-        color: '#71717a',
+        justifyContent: 'flex-end',
       }}
     >
-      <span>References:</span>
-      {onSwitch && (
-        <button type="button" onClick={onSwitch} style={linkStyle}>
-          Switch to full layout ↗
-        </button>
-      )}
-      <span style={linkStyle}>Transcript ↗</span>
-      <span style={linkStyle}>Local Discovery ↗</span>
-      <span style={linkStyle}>Methodology / Limitations ↗</span>
+      <button
+        type="button"
+        onClick={onSwitch}
+        style={{
+          background: 'transparent',
+          border: '1px solid #e4e4e7',
+          borderRadius: 4,
+          padding: '4px 10px',
+          fontSize: 11.5,
+          color: '#52525b',
+          cursor: 'pointer',
+          fontWeight: 500,
+        }}
+      >
+        Switch to Full layout
+      </button>
     </footer>
   );
 }
@@ -1321,6 +1704,24 @@ export default function MinimalReportView({
   runtimeAgentName,
   onSwitchToFullLayout,
 }: MinimalReportViewProps) {
+  // Screenshot helper — `?scroll=bottom` scrolls the inner `.body` container
+  // to its bottom on mount. Headless Chrome capture URLs use this.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const p = new URLSearchParams(window.location.search);
+    if (p.get('scroll') !== 'bottom') return;
+    let tries = 0;
+    const t = setInterval(() => {
+      const b = document.querySelector('.body') as HTMLElement | null;
+      if (b) {
+        b.scrollTop = b.scrollHeight;
+        if (tries++ > 5) clearInterval(t);
+      } else if (tries++ > 20) {
+        clearInterval(t);
+      }
+    }, 150);
+    return () => clearInterval(t);
+  }, []);
   if (!reportJson) {
     return (
       <div className="report" style={{ padding: 24 }}>
@@ -1342,7 +1743,7 @@ export default function MinimalReportView({
       <SystemsBlock systems={reportJson.systems || []} verdict={reportJson.verdict} />
       <FindingsBlock verdict={reportJson.verdict} />
       <ComplianceBlock rc={reportJson.regulatoryCompliance} />
-      <FooterLinks onSwitch={onSwitchToFullLayout} />
+      <FooterToggle onSwitch={onSwitchToFullLayout} />
     </div>
   );
 }
