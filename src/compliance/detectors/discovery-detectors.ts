@@ -228,6 +228,173 @@ function makeProcessorDetector(
   };
 }
 
+// ─── Detector — MCP tool inventory presence ────────────────────────────────
+
+/**
+ * AAP-105 D4 quick-win #3 — fires `verified` when the discovery surface
+ * lists at least one MCP server. The detector intentionally treats the
+ * presence of any MCP entry as evidence that the operator HAS an AI-
+ * tooling inventory available; the verdict is therefore `verified`,
+ * mirroring the audit semantics of ISO A.4.4 / NIST MAP 2.1: "the
+ * operator can produce an inventory of AI components and tasks they
+ * cover".
+ *
+ * Note: a tougher reading of these controls would also require a
+ * declared / documented inventory, but Heron's evidence model treats
+ * the live inventory itself as the primary artefact. Operators who
+ * lack any MCP server (no AI tooling) legitimately fall outside the
+ * control's scope — the detector returns null, leaving the row inert.
+ */
+function makeMcpInventoryDetector(
+  frameworkId: FrameworkId,
+  controlId: string,
+  controlName: string,
+): TypedDetector {
+  return (evidence: TypedEvidenceEnvelope): ControlResult | null => {
+    if (!evidence.discovery) return null;
+    const mcpRefs: ControlResultEvidenceRef[] = [];
+    for (const agent of evidence.discovery.agents ?? []) {
+      for (const srv of agent.mcpServers ?? []) {
+        mcpRefs.push({
+          kind: 'inventory',
+          ref: `mcp:${srv.name} (${srv.transport})`,
+        });
+      }
+    }
+    if (mcpRefs.length === 0) return null;
+
+    const findingType: FindingType = 'excessive-access';
+    const out: ControlResult = {
+      stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
+      findingType,
+      frameworkId,
+      controlId,
+      controlName,
+      path: 'typed',
+      surface: 'actual',
+      verdict: 'verified',
+      severity: 'info',
+      rationale: `Discovery enumerated ${mcpRefs.length} MCP server${mcpRefs.length === 1 ? '' : 's'} — an inventory of AI tooling is available for ${frameworkId} ${controlId}.`,
+      evidenceRefs: mcpRefs.slice(0, 24),
+    };
+    return out;
+  };
+}
+
+// ─── Detector — EU AI Act Art. 5 attestation gate ─────────────────────────
+
+/**
+ * AAP-105 D4 quick-win #2 — EU AI Act Art. 5 prohibited-practice landing.
+ *
+ * The article forbids specific AI uses (subliminal manipulation,
+ * exploitation of vulnerabilities, social scoring, real-time remote
+ * biometric ID in public for law enforcement, emotion recognition in
+ * workplace / education). Heron's evidence cannot prove a NEGATIVE
+ * (the agent does not engage in these practices) — that's an
+ * operator attestation.
+ *
+ * What this detector can honestly do: when discovery surfaces an
+ * agent with ≥1 MCP server (= real AI tooling in use), fire `partial`
+ * with the rationale "operator must attest none of the listed Art. 5
+ * prohibited practices apply". This makes Art. 5 visible in the
+ * framework accordion rather than silently absent, while preserving
+ * the honest-partial discipline: the verdict deliberately is not
+ * `verified`, because Heron has not proven the negative.
+ */
+function makeEUAct5AttestationDetector(): TypedDetector {
+  return (evidence: TypedEvidenceEnvelope): ControlResult | null => {
+    if (!evidence.discovery) return null;
+    let mcpCount = 0;
+    for (const agent of evidence.discovery.agents ?? []) {
+      mcpCount += (agent.mcpServers ?? []).length;
+    }
+    if (mcpCount === 0) return null;
+
+    const findingType: FindingType = 'regulatory-flags';
+    const frameworkId: FrameworkId = 'eu-ai-act';
+    const controlId = 'Art. 5';
+    const out: ControlResult = {
+      stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
+      findingType,
+      frameworkId,
+      controlId,
+      controlName:
+        'Prohibited practices — subliminal manipulation, exploitation, social scoring, real-time biometric ID in public spaces, emotion recognition in workplace.',
+      path: 'typed',
+      surface: 'actual',
+      verdict: 'partial',
+      severity: 'medium',
+      rationale: `Discovery confirms ${mcpCount} MCP server${mcpCount === 1 ? '' : 's'} are in use; operator must attest that none of the practices listed in EU AI Act Art. 5 (subliminal manipulation, social scoring, real-time biometric ID in public spaces, emotion recognition in workplace) apply to this agent.`,
+      evidenceRefs: [
+        {
+          kind: 'absence',
+          ref: `No operator attestation against Art. 5 prohibited practices found; ${mcpCount} MCP server(s) discovered.`,
+        },
+      ],
+    };
+    return out;
+  };
+}
+
+// ─── Detector — .env secret-pattern presence ───────────────────────────────
+
+/**
+ * AAP-105 D4 quick-win #4 — flags GDPR Art. 32 (security of processing)
+ * when discovery surfaces secret-pattern variable names (`*_TOKEN`,
+ * `*_KEY`, `*_SECRET`, `*_PASSWORD`) sitting in plain `.env` files
+ * inside a workspace. Heron's name-only contract means we never read
+ * the literal value; the pattern itself indicates the operator has
+ * credential material in plaintext on disk, which is a recognised
+ * Art. 32 control gap (encryption / pseudonymisation / restricted
+ * storage are the canonical mitigations).
+ *
+ * The detector intentionally fires `partial` rather than `fail`: a
+ * `.env` file is a common dev-loop artefact, and the canonical
+ * mitigation (move to a secrets manager / use OS keychain) is a
+ * follow-on remediation rather than a present compromise. AAP-100
+ * removed the L3 keychain reader so we cannot prove "this credential
+ * is ALSO in keychain", only the presence in `.env`.
+ */
+const SECRET_PATTERN_RE = /(_TOKEN|_KEY|_SECRET|_PASSWORD|_PASSWD|_API_KEY|_CREDENTIALS?|_PRIVATE_KEY)$/i;
+
+function makeEnvSecretDetector(
+  frameworkId: FrameworkId,
+  controlId: string,
+  controlName: string,
+): TypedDetector {
+  return (evidence: TypedEvidenceEnvelope): ControlResult | null => {
+    if (!evidence.discovery) return null;
+    const matches: ControlResultEvidenceRef[] = [];
+    for (const env of evidence.discovery.workspaceEnv ?? []) {
+      for (const k of env.keys ?? []) {
+        if (SECRET_PATTERN_RE.test(k)) {
+          matches.push({
+            kind: 'inventory',
+            ref: `env:${env.path}: ${k} (plaintext secret-pattern key)`,
+          });
+        }
+      }
+    }
+    if (matches.length === 0) return null;
+
+    const findingType: FindingType = 'sensitive-data';
+    const out: ControlResult = {
+      stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
+      findingType,
+      frameworkId,
+      controlId,
+      controlName,
+      path: 'typed',
+      surface: 'actual',
+      verdict: 'partial',
+      severity: 'medium',
+      rationale: `Workspace .env files contain ${matches.length} secret-pattern variable name${matches.length === 1 ? '' : 's'} (token / key / secret / password) — activates ${frameworkId} ${controlId} (security of processing — encrypt or move credentials out of plaintext storage).`,
+      evidenceRefs: matches.slice(0, 24),
+    };
+    return out;
+  };
+}
+
 // ─── Adapter rows (mirror router-adapter shape) ────────────────────────────
 
 interface DiscoveryAdapterRow {
@@ -292,5 +459,103 @@ export const DISCOVERY_DETECTOR_ADAPTERS: ReadonlyArray<DiscoveryAdapterRow> = [
       'A001',
       'Input data policy.',
     ),
+  },
+  // ── AAP-105 D4 quick-win #1: makeProcessorDetector reuse ──────────────────
+  // Same third-party-SaaS / processor signal that already lights AIUC-1 A001
+  // legitimately speaks to four more controls — one per mandatory framework
+  // where the standard expects the operator to document the supplier or
+  // cross-border-transfer relationship. Reusing the detector means the
+  // evidence and rationale stay identical; only the framework target shifts.
+  {
+    findingType: 'sensitive-data',
+    frameworkId: 'gdpr',
+    controlId: 'Art. 28',
+    detector: makeProcessorDetector(
+      'gdpr',
+      'Art. 28',
+      'Processor obligations — written contract / DPA required.',
+    ),
+  },
+  {
+    findingType: 'sensitive-data',
+    frameworkId: 'iso-42001',
+    controlId: 'A.10.3',
+    detector: makeProcessorDetector(
+      'iso-42001',
+      'A.10.3',
+      'Suppliers — third-party AI components and services.',
+    ),
+  },
+  {
+    findingType: 'sensitive-data',
+    frameworkId: 'nist-ai-rmf',
+    controlId: 'GOVERN 6.2',
+    detector: makeProcessorDetector(
+      'nist-ai-rmf',
+      'GOVERN 6.2',
+      'Third-party AI accountability — supplier integration.',
+    ),
+  },
+  {
+    findingType: 'sensitive-data',
+    frameworkId: 'nist-ai-rmf',
+    controlId: 'MANAGE 3.1',
+    detector: makeProcessorDetector(
+      'nist-ai-rmf',
+      'MANAGE 3.1',
+      'Third-party risk management — pre-trained or vendor model risk.',
+    ),
+  },
+  // ── AAP-105 D4 quick-win #3: MCP tool inventory presence ─────────────────
+  // Any MCP server registered in the agent's config is, by definition, an
+  // AI-tool resource that the operator is supposed to inventory. The signal
+  // is binary (≥1 MCP server) — when present it lights two AI-system-
+  // categorisation / tooling-inventory controls.
+  {
+    findingType: 'excessive-access',
+    frameworkId: 'iso-42001',
+    controlId: 'A.4.4',
+    detector: makeMcpInventoryDetector(
+      'iso-42001',
+      'A.4.4',
+      'Tooling resources — AI tools and components inventory.',
+    ),
+  },
+  {
+    findingType: 'excessive-access',
+    frameworkId: 'nist-ai-rmf',
+    controlId: 'MAP 2.1',
+    detector: makeMcpInventoryDetector(
+      'nist-ai-rmf',
+      'MAP 2.1',
+      'AI system categorisation — capabilities, methods, tasks.',
+    ),
+  },
+  // ── AAP-105 D4 quick-win #4: .env secret-pattern detector ───────────────
+  // Reframed from the original "keychain shadowing" idea (AAP-100 removed
+  // L3 keychain + L4 OS credential surfaces). The signal Heron CAN see
+  // post-AAP-100: secret-pattern variable names (`*_TOKEN`, `*_KEY`,
+  // `*_SECRET`, `*_PASSWORD`) sitting in plaintext .env files inside a
+  // project workspace. GDPR Art. 32 (security of processing) is the
+  // canonical landing.
+  {
+    findingType: 'sensitive-data',
+    frameworkId: 'gdpr',
+    controlId: 'Art. 32',
+    detector: makeEnvSecretDetector(
+      'gdpr',
+      'Art. 32',
+      'Security of processing — protect credentials from disclosure.',
+    ),
+  },
+  // ── AAP-105 D4 quick-win #2: EU AI Act Art. 5 attestation gate ──────────
+  // Surface Art. 5 in the EU AI Act framework card so the reviewer can
+  // see the article was checked. Verdict is intentionally `partial` to
+  // preserve the honest-partial discipline.
+  {
+    findingType: 'regulatory-flags',
+    frameworkId: 'eu-ai-act',
+    controlId: 'Art. 5',
+    detector: makeEUAct5AttestationDetector(),
   },
 ];

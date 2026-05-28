@@ -76,7 +76,12 @@ describe('control catalog representation', () => {
       ),
     );
 
-    expect(actual.size).toBe(expected.size);
+    // AAP-83 / AAP-105 D4 — the catalog is a superset of CONTROL_MAPPINGS.
+    // `attachDetectors` appends typed-only adapter rows (e.g. gdpr Art. 28,
+    // iso-42001 A.10.3) that have no prose mapping. The catalog must
+    // contain every prose key but may legitimately carry additional
+    // typed-only entries.
+    expect(actual.size).toBeGreaterThanOrEqual(expected.size);
     for (const k of expected) expect(actual.has(k)).toBe(true);
   });
 
@@ -102,9 +107,22 @@ describe('control catalog representation', () => {
     expect(entry?.gatedBy).toEqual(['hasCrossCustomer']);
   });
 
-  it('every entry defaults prosePathEnabled=true so the legacy mapper keeps firing', () => {
+  it('every entry sourced from CONTROL_MAPPINGS defaults prosePathEnabled=true so the legacy mapper keeps firing', () => {
+    // AAP-105 D4 added typed-only adapter rows (no matching prose entry
+    // in CONTROL_MAPPINGS — e.g. gdpr Art. 28, iso-42001 A.10.3). These
+    // legitimately land with `prosePathEnabled: false` because there is
+    // no prose detector for them. The invariant being pinned here is
+    // that adapter rows which DO match an existing CONTROL_MAPPINGS row
+    // never silently flip `prosePathEnabled` from true to false.
     for (const e of CONTROL_CATALOG) {
-      expect(e.prosePathEnabled).toBe(true);
+      if (e.prosePathEnabled === false) {
+        // Typed-only entries have a deterministic detector — verify the
+        // catalog never sets `prosePathEnabled: false` without a
+        // detector to back the verdict.
+        expect(e.deterministicDetector).toBeTypeOf('function');
+      } else {
+        expect(e.prosePathEnabled).toBe(true);
+      }
     }
   });
 
