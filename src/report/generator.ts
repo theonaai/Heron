@@ -8,7 +8,6 @@ import {
 import {
   computeRiskScore,
   applySeverityOverrides,
-  calibrateOverallRiskLevel,
 } from '../analysis/risk-scorer.js';
 import { renderMarkdownReport, renderAnalysisFailedReport } from './templates.js';
 import { computeVerdict } from '../verification/verdict.js';
@@ -113,14 +112,12 @@ async function buildSuccessReport(
   // 2. Compute risk score from structured per-system data
   const riskScore = computeRiskScore(analysis.systems, analysis.risks);
 
-  // AAP-69: calibrate the categorical overall label against the LLM-issued
-  // verdict so the two fields cannot contradict on the published report.
-  // The numeric `riskScore.score` is intentionally NOT mutated — it remains
-  // the rubric's honest output. Only the pill label is reconciled.
-  const calibratedOverall = calibrateOverallRiskLevel(
-    riskScore.overall,
-    analysis.recommendation,
-  );
+  // AAP-102 — `calibrateOverallRiskLevel` removed. The rubric's honest
+  // `riskScore.overall` flows straight through to the report. Posture
+  // computed via FIPS 199 high-water-mark in `verdict.ts` is the new
+  // anchor; `overallRiskLevel` remains as a legacy field consumed by
+  // the unmodified display layer (G4 cleans up).
+  const calibratedOverall = riskScore.overall;
 
   // 3. Compute structured compliance (AAP-31: CategorizedCompliance)
   const compliance = mapFindingsToRiskCategories({
@@ -174,11 +171,12 @@ async function buildSuccessReport(
   //    available at generation time. Surface 2 (discovery / OAuth) has
   //    not run yet — the scan route re-renders the markdown after a
   //    discovery scan completes.
+  // AAP-102 — `interviewTranscriptText` removed alongside discrepancy
+  // detection. The verdict no longer scrapes the transcript for ±80-char
+  // denial windows; SLF findings live in their own column and reviewer
+  // spots mismatches by eye.
   const initialVerdict = computeVerdict({
     interviewFindings: analysis.risks,
-    interviewTranscriptText: session.transcript
-      .map((qa) => `${qa.question}\n${qa.answer}`)
-      .join('\n'),
   });
 
   // 6. Format output

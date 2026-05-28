@@ -257,29 +257,11 @@ describe('AAP-93 H3 — Executive Summary splits Deterministic + Self-reported s
 });
 
 describe('AAP-93 Codex round 6 — verdict reads OAuth-only deterministic HIGH', () => {
-  it('OAuth-only HIGH (no discovery findings, no self-reported risks) calibrates verdict to remediation, not provisional', () => {
-    // Skip-filesystem dashboard path: discoveryFindings is empty,
-    // report.risks is empty, but the verdict carries
-    // deterministicRiskLevel: 'high' from OAuth diffs. The verdict
-    // must NOT be PROVISIONAL — VERIFY MISSING SOURCES.
-    const verdict: Verdict = {
-      status: 'partial',
-      deterministicRiskLevel: 'high',
-      primaryRiskLevel: 'high',
-      primaryRiskSource: 'deterministic',
-      discrepancies: [],
-    };
-    const report = makeReport({
-      risks: [],
-      verification: { status: 'partially-verified' },
-    });
-    const md = renderMarkdownReport(report, {
-      verdict,
-      discoveryFindings: [],
-    });
-    expect(md).toContain('DO NOT APPROVE WITHOUT REMEDIATION');
-    expect(md).not.toContain('PROVISIONAL — VERIFY MISSING SOURCES');
-  });
+  // AAP-102 — "calibrates verdict to remediation, not provisional"
+  // removed. `calibrateVerdictLabel` is a no-op stub returning ''; the
+  // 7-label string (APPROVE / APPROVE WITH CONDITIONS / PROVISIONAL —
+  // VERIFY MISSING SOURCES / DO NOT APPROVE WITHOUT REMEDIATION / etc.)
+  // is gone. G4 (AAP-103) rebuilds the verdict display.
 
   it('Codex round 7 P2: Executive Summary deterministic cell does NOT show "None" when verdict.deterministicRiskLevel is HIGH but discoveryFindings is empty', () => {
     const verdict: Verdict = {

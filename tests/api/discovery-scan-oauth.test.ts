@@ -236,10 +236,11 @@ describe('POST /api/discovery/scan — L6 OAuth wire-up (AAP-74)', () => {
     // 'partial' is correct: L6 ran, filesystem did not, so we have
     // Surface 2 evidence on at least one source — but not all.
     expect(updated!.verificationStatus).toBe('partial');
-    // Verdict pipeline ran against an L6-only input — primary risk
-    // is deterministic (low, given a clean read with no declared
-    // baseline → extras at info severity).
-    expect(updated!.deterministicRiskLevel).toBeDefined();
+    // AAP-102 — `deterministicRiskLevel` is no longer persisted on the
+    // session (persistVerdict writes `riskLevel` only). Verify the
+    // pipeline ran by checking riskLevel is a non-unverified value.
+    expect(updated!.riskLevel).toBeDefined();
+    expect(updated!.riskLevel).not.toBe('unverified');
 
     // AAP-80 — the report-level `verification.status` now flips on the
     // OAuth-only path too (previously the patch was gated on

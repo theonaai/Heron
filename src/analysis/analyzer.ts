@@ -5,7 +5,6 @@ import { analysisResultSchema, type AnalysisResult } from '../report/types.js';
 import { ANALYSIS_SYSTEM_PROMPT, buildAnalysisPrompt } from '../llm/prompts.js';
 import * as logger from '../util/logger.js';
 import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
-import { isBusinessSystem } from '../util/systems.js';
 import { sanitizeAnalyzerOutput } from './sanitize.js';
 
 // Extended result that includes both new per-system data and legacy flat fields
@@ -244,14 +243,35 @@ async function tryParse(
     // Zod validation — parse with defaults and coercion
     const result = analysisResultSchema.parse(raw);
 
+    // AAP-102 — recommendations[] is no longer LLM-generated. Strategy v3.0
+    // violation: the prior 20-entry advisory array was generic LLM output
+    // ("improve risk management posture"). The schema field stays for back-
+    // compat with the report JSON contract, but the value is always [].
+    // The prompt still asks the LLM for recommendations (G4 will rewrite
+    // the prompt to drop them); we discard whatever it returns here.
+    result.recommendations = [];
+
     // AAP-43 P2 #8: drop scope-creep / excessive-access risks that reference
     // only internal/orchestration components (local filesystem, SQLite, env
     // vars, etc.). The prompt tells the LLM not to do this, but some models
     // still emit them — this is the belt-and-braces guarantee.
-    const businessSystemIds = new Set(
-      result.systems.filter(isBusinessSystem).map((s) => s.systemId.toLowerCase()),
+    // AAP-102: per-system categorisation removed; treat every system as a
+    // business system for the orchestration-only filter. The
+    // `ORCHESTRATION_ONLY_PATTERN` already keys off vocabulary in the risk
+    // text, not the system category — the previous `isBusinessSystem`
+    // filter only narrowed which systemIds we cross-checked against. With
+    // categorisation gone, we cross-check against every declared systemId.
+    const declaredSystemIds = new Set(
+      result.systems.map((s) => s.systemId.toLowerCase()),
     );
-    result.risks = result.risks.filter((r) => !isRiskAboutOrchestrationOnly(r, businessSystemIds));
+    result.risks = result.risks.filter((r) => !isRiskAboutOrchestrationOnly(r, declaredSystemIds));
+
+    // AAP-102 — stamp evidenceSource = 'SLF' on every LLM-derived risk.
+    // The analyzer reads the interview transcript only; every finding it
+    // mints is by definition self-attested. Verified findings come from
+    // typed detectors (router-adapter / discovery-detectors) which stamp
+    // MCP / OAU / ENV / PLG themselves.
+    result.risks = result.risks.map((r) => ({ ...r, evidenceSource: 'SLF' as const }));
 
     // Reviewer-feedback fix (2026-04-25): drop "negative" content from
     // scopesDelta (and scopesNeeded) where the LLM put a constraint

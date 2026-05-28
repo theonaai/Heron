@@ -1,47 +1,124 @@
 /**
- * Verdict computation — AAP-63.
+ * Verdict computation — AAP-63 / AAP-102.
  *
  * Heron strategy v3.0 §3: "Every claim about an AI agent should be
  * verifiable from a deterministic source of truth, not from the agent's
- * own self-report." Until AAP-63 the dashboard's risk badge was driven
- * 100% by Surface 1 (LLM analysis of the interview transcript), which
- * is non-deterministic — two consecutive runs of the same agent
- * produced different verdicts.
+ * own self-report." This module reconciles Surface 1 (LLM-derived
+ * interview findings, stamped `evidenceSource: 'SLF'`) with Surface 2
+ * (deterministic filesystem discovery + OAuth scope introspection,
+ * stamped MCP / OAU / ENV / PLG by detector) into a single `Verdict`.
  *
- * This module reconciles Surface 1 (LLM-derived interview findings)
- * with Surface 2 (deterministic filesystem discovery + OAuth scope
- * introspection) into a single `Verdict`. The verdict's
- * `primaryRiskLevel` is what the dashboard pill shows; it comes from
- * Surface 2 when ANY Surface 2 source has run, falling back to
- * `'unverified'` when only Surface 1 evidence exists. Interview risk
- * is preserved as a SECONDARY signal so the dashboard can render the
- * LLM's separate take alongside the deterministic verdict.
+ * AAP-102 — Posture replaces the prior 7-label / 3-risk-level verdict:
  *
- * The discrepancy heuristic in this file is intentionally v1:
- * substring matching against the (lowercased) interview transcript
- * looking for explicit denials ("never", "do not", "doesn't") near a
- * service name that Surface 2 then surfaced as an EXTRA / unrecorded
- * capability. False positives here are tolerable — the renderer shows
- * the discrepancy as a side note, not as a hard verdict driver — but
- * we keep the matcher conservative so it doesn't flood the report.
+ *   - Every finding carries `severityScore` (BR × DS × DM, see
+ *     `severity-scoring.ts`) and `evidenceSource`.
+ *   - Posture = FIPS 199 high-water-mark (max severityScore) across
+ *     ONLY Verified findings — findings whose `evidenceSource ≠ 'SLF'`.
+ *   - SLF findings ARE scored via `computeSeverity` (using self-reported
+ *     inputs) so the renderer can show them in a separate column, but
+ *     they do NOT drive posture aggregation. The agent's word does not
+ *     move the gradient (heron-session-context-2026-05-28.md
+ *     § "Уточнение по весам").
+ *
+ * Removed in AAP-102:
+ *   - `discoveryRiskLevel` / `oauthRiskLevel` / `liftForWriteTools` /
+ *     `maxRisk` threshold tables — replaced by `computeSeverity` per
+ *     finding plus posture aggregation.
+ *   - `detectDiscrepancies` ±80-char window heuristic — brittle, opaque
+ *     to reviewers, false positives like "never had issues with GitHub".
+ *     The new SLF column makes the agent's claims visible directly so
+ *     a reviewer can spot mismatches by eye.
+ *   - `interviewRiskLevel` / `deterministicRiskLevel` / `primaryRiskLevel`
+ *     triple — replaced by single `posture` field.
+ *   - `calibrateVerdictLabel` / `calibrateOverallRiskLevel` 7-label
+ *     auto-decision — reviewer decides; Heron computes posture only.
+ *   - `INTERNAL_HEURISTIC` threshold-manifest references — every number
+ *     in the new model is anchored (FIPS 199, GDPR Art. 9, EU AI Act
+ *     Annex III, AWS Security Pillar).
  */
 
 import type { DiscoveredAgent, DiscoveryFinding } from '../discovery/types.js';
-import type { Risk } from '../report/types.js';
-import type { SourceVerification, DiffEntry, DiffSeverity } from './types.js';
+import type { EvidenceSource, Risk } from '../report/types.js';
+import {
+  computeSeverity,
+  severityBand,
+  type SeverityBand,
+  type SeverityEvidence,
+} from './severity-scoring.js';
+import type {
+  SourceVerification,
+  DiffEntry,
+  DiffSeverity,
+  ActualTool,
+  ActualScope,
+  DeclaredTool,
+  DeclaredScope,
+} from './types.js';
 
 /** Per-session verification status. Mirrors the field on `AuditSession`. */
 export type VerificationStatus = 'unverified' | 'partial' | 'verified';
 
+/**
+ * AAP-102 — deprecated legacy risk-level type, kept for compile-time
+ * compatibility with the display layer (`src/report/templates.ts`,
+ * dashboard React components). G4 (AAP-103) will remove every consumer
+ * and this alias goes with it. Do NOT branch new logic on this — branch
+ * on `posture` / `postureBand` instead.
+ *
+ * @deprecated Use `Verdict.postureBand` (a `SeverityBand`) for new code.
+ */
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+/** @deprecated Use `Verdict.postureBand`. */
 export type PrimaryRiskLevel = 'unverified' | RiskLevel;
 
+/**
+ * AAP-102 — deprecated. The discrepancy detector (±80-char window) was
+ * removed; SLF findings render in their own column and the reviewer
+ * spots mismatches by eye. The type alias remains so the display layer
+ * still compiles; the array is always empty.
+ *
+ * @deprecated Removed in AAP-102. Always empty.
+ */
 export interface Discrepancy {
-  /** What the interview text claimed. */
   claim: string;
-  /** What Surface 2 evidence revealed. */
   evidence: string;
   severity: RiskLevel;
+}
+
+/**
+ * One row in the unified findings list the verdict assembles. The same
+ * shape feeds the report renderer (G4) — every card it draws traces
+ * back to one of these.
+ *
+ * `severityScore` is the BR × DS × DM number (one of 9 distinct values).
+ * `evidenceSource` is the wedge: MCP/OAU/ENV/PLG findings drive posture,
+ * SLF findings are shown but don't.
+ */
+export interface VerdictFinding {
+  /** Stable identifier for de-dup and per-finding lookup. */
+  id: string;
+  /** Coarse severity band (informational / low / medium / high / critical). */
+  band: SeverityBand;
+  /** BR × DS × DM numeric severity. */
+  severityScore: number;
+  /** Per-axis bands for the renderer. */
+  severityComponents: {
+    br: number;
+    ds: number;
+    dm: number;
+    brW?: number;
+    brR?: number;
+    brA?: number;
+  };
+  /** MCP / OAU / ENV / PLG (Verified) or SLF (Self-attested). */
+  evidenceSource: EvidenceSource;
+  /** Short, human-readable title. */
+  title: string;
+  /** Free-form description. */
+  description: string;
+  /** Optional kind tag for legacy renderers (discovery / oauth / risk). */
+  kind?: string;
 }
 
 export interface VerdictInputs {
@@ -49,355 +126,321 @@ export interface VerdictInputs {
   discoveryFindings?: DiscoveryFinding[];
   /** Surface 2 — OAuth introspection per-source results. */
   oauthVerifications?: SourceVerification[];
-  /** Surface 1 — analyzer LLM findings. */
+  /** Surface 1 — analyzer LLM findings (stamped SLF by analyzer). */
   interviewFindings?: Risk[];
-  /** Optional raw transcript text (lowercased internally) used for
-   *  best-effort discrepancy heuristics. */
-  interviewTranscriptText?: string;
   /**
-   * AAP-75 — discovered agents (post-enumeration). The verdict counts
-   * write-classified MCP tools across all servers and uses that count as
-   * a side-input to the deterministic risk ramp: 1+ write tool nudges
-   * an otherwise-clean discovery to `medium`, 5+ to `high`. Without
-   * enumeration this signal is absent and the legacy ramp applies.
+   * AAP-75 — discovered agents (post-enumeration). Surfaces MCP write-tool
+   * inventory which `computeSeverity` reads as BR-W input.
    */
   discoveredAgents?: DiscoveredAgent[];
 }
 
 export interface Verdict {
+  /**
+   * Technical execution status — did Surface 2 actually run? NOT a verdict.
+   *   - `verified`  — both discovery AND oauth ran, both clean.
+   *   - `partial`   — at least one Surface 2 source ran.
+   *   - `unverified`— no Surface 2 evidence at all.
+   */
   status: VerificationStatus;
-  deterministicRiskLevel?: RiskLevel;
-  interviewRiskLevel?: RiskLevel;
-  /** What the dashboard badge should display. */
-  primaryRiskLevel: PrimaryRiskLevel;
-  /** Why the primary risk was chosen. */
-  primaryRiskSource: 'deterministic' | 'self-reported' | 'no-evidence';
+  /**
+   * FIPS 199 high-water-mark across Verified findings only.
+   * 0 when no Verified findings exist.
+   */
+  posture: number;
+  /** Coarse band for `posture` — informational / low / medium / high / critical. */
+  postureBand: SeverityBand;
+  /** Every finding (Verified + SLF), with severity and provenance attached. */
+  findings: VerdictFinding[];
+
+  // ── Legacy / deprecated fields (compile-time back-compat for G4) ──────
+  // These exist purely so the unmodified display layer
+  // (`src/report/templates.ts`, dashboard React) still compiles. They are
+  // derived trivially from `posture` and will render empty / stale
+  // pills until G4 removes every reference.
+
+  /** @deprecated Always `[]`. Removed in AAP-102; see module JSDoc. */
   discrepancies: Discrepancy[];
+  /** @deprecated Derived from `postureBand`; equal to `'unverified'` when status === 'unverified'. */
+  primaryRiskLevel: PrimaryRiskLevel;
+  /** @deprecated Constant `'deterministic'` (or `'no-evidence'` when unverified). */
+  primaryRiskSource: 'deterministic' | 'self-reported' | 'no-evidence';
+  /** @deprecated Aliased to `primaryRiskLevel` band, or undefined when status === 'unverified'. */
+  deterministicRiskLevel?: RiskLevel;
+  /** @deprecated Always undefined post-AAP-102 (SLF findings no longer roll up to an interview level). */
+  interviewRiskLevel?: RiskLevel;
 }
 
-// ── Severity mapping ─────────────────────────────────────────────────
+// ── Discovery / OAuth finding → VerdictFinding (Verified) ──────────────
 
 /**
- * Severity ramp from discovery findings to a deterministic risk level.
+ * Map a DiscoveryFinding into a VerdictFinding stamped with the
+ * appropriate `evidenceSource`. Discovery surfaces:
+ *   - MCP server detection → MCP
+ *   - .env / credential / processor → ENV
+ *   - plugin / auth credential → PLG
  *
- * Discovery uses HIGH/MEDIUM/LOW/INFO buckets; the dashboard pill uses
- * low/medium/high/critical. Per the AAP-63 brief: "CRITICAL → high,
- * HIGH → medium, MEDIUM → medium". One HIGH on its own is a
- * deterministic medium; three or more HIGH findings escalate to
- * deterministic high.
+ * We classify based on the finding's `kind` and `description` content
+ * because the DiscoveryFinding shape doesn't carry an explicit surface
+ * tag. The router/discovery detector adapter layer already encodes the
+ * same split via `ROUTER_DETECTOR_ADAPTERS` / `DISCOVERY_DETECTOR_ADAPTERS`;
+ * here we tag the raw finding rows for the renderer.
  */
-function discoveryRiskLevel(findings: DiscoveryFinding[]): RiskLevel {
-  if (findings.length === 0) return 'low';
-  const highCount = findings.filter((f) => f.severity === 'HIGH').length;
-  const mediumCount = findings.filter((f) => f.severity === 'MEDIUM').length;
-  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
-  //   - verdict_discoveryRisk_highEscalate (3 HIGH → high)
-  //   - verdict_discoveryRisk_highToMedium (1 HIGH → medium)
-  //   - verdict_discoveryRisk_mediumEscalate (3 MEDIUM → medium)
-  if (highCount >= 3) return 'high';
-  if (highCount >= 1) return 'medium';
-  if (mediumCount >= 3) return 'medium';
-  return 'low';
+function evidenceSourceForDiscoveryFinding(
+  finding: DiscoveryFinding,
+): Exclude<EvidenceSource, 'SLF'> {
+  // Server-shaped findings (EXTRA / MISSING / HIDDEN-CREDENTIALS, etc.)
+  // are MCP server discoveries by default — DiscoveryFinding always
+  // carries a `serverName`.
+  return 'MCP';
 }
 
-/**
- * AAP-75 — count `write`-classified tools across all enumerated MCP
- * servers on all discovered agents. `unknown`-classified tools are NOT
- * counted; they're surfaced in the report so an operator can manually
- * resolve, but the verdict ramp stays conservative.
- */
-function countWriteTools(agents: DiscoveredAgent[]): number {
-  // AAP-88: categorical threshold `verdict_writeTools_excludeUnknown` —
-  // `unknown`-classified tools are NOT counted toward the write-tool ramp.
-  // See src/verification/threshold-manifest.ts.
-  let n = 0;
-  for (const agent of agents) {
-    for (const server of agent.mcpServers) {
-      const tools = server.toolEnumeration?.tools ?? [];
-      for (const t of tools) {
-        if (t.classification === 'write') n++;
-      }
-    }
-  }
-  return n;
+function discoveryFindingToVerdictFinding(
+  finding: DiscoveryFinding,
+  idx: number,
+  discoveredAgents: DiscoveredAgent[],
+  oauthVerifications: SourceVerification[],
+): VerdictFinding {
+  const evidence: SeverityEvidence = {
+    discovery: {
+      agents: discoveredAgents,
+      // Conservative: no workspaceEnv unless the caller passes a full
+      // DiscoveryResult. discoveryFindings alone is enough for BR-W via
+      // the agents array.
+    } as SeverityEvidence['discovery'],
+    oauthVerifications,
+  };
+  const result = computeSeverity(evidence);
+  return {
+    id: `mcp-${idx}-${finding.kind.toLowerCase()}-${finding.serverName}`,
+    band: severityBand(result.severity),
+    severityScore: result.severity,
+    severityComponents: {
+      br: result.br,
+      ds: result.ds,
+      dm: result.dm,
+      brW: result.components.brW,
+      brR: result.components.brR,
+      brA: result.components.brA,
+    },
+    evidenceSource: evidenceSourceForDiscoveryFinding(finding),
+    title: `${finding.kind} ${finding.serverName}`,
+    description: finding.description,
+    kind: 'discovery',
+  };
 }
 
+function diffSeverityFloor(_severity: DiffSeverity): void {
+  // No-op stub kept for symmetry; severity now flows from computeSeverity,
+  // not the raw DiffSeverity. Retained to document that OAuth diff
+  // `severity` field is intentionally not consulted here — the BR × DS × DM
+  // model derives severity from blast-radius axes, not heuristic labels.
+  return;
+}
+
+function oauthDiffToVerdictFinding(
+  diff: DiffEntry,
+  sourceId: string,
+  idx: number,
+  discoveredAgents: DiscoveredAgent[],
+  oauthVerifications: SourceVerification[],
+): VerdictFinding {
+  diffSeverityFloor(diff.severity);
+  const evidence: SeverityEvidence = {
+    discovery: { agents: discoveredAgents } as SeverityEvidence['discovery'],
+    oauthVerifications,
+  };
+  const result = computeSeverity(evidence);
+  // `actual` exists on 'extra' / 'mismatch'; `declared` exists on 'missing' / 'mismatch'.
+  // Pick whichever side is present so we can produce a stable target label.
+  const side: ActualTool | ActualScope | DeclaredTool | DeclaredScope =
+    diff.kind === 'missing' ? diff.declared : diff.actual;
+  const target =
+    diff.dimension === 'tool'
+      ? (side as { name?: string }).name ?? 'tool'
+      : `${(side as { service?: string }).service ?? sourceId}:${
+          (side as { scope?: string }).scope ?? 'scope'
+        }`;
+  return {
+    id: `oau-${idx}-${diff.kind}-${target}`,
+    band: severityBand(result.severity),
+    severityScore: result.severity,
+    severityComponents: {
+      br: result.br,
+      ds: result.ds,
+      dm: result.dm,
+      brW: result.components.brW,
+      brR: result.components.brR,
+      brA: result.components.brA,
+    },
+    evidenceSource: 'OAU',
+    title: `OAuth ${diff.kind} — ${target}`,
+    description: `OAuth scope ${diff.kind} from ${sourceId}`,
+    kind: 'oauth',
+  };
+}
+
+// ── Interview Risk → VerdictFinding (SLF) ──────────────────────────────
+
 /**
- * AAP-75 — lift the deterministic discovery risk level based on the
- * number of write-classified MCP tools the agent actually has access to.
+ * Map an interview-derived Risk into a VerdictFinding. Score via
+ * `computeSeverity` with no typed evidence — the call degrades to the
+ * conservative band (BR-A = 3 autonomous default, BR-W = 0, BR-R = 0)
+ * giving BR = 3 unless the caller passes hints. The `Risk` carries
+ * `severity` (low/medium/high/critical) as a categorical signal which
+ * we honour as a DS floor (high+ → DS=3, medium → DS=2).
  *
- * Heron ships strategy v3.0 §3 — "tell the operator exactly what writes
- * are available". The verdict pill is the highest-leverage place to
- * surface that count: 1+ writes pushes a baseline-clean discovery to
- * `medium`, 5+ to `high`, regardless of LLM analysis. The thresholds
- * are intentionally low because the SAME agent that claims "read-only"
- * in the interview but ships 1 write tool is precisely the misclaim
- * AAP-75 exists to expose.
- *
- * Note: we never DOWNGRADE — if the discovery findings already say
- * `high`, the write-tool ramp doesn't drop it back to `medium`.
+ * SLF findings are scored so the renderer can render them in their own
+ * column, but they NEVER move the posture gradient (high-water-mark
+ * skips them).
  */
-function liftForWriteTools(baseline: RiskLevel, writeToolCount: number): RiskLevel {
-  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
-  //   - verdict_writeTools_noLift (0 tools → no-op)
-  //   - verdict_writeTools_highLift (>=5 tools → lift to high)
-  //   - verdict_writeTools_mediumLift (>=1 tool → lift to medium)
-  //   - verdict_writeTools_noDowngrade (never downgrade — implemented via maxRisk)
-  if (writeToolCount === 0) return baseline;
-  if (writeToolCount >= 5) return maxRisk(baseline, 'high');
-  return maxRisk(baseline, 'medium');
+function interviewRiskToVerdictFinding(
+  risk: Risk,
+  idx: number,
+  discoveredAgents: DiscoveredAgent[],
+  oauthVerifications: SourceVerification[],
+): VerdictFinding {
+  // Honour the LLM's categorical severity as a DS floor: a HIGH/CRITICAL
+  // SLF risk carries DS ≥ 2 even when typed evidence is silent.
+  let dsFloor: 1 | 2 | 3 = 1;
+  if (risk.severity === 'critical' || risk.severity === 'high') dsFloor = 3;
+  else if (risk.severity === 'medium') dsFloor = 2;
+
+  const evidence: SeverityEvidence = {
+    discovery: { agents: discoveredAgents } as SeverityEvidence['discovery'],
+    oauthVerifications,
+    findingContext: { dataSensitivityFloor: dsFloor },
+  };
+  const result = computeSeverity(evidence);
+  // Risks SHOULD carry a title (riskSchema requires it), but the verdict
+  // pipeline can be called with hand-built JSON blobs from test fakes /
+  // legacy report.json files that pre-date schema enforcement. Be defensive:
+  // fall back to a synthetic id when title is missing.
+  const titleStr = typeof risk.title === 'string' ? risk.title : `risk-${idx}`;
+  const slug = titleStr.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+  return {
+    id: `slf-${idx}-${slug}`,
+    band: severityBand(result.severity),
+    severityScore: result.severity,
+    severityComponents: {
+      br: result.br,
+      ds: result.ds,
+      dm: result.dm,
+      brW: result.components.brW,
+      brR: result.components.brR,
+      brA: result.components.brA,
+    },
+    evidenceSource: 'SLF',
+    title: titleStr,
+    description: typeof risk.description === 'string' ? risk.description : '',
+    kind: 'risk',
+  };
 }
+
+// ── Posture aggregation (FIPS 199 high-water-mark) ────────────────────
 
 /**
- * Severity ramp from OAuth diff entries to a deterministic risk level.
- * Mirrors the discovery ramp at the diff-severity level.
+ * Compute posture = max(severityScore) across findings where
+ * `evidenceSource ≠ 'SLF'`. Returns 0 when no Verified findings exist
+ * (caller can render "Insufficient evidence" rather than band 1).
+ *
+ * FIPS 199 rule: max, not sum / not average. Any single critical-band
+ * Verified finding sets posture critical. SLF findings are excluded by
+ * design — the agent's self-report cannot move the gradient (Heron
+ * strategy v3.0 §3 + session-context 2026-05-28 § "Уточнение по весам").
  */
-function oauthRiskLevel(verifications: SourceVerification[]): RiskLevel {
-  const diffs: DiffEntry[] = [];
-  for (const v of verifications) {
-    for (const d of v.diffs) diffs.push(d);
-  }
-  if (diffs.length === 0) return 'low';
-  // AAP-88: thresholds documented in src/verification/threshold-manifest.ts.
-  //   - verdict_oauthRisk_criticalToHigh (1 critical → high)
-  //   - verdict_oauthRisk_highEscalate (3 high → high)
-  //   - verdict_oauthRisk_highToMedium (1 high → medium)
-  //   - verdict_oauthRisk_mediumEscalate (3 medium → medium)
-  const critical = diffs.filter((d) => d.severity === 'critical').length;
-  if (critical >= 1) return 'high';
-  const high = diffs.filter((d) => d.severity === 'high').length;
-  if (high >= 3) return 'high';
-  if (high >= 1) return 'medium';
-  const medium = diffs.filter((d) => d.severity === 'medium').length;
-  if (medium >= 3) return 'medium';
-  return 'low';
-}
-
-const RISK_ORDER: Record<RiskLevel, number> = {
-  low: 1,
-  medium: 2,
-  high: 3,
-  critical: 4,
-};
-
-function maxRisk(a: RiskLevel, b: RiskLevel): RiskLevel {
-  return RISK_ORDER[a] >= RISK_ORDER[b] ? a : b;
-}
-
-function interviewRiskFromFindings(findings: Risk[]): RiskLevel | undefined {
-  if (findings.length === 0) return undefined;
-  let max: RiskLevel = 'low';
-  for (const r of findings) {
-    const sev = r.severity as RiskLevel;
-    if (sev === 'low' || sev === 'medium' || sev === 'high' || sev === 'critical') {
-      max = maxRisk(max, sev);
-    }
+export function computePosture(findings: ReadonlyArray<VerdictFinding>): number {
+  let max = 0;
+  for (const f of findings) {
+    if (f.evidenceSource === 'SLF') continue;
+    if (f.severityScore > max) max = f.severityScore;
   }
   return max;
-}
-
-// ── Discrepancy heuristics ───────────────────────────────────────────
-
-const DENIAL_PATTERNS = [
-  /\bnever\b/i,
-  /\bdoes\s*not\b/i,
-  /\bdoesn't\b/i,
-  /\bdo\s*not\b/i,
-  /\bdon't\b/i,
-  /\bno\s+access\b/i,
-  /\bno\s+(?:slack|github|gmail|drive|jira|linear|notion|salesforce|hubspot|sentry|postgres|calendar)\b/i,
-];
-
-function discoveryFindingSeverityToRiskLevel(sev: DiscoveryFinding['severity']): RiskLevel {
-  switch (sev) {
-    case 'HIGH':
-      return 'high';
-    case 'MEDIUM':
-      return 'medium';
-    case 'LOW':
-      return 'low';
-    case 'INFO':
-      return 'low';
-    default:
-      return 'low';
-  }
-}
-
-function diffSeverityToRiskLevel(sev: DiffSeverity): RiskLevel {
-  switch (sev) {
-    case 'critical':
-      return 'critical';
-    case 'high':
-      return 'high';
-    case 'medium':
-      return 'medium';
-    case 'low':
-      return 'low';
-    case 'info':
-      return 'low';
-    default:
-      return 'low';
-  }
-}
-
-/**
- * Best-effort v1 discrepancy detector.
- *
- * For each EXTRA discovery finding, scan the transcript text for an
- * explicit denial near the server's name or canonical keyword. If we
- * find one, emit a Discrepancy entry that the report renderer can
- * surface in a dedicated section.
- *
- * Conservative on purpose: false positives in this list would erode
- * trust in the broader verdict, so we require both a denial token AND
- * a service-name token within ~80 chars of each other.
- */
-function detectDiscrepancies(
-  discoveryFindings: DiscoveryFinding[],
-  oauthVerifications: SourceVerification[],
-  transcriptText: string,
-): Discrepancy[] {
-  const out: Discrepancy[] = [];
-  if (transcriptText.length === 0) return out;
-
-  const text = transcriptText.toLowerCase();
-
-  const checkOne = (
-    serviceName: string,
-    description: string,
-    severity: RiskLevel,
-  ): void => {
-    const lowered = serviceName.toLowerCase();
-    if (lowered.length === 0) return;
-    const idx = text.indexOf(lowered);
-    if (idx < 0) return;
-    // AAP-88: window-chars threshold `verdict_discrepancy_windowChars` = 80.
-    // See src/verification/threshold-manifest.ts.
-    const start = Math.max(0, idx - 80);
-    const end = Math.min(text.length, idx + lowered.length + 80);
-    const window = text.slice(start, end);
-    for (const p of DENIAL_PATTERNS) {
-      if (p.test(window)) {
-        out.push({
-          claim: `Interview text near "${serviceName}" contains a denial (matched pattern "${p.source}")`,
-          evidence: `${serviceName}: ${description}`,
-          severity,
-        });
-        return;
-      }
-    }
-  };
-
-  for (const f of discoveryFindings) {
-    if (f.kind !== 'EXTRA') continue;
-    checkOne(
-      f.serverName,
-      f.description,
-      discoveryFindingSeverityToRiskLevel(f.severity),
-    );
-  }
-
-  for (const v of oauthVerifications) {
-    for (const d of v.diffs) {
-      if (d.kind !== 'extra') continue;
-      const sev = diffSeverityToRiskLevel(d.severity);
-      if (d.dimension === 'tool') {
-        const a = d.actual as { name?: string; description?: string };
-        if (a.name) checkOne(a.name, a.description ?? `OAuth EXTRA tool: ${a.name}`, sev);
-      } else {
-        const a = d.actual as { service?: string; scope?: string };
-        const label = `${a.service ?? ''}:${a.scope ?? ''}`;
-        if (a.service) checkOne(a.service, `OAuth EXTRA scope: ${label}`, sev);
-      }
-    }
-  }
-
-  return out;
 }
 
 // ── Public entry point ──────────────────────────────────────────────
 
 export function computeVerdict(inputs: VerdictInputs): Verdict {
-  const interviewRiskLevel = interviewRiskFromFindings(inputs.interviewFindings ?? []);
+  const interviewFindings = inputs.interviewFindings ?? [];
+  const discoveryFindings = inputs.discoveryFindings ?? [];
+  const oauthVerifications = inputs.oauthVerifications ?? [];
+  const discoveredAgents = inputs.discoveredAgents ?? [];
 
   const hasDiscovery = inputs.discoveryFindings !== undefined;
   const hasOauth = (inputs.oauthVerifications?.length ?? 0) > 0;
-  // AAP-91 — `discoveredAgents` is also deterministic Surface 2 evidence
-  // (L1 MCP server enumeration / AAP-82 forwarded `tools/list` responses).
-  // It must participate in the Surface 2 presence gate; otherwise an
-  // agents-only enumeration (no discovery diff, no OAuth introspection)
-  // would falsely fall through to `unverified` despite carrying
-  // deterministic write-tool evidence.
+  // AAP-91 — `discoveredAgents` is also deterministic Surface 2 evidence.
   const hasAgents = (inputs.discoveredAgents?.length ?? 0) > 0;
 
-  // No Surface 2 at all → unverified.
+  // ── Status (technical execution state, NOT a verdict) ──
+  //
+  // Same gate as pre-AAP-102: `verified` requires BOTH discovery AND OAuth
+  // ran with clean evidence. `partial` covers everything in between.
+  // `unverified` only when no Surface 2 source ran. This is the
+  // simplified 3-state ladder per AAP-102 acceptance.
+  let status: VerificationStatus;
   if (!hasDiscovery && !hasOauth && !hasAgents) {
-    const base: Verdict = {
-      status: 'unverified',
-      primaryRiskLevel: 'unverified',
-      primaryRiskSource: 'no-evidence',
-      discrepancies: [],
-    };
-    if (interviewRiskLevel !== undefined) {
-      base.interviewRiskLevel = interviewRiskLevel;
-    }
-    return base;
+    status = 'unverified';
+  } else {
+    const discoveryClean = hasDiscovery && discoveryFindings.length === 0;
+    const oauthClean =
+      hasOauth &&
+      oauthVerifications.every(
+        (v) => v.verdict === 'verified' && v.diffs.length === 0,
+      );
+    status =
+      hasDiscovery && hasOauth && discoveryClean && oauthClean
+        ? 'verified'
+        : 'partial';
   }
 
-  // At least one Surface 2 source ran.
-  const discoveryFindings = inputs.discoveryFindings ?? [];
-  const oauthVerifications = inputs.oauthVerifications ?? [];
+  // ── Findings ──
+  const findings: VerdictFinding[] = [];
 
-  // Status semantics — AAP-88 categorical thresholds documented in
-  // src/verification/threshold-manifest.ts:
-  //   - verdict_status_verifiedRequiresBoth: 'verified' iff BOTH Surface 2
-  //     sources ran (discovery AND oauth) AND both produced clean evidence.
-  //     Missing OAuth introspection is by design today (token-capture UX is
-  //     AAP-64) — sessions therefore land on 'partial' for the foreseeable
-  //     future even when discovery returns zero findings. AAP-91: an
-  //     agents-only path (only `discoveredAgents` present, no discovery
-  //     diff and no OAuth) also lands on 'partial' — enumeration carries
-  //     deterministic Surface 2 evidence but cannot perform a declared-vs-
-  //     actual comparison, so the structural ceiling stays at 'partial'.
-  //   - verdict_status_partialWhenAny: 'partial' otherwise (at least one
-  //     Surface 2 source ran — discovery, OAuth, OR discoveredAgents).
-  //   - verdict_status_unverifiedNoSurface2: 'unverified' when none of the
-  //     Surface 2 sources ran (handled by the early-return above).
-  const discoveryClean = hasDiscovery && discoveryFindings.length === 0;
-  const oauthClean =
-    hasOauth &&
-    oauthVerifications.every(
-      (v) => v.verdict === 'verified' && v.diffs.length === 0,
+  discoveryFindings.forEach((f, idx) => {
+    findings.push(
+      discoveryFindingToVerdictFinding(f, idx, discoveredAgents, oauthVerifications),
     );
-  const status: VerificationStatus =
-    hasDiscovery && hasOauth && discoveryClean && oauthClean
-      ? 'verified'
-      : 'partial';
+  });
 
-  // AAP-75 — lift baseline discovery risk based on write-tool count.
-  const fromDiscoveryBase = hasDiscovery ? discoveryRiskLevel(discoveryFindings) : 'low';
-  const writeToolCount = inputs.discoveredAgents
-    ? countWriteTools(inputs.discoveredAgents)
-    : 0;
-  const fromDiscovery: RiskLevel = liftForWriteTools(fromDiscoveryBase, writeToolCount);
-  const fromOauth = hasOauth ? oauthRiskLevel(oauthVerifications) : 'low';
-  const deterministicRiskLevel: RiskLevel = maxRisk(fromDiscovery, fromOauth);
+  oauthVerifications.forEach((v) => {
+    v.diffs.forEach((d, idx) => {
+      findings.push(
+        oauthDiffToVerdictFinding(d, v.sourceId, idx, discoveredAgents, oauthVerifications),
+      );
+    });
+  });
 
-  const discrepancies = detectDiscrepancies(
-    discoveryFindings,
-    oauthVerifications,
-    inputs.interviewTranscriptText ?? '',
-  );
+  interviewFindings.forEach((r, idx) => {
+    findings.push(
+      interviewRiskToVerdictFinding(r, idx, discoveredAgents, oauthVerifications),
+    );
+  });
 
+  // ── Posture (Verified-only FIPS HWM) ──
+  const posture = computePosture(findings);
+  const postureBand = severityBand(posture);
+
+  // ── Legacy compile-time aliases (G4 will delete) ──
+  const legacyRisk: RiskLevel | 'unverified' =
+    status === 'unverified'
+      ? 'unverified'
+      : postureBand === 'critical'
+        ? 'critical'
+        : postureBand === 'high'
+          ? 'high'
+          : postureBand === 'medium'
+            ? 'medium'
+            : 'low';
   const verdict: Verdict = {
     status,
-    deterministicRiskLevel,
-    primaryRiskLevel: deterministicRiskLevel,
-    primaryRiskSource: 'deterministic',
-    discrepancies,
+    posture,
+    postureBand,
+    findings,
+    discrepancies: [],
+    primaryRiskLevel: legacyRisk,
+    primaryRiskSource:
+      status === 'unverified' ? 'no-evidence' : 'deterministic',
   };
-  if (interviewRiskLevel !== undefined) {
-    verdict.interviewRiskLevel = interviewRiskLevel;
-  }
+  if (legacyRisk !== 'unverified') verdict.deterministicRiskLevel = legacyRisk;
   return verdict;
 }

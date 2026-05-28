@@ -131,11 +131,49 @@ export const writeActionSchema = z.object({
 });
 export type WriteAction = z.infer<typeof writeActionSchema>;
 
+// ─── Finding evidence source (AAP-102) ──────────────────────────────────────
+//
+// Provenance for every finding. The wedge between Verified and Self-attested
+// claims (Heron strategy v3.0 §3): typed deterministic detectors stamp one of
+// MCP / OAU / ENV / PLG depending on which evidence surface fired; findings
+// emerging from the prose engine (regex on the interview transcript driving
+// `CONTROL_MAPPINGS`) and findings minted by the analyzer LLM from the
+// transcript are SLF (self-attested).
+//
+// `posture` aggregation (AAP-102) reads ONLY Verified findings — SLF findings
+// are scored via `computeSeverity` against self-reported inputs but never
+// drive posture. This is the "verified-only high-water-mark" rule from
+// /Users/ilaivanov/Claude/Claude1/heron-session-context-2026-05-28.md
+// § "Уточнение по весам".
+export const evidenceSourceValues = ['MCP', 'OAU', 'ENV', 'PLG', 'SLF'] as const;
+export const evidenceSourceSchema = z.enum(evidenceSourceValues);
+export type EvidenceSource = typeof evidenceSourceValues[number];
+
+// BR × DS × DM component bands, mirrored from
+// `src/verification/severity-scoring.ts`. The schema accepts numbers
+// (1 / 2 / 3 for BR-W / BR-R / BR-A) so the renderer can attach the
+// breakdown to a finding row.
+export const severityComponentsSchema = z.object({
+  br: z.number(),
+  ds: z.number(),
+  dm: z.number(),
+  brW: z.number().optional(),
+  brR: z.number().optional(),
+  brA: z.number().optional(),
+});
+export type SeverityComponents = z.infer<typeof severityComponentsSchema>;
+
 export const riskSchema = z.object({
   severity: severitySchema,
   title: z.string(),
   description: z.string(),
   mitigation: z.string().optional(),
+  /** AAP-102 — BR × DS × DM severity number (one of 1, 1.5, 2, 3, 4, 4.5, 6, 9, 13.5). */
+  severityScore: z.number().optional(),
+  /** AAP-102 — per-axis breakdown for the renderer. */
+  severityComponents: severityComponentsSchema.optional(),
+  /** AAP-102 — provenance: MCP / OAU / ENV / PLG (Verified) vs SLF (Self-attested). */
+  evidenceSource: evidenceSourceSchema.optional(),
 });
 export type Risk = z.infer<typeof riskSchema>;
 
