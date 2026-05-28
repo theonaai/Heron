@@ -161,7 +161,7 @@ async function buildSuccessReport(
     },
     // AAP-79: every freshly-rendered report starts in 'interrogation-only'.
     // start_verification (or the dashboard scan route) flips this to
-    // 'verified' / 'verification-failed' after the L1-L5 evidence reads
+    // 'verified' / 'verification-failed' after the L1-L3 evidence reads
     // complete. Until then, the banner in markdown + dashboard tells the
     // operator (or the calling agent) that the verdict is self-report only.
     verification: {

@@ -54,11 +54,11 @@ export type { VerificationSignals } from '../../verification/frameworks/envelope
  * be appended without churning every detector signature.
  */
 export interface TypedEvidenceEnvelope {
-  /** Surface 2 deterministic — filesystem discovery (L1-L5). */
+  /** Surface 2 deterministic — filesystem discovery (L1-L3). */
   discovery?: DiscoveryResult | undefined;
   /** Surface 2 deterministic — MCP / OAuth / agent-declaration verification. */
   verificationReport?: VerificationReport | undefined;
-  /** Surface 2 cloud — L7 OAuth scope introspection per provider. */
+  /** Surface 2 cloud — L4 OAuth scope introspection per provider. */
   oauthVerifications?: SourceVerification[] | undefined;
 }
 

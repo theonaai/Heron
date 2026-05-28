@@ -1,16 +1,24 @@
 /**
- * Discovery orchestrator — AAP-53 + AAP-58.
+ * Discovery orchestrator — AAP-53 + AAP-58 + AAP-100.
  *
- * `runDiscovery(opts)` reads every candidate config file from each
- * registered reader, projects them through the whitelist, and returns
- * a single `DiscoveryResult` with the deterministic agent inventory.
+ * `runDiscovery({ runtime, ... })` reads only the evidence directories
+ * that belong to the audited runtime, projects them through the
+ * whitelist, and returns a single `DiscoveryResult` with the
+ * deterministic agent inventory.
+ *
+ * AAP-100 — `runtime` is required. Heron used to scan all six runtimes
+ * host-wide on every audit, which meant a Codex audit surfaced Claude
+ * Code findings (and vice versa). The simplification scope locks
+ * discovery to the audited runtime: when auditing Codex, only
+ * `~/.codex/*` is read; `~/.claude/*`, `~/.cursor/*`, etc. are not
+ * touched.
  *
  * Missing files are silently skipped (try/catch around readFile).
- * Malformed files are skipped with a warning. A truly missing
- * config dir for every runtime returns `{ agents: [], findings: [],
+ * Malformed files are skipped with a warning. A truly missing config
+ * dir for the audited runtime returns `{ agents: [], findings: [],
  * scannedPaths: [...] }` — the empty array is itself useful evidence.
  *
- * AAP-58 — the per-reader scan now collects four kinds of capability:
+ * AAP-58 — each per-reader scan collects three kinds of capability:
  *   1. MCP servers via `reader.parse`         (AAP-53).
  *   2. Plugins / skills via `reader.parseCapabilities`.
  *   3. Auth-credential KEY NAMES via the sibling `AUTH_READERS` set.
@@ -19,6 +27,14 @@
  * consumers iterate one list. `Agent.mcpServers` stays populated for
  * back-compat — the dashboard renders both surfaces until callers
  * migrate.
+ *
+ * AAP-100 — L3 (macOS Keychain) and L4 (cross-cutting OS credentials)
+ * readers were deleted. Both layers audited the dev box (e.g.
+ * `~/.aws/credentials`, the user's Keychain) rather than the deployed
+ * agent — security gatekeepers do not pay to verify someone's laptop.
+ * The remaining layers are L1 (MCP configs), L2 (plugins/skills/auth),
+ * L5 (workspace .env, renumbered to L3 in docs), and L6 (OAuth, owned
+ * by a separate orchestrator).
  */
 
 import { readFile } from 'node:fs/promises';
@@ -32,9 +48,7 @@ import { codexAuthReader } from './readers/codex-auth.js';
 import { continueReader } from './readers/continue.js';
 import { cursorReader } from './readers/cursor.js';
 import { windsurfReader } from './readers/windsurf.js';
-import { readOsCredentials } from './readers/os-credentials.js';
 import { readWorkspaceEnv } from './readers/workspace-env.js';
-import { readKeychain, type KeychainSpawn } from './readers/keychain.js';
 import {
   enumerateAllServers,
   type EnumerateOptions,
@@ -64,6 +78,13 @@ const READERS: AgentReader[] = [
 const AUTH_READERS: AuthReader[] = [codexAuthReader, claudeCodeAuthReader];
 
 export interface DiscoveryOptions {
+  /**
+   * AAP-100 — runtime under audit. Only readers whose `runtime` matches
+   * this value run; all other runtimes' evidence directories are left
+   * untouched. This closes drift entry #8 (host-wide vs per-runtime)
+   * from `miro-vs-code-drift.md`.
+   */
+  runtime: DiscoveredRuntime;
   /** Override $HOME for testing. Defaults to os.homedir(). */
   homeDir?: string;
   /** Optional workspace path scanned in addition to user-level paths. */
@@ -75,23 +96,6 @@ export interface DiscoveryOptions {
    * in one pass.
    */
   workspaceHints?: string[];
-  /**
-   * AAP-67 — override the host platform for L3 (Keychain). Tests inject
-   * `'darwin'` to exercise the macOS path on CI Linux runners.
-   */
-  platform?: NodeJS.Platform;
-  /**
-   * AAP-67 — override `child_process.spawn` for the L3 Keychain reader.
-   * Tests only; production always uses the default node spawn.
-   */
-  keychainSpawn?: KeychainSpawn;
-  /**
-   * AAP-67 — opt out of the L3 Keychain shell-out. The dashboard sets
-   * this to `false` for the v1 ship because the macOS `security` tool
-   * occasionally surfaces an auth prompt depending on the user's
-   * keychain ACL config; the e2e tests opt in explicitly.
-   */
-  enableKeychain?: boolean;
   /**
    * AAP-75 — when true, after L1 discovery the aggregator opens an MCP
    * connection to each declared server and calls `tools/list` (the
@@ -135,12 +139,18 @@ function upsertAgent(
   return fresh;
 }
 
-export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<DiscoveryResult> {
+export async function runDiscovery(opts: DiscoveryOptions): Promise<DiscoveryResult> {
   const home = opts.homeDir ?? defaultHomeDir();
   const agents: DiscoveredAgent[] = [];
   const scannedPaths: string[] = [];
 
-  for (const reader of READERS) {
+  // AAP-100 — filter readers to the audited runtime. Each reader self-
+  // declares its `runtime`; only matching readers (L1 MCP + L2 auth)
+  // touch the filesystem.
+  const activeReaders = READERS.filter((r) => r.runtime === opts.runtime);
+  const activeAuthReaders = AUTH_READERS.filter((r) => r.runtime === opts.runtime);
+
+  for (const reader of activeReaders) {
     const candidates = reader.paths(home, opts.workspaceDir);
     for (const path of candidates) {
       scannedPaths.push(path);
@@ -188,7 +198,7 @@ export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<Discove
   // Auth-credential readers run last — their output attaches to the
   // existing Agent row for the same runtime when one exists, otherwise
   // it creates a fresh row keyed on the credentials file path.
-  for (const reader of AUTH_READERS) {
+  for (const reader of activeAuthReaders) {
     const candidates = reader.paths(home, opts.workspaceDir);
     for (const path of candidates) {
       scannedPaths.push(path);
@@ -221,25 +231,13 @@ export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<Discove
     }
   }
 
-  // ── AAP-67 — L3 + L4 + L5 readers ──────────────────────────────────────
-  // These run independently of the per-runtime agent scan. They never
-  // attach to a DiscoveredAgent row; instead they populate dedicated
-  // top-level slots on the DiscoveryResult, so the dashboard / report
-  // can render them as their own sections.
+  // ── AAP-67 — workspace .env reader (renumbered to L3 in docs) ──────────
+  // Runs independently of the per-runtime agent scan: workspace .env
+  // files are cwd-local, not bound to a runtime. The reader populates
+  // a dedicated top-level slot on `DiscoveryResult` so the dashboard /
+  // report renders it as its own section.
   const warnings: string[] = [];
 
-  // L4 — cross-cutting OS credentials.
-  let osCredentials: DiscoveryResult['osCredentials'];
-  try {
-    const result = await readOsCredentials({ home });
-    osCredentials = result.findings;
-    for (const p of result.scannedPaths) scannedPaths.push(p);
-  } catch (e) {
-    warnings.push(`os-credentials reader failed: ${(e as Error).message || String(e)}`);
-  }
-
-  // L5 — per-workspace .env*. Union of explicit `workspaceDir` (the
-  // AAP-58 primary) + any `workspaceHints` supplied by the caller.
   const workspaceList: string[] = [];
   if (opts.workspaceDir) workspaceList.push(opts.workspaceDir);
   if (opts.workspaceHints) for (const h of opts.workspaceHints) workspaceList.push(h);
@@ -251,30 +249,6 @@ export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<Discove
       for (const p of result.scannedPaths) scannedPaths.push(p);
     } catch (e) {
       warnings.push(`workspace-env reader failed: ${(e as Error).message || String(e)}`);
-    }
-  }
-
-  // L3 — macOS Keychain. Opt-in via `enableKeychain: true` so a default
-  // headless run never risks a `security` prompt. The dashboard surfaces
-  // it through the same consent flow the operator already accepted for
-  // local discovery (Linear ticket: "do NOT add a separate consent
-  // surface — reuse the existing dashboard consent flow").
-  //
-  // `HERON_DISCOVERY_KEYCHAIN_DISABLE=1` (env override) forces the
-  // Keychain layer off — used by the route tests so a darwin dev box
-  // running `npm test` doesn't shell out to `security` for real.
-  const keychainDisabledByEnv = process.env.HERON_DISCOVERY_KEYCHAIN_DISABLE === '1';
-  let keychainServices: DiscoveryResult['keychainServices'];
-  if (opts.enableKeychain && !keychainDisabledByEnv) {
-    try {
-      const result = await readKeychain({
-        platform: opts.platform,
-        spawn: opts.keychainSpawn,
-      });
-      keychainServices = result.services;
-      for (const w of result.warnings) warnings.push(w);
-    } catch (e) {
-      warnings.push(`keychain reader failed: ${(e as Error).message || String(e)}`);
     }
   }
 
@@ -321,9 +295,7 @@ export async function runDiscovery(opts: DiscoveryOptions = {}): Promise<Discove
     findings: [],
     scannedAt: new Date().toISOString(),
     scannedPaths,
-    ...(osCredentials !== undefined ? { osCredentials } : {}),
     ...(workspaceEnv !== undefined ? { workspaceEnv } : {}),
-    ...(keychainServices !== undefined ? { keychainServices } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

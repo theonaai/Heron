@@ -129,7 +129,7 @@ describe('discovery API routes', () => {
       const res = await scanPOST(
         jsonRequest(`${ORIGIN}/api/discovery/scan`, {
           method: 'POST',
-          body: { sessionId: id, workspaceRoot: workspaceDir },
+          body: { sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' },
         }),
       );
       expect(res.status).toBe(403);
@@ -179,7 +179,7 @@ describe('discovery API routes', () => {
       const res = await scanPOST(
         jsonRequest(`${ORIGIN}/api/discovery/scan`, {
           method: 'POST',
-          body: { sessionId: id, workspaceRoot: workspaceDir },
+          body: { sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' },
         }),
       );
       expect(res.status).toBe(200);
@@ -205,7 +205,7 @@ describe('discovery API routes', () => {
       const res = await scanPOST(
         jsonRequest(`${ORIGIN}/api/discovery/scan`, {
           method: 'POST',
-          body: { sessionId: 'bogus', workspaceRoot: workspaceDir },
+          body: { sessionId: 'bogus', workspaceRoot: workspaceDir, runtime: 'codex' },
         }),
       );
       expect(res.status).toBe(400);
@@ -282,7 +282,7 @@ describe('discovery API routes', () => {
       const res = await scanPOST(
         jsonRequest(`${ORIGIN}/api/discovery/scan`, {
           method: 'POST',
-          body: { sessionId: id, workspaceRoot: workspaceDir },
+          body: { sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' },
         }),
       );
       expect(res.status).toBe(200);

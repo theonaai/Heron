@@ -17,12 +17,12 @@
  *      (`AWS_`, `OPENAI_`, `SLACK_`, `HUBSPOT_`, …) surface as the
  *      processor-flag analogue (GDPR Art. 28-class controls).
  *
- * Discovery walks every L1-L5 surface (`agent.mcpServers[].redactedEnvKeys`,
- * `agent.capabilities[]` (auth_credential), `keychainServices[]`,
- * `osCredentials[]`, `workspaceEnv[].keys`). The key-vocabulary
- * classifier `classifyKeyName` is the single source of truth for
- * credential-name → category mapping (the AAP-79 prose-synthesis
- * shadow was deleted in AAP-86).
+ * Discovery walks every remaining surface (`agent.mcpServers[].redactedEnvKeys`,
+ * `agent.capabilities[]` (auth_credential), `workspaceEnv[].keys`).
+ * The key-vocabulary classifier `classifyKeyName` is the single source
+ * of truth for credential-name → category mapping (the AAP-79
+ * prose-synthesis shadow was deleted in AAP-86; the L3 Keychain + L4
+ * OS-credential surfaces were removed in AAP-100).
  */
 
 import type { DiscoveryResult } from '../../discovery/types.js';
@@ -145,20 +145,6 @@ function walkDiscovery(discovery: DiscoveryResult): Aggregate {
         ingest(cap.provider, `capability:${cap.provider}`);
       }
     }
-  }
-
-  for (const kc of discovery.keychainServices ?? []) {
-    ingest(kc.service, `keychain:${kc.service}`);
-  }
-
-  for (const oc of discovery.osCredentials ?? []) {
-    for (const t of oc.tokens ?? []) {
-      ingest(t, `os-cred:${oc.kind}`);
-    }
-    // The credential file kind itself often carries a processor signal —
-    // `aws-credentials` implies AWS even when no profile name fires the
-    // vendor regex.
-    ingest(oc.kind, `os-cred:${oc.kind}`);
   }
 
   for (const env of discovery.workspaceEnv ?? []) {
