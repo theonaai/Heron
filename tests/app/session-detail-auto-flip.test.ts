@@ -22,13 +22,14 @@
 import { describe, it, expect } from 'vitest';
 import { shouldAutoFlipToReport } from '../../components/heron-v1/dashboard/SessionDetail';
 
-describe('AAP-92 — shouldAutoFlipToReport', () => {
+describe('AAP-92 / AAP-104 A2 — shouldAutoFlipToReport', () => {
   it('flips on the analyzing → complete transition when report is ready', () => {
     expect(
       shouldAutoFlipToReport({
         prevStatus: 'analyzing',
         nextStatus: 'complete',
         hasReport: true,
+        prevHasReport: false,
         userTabChosen: false,
       }),
     ).toBe(true);
@@ -40,6 +41,7 @@ describe('AAP-92 — shouldAutoFlipToReport', () => {
         prevStatus: 'awaiting_answer',
         nextStatus: 'complete',
         hasReport: true,
+        prevHasReport: false,
         userTabChosen: false,
       }),
     ).toBe(true);
@@ -51,6 +53,7 @@ describe('AAP-92 — shouldAutoFlipToReport', () => {
         prevStatus: 'interviewing',
         nextStatus: 'complete',
         hasReport: true,
+        prevHasReport: false,
         userTabChosen: false,
       }),
     ).toBe(true);
@@ -63,25 +66,41 @@ describe('AAP-92 — shouldAutoFlipToReport', () => {
         prevStatus: 'analyzing',
         nextStatus: 'complete',
         hasReport: true,
+        prevHasReport: false,
         userTabChosen: true,
       }),
     ).toBe(false);
   });
 
   it('does NOT flip when hasReport is still false (report blob not yet attached)', () => {
-    // SSE delivers status-change before the GET that fetches the
-    // rendered markdown. The useEffect runs once on status change with
-    // hasReport=false, then a second time when the GET response sets
-    // liveSession.report and hasReport flips true. The second run is
-    // the one that should flip — pin that here.
+    // The first SSE tick lands status-change without a report yet — the
+    // GET fetch races behind it. Don't flip until the report exists.
     expect(
       shouldAutoFlipToReport({
         prevStatus: 'analyzing',
         nextStatus: 'complete',
         hasReport: false,
+        prevHasReport: false,
         userTabChosen: false,
       }),
     ).toBe(false);
+  });
+
+  it('AAP-104 A2 — flips when report blob arrives AFTER status flipped to complete', () => {
+    // Regression for the 2026-05-28 demo bug. The SSE pipeline lands
+    // `status: complete` first; the report blob arrives on the
+    // subsequent GET. Pre-AAP-104 the effect ran twice with prevStatus
+    // already 'complete' on the second tick, so the flip never fired.
+    // The new prevHasReport gate catches that follow-up render.
+    expect(
+      shouldAutoFlipToReport({
+        prevStatus: 'complete',
+        nextStatus: 'complete',
+        hasReport: true,
+        prevHasReport: false,
+        userTabChosen: false,
+      }),
+    ).toBe(true);
   });
 
   it('does NOT flip for non-complete terminal statuses (analysis_failed, error)', () => {
@@ -90,6 +109,7 @@ describe('AAP-92 — shouldAutoFlipToReport', () => {
         prevStatus: 'analyzing',
         nextStatus: 'analysis_failed',
         hasReport: false,
+        prevHasReport: false,
         userTabChosen: false,
       }),
     ).toBe(false);
@@ -98,6 +118,7 @@ describe('AAP-92 — shouldAutoFlipToReport', () => {
         prevStatus: 'interviewing',
         nextStatus: 'error',
         hasReport: false,
+        prevHasReport: false,
         userTabChosen: false,
       }),
     ).toBe(false);
@@ -112,19 +133,21 @@ describe('AAP-92 — shouldAutoFlipToReport', () => {
         prevStatus: undefined,
         nextStatus: 'complete',
         hasReport: true,
+        prevHasReport: true,
         userTabChosen: false,
       }),
     ).toBe(false);
   });
 
-  it('does NOT flip if the previous status was already complete (status echo / noop tick)', () => {
-    // Defensive: a duplicate status-change event with the same status
+  it('does NOT flip if the previous status was already complete AND report was already attached', () => {
+    // Defensive: a duplicate status-change event when nothing changed
     // must not re-flip the tab if the user has since switched away.
     expect(
       shouldAutoFlipToReport({
         prevStatus: 'complete',
         nextStatus: 'complete',
         hasReport: true,
+        prevHasReport: true,
         userTabChosen: false,
       }),
     ).toBe(false);

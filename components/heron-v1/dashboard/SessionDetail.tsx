@@ -68,20 +68,40 @@ type Tab = 'report' | 'transcript' | 'diff';
 //
 // `shouldAutoFlipToReport` is exported for unit tests. The hook itself
 // stays inline in the component because it owns the userTabChosen ref.
+//
+// AAP-104 A2 — fixes the SSE race the original AAP-92 logic missed.
+//
+// Live audits flip status FIRST (`status-change` SSE event payload:
+// `{ status: 'complete' }`) and only THEN fetch the rendered report blob
+// (`liveSession.report` populated by the subsequent
+// `GET /api/audit/sessions/:id` response). Pre-AAP-104 the effect only
+// considered the live → complete status transition, so by the time the
+// report blob arrived `prevStatus` was already `complete` and the flip
+// silently never fired. Now we also flip on the subsequent
+// `prevStatus === 'complete'` + `hasReport flips true` transition.
 // ────────────────────────────────────────────────────────────────
 export function shouldAutoFlipToReport(input: {
   prevStatus: string | undefined;
   nextStatus: string;
   hasReport: boolean;
+  prevHasReport: boolean;
   userTabChosen: boolean;
 }): boolean {
   if (input.userTabChosen) return false;
   if (!input.hasReport) return false;
   if (input.nextStatus !== 'complete') return false;
+  // Case 1: status just transitioned live → complete AND a report was
+  // already populated on this render (single-frame transition, the
+  // happy path tests have always covered).
   const liveStatuses = new Set(['interviewing', 'analyzing', 'awaiting_answer']);
-  if (!input.prevStatus) return false;
-  if (!liveStatuses.has(input.prevStatus)) return false;
-  return true;
+  if (input.prevStatus && liveStatuses.has(input.prevStatus)) return true;
+  // Case 2: SSE landed `status: complete` ahead of the report blob
+  // (the demo race). On that frame `hasReport` was still false; the
+  // subsequent report fetch flips it true while prevStatus is already
+  // 'complete'. Detect that edge here so the user sees the report tab
+  // without manual navigation.
+  if (input.prevStatus === 'complete' && !input.prevHasReport) return true;
+  return false;
 }
 
 export default function SessionDetail({ session }: { session: AuditSessionDetail }) {
@@ -122,24 +142,31 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   // Stored in a ref so the comparison happens once per status change
   // and updating it doesn't cause extra renders.
   const prevStatusRef = useRef<string | undefined>(undefined);
+  // AAP-104 A2 — previous `hasReport` snapshot. Lets the auto-flip catch
+  // the SSE race where `status: complete` arrives one render BEFORE the
+  // report blob does.
+  const prevHasReportRef = useRef<boolean>(hasReport);
 
-  // AAP-92 — auto-flip the active tab to "report" the moment an
-  // in-flight audit completes. See `shouldAutoFlipToReport` for the
-  // exact decision rule.
+  // AAP-92 + AAP-104 A2 — auto-flip the active tab to "report" the moment
+  // an in-flight audit completes. See `shouldAutoFlipToReport` for the
+  // exact decision rule, including the SSE-race carve-out.
   useEffect(() => {
     const prevStatus = prevStatusRef.current;
     const nextStatus = liveSession.status;
+    const prevHasReport = prevHasReportRef.current;
     if (
       shouldAutoFlipToReport({
         prevStatus,
         nextStatus,
         hasReport,
+        prevHasReport,
         userTabChosen: userTabChosenRef.current,
       })
     ) {
       setTab('report');
     }
     prevStatusRef.current = nextStatus;
+    prevHasReportRef.current = hasReport;
   }, [liveSession.status, hasReport]);
 
   // AAP-92 — wrap setTab so manual tab clicks mark the user-chose ref.
@@ -167,6 +194,20 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             | 'verified'
             | 'partially-verified'
             | 'verification-failed';
+        };
+        // AAP-104 B1 — posture from the new BR×DS×DM verdict snapshot
+        // (AAP-103). The topbar pill reads from this when present so the
+        // colour matches the in-report gradient indicator. Older
+        // sessions without a verdict snapshot fall back to the legacy
+        // deterministicRiskLevel branch in the pill logic.
+        verdict?: {
+          posture?: number;
+          postureBand?:
+            | 'informational'
+            | 'low'
+            | 'medium'
+            | 'high'
+            | 'critical';
         };
       }
     | undefined;
@@ -325,7 +366,15 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const verificationStatus = liveSession.verificationStatus;
   const isUnverified =
     verificationStatus === undefined || verificationStatus === 'unverified';
-  const deterministicRaw = (liveSession.deterministicRiskLevel || '').toLowerCase();
+  // AAP-104 B1 — when a verdict snapshot is present (AAP-103+), the
+  // primary pill reflects `postureBand` from BR×DS×DM (Verified-only
+  // FIPS-199 high-water-mark). Pre-AAP-103 sessions still have the
+  // legacy `deterministicRiskLevel` — fall through to it so they keep
+  // rendering the same way as before.
+  const postureBand = (reportJson?.verdict?.postureBand || '').toLowerCase();
+  const deterministicRaw =
+    postureBand ||
+    (liveSession.deterministicRiskLevel || '').toLowerCase();
   const deterministicSev =
     deterministicRaw === 'critical'
       ? 'sev-critical'
@@ -335,7 +384,9 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
           ? 'sev-medium'
           : deterministicRaw === 'low'
             ? 'sev-low'
-            : 'sev-neutral';
+            : deterministicRaw === 'informational'
+              ? 'sev-info'
+              : 'sev-neutral';
   // Secondary pill uses the explicit interviewRiskLevel when present;
   // legacy sessions only have the old `riskLevel` field — fall through
   // to it so they keep rendering a meaningful self-report indicator.
@@ -362,7 +413,9 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
     : 'deterministic';
   const primaryTooltip =
     primaryRiskSource === 'deterministic'
-      ? 'Risk derived from deterministic evidence (filesystem discovery / OAuth introspection).'
+      ? postureBand
+        ? 'Posture is the BR×DS×DM high-water-mark over Verified findings (FIPS 199). Self-attested findings do not move it.'
+        : 'Risk derived from deterministic evidence (filesystem discovery / OAuth introspection).'
       : 'No deterministic evidence yet — run discovery from below to verify the agent against actual config files.';
 
   const analysisError: AnalysisErrorRecord | null | undefined = liveSession.analysisError;
@@ -415,7 +468,12 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
                     title={primaryTooltip}
                     style={{ fontWeight: 600 }}
                   >
-                    {deterministicRaw || 'unknown'} risk
+                    {/* AAP-104 B1 — when `postureBand` is the source the
+                        label reads as "low posture" / "high posture"
+                        etc., matching the in-report gradient label. */}
+                    {deterministicRaw
+                      ? `${deterministicRaw} ${postureBand ? 'posture' : 'risk'}`
+                      : 'no posture'}
                   </span>
                 )
               )}
