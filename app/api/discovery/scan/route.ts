@@ -15,21 +15,21 @@
  *    advertised), then finally to `process.cwd()`.
  * 4. Checks consent for the resolved workspaceRoot. Refuses with 403
  *    if 'deny' / absent. Consent gates ONLY the filesystem readers
- *    (L1-L5). L6 OAuth introspection talks to remote APIs the
+ *    (L1-L3). L4 OAuth introspection talks to remote APIs the
  *    operator already authenticated against; consent here would not
  *    add a new trust boundary.
  * 5. Runs all readers against $HOME (HERON_DISCOVERY_HOME override in
  *    tests) + workspaceRoot, projecting through redaction.
- * 6. AAP-74 — when `oauthSources` is present, invokes the L6 OAuth
- *    introspection orchestrator after L1-L5. Each entry is
+ * 6. AAP-74 — when `oauthSources` is present, invokes the L4 OAuth
+ *    introspection orchestrator after L1-L3. Each entry is
  *    translated into an `OAuthScopesSourceConfig` and forwarded to
  *    `runVerification`. The resulting `SourceVerification[]` flows
  *    into `computeVerdictFromArtifacts` via the
- *    `oauthVerificationsOverride` so the dashboard pill reflects L6
+ *    `oauthVerificationsOverride` so the dashboard pill reflects L4
  *    evidence on the same tick the scan completes.
  * 7. Diffs result against the session's transcript.
  * 8. Patches the session's report.json with localAgentDiscovery +
- *    oauthScopeVerification (when L6 ran).
+ *    oauthScopeVerification (when L4 ran).
  * 9. Publishes a session event so live dashboards re-render.
  * 10. Consumes 'allow-once' on success.
  *
@@ -37,8 +37,8 @@
  * Theona-hosted agent (no disk access) can submit a request with
  * `oauthSources` only and skip the consent check by setting
  * `skipFilesystem: true`. This is load-bearing for the HR-vertical
- * demo — Theona-hosted agents have no L1-L5 evidence to surface, so
- * L6 OAuth introspection is the only deterministic source.
+ * demo — Theona-hosted agents have no L1-L3 evidence to surface, so
+ * L4 OAuth introspection is the only deterministic source.
  */
 
 import { stat } from 'node:fs/promises';
@@ -103,7 +103,7 @@ const workspaceRootSchema = z
     message: 'workspaceRoot must not contain `..` segments',
   });
 
-// ── AAP-74 — L6 OAuth source schema ──────────────────────────────────
+// ── AAP-74 — L4 OAuth source schema ──────────────────────────────────
 //
 // One entry per service the operator wants to introspect. The shape is
 // a tagged union on `kind`; we keep the credential bounds loose (1-4096
@@ -195,7 +195,7 @@ const ScanBodySchema = z
         'claude-desktop',
       ])
       .optional(),
-    // AAP-74 — optional L6 OAuth introspection sources. When present,
+    // AAP-74 — optional L4 OAuth introspection sources. When present,
     // the route runs `runVerification` after the filesystem readers and
     // merges the result into the session's report.json. Capped at 8
     // sources per request to bound work-per-call; real audits use 1-3
@@ -203,9 +203,9 @@ const ScanBodySchema = z
     oauthSources: z.array(OAuthSourceSchema).max(8).optional(),
     // AAP-74 — opt out of the filesystem readers entirely. Used by
     // hosted-agent flows (Theona, etc.) where the audited agent runs
-    // off-machine and L1-L5 have no evidence to surface. When true the
+    // off-machine and L1-L3 have no evidence to surface. When true the
     // route skips the consent check and the runDiscovery call; the
-    // session's report.json carries only the L6 verification section.
+    // session's report.json carries only the L4 verification section.
     skipFilesystem: z.boolean().optional(),
   })
   .strict();
@@ -259,7 +259,7 @@ export async function POST(request: Request): Promise<Response> {
   // AAP-74 — hosted-agent flow opt-out. When the operator explicitly
   // sets `skipFilesystem: true` AND supplies at least one
   // `oauthSources` entry, the filesystem readers + consent check are
-  // skipped: L1-L5 produce no evidence for off-machine agents anyway,
+  // skipped: L1-L3 produce no evidence for off-machine agents anyway,
   // so the round-trip through `runDiscovery` is wasted work. Without
   // an OAuth source the request would produce nothing — reject early
   // with a clear error rather than running an empty scan.
@@ -273,7 +273,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
   // AAP-100 — runtime is required for any path that runs filesystem
-  // discovery. The L6 OAuth-only path (skipFilesystem) does not need a
+  // discovery. The L4 OAuth-only path (skipFilesystem) does not need a
   // runtime because it never touches local agent configs.
   if (!skipFilesystem && !body.data.runtime) {
     return errorResponse(
@@ -326,9 +326,10 @@ export async function POST(request: Request): Promise<Response> {
   // consent decision the user just accepted (no separate consent
   // surface — see Linear ticket).
   // AAP-100 — discovery scopes reads to the audited runtime's config
-  // directory only. The legacy L3 (macOS Keychain) and L4 (cross-cutting
-  // OS credentials) readers were removed alongside their consent
-  // affordances.
+  // directory only. The legacy macOS Keychain and cross-cutting OS
+  // credentials readers were removed alongside their consent
+  // affordances; the remaining filesystem layers are L1 (MCP configs),
+  // L2 (plugins/skills/auth), and L3 (workspace .env).
   type DiscoveryPayload = Awaited<ReturnType<typeof runDiscovery>> & {
     agents: Awaited<ReturnType<typeof runDiscovery>>['agents'];
   };
@@ -409,9 +410,9 @@ export async function POST(request: Request): Promise<Response> {
     } as DiscoveryPayload;
   }
 
-  // ── AAP-74 — L6 OAuth scope introspection ─────────────────────────
+  // ── AAP-74 — L4 OAuth scope introspection ─────────────────────────
   //
-  // When the request body carries `oauthSources`, run the L6
+  // When the request body carries `oauthSources`, run the L4
   // orchestrator. Each entry maps to one `OAuthScopesSource` adapter
   // call; the runner translates to + from the public report shape.
   // The route never logs the credential payload — the runner errors
@@ -428,7 +429,7 @@ export async function POST(request: Request): Promise<Response> {
   //
   // patchReportJson merges (not overwrites) at the top level. We
   // surface localAgentDiscovery only when filesystem ran, and
-  // oauthScopeVerification only when L6 ran; both are strictly
+  // oauthScopeVerification only when L4 ran; both are strictly
   // additive so existing report.json shapes are preserved.
   //
   // AAP-79 — same code path that powers the `start_verification` MCP
@@ -490,7 +491,7 @@ export async function POST(request: Request): Promise<Response> {
   // attempted (filesystem OR oauth). Pre-AAP-80 this patch was gated on
   // `finalResult`, so the OAuth-only hosted-agent path (skipFilesystem
   // + oauthSources) left the report in `interrogation-only` even
-  // though L6 evidence had just landed and the verdict had flipped to
+  // though L4 evidence had just landed and the verdict had flipped to
   // `partial` or `verified`.
   if (surface2Attempted) {
     const verificationStatus: ReportVerificationStatus =
@@ -523,7 +524,7 @@ export async function POST(request: Request): Promise<Response> {
   // AAP-80 — re-render whenever ANY Surface 2 source attempted
   // (filesystem OR oauth), not just filesystem. Previously the OAuth-only
   // path (`skipFilesystem: true`) left the .md carrying the
-  // interrogation-only banner even after L6 evidence landed.
+  // interrogation-only banner even after L4 evidence landed.
   //
   // Pass per-source status into the renderer so the "Verification
   // Status" table reflects reality: the OAuth-only path emits

@@ -5,7 +5,7 @@
  * Original AAP-79 problem: the analyzer pipeline runs
  * `mapFindingsToRiskCategories` exactly once, on the LLM-extracted
  * systems + the raw interview transcript. Surface 2 evidence
- * (`runDiscovery` filesystem reads — L1-L5) lands later, after the
+ * (`runDiscovery` filesystem reads — L1-L3) lands later, after the
  * report is already on disk. Pre-AAP-79 the mapping was never
  * re-computed, so a transcript that never mentioned PII could still
  * leave the report missing GDPR Art 5(1)(c) controls even when

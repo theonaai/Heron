@@ -97,8 +97,8 @@ export type ControlResultPath = 'typed' | 'prose' | 'combined';
  *
  *   - `declared` — Surface 1: interview transcript / agent declaration.
  *   - `actual`   — Surface 2 deterministic: filesystem discovery
- *                  (L1-L5), MCP server enumeration, scope inventory.
- *   - `oauth`    — Surface 2 cloud: L7 OAuth introspection.
+ *                  (L1-L3), MCP server enumeration, scope inventory.
+ *   - `oauth`    — Surface 2 cloud: L4 OAuth introspection.
  *   - `approval` — approval-chain evidence (E004, E015, Article 14, 12).
  */
 export type ControlResultSurface = 'declared' | 'actual' | 'oauth' | 'approval';

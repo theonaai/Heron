@@ -1185,11 +1185,11 @@ export interface DeclaredEvidence {
  * once. When omitted, the typed-evidence detectors return null and the
  * mapper falls back to the prose path unchanged.
  *
- * `discovery` carries filesystem L1-L5 reads (MCP configs, OAuth scopes,
- * env files, keychain). `verificationReport` carries the diff +
+ * `discovery` carries filesystem L1-L3 reads (MCP configs, plugins/
+ * skills/auth, workspace .env). `verificationReport` carries the diff +
  * inventory + approval chain output from `runVerification`.
  * `oauthVerifications` is the per-provider source-verification array
- * the cloud-side L7 introspection produces.
+ * the cloud-side L4 introspection produces.
  */
 export interface ActualEvidence {
   discovery?: DiscoveryResult | null;
