@@ -25,7 +25,6 @@ import type {
   OAuthScopesSection as OAuthScopesData,
   McpFindingSeverity,
   LocalAgentDiscoverySection as LocalDiscoveryData,
-  LocalDiscoveryFinding,
   LocalDiscoveredCapability,
   LocalDiscoveredMcpTool,
   LocalMcpToolEnumeration,
@@ -301,10 +300,6 @@ export function OAuthScopesSection({ scopes }: { scopes: OAuthScopesData }) {
    with the user's consent, plus diff findings against the interview
    transcript. Severity pills reuse the existing palette so the section
    reads consistently with MCP-scan findings above. */
-function severityForKind(f: LocalDiscoveryFinding): McpFindingSeverity {
-  return f.severity;
-}
-
 export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscoveryData }) {
   // Filter scannedPaths to those that actually produced an entry so the
   // subtitle stays useful — listing 30 attempted-but-missing paths
@@ -462,51 +457,16 @@ export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscovery
       {/* AAP-67 — reader warnings */}
       <DiscoveryWarnings discovery={discovery} />
 
-      {/* Findings table */}
-      <div className="tier-label">
-        <span>Findings — interview vs filesystem</span>
-        <span className="tier-count">{discovery.findings.length}</span>
-      </div>
-      {discovery.findings.length === 0 ? (
-        <p className="muted" style={{ fontSize: 12.5, fontStyle: 'italic' }}>
-          The interview transcript matched what was discovered on disk.
-        </p>
-      ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th style={{ width: 100 }}>Severity</th>
-                <th style={{ width: 170 }}>Kind</th>
-                <th style={{ width: 160 }}>Server</th>
-                <th style={{ width: 120 }}>Runtime</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              {discovery.findings.map((f, idx) => (
-                <tr key={`${f.kind}-${f.serverName}-${idx}`}>
-                  <td>
-                    <span className={`sev ${severityToCssClass(severityForKind(f))}`}>
-                      {f.severity}
-                    </span>
-                  </td>
-                  <td className="mono" style={{ fontSize: 11.5 }}>
-                    {f.kind}
-                  </td>
-                  <td style={{ fontWeight: 500 }}>{f.serverName}</td>
-                  <td className="mono" style={{ fontSize: 11.5 }}>
-                    {f.runtime}
-                  </td>
-                  <td style={{ color: 'var(--r-ink-2)', fontSize: 12.5, lineHeight: 1.55 }}>
-                    {f.description}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/* AAP-104 B2/B3 — the legacy "Findings — interview vs filesystem"
+          table rendered the same MCP discrepancies that already show up
+          as `MCP-001/002/003` cards in section 03 Findings, with a
+          DIFFERENT severity band (legacy `MEDIUM` vs the new
+          BR×DS×DM-derived `LOW`). The duplicate confused readers and
+          contradicted the single source of truth (`verdict.findings`).
+          Removed entirely — Section 03 owns the authoritative listing.
+          The discovery section still surfaces the raw discovered MCP
+          server inventory + credential keys + plugins + .env above,
+          which is non-overlapping evidence (not a verdict). */}
     </div>
   );
 }

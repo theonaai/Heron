@@ -251,6 +251,16 @@ async function tryParse(
     // the prompt to drop them); we discard whatever it returns here.
     result.recommendations = [];
 
+    // AAP-104 D6 — drop `recommendation` (the 7-label auto-decision verdict
+    // string: APPROVE / APPROVE WITH CONDITIONS / DENY). AAP-102 cut the
+    // calibration matrix that produced these labels — but the analyzer
+    // prompt still asks the LLM for one, and it leaks back into report.json
+    // (visible in `sess-20260528-091712-c37728/report.json:recommendation
+    // == "APPROVE WITH CONDITIONS"`). Reviewer decides the verdict; Heron
+    // computes posture. The schema field stays optional for back-compat
+    // with persisted reports.
+    delete result.recommendation;
+
     // AAP-43 P2 #8: drop scope-creep / excessive-access risks that reference
     // only internal/orchestration components (local filesystem, SQLite, env
     // vars, etc.). The prompt tells the LLM not to do this, but some models

@@ -305,6 +305,32 @@ function FindingsSubsection({
   );
 }
 
+// AAP-104 B5 — SLF descriptions arrive from the LLM analyzer and are
+// often 5+ paragraphs of dense prose. Truncate to a leading clause for
+// the card view and reveal the rest behind "Show more". 320 chars
+// (≈ 2 sentences) keeps cards scannable without burying the wedge
+// between Verified and Self-attested.
+const DESCRIPTION_TRUNCATE_LEN = 320;
+
+function truncateAt(text: string, limit: number): { head: string; rest: string } {
+  if (text.length <= limit) return { head: text, rest: '' };
+  // Prefer cutting at a sentence break or whitespace under the limit so
+  // the head doesn't end mid-word.
+  const window = text.slice(0, limit);
+  const sentenceEnd = Math.max(
+    window.lastIndexOf('. '),
+    window.lastIndexOf('? '),
+    window.lastIndexOf('! '),
+  );
+  let cut = limit;
+  if (sentenceEnd > limit * 0.6) cut = sentenceEnd + 1;
+  else {
+    const ws = window.lastIndexOf(' ');
+    if (ws > limit * 0.6) cut = ws;
+  }
+  return { head: text.slice(0, cut).trimEnd() + '…', rest: text.slice(cut).trimStart() };
+}
+
 function FindingCard({ finding }: { finding: CodedVerdictFinding }) {
   const sevColor = colorForSeverity(finding.severityScore);
   const sevText = formatSeverityNumber(finding.severityScore);
@@ -321,7 +347,14 @@ function FindingCard({ finding }: { finding: CodedVerdictFinding }) {
     ...(finding.severityComponents.brA !== undefined && { brA: finding.severityComponents.brA }),
   });
 
-  const mitigation = getMitigationHint({ evidenceSource: finding.evidenceSource });
+  // AAP-104 B9 — prefer the analyzer's mitigation prose when it's
+  // attached to the finding (Surface 1 risks carry `analyzerNotes`
+  // after the verdict pipeline preserves the LLM's actionable
+  // suggestions). Falls through to the generic evidence-source
+  // fallback otherwise.
+  const fallbackHint = getMitigationHint({ evidenceSource: finding.evidenceSource });
+  const analyzerNotes = (finding as { analyzerNotes?: string }).analyzerNotes;
+  const mitigation = analyzerNotes && analyzerNotes.length > 0 ? analyzerNotes : fallbackHint;
 
   const implications = implicationsForFinding(finding);
 
@@ -390,16 +423,7 @@ function FindingCard({ finding }: { finding: CodedVerdictFinding }) {
         />
       </header>
       {finding.description && (
-        <p
-          style={{
-            margin: '0 0 10px',
-            fontSize: 13,
-            lineHeight: 1.55,
-            color: 'var(--r-ink-2)',
-          }}
-        >
-          {finding.description}
-        </p>
+        <FindingDescription text={finding.description} />
       )}
       {implications.length > 0 && (
         <div style={{ margin: '10px 0' }}>
@@ -435,6 +459,45 @@ function FindingCard({ finding }: { finding: CodedVerdictFinding }) {
   );
 }
 
+function FindingDescription({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const { head, rest } = useMemo(() => truncateAt(text, DESCRIPTION_TRUNCATE_LEN), [text]);
+  const hasMore = rest.length > 0;
+  return (
+    <p
+      style={{
+        margin: '0 0 10px',
+        fontSize: 13,
+        lineHeight: 1.55,
+        color: 'var(--r-ink-2)',
+      }}
+    >
+      {expanded ? text : head}
+      {hasMore && (
+        <>
+          {' '}
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              color: '#1d4ed8',
+              fontSize: 12.5,
+              fontWeight: 600,
+              textDecoration: 'underline',
+            }}
+          >
+            {expanded ? 'Show less' : 'Show more'}
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
+
 function SeverityPill({
   severity: _severity,
   band: _band,
@@ -451,8 +514,12 @@ function SeverityPill({
   const [hovered, setHovered] = useState(false);
   return (
     <div style={{ position: 'relative' }}>
+      {/* AAP-104 B3 — custom `role="tooltip"` popover handles hover hint.
+          The native `title` attribute was also wired up here, causing a
+          dual-tooltip (the OS popover plus our custom one) when the
+          severity pill was hovered. Removed `title` so only the styled
+          tooltip renders. */}
       <span
-        title={formula}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
@@ -497,6 +564,14 @@ function SeverityPill({
 }
 
 function MitigationCallout({ text }: { text: string }) {
+  // AAP-104 B9 — analyzer-supplied mitigation prose is a semicolon-
+  // joined list of suggestions ("Restrict X; rotate Y; audit Z"). The
+  // pre-fix renderer dumped the whole string on one line, which made
+  // multi-item lists unreadable. Detect `; ` separators and render as
+  // a bullet list instead.
+  const items = text.includes('; ')
+    ? text.split(/;\s+/).map((s) => s.replace(/\.$/, '').trim()).filter((s) => s.length > 0)
+    : null;
   return (
     <div
       style={{
@@ -519,7 +594,23 @@ function MitigationCallout({ text }: { text: string }) {
       >
         Mitigations
       </div>
-      <div style={{ fontSize: 12.5, lineHeight: 1.55, color: '#14532d' }}>{text}</div>
+      {items && items.length > 1 ? (
+        <ul
+          style={{
+            margin: 0,
+            paddingLeft: 18,
+            fontSize: 12.5,
+            lineHeight: 1.55,
+            color: '#14532d',
+          }}
+        >
+          {items.map((it, i) => (
+            <li key={i}>{it}</li>
+          ))}
+        </ul>
+      ) : (
+        <div style={{ fontSize: 12.5, lineHeight: 1.55, color: '#14532d' }}>{text}</div>
+      )}
     </div>
   );
 }
@@ -548,12 +639,56 @@ function implicationsForFinding(finding: VerdictFindingSnapshot | CodedVerdictFi
       );
       break;
     case 'SLF':
-      out.push(
-        'This claim is self-reported and not verified against deterministic evidence. A reviewer should attach a config file, audit log, or scope record before relying on it.',
-      );
+      // AAP-104 B4 — SLF Implications now mirrors the severity-component
+      // breakdown of the self-reported claim, instead of repeating the
+      // "self-reported, not verified" meta-info the SLF badge already
+      // displays. Each axis explains WHY the agent's own description
+      // pushed the severity score up so the reviewer can decide where
+      // to direct deterministic verification effort.
+      out.push(...slfImplications(finding));
       break;
   }
   return out;
+}
+
+function slfImplications(finding: VerdictFindingSnapshot | CodedVerdictFinding): string[] {
+  const c = finding.severityComponents;
+  const lines: string[] = [];
+  if (c.brW !== undefined && c.brW >= 2) {
+    lines.push(
+      `Agent self-reports ${c.brW === 3 ? 'five or more' : 'two to four'} write-capable tools (BR-W=${c.brW}) — confirm by enumerating the actual MCP server tool list.`,
+    );
+  }
+  if (c.brR !== undefined && c.brR >= 2) {
+    lines.push(
+      `Agent self-reports reaching ${c.brR === 3 ? 'seven or more' : 'three to six'} distinct systems (BR-R=${c.brR}) — confirm by listing OAuth scopes + per-system credentials.`,
+    );
+  }
+  if (c.brA !== undefined && c.brA >= 2) {
+    lines.push(
+      `Agent self-reports ${c.brA === 3 ? 'fully autonomous' : 'partial human-in-loop'} chaining (BR-A=${c.brA}) — confirm by inspecting the orchestration code for approval gates.`,
+    );
+  }
+  if (c.ds >= 2) {
+    lines.push(
+      c.ds === 3
+        ? `Agent describes processing Critical-tier data (Article 9 special category, PHI, financial credentials, gov IDs — DS=${c.ds}) — confirm by inspecting the actual data flow.`
+        : `Agent describes processing Sensitive PII (DS=${c.ds}) — confirm by inspecting the actual data flow.`,
+    );
+  }
+  if (c.dm > 1) {
+    lines.push(
+      `Domain multiplier ${c.dm}× — agent operates in an EU AI Act Annex III or GDPR Art. 35(3) domain. Confirm DPIA coverage.`,
+    );
+  }
+  if (lines.length === 0) {
+    // Fallback for SLF findings with no elevated axis (still SLF so we
+    // never silently drop the section).
+    lines.push(
+      'Self-reported claim. Attach deterministic evidence (config, scope grant, audit log) before relying on it.',
+    );
+  }
+  return lines;
 }
 
 // Use `bucketForBand` in a no-op import so tree-shakers don't drop it

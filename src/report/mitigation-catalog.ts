@@ -53,7 +53,11 @@ const EVIDENCE_SOURCE_HINTS: Record<EvidenceSource, string> = {
   OAU: 'Either restrict the OAuth scope at the provider, or update the declared scope with business justification. See https://docs.heron/findings/oauth-scope-extra',
   ENV: 'Move credentials to a secret manager (Vault, AWS Secrets Manager, OS keychain) and remove the value from the workspace .env file. See https://docs.heron/findings/env-sensitive-pii',
   PLG: 'Audit the plugin / skill grant: either tighten the declared filesystem / network scope, or remove the plugin from the agent runtime. See https://docs.heron/findings/plugin-grant',
-  SLF: 'This claim is self-reported and not yet verified deterministically. Treat it as a working hypothesis until you can attach evidence (config file, OAuth scope, .env key, or audit log). See https://docs.heron/findings/self-attested',
+  // AAP-104 B4 — SLF fallback rewritten as a concrete instruction ("how
+  // to convert to Verified") instead of a meta-restatement of "this is
+  // self-reported". The SLF badge already labels the row; the
+  // mitigation block now tells the reviewer what evidence to attach.
+  SLF: 'How to convert to Verified: ask the deployer for the MCP config, OAuth scope grant, .env keys, or production audit log that backs this claim. Heron will rerun the BR×DS×DM scoring against the supplied evidence. See https://docs.heron/findings/self-attested',
 };
 
 /**

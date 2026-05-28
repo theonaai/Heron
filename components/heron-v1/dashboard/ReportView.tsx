@@ -350,15 +350,22 @@ const CATEGORY_LABELS: Record<RiskCategory, string> = {
    Anything unrecognized falls into a synthetic 'other' bucket. */
 type ConcernBucket =
   | 'data-handling'
+  | 'excessive-permissions'
   | 'write-ops'
   | 'decisions'
   | 'regulatory'
   | 'other';
 
+// AAP-104 B4 — split `excessive-access` out of the `data-handling`
+// bucket. The legacy `ComplianceConcerns` renderer was collapsing
+// both `sensitive-data` AND `excessive-access` flags under the single
+// "Data handling" header — so any session carrying both triggered
+// two adjacent cards both titled "Data handling", and the second
+// (excessive permissions) was effectively mislabeled.
 const TRIGGER_TO_BUCKET: Record<string, ConcernBucket> = {
   'write-risk': 'write-ops',
   'scope-creep': 'write-ops',
-  'excessive-access': 'data-handling',
+  'excessive-access': 'excessive-permissions',
   'sensitive-data': 'data-handling',
   'decisions-about-people': 'decisions',
   'regulatory-flags': 'regulatory',
@@ -367,6 +374,7 @@ const TRIGGER_TO_BUCKET: Record<string, ConcernBucket> = {
 
 const BUCKET_LABELS: Record<ConcernBucket, string> = {
   'data-handling': 'Data handling',
+  'excessive-permissions': 'Excessive permissions',
   'write-ops': 'Write operation risks',
   decisions: 'Automated decision-making',
   regulatory: 'Regulatory concerns',
@@ -375,6 +383,7 @@ const BUCKET_LABELS: Record<ConcernBucket, string> = {
 
 const BUCKET_ORDER: ConcernBucket[] = [
   'data-handling',
+  'excessive-permissions',
   'write-ops',
   'decisions',
   'regulatory',
@@ -432,23 +441,10 @@ const fieldDescriptions: Record<string, string> = {
 
 /* ── Helpers ── */
 
-function computeSystemRisk(sys: SystemAssessment): 'high' | 'medium' | 'low' {
-  let score = 0;
-  const brScores: Record<string, number> = {
-    'single-record': 0,
-    'single-user': 1,
-    'team-scope': 2,
-    'org-wide': 3,
-    'cross-tenant': 4,
-  };
-  score += brScores[sys.blastRadius] ?? 1;
-  if (sys.scopesDelta.length > 0) score += 1;
-  if (sys.writeOperations.some((w) => !w.reversible)) score += 2;
-  if (/pii|personal|health|financial|credit/i.test(sys.dataSensitivity)) score += 1;
-  if (score >= 5) return 'high';
-  if (score >= 3) return 'medium';
-  return 'low';
-}
+// AAP-104 D5 — `computeSystemRisk` (separate threshold-based heuristic)
+// removed along with `SystemsGrouped` risk tiers above. Severity now
+// lives on findings (BR×DS×DM, AAP-101) and posture (FIPS HWM,
+// AAP-102). One source of truth.
 
 function isBusinessSystem(s: SystemAssessment): boolean {
   const id = s.systemId.toLowerCase();
@@ -701,9 +697,35 @@ function SectionHead({
   );
 }
 
-/* ── Verdict banner ── */
+/* ── Verdict banner ──
+ *
+ * AAP-104 B5/B6 — when `calibrateVerdictLabel` returns the empty-string
+ * sentinel (G3 stub, AAP-102), do not render an empty pill with only the
+ * ⚠ glyph. The posture gradient below already carries the verdict
+ * signal; the legacy banner is suppressed entirely until a real label
+ * is reintroduced. `meta` (questions / duration / date) survives as a
+ * lightweight strip when supplied.
+ */
 function VerdictBanner({ verdict, meta }: { verdict: string; meta?: React.ReactNode }) {
-  const v = verdict.toUpperCase();
+  const trimmed = verdict.trim();
+  if (!trimmed) {
+    if (!meta) return null;
+    return (
+      <div
+        className="verdict-meta-only"
+        style={{
+          margin: '0 0 16px',
+          padding: '6px 10px',
+          fontSize: 12,
+          color: 'var(--r-ink-3)',
+          textAlign: 'right',
+        }}
+      >
+        {meta}
+      </div>
+    );
+  }
+  const v = trimmed.toUpperCase();
   const cls = v.includes('DENY') ? 'verdict deny' : v.includes('APPROVE WITHOUT') ? 'verdict approve' : 'verdict';
   const icon = v.includes('DENY') ? '✕' : '⚠';
   return (
@@ -711,7 +733,7 @@ function VerdictBanner({ verdict, meta }: { verdict: string; meta?: React.ReactN
       <span aria-hidden style={{ fontSize: 14 }}>
         {icon}
       </span>
-      <span>{verdict}</span>
+      <span>{trimmed}</span>
       {meta && <span className="verdict-meta">{meta}</span>}
     </div>
   );
@@ -1040,43 +1062,22 @@ function FindingsTable({ findings }: { findings: EnrichedFinding[] }) {
   );
 }
 
-/* ── Systems grouped by risk ──
-   Tier label is a non-clickable section header (one short line) and
-   each system is rendered as a fully-expanded card. Earlier impl had
-   nested collapse (tier-level + per-row), which produced a confusing
-   "open one to open another" interaction — flagged as bad UX. */
+/* ── Systems list ──
+   AAP-104 D5 — pre-fix this rendered three risk tiers (high/medium/low)
+   computed by a SEPARATE threshold-based score (blastRadius rank +
+   scopesDelta + writes + sensitivity keyword match). That collided with
+   the BR×DS×DM posture (AAP-101/102) which is the single source of
+   truth for risk in v1.1: a system showing tier "high risk" while the
+   page header says "LOW POSTURE" was a contradiction Heron couldn't
+   defend. Now systems render as a flat list — severity lives on
+   findings (Section 03), not on systems. */
 function SystemsGrouped({ systems }: { systems: SystemAssessment[] }) {
-  const groups: Record<'high' | 'medium' | 'low', SystemAssessment[]> = {
-    high: [],
-    medium: [],
-    low: [],
-  };
-  for (const s of systems) groups[computeSystemRisk(s)].push(s);
-
-  const orderedRisks: ('high' | 'medium' | 'low')[] = ['high', 'medium', 'low'];
-
+  if (systems.length === 0) return null;
   return (
-    <div className="stack-lg">
-      {orderedRisks.map((risk) => {
-        const items = groups[risk];
-        if (items.length === 0) return null;
-        return (
-          <div key={risk}>
-            <div className="tier-label">
-              <span className={`dot ${risk}`} />
-              <span>{risk} risk</span>
-              <span className="tier-count">
-                {items.length} {items.length === 1 ? 'system' : 'systems'}
-              </span>
-            </div>
-            <div className="stack-md">
-              {items.map((s) => (
-                <SystemCard key={s.systemId} system={s} />
-              ))}
-            </div>
-          </div>
-        );
-      })}
+    <div className="stack-md">
+      {systems.map((s) => (
+        <SystemCard key={s.systemId} system={s} />
+      ))}
     </div>
   );
 }
@@ -1252,74 +1253,67 @@ function SystemCard({ system }: { system: SystemAssessment }) {
                 </td>
               </tr>
             )}
-            {system.sources && system.sources.length > 0 && (
-              <tr>
-                <td className="kv-prop">Sources</td>
-                <td className="kv-val">
-                  <span className="mono" style={{ fontSize: 11.5, color: 'var(--r-ink-4)' }}>
-                    {system.sources.join(', ')}
-                  </span>
-                </td>
-              </tr>
-            )}
+            {/* AAP-104 D1 — the "Sources: A2, A3, A4…" row exposed the
+                internal interview question numbers used by the LLM
+                analyzer to anchor each per-system claim. Useless to a
+                compliance officer (the questions are not numbered
+                anywhere in the report) and read as engineering exhaust.
+                Removed from System cards. The traceability is still
+                available in `report.json` for debugging. */}
           </tbody>
         </table>
 
         {/* AAP-64 — structured frequency sub-table sits below the main
             Property | Value block so the dense numbers don't crowd the
-            scope chips above. */}
-        {hasStructuredFreq && system.frequency && (
-          <table
-            className="tbl tbl-keyvalue"
-            aria-label="Frequency dimensions"
-            style={{ marginTop: 14 }}
-          >
-            <thead>
-              <tr>
-                <th className="kv-prop">Frequency dimension</th>
-                <th>Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              {system.frequency.runsLastWeek !== undefined && (
+            scope chips above.
+            AAP-104 D2 — drop rows whose value is the boilerplate
+            "not observable" / null. Pre-fix the table dumped every row
+            for every system, most reading `not observable` because the
+            LLM analyzer marks `runsLastWeek: null` by default. The
+            useful rows (callsPerRun, batchSize, notes) carry the
+            actual signal; render only those. */}
+        {hasStructuredFreq && system.frequency && (() => {
+          const f = system.frequency;
+          const rows: Array<{ label: string; value: React.ReactNode }> = [];
+          if (typeof f.runsLastWeek === 'number') {
+            rows.push({ label: 'Runs last week', value: f.runsLastWeek });
+          }
+          if (f.callsPerRun && f.callsPerRun.trim().length > 0) {
+            rows.push({ label: 'Calls per run', value: f.callsPerRun });
+          }
+          if (f.batchSize !== undefined && f.batchSize !== null) {
+            rows.push({ label: 'Batch size', value: String(f.batchSize) });
+          }
+          if (f.concurrency && f.concurrency.trim().length > 0) {
+            rows.push({ label: 'Concurrency', value: f.concurrency });
+          }
+          if (f.notes && f.notes.trim().length > 0) {
+            rows.push({ label: 'Notes', value: f.notes });
+          }
+          if (rows.length === 0) return null;
+          return (
+            <table
+              className="tbl tbl-keyvalue"
+              aria-label="Frequency dimensions"
+              style={{ marginTop: 14 }}
+            >
+              <thead>
                 <tr>
-                  <td className="kv-prop">Runs last week</td>
-                  <td
-                    className={`kv-val ${system.frequency.runsLastWeek === null ? 'muted' : ''}`}
-                  >
-                    {system.frequency.runsLastWeek === null
-                      ? 'not observable'
-                      : system.frequency.runsLastWeek}
-                  </td>
+                  <th className="kv-prop">Frequency dimension</th>
+                  <th>Value</th>
                 </tr>
-              )}
-              {system.frequency.callsPerRun && (
-                <tr>
-                  <td className="kv-prop">Calls per run</td>
-                  <td className="kv-val">{system.frequency.callsPerRun}</td>
-                </tr>
-              )}
-              {system.frequency.batchSize !== undefined && (
-                <tr>
-                  <td className="kv-prop">Batch size</td>
-                  <td className="kv-val">{String(system.frequency.batchSize)}</td>
-                </tr>
-              )}
-              {system.frequency.concurrency && (
-                <tr>
-                  <td className="kv-prop">Concurrency</td>
-                  <td className="kv-val">{system.frequency.concurrency}</td>
-                </tr>
-              )}
-              {system.frequency.notes && (
-                <tr>
-                  <td className="kv-prop">Notes</td>
-                  <td className="kv-val">{system.frequency.notes}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.label}>
+                    <td className="kv-prop">{r.label}</td>
+                    <td className="kv-val">{r.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1421,10 +1415,19 @@ function ConcernCard({ bucket, flags }: { bucket: ConcernBucket; flags: Regulato
 }
 
 function ComplianceConcerns({ flags }: { flags: RegulatoryFlag[] }) {
+  // AAP-104 D8 — drop `risk-score` flags before bucketing. They are
+  // methodology anchors (e.g. "Overall risk rating is anchored to
+  // ISO/IEC 42001 risk-management controls (Clause 6.1). See
+  // Methodology.") that render as a generic "regulatory" concern
+  // card on every audit and add no signal — the BR×DS×DM scoring
+  // model (AAP-101) is the actual methodology now. `GAP_EXCLUDED`
+  // already filtered these from gap counting in templates.ts; do the
+  // same in the dashboard renderer.
+  const meaningfulFlags = flags.filter((f) => f.triggeredBy !== 'risk-score');
   // Group by trigger-derived bucket — matches OSS Heron's published
   // section ordering (Data handling → Write ops → Decisions → Regulatory).
   const byBucket = new Map<ConcernBucket, RegulatoryFlag[]>();
-  for (const f of flags) {
+  for (const f of meaningfulFlags) {
     const k = bucketFor(f);
     if (!byBucket.has(k)) byBucket.set(k, []);
     byBucket.get(k)!.push(f);
@@ -1596,7 +1599,13 @@ function CategorizedComplianceView({ compliance }: { compliance: CategorizedComp
       {hasControlResults && <ControlResultsView results={controlResults} />}
       {legacyOnlyFlags.length > 0 && <ComplianceConcerns flags={legacyOnlyFlags} />}
 
-      <ObligationsRequiringReview />
+      {/* AAP-104 D3 — "Obligations Requiring Further Review" is a generic
+          12-row GDPR deployer-checklist (DPIA, DPO, Art. 30 RoPA, etc.)
+          that has nothing to do with the audit's actual signal. It was
+          showing for every deployment, even ones with no EU exposure.
+          Now it only renders when GDPR is one of the activated
+          frameworks for THIS audit. */}
+      {activated.includes('gdpr') && <ObligationsRequiringReview />}
     </div>
   );
 }
@@ -2200,26 +2209,11 @@ export default function ReportView({
 
   const businessSystems = json.systems.filter(isBusinessSystem);
 
-  const excessiveBySystem = new Map<string, string[]>();
-  for (const sys of businessSystems) {
-    for (const scope of sys.scopesDelta) {
-      if (scope !== 'NOT PROVIDED') {
-        if (!excessiveBySystem.has(sys.systemId)) excessiveBySystem.set(sys.systemId, []);
-        // AAP-65 — defense-in-depth. The analyzer's sanitizeAnalyzerOutput
-        // already strips this prefix at parse time, so new sessions arrive
-        // with clean bare scope tokens. But pre-AAP-65 sessions persisted
-        // on disk still carry "Unused in this audit task so far:" — we
-        // keep the regex strip here so old reports render cleanly too.
-        // Also drop trailing source refs like " (A11)." for the same reason.
-        const cleaned = scope
-          .replace(/^\s*Unused in this(?:\s+(?:audit\s+task|task))?\s+so\s+far\s*:?\s*/i, '')
-          .replace(/^\s*Unused (?:in this )?(?:audit )?task(?:\s+so\s+far)?\s*:?\s*/i, '')
-          .replace(/\s*\(A\d+\)\s*\.?\s*$/i, '')
-          .trim();
-        excessiveBySystem.get(sys.systemId)!.push(cleaned || scope);
-      }
-    }
-  }
+  // AAP-104 D6 — `excessiveBySystem` map computed here only fed the
+  // "Permissions delta — excessive (revokable)" panel that's now
+  // removed from the Verdict section (duplicated SLF / OAU findings
+  // in Section 03). Per-system scope deltas still render inline on
+  // the System Cards via the dedicated Excessive row.
 
   const countBySev = (sev: string) => json.risks.filter((r) => r.severity === sev).length;
   const sevCounts = [
@@ -2269,14 +2263,15 @@ export default function ReportView({
       : []),
   ];
 
-  const overallRiskClass = (() => {
-    const lv = (json.overallRiskLevel || '').toLowerCase();
-    if (lv === 'critical') return 'sev-critical';
-    if (lv === 'high') return 'sev-high';
-    if (lv === 'medium') return 'sev-medium';
-    if (lv === 'low') return 'sev-low';
-    return 'sev-info';
-  })();
+  // AAP-104 B1 + D9 — pre-fix the Executive Summary carried a
+  // RISK pill computed from `overallRiskLevel` (LLM analyzer
+  // self-report read of the interview transcript). That pill
+  // conflicted with both the page header POSTURE badge AND the
+  // gradient indicator on every session where Verified ≠
+  // self-report. D9 removed the chip entirely so posture stays the
+  // single source of truth — `postureLabel` retained below for the
+  // gradient at the top of the report.
+  // const postureLabel reserved for gradient/header path only.
 
   return (
     <div className="report" ref={reportRootRef}>
@@ -2396,12 +2391,15 @@ export default function ReportView({
           flexWrap: 'wrap',
         }}
       >
-        <span>
-          <span className="muted" style={{ marginRight: 6, fontSize: 10.5, letterSpacing: '0.1em' }}>
-            RISK
-          </span>
-          <span className={`sev ${overallRiskClass}`}>{json.overallRiskLevel}</span>
-        </span>
+        {/* AAP-104 D9 — pre-fix Executive Summary was a triple-chip strip
+            (RISK / SYSTEMS / FINDINGS) that duplicated POSTURE from the
+            page-header pill + the gradient indicator at the top of the
+            report. The RISK label also conflicted with header POSTURE
+            on every session where the LLM's `overallRiskLevel` diverged
+            from BR×DS×DM posture (the B1 bug). Now Exec Summary
+            surfaces only the counts (systems + findings-by-severity)
+            and lets the gradient + header pill own the posture
+            statement. */}
         <span>
           <span className="muted" style={{ marginRight: 6, fontSize: 10.5, letterSpacing: '0.1em' }}>
             SYSTEMS
@@ -2510,12 +2508,13 @@ export default function ReportView({
         </p>
       )}
 
-      {/* 04 Systems & Access */}
+      {/* 04 Systems & Access — AAP-104 D5: section title no longer
+          claims to "group by risk" (per-system risk tiers removed). */}
       <SectionHead
         num="04"
         id="sec-systems"
         label="Systems & Access"
-        title="External integrations grouped by risk"
+        title="External integrations the agent connects to"
         meta={`${businessSystems.length} ${businessSystems.length === 1 ? 'system' : 'systems'}`}
       />
       <SystemsGrouped systems={businessSystems} />
@@ -2565,48 +2564,16 @@ export default function ReportView({
         </div>
       )}
 
-      {excessiveBySystem.size > 0 && (
-        <div className="panel panel-pad" style={{ marginTop: 20 }}>
-          <div className="field-label">Permissions delta — excessive (revokable)</div>
-          <div className="stack-md">
-            {Array.from(excessiveBySystem.entries()).map(([system, scopes]) => (
-              <div key={system}>
-                <div
-                  style={{
-                    fontSize: 13,
-                    color: 'var(--r-ink)',
-                    fontWeight: 500,
-                    marginBottom: 8,
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {system}
-                </div>
-                <div className="stack" style={{ gap: 6 }}>
-                  {scopes.map((s, i) => {
-                    // The backend's `scopesDelta` field is sometimes a short
-                    // token (e.g. "drive.file") and sometimes a long
-                    // descriptive sentence explaining WHY a scope is
-                    // excessive. Long entries render as readable note
-                    // panels (sans, slate ink, soft orange accent);
-                    // short entries as chips.
-                    const isLong = s.length > 60 || /\s.+\s/.test(s);
-                    return isLong ? (
-                      <div key={i} className="delta-note">
-                        {s}
-                      </div>
-                    ) : (
-                      <span key={i} className="scope-chip excess">
-                        {s}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* AAP-104 D6 — pre-fix the Verdict section dropped a
+          "Permissions delta — excessive (revokable)" panel below the
+          recommendations, rendering every system's `scopesDelta`
+          entries. Those same scope diffs now drive the SLF / OAU
+          findings in Section 03 (e.g. SLF-0 "Broad Google Sheets
+          OAuth access") via the analyzer pipeline. Keeping both
+          surfaces produced a noisy duplicate. The per-system System
+          Card still surfaces the same delta inline with the scope
+          chips (an Excessive row that only renders when there's
+          something to show), so no information is lost. */}
 
       {/* 07 Compliance Detail */}
       {json.regulatoryCompliance && (
