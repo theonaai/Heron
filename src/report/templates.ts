@@ -173,16 +173,14 @@ export interface RenderMarkdownReportContext {
     reason?: string;
   }>;
   /**
-   * AAP-67 — L3/L4/L5 discovery sections to render alongside the
-   * existing Surface 2 findings. When absent, the section block is
-   * omitted entirely. The shape mirrors `DiscoveryResult`'s new fields
-   * (kept loose — `string[]` for tokens / keys / services — so the
-   * markdown template stays decoupled from the reader types).
+   * AAP-67 — workspace .env evidence (renumbered to L3 in docs after
+   * AAP-100). When absent, the section block is omitted entirely.
+   * The shape mirrors `DiscoveryResult`'s `workspaceEnv` (kept loose —
+   * `string[]` for keys — so the markdown template stays decoupled
+   * from the reader types).
    */
   localDiscoveryExtras?: {
-    osCredentials?: Array<{ kind: string; path: string; tokens: string[] }>;
     workspaceEnv?: Array<{ path: string; workspace: string; keys: string[] }>;
-    keychainServices?: Array<{ service: string; category: string }>;
     warnings?: string[];
   };
 }
@@ -349,7 +347,7 @@ function renderInterrogationOnlyBanner(report: AuditReport): string {
   return [
     '> **This report is based on the interview only.** Run verification to ' +
       'confirm declared scope against deterministic evidence ' +
-      '(MCP configs, OS credentials, .env files, Keychain: names only).',
+      '(MCP configs, plugin / skill / auth credential names, .env files: names only).',
     '>',
     '> Verified runs flip this banner off and re-compute the framework mapping ' +
       'with the discovery evidence merged in. Call `start_verification` from the ' +
@@ -1128,13 +1126,15 @@ function renderDiscrepanciesSection(verdict: Verdict | undefined): string {
 }
 
 /**
- * AAP-67 — Local discovery extras (L3/L4/L5).
+ * AAP-67 — Local discovery extras (workspace .env).
  *
- * Surfaces the macOS Keychain service names, cross-cutting OS
- * credentials, and per-workspace env-variable names that the discovery
- * scan picked up. Returns the empty string when there's nothing to
- * render — `sections.filter(Boolean)` then drops the section so legacy
- * reports stay byte-identical.
+ * Surfaces the per-workspace env-variable names the discovery scan
+ * picked up. Returns the empty string when there's nothing to render —
+ * `sections.filter(Boolean)` then drops the section so legacy reports
+ * stay byte-identical.
+ *
+ * AAP-100 — the L3 (macOS Keychain) and L4 (cross-cutting OS
+ * credentials) subsections were removed alongside their readers.
  *
  * Privacy contract: every row is a NAME, never a value. The renderer
  * does not synthesise values from the data — it just lays out what the
@@ -1143,45 +1143,18 @@ function renderDiscrepanciesSection(verdict: Verdict | undefined): string {
 function renderLocalDiscoveryExtras(context: RenderMarkdownReportContext): string {
   const extras = context.localDiscoveryExtras;
   if (!extras) return '';
-  const hasOs = extras.osCredentials && extras.osCredentials.length > 0;
   const hasEnv = extras.workspaceEnv && extras.workspaceEnv.length > 0;
-  const hasKc = extras.keychainServices && extras.keychainServices.length > 0;
   const hasWarn = extras.warnings && extras.warnings.length > 0;
-  if (!hasOs && !hasEnv && !hasKc && !hasWarn) return '';
+  if (!hasEnv && !hasWarn) return '';
 
-  const lines: string[] = ['## Local Discovery — L3/L4/L5', ''];
+  const lines: string[] = ['## Local Discovery — Workspace .env', ''];
   lines.push(
     '_Deterministic evidence beyond per-agent configs. Heron surfaces NAMES only — credential values are never read, logged, or transmitted._',
   );
   lines.push('');
 
-  if (hasKc) {
-    lines.push('### macOS Keychain services (L3)');
-    lines.push('');
-    lines.push('| Category | Service |');
-    lines.push('| --- | --- |');
-    for (const k of extras.keychainServices!) {
-      lines.push(`| ${escapeCell(k.category)} | ${escapeCell(k.service)} |`);
-    }
-    lines.push('');
-  }
-
-  if (hasOs) {
-    lines.push('### Cross-cutting OS credentials (L4)');
-    lines.push('');
-    lines.push('| Kind | Path | Identifying tokens |');
-    lines.push('| --- | --- | --- |');
-    for (const f of extras.osCredentials!) {
-      const tokenList = f.tokens.length === 0 ? '_(file present, no parseable tokens)_' : f.tokens.map(escapeCell).join(', ');
-      lines.push(
-        `| ${escapeCell(f.kind)} | ${escapeCell(f.path)} | ${tokenList} |`,
-      );
-    }
-    lines.push('');
-  }
-
   if (hasEnv) {
-    lines.push('### Per-workspace env vars (L5)');
+    lines.push('### Per-workspace env vars');
     lines.push('');
     lines.push('| File | Variable names |');
     lines.push('| --- | --- |');

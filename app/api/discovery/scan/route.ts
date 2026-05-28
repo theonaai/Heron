@@ -181,6 +181,20 @@ const ScanBodySchema = z
   .object({
     sessionId: z.string().min(1).max(200),
     workspaceRoot: workspaceRootSchema.optional(),
+    // AAP-100 — runtime under audit. Required whenever filesystem
+    // discovery runs (i.e. `skipFilesystem` is not set). Constrains
+    // discovery to the audited runtime's evidence directories — a
+    // Codex audit only reads ~/.codex/*, etc.
+    runtime: z
+      .enum([
+        'claude-code',
+        'codex',
+        'cursor',
+        'continue',
+        'windsurf',
+        'claude-desktop',
+      ])
+      .optional(),
     // AAP-74 — optional L6 OAuth introspection sources. When present,
     // the route runs `runVerification` after the filesystem readers and
     // merges the result into the session's report.json. Capped at 8
@@ -230,7 +244,9 @@ export async function POST(request: Request): Promise<Response> {
         ? 'invalid_workspace_root'
         : issue && issue.path[0] === 'oauthSources'
           ? 'invalid_oauth_sources'
-          : 'invalid_body';
+          : issue && issue.path[0] === 'runtime'
+            ? 'invalid_runtime'
+            : 'invalid_body';
     return errorResponse(400, issue?.message ?? 'invalid body', code);
   }
 
@@ -254,6 +270,16 @@ export async function POST(request: Request): Promise<Response> {
       400,
       'skipFilesystem requires at least one oauthSources entry',
       'invalid_body',
+    );
+  }
+  // AAP-100 — runtime is required for any path that runs filesystem
+  // discovery. The L6 OAuth-only path (skipFilesystem) does not need a
+  // runtime because it never touches local agent configs.
+  if (!skipFilesystem && !body.data.runtime) {
+    return errorResponse(
+      400,
+      'runtime is required when filesystem discovery runs (set skipFilesystem to bypass)',
+      'invalid_runtime',
     );
   }
 
@@ -294,14 +320,15 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
 
-  // ── L1-L5 filesystem discovery ─────────────────────────────────────
+  // ── Filesystem discovery (L1 MCP + L2 plugins/auth + workspace .env) ──
   //
-  // AAP-67 — L3 + L4 + L5. The dashboard consent the user just accepted
-  // covers "let Heron scan local discovery"; L3-L5 piggybacks on that
-  // same opt-in (no separate consent surface — see Linear ticket).
-  // `enableKeychain: true` is gated by the macOS-only platform check
-  // inside the reader, so non-macOS hosts cleanly emit a warning rather
-  // than attempting the spawn.
+  // AAP-67 — workspace .env scanning piggybacks on the same dashboard
+  // consent decision the user just accepted (no separate consent
+  // surface — see Linear ticket).
+  // AAP-100 — discovery scopes reads to the audited runtime's config
+  // directory only. The legacy L3 (macOS Keychain) and L4 (cross-cutting
+  // OS credentials) readers were removed alongside their consent
+  // affordances.
   type DiscoveryPayload = Awaited<ReturnType<typeof runDiscovery>> & {
     agents: Awaited<ReturnType<typeof runDiscovery>>['agents'];
   };
@@ -317,10 +344,12 @@ export async function POST(request: Request): Promise<Response> {
     // verdict can factor in write-tool count.
     const enableMcpToolEnumeration =
       process.env.HERON_DISCOVERY_MCP_TOOLS_DISABLE !== '1';
+    // AAP-100 — runtime is required (validated above when filesystem runs).
+    const runtime = body.data.runtime!;
     const result = await runDiscovery({
+      runtime,
       workspaceDir: workspaceRoot,
       workspaceHints: additionalWorkspaceHints,
-      enableKeychain: true,
       enableMcpToolEnumeration,
     });
 
@@ -349,17 +378,11 @@ export async function POST(request: Request): Promise<Response> {
     // inline tokens that survived Layer 2/3 scrubbers (JWT in URL, GCP
     // service-account markers, private keys, Slack webhooks, etc.).
     const scrubbedAgents = await secretlintScrub(result.agents);
-    // AAP-67 — same defense-in-depth pass over L3-L5 sections. The
-    // individual readers already scrub each NAME/TOKEN they emit; this
-    // final pass catches anything that slipped through unioned arrays.
-    const scrubbedOsCredentials = result.osCredentials
-      ? await secretlintScrub(result.osCredentials)
-      : undefined;
+    // AAP-67 — same defense-in-depth pass over workspace .env keys.
+    // The reader already scrubs each NAME it emits; this final pass
+    // catches anything that slipped through unioned arrays.
     const scrubbedWorkspaceEnv = result.workspaceEnv
       ? await secretlintScrub(result.workspaceEnv)
-      : undefined;
-    const scrubbedKeychain = result.keychainServices
-      ? await secretlintScrub(result.keychainServices)
       : undefined;
     const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
     // AAP-82 Blocker 1: surface "agent reported a server Heron did not
@@ -381,9 +404,7 @@ export async function POST(request: Request): Promise<Response> {
       ...result,
       agents: scrubbedAgents,
       findings,
-      ...(scrubbedOsCredentials !== undefined ? { osCredentials: scrubbedOsCredentials } : {}),
       ...(scrubbedWorkspaceEnv !== undefined ? { workspaceEnv: scrubbedWorkspaceEnv } : {}),
-      ...(scrubbedKeychain !== undefined ? { keychainServices: scrubbedKeychain } : {}),
       ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
     } as DiscoveryPayload;
   }

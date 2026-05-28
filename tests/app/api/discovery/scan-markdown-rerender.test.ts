@@ -134,7 +134,7 @@ describe('POST /api/discovery/scan — AAP-79 markdown re-render', () => {
     const scanRes = await scanPOST(
       jsonRequest(`${ORIGIN}/api/discovery/scan`, {
         method: 'POST',
-        body: { sessionId: id, workspaceRoot: workspaceDir },
+        body: { sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' },
       }),
     );
     expect(scanRes.status).toBe(200);

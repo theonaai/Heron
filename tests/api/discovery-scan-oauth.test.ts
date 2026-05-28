@@ -126,7 +126,7 @@ describe('POST /api/discovery/scan — L6 OAuth wire-up (AAP-74)', () => {
       }),
     );
     const res = await scanPOST(
-      jsonRequest(`${ORIGIN}/api/discovery/scan`, { sessionId }),
+      jsonRequest(`${ORIGIN}/api/discovery/scan`, { sessionId, runtime: 'codex' }),
     );
     expect(res.status).toBe(200);
     const body = await readJson<{
@@ -159,6 +159,7 @@ describe('POST /api/discovery/scan — L6 OAuth wire-up (AAP-74)', () => {
     const res = await scanPOST(
       jsonRequest(`${ORIGIN}/api/discovery/scan`, {
         sessionId,
+        runtime: 'codex',
         oauthSources: [
           {
             kind: 'google-workspace',

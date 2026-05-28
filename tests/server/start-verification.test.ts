@@ -88,7 +88,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     const server = makeServer();
     const r = await server.invoke(
       'start_verification',
-      { session_id: 'sess-20260101-000000-aaaaaa' },
+      { session_id: 'sess-20260101-000000-aaaaaa', runtime: 'codex' },
       makeCtx(),
     );
     expect(r.ok).toBe(false);
@@ -105,7 +105,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     await setPendingQuestion(id, { text: 'Q', category: 'purpose', index: 0 });
     const r = await server.invoke(
       'start_verification',
-      { session_id: id },
+      { session_id: id, runtime: 'codex' },
       makeCtx(),
     );
     expect(r.ok).toBe(false);
@@ -131,7 +131,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
 
     const r = await server.invoke(
       'start_verification',
-      { session_id: id },
+      { session_id: id, runtime: 'codex' },
       makeCtx(),
     );
 
@@ -187,7 +187,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     const missingPath = join(tmpDir, 'does-not-exist');
     const r = await server.invoke(
       'start_verification',
-      { session_id: id, workspace_hint: missingPath },
+      { session_id: id, runtime: 'codex', workspace_hint: missingPath },
       makeCtx(),
     );
 
@@ -271,7 +271,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
 
       const r = await server.invoke(
         'start_verification',
-        { session_id: id, workspace_hint: workspace },
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
         makeCtx(),
       );
 
@@ -352,7 +352,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
 
     const r = await server.invoke(
       'start_verification',
-      { session_id: id, workspace_hint: filePath },
+      { session_id: id, runtime: 'codex', workspace_hint: filePath },
       makeCtx(),
     );
     expect(r.ok).toBe(true);
@@ -460,7 +460,7 @@ describe('HeronMCPServer.start_verification — agent-reported tools overlay (AA
       // Step 3 — start_verification.
       const r = await server.invoke(
         'start_verification',
-        { session_id: id, workspace_hint: workspace },
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
         makeCtx(),
       );
       expect(r.ok).toBe(true);

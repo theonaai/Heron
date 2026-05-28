@@ -378,14 +378,13 @@ const START_VERIFICATION_DEF: ToolDefinition = {
   name: 'start_verification',
   description:
     "Scan agent's runtime environment for evidence supporting the audit transcript.\n\n" +
-    'Reads:\n' +
-    '  - MCP server configurations from runtime configs\n' +
+    'Reads (only for the runtime under audit):\n' +
+    '  - MCP server configurations from the runtime config (e.g. ~/.codex/config.toml)\n' +
     '  - Plugin / skill / auth credential NAMES (never values)\n' +
-    '  - macOS Keychain service names matching AI/SaaS allowlist (opt-in)\n' +
-    '  - Cross-cutting OS credential file identifiers (AWS, GCP, kube, npm, ...)\n' +
     '  - Environment variable NAMES from workspace .env files\n\n' +
     'NEVER reads:\n' +
     '  - Actual credential values, tokens, passwords\n' +
+    "  - Other runtimes' config directories (e.g. when auditing Codex, ~/.claude/* is not touched)\n" +
     '  - Files outside the standard discovery paths\n\n' +
     "Output: deterministic evidence to verify the agent's declared scope.",
   inputSchema: {
@@ -398,6 +397,21 @@ const START_VERIFICATION_DEF: ToolDefinition = {
           'a session whose interview has completed (status complete). Sessions in ' +
           'analysis_failed are rejected: re-run start_audit_session first.',
       },
+      runtime: {
+        type: 'string',
+        enum: [
+          'claude-code',
+          'codex',
+          'cursor',
+          'continue',
+          'windsurf',
+          'claude-desktop',
+        ],
+        description:
+          'The runtime under audit. Discovery reads only this runtime\'s ' +
+          'evidence directories — when auditing Codex, only ~/.codex/* is ' +
+          'scanned; ~/.claude/*, ~/.cursor/*, etc. are not touched.',
+      },
       workspace_hint: {
         type: 'string',
         description:
@@ -406,7 +420,7 @@ const START_VERIFICATION_DEF: ToolDefinition = {
           'session start, falling back to the server process cwd.',
       },
     },
-    required: ['session_id'],
+    required: ['session_id', 'runtime'],
     additionalProperties: false,
   },
 };
@@ -520,6 +534,16 @@ const startVerificationInputSchema = z.object({
   session_id: z
     .string({ required_error: 'session_id is required' })
     .regex(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/, 'invalid session_id format'),
+  // AAP-100 — `runtime` is required so discovery scopes reads to the
+  // audited runtime's evidence directories only.
+  runtime: z.enum([
+    'claude-code',
+    'codex',
+    'cursor',
+    'continue',
+    'windsurf',
+    'claude-desktop',
+  ], { required_error: 'runtime is required' }),
   workspace_hint: z
     .string()
     .min(1)
@@ -1472,7 +1496,7 @@ export class HeronMCPServer {
       };
     }
 
-    const { session_id: sessionId, workspace_hint: workspaceHint } = parsed.data;
+    const { session_id: sessionId, runtime, workspace_hint: workspaceHint } = parsed.data;
     const session = await getSession(sessionId);
     if (!session) {
       return {
@@ -1574,9 +1598,9 @@ export class HeronMCPServer {
     let scrubbed: DiscoveryResult;
     try {
       const result = await runDiscovery({
+        runtime,
         workspaceDir: workspaceRoot,
         workspaceHints: hintsForReader,
-        enableKeychain: true,
         enableMcpToolEnumeration,
       });
 
@@ -1600,14 +1624,8 @@ export class HeronMCPServer {
         : [];
 
       const scrubbedAgents = await secretlintScrub(result.agents);
-      const scrubbedOsCredentials = result.osCredentials
-        ? await secretlintScrub(result.osCredentials)
-        : undefined;
       const scrubbedWorkspaceEnv = result.workspaceEnv
         ? await secretlintScrub(result.workspaceEnv)
-        : undefined;
-      const scrubbedKeychain = result.keychainServices
-        ? await secretlintScrub(result.keychainServices)
         : undefined;
       const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
       const mergedWarnings = [
@@ -1618,14 +1636,8 @@ export class HeronMCPServer {
         ...result,
         agents: scrubbedAgents,
         findings,
-        ...(scrubbedOsCredentials !== undefined
-          ? { osCredentials: scrubbedOsCredentials }
-          : {}),
         ...(scrubbedWorkspaceEnv !== undefined
           ? { workspaceEnv: scrubbedWorkspaceEnv }
-          : {}),
-        ...(scrubbedKeychain !== undefined
-          ? { keychainServices: scrubbedKeychain }
           : {}),
         ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
@@ -2209,7 +2221,7 @@ export function buildStartVerificationHint(sessionId: string): string {
     'is not yet verified against your runtime environment.\n\n' +
     'To produce a verified report, call the `start_verification` tool. You will be asked ' +
     'for permission to scan your filesystem for deterministic evidence (MCP configs, ' +
-    'OS credentials, .env files, Keychain). No secret values are read.\n\n' +
+    'plugin / skill / auth credential names, .env files). No secret values are read.\n\n' +
     `Session ID: ${sessionId}`
   );
 }

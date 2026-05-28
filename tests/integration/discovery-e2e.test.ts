@@ -1,10 +1,10 @@
 /**
- * Discovery end-to-end integration test — AAP-53.
+ * Discovery end-to-end integration test — AAP-53 / AAP-100.
  *
  * Spins up a temp $HOME, writes three fixture configs (codex, cursor,
- * claude-code), runs the full discovery + diff pipeline, and asserts:
+ * claude-code), and runs `runDiscovery` once per runtime. Asserts:
  *
- *   1. Three DiscoveredAgent entries, one per runtime.
+ *   1. Each per-runtime call surfaces only that runtime's agent.
  *   2. Redacted env-key NAMES survive; their VALUES never appear
  *      anywhere in the serialized result (deep-grep).
  *   3. EXTRA findings fire for the servers not mentioned in the
@@ -14,6 +14,11 @@
  *
  * The grep assertion is the load-bearing one: if any reader breaks
  * its whitelist contract, this test catches the leak immediately.
+ *
+ * AAP-100 — `runDiscovery` is no longer host-wide. Discovery scopes
+ * to the audited runtime's evidence directories only. The test
+ * exercises the three runtimes independently to match the new
+ * contract.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -24,6 +29,7 @@ import { join } from 'node:path';
 import { runDiscovery } from '../../src/discovery/index.js';
 import { diffAgainstTranscript } from '../../src/discovery/diff.js';
 import { secretlintScrub } from '../../src/discovery/secretlint-scrub.js';
+import type { DiscoveredAgent } from '../../src/discovery/types.js';
 
 const SECRET_VALUES = ['xoxb-fake', 'ghp-fake', 'postgres://u:p@h/db'];
 
@@ -50,7 +56,7 @@ describe('discovery e2e — fixture HOME with secret redaction grep', () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
-  it('reads fixture configs, redacts secrets, diffs against transcript', async () => {
+  it('reads fixture configs per-runtime, redacts secrets, diffs against transcript', async () => {
     // 1. Codex (TOML) — slack with credentials, NOT in transcript.
     await mkdir(join(homeDir, '.codex'), { recursive: true });
     await writeFile(
@@ -91,14 +97,30 @@ SLACK_BOT_TOKEN = "xoxb-fake"
       }),
     );
 
-    const result = await runDiscovery({ homeDir });
+    // AAP-100 — run discovery once per runtime under audit. Each call
+    // only reads that runtime's config directory.
+    const codexResult = await runDiscovery({ runtime: 'codex', homeDir });
+    const cursorResult = await runDiscovery({ runtime: 'cursor', homeDir });
+    const claudeResult = await runDiscovery({ runtime: 'claude-code', homeDir });
 
-    // ── Shape assertions ────────────────────────────────────────
-    expect(result.agents.length).toBe(3);
-    const runtimes = result.agents.map((a) => a.runtime).sort();
-    expect(runtimes).toEqual(['claude-code', 'codex', 'cursor']);
+    // ── Per-runtime scope: each call surfaces only its own runtime ─
+    expect(codexResult.agents.map((a) => a.runtime)).toEqual(['codex']);
+    expect(cursorResult.agents.map((a) => a.runtime)).toEqual(['cursor']);
+    expect(claudeResult.agents.map((a) => a.runtime)).toEqual(['claude-code']);
 
-    const allServers = result.agents.flatMap((a) => a.mcpServers);
+    // Cross-runtime isolation: scannedPaths never touch the other runtimes' dirs.
+    expect(codexResult.scannedPaths.some((p) => p.includes('.cursor'))).toBe(false);
+    expect(codexResult.scannedPaths.some((p) => p.includes('.claude'))).toBe(false);
+    expect(claudeResult.scannedPaths.some((p) => p.includes('.codex'))).toBe(false);
+    expect(claudeResult.scannedPaths.some((p) => p.includes('.cursor'))).toBe(false);
+
+    // ── Combine the three results for the shared assertions below ─
+    const allAgents: DiscoveredAgent[] = [
+      ...codexResult.agents,
+      ...cursorResult.agents,
+      ...claudeResult.agents,
+    ];
+    const allServers = allAgents.flatMap((a) => a.mcpServers);
     const slack = allServers.find((s) => s.name === 'slack')!;
     expect(slack.hasCredentials).toBe(true);
     expect(slack.redactedEnvKeys).toEqual(['SLACK_BOT_TOKEN']);
@@ -112,12 +134,14 @@ SLACK_BOT_TOKEN = "xoxb-fake"
     expect(postgres.redactedEnvKeys).toEqual(['POSTGRES_CONNECTION_STRING']);
 
     // ── Deep-grep secret check (the load-bearing assertion) ────
-    const serialized = JSON.stringify(result);
-    for (const secret of SECRET_VALUES) {
-      expect(serialized.includes(secret)).toBe(false);
+    for (const result of [codexResult, cursorResult, claudeResult]) {
+      const serialized = JSON.stringify(result);
+      for (const secret of SECRET_VALUES) {
+        expect(serialized.includes(secret)).toBe(false);
+      }
     }
 
-    // ── Diff against transcript ────────────────────────────────
+    // ── Diff against transcript (combined inventory) ──────────
     const transcript = [
       {
         category: 'tools',
@@ -125,7 +149,7 @@ SLACK_BOT_TOKEN = "xoxb-fake"
         answer: 'I use github for code review.',
       },
     ];
-    const findings = diffAgainstTranscript(result.agents, transcript);
+    const findings = diffAgainstTranscript(allAgents, transcript);
 
     const extras = findings.filter((f) => f.kind === 'EXTRA');
     expect(extras.map((f) => f.serverName).sort()).toEqual(['postgres', 'slack']);
@@ -201,9 +225,18 @@ url = "https://${INLINE_BASIC_AUTH}@private-mcp.example.com/mcp"
       }),
     );
 
-    const result = await runDiscovery({ homeDir });
+    // AAP-100 — combine per-runtime calls so the grep assertion runs
+    // over the unioned scrubbed inventory.
+    const codex = await runDiscovery({ runtime: 'codex', homeDir });
+    const cursor = await runDiscovery({ runtime: 'cursor', homeDir });
+    const claude = await runDiscovery({ runtime: 'claude-code', homeDir });
+
     // Pass through Layer 4 (secretlint) — same path the API route uses.
-    const scrubbed = await secretlintScrub(result.agents);
+    const scrubbed = [
+      ...(await secretlintScrub(codex.agents)),
+      ...(await secretlintScrub(cursor.agents)),
+      ...(await secretlintScrub(claude.agents)),
+    ];
     const json = JSON.stringify(scrubbed);
 
     // ── Deep-grep every inline secret category ─────────────────

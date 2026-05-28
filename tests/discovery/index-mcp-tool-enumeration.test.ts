@@ -65,6 +65,7 @@ args = ["hi"]
     );
 
     const result = await runDiscovery({
+      runtime: 'codex',
       homeDir,
       enableMcpToolEnumeration: true,
       mcpToolEnumeration: {
@@ -100,6 +101,7 @@ args = []
     );
 
     const result = await runDiscovery({
+      runtime: 'codex',
       homeDir,
       enableMcpToolEnumeration: true,
       mcpToolEnumeration: {
@@ -130,7 +132,7 @@ args = []
     // actually spawn /bin/echo which exits without speaking MCP,
     // yielding state: 'failed' rather than undefined. The assertion
     // that toolEnumeration is undefined is the load-bearing one.
-    const result = await runDiscovery({ homeDir });
+    const result = await runDiscovery({ runtime: 'codex', homeDir });
     expect(result.agents[0].mcpServers[0].toolEnumeration).toBeUndefined();
   });
 
@@ -145,6 +147,7 @@ url = "https://example.com/mcp"
     );
 
     const result = await runDiscovery({
+      runtime: 'codex',
       homeDir,
       enableMcpToolEnumeration: true,
       mcpToolEnumeration: {

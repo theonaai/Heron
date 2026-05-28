@@ -282,49 +282,28 @@ export interface LocalAgentDiscoverySection {
   findings: LocalDiscoveryFinding[];
   scannedAt: string;
   scannedPaths: string[];
-  /** AAP-67 — L4 cross-cutting OS credentials (file-presence + names). */
-  osCredentials?: LocalOsCredentialFinding[];
-  /** AAP-67 — L5 per-workspace `.env*` variable NAMES (never values). */
+  /**
+   * AAP-67 — per-workspace `.env*` variable NAMES (never values).
+   * Renumbered to L3 in docs after AAP-100 dropped the legacy L3
+   * (Keychain) + L4 (OS credentials) readers; the persisted field
+   * name stays `workspaceEnv` for back-compat with stored report.json
+   * blobs.
+   */
   workspaceEnv?: LocalWorkspaceEnvFile[];
-  /** AAP-67 — L3 macOS Keychain service NAMES (never passwords). */
-  keychainServices?: LocalKeychainServiceFinding[];
-  /** AAP-67 — warnings from L3-L5 readers (e.g. non-macOS host). */
+  /** AAP-67 — warnings emitted by discovery readers. */
   warnings?: string[];
 }
 
-// ─── AAP-67 — L3/L4/L5 dashboard shapes ─────────────────────────────────
+// ─── Workspace .env dashboard shape (AAP-67) ────────────────────────────
 //
-// Mirrors of the reader shapes in `src/discovery/types.ts`. Defined here
+// Mirror of the reader shape in `src/discovery/types.ts`. Defined here
 // so the dashboard / ReportView / McpSections types don't need to import
 // from `src/` (which would pull node-only deps into the bundler graph).
-
-export type LocalOsCredentialKind =
-  | 'aws-credentials'
-  | 'aws-config'
-  | 'gcloud-adc'
-  | 'kube-config'
-  | 'docker-config'
-  | 'npmrc'
-  | 'pypirc'
-  | 'netrc'
-  | 'gitconfig'
-  | 'ssh-config';
-
-export interface LocalOsCredentialFinding {
-  kind: LocalOsCredentialKind;
-  path: string;
-  tokens: string[];
-}
 
 export interface LocalWorkspaceEnvFile {
   path: string;
   workspace: string;
   keys: string[];
-}
-
-export interface LocalKeychainServiceFinding {
-  service: string;
-  category: string;
 }
 
 // ─── Compliance shapes (passthrough from server) ───────────────────────────

@@ -29,9 +29,7 @@ import type {
   LocalDiscoveredCapability,
   LocalDiscoveredMcpTool,
   LocalMcpToolEnumeration,
-  LocalOsCredentialFinding,
   LocalWorkspaceEnvFile,
-  LocalKeychainServiceFinding,
   OAuthScopeConnector,
   OAuthScopeDiffEntry,
   OAuthScopeVerificationSection as OAuthScopeVerificationData,
@@ -458,16 +456,10 @@ export function LocalDiscoverySection({ discovery }: { discovery: LocalDiscovery
       {/* AAP-58 — Detected credential keys table */}
       <AuthCredentialsTable discovery={discovery} />
 
-      {/* AAP-67 — L4 cross-cutting OS credentials */}
-      <OsCredentialsTable discovery={discovery} />
-
-      {/* AAP-67 — L5 per-workspace .env */}
+      {/* AAP-67 — per-workspace .env (renumbered to L3 in docs after AAP-100) */}
       <WorkspaceEnvTable discovery={discovery} />
 
-      {/* AAP-67 — L3 macOS Keychain */}
-      <KeychainServicesTable discovery={discovery} />
-
-      {/* AAP-67 — reader warnings (e.g. non-macOS host) */}
+      {/* AAP-67 — reader warnings */}
       <DiscoveryWarnings discovery={discovery} />
 
       {/* Findings table */}
@@ -808,78 +800,14 @@ function AuthCredentialsTable({ discovery }: { discovery: LocalDiscoveryData }) 
   );
 }
 
-/* ── AAP-67 — L4 / L5 / L3 sub-tables ────────────────────────────────────
-   Three new layers on top of the existing AAP-53/AAP-58 surface. Each
-   table renders only when its corresponding section is populated, so
-   sessions scanned with a non-macOS host (or before AAP-67 shipped)
-   render unchanged from the prior surface. Every row carries an
-   inline "Names only — value never read" affordance because the
-   names-not-values invariant is the load-bearing contract of the PR. */
+/* ── Workspace .env sub-table (AAP-67) ──────────────────────────────────
+   Renders only when the section is populated, so sessions scanned
+   without workspace .env evidence render unchanged. Every row carries
+   an inline "Names only — value never read" affordance because the
+   names-not-values invariant is the load-bearing contract.
 
-function OsCredentialsTable({ discovery }: { discovery: LocalDiscoveryData }) {
-  const rows: LocalOsCredentialFinding[] = (discovery.osCredentials ?? []).filter(
-    (f) => f.tokens.length > 0 || f.path.length > 0,
-  );
-  if (rows.length === 0) return null;
-  return (
-    <>
-      <div className="tier-label">
-        <span>OS credentials (L4) — file presence + identifying tokens, never values</span>
-        <span className="tier-count">{rows.length}</span>
-      </div>
-      <div className="tbl-wrap" style={{ marginBottom: 18 }}>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th style={{ width: 160 }}>Kind</th>
-              <th style={{ width: 320 }}>Path</th>
-              <th>Identifying tokens (names only)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((f, idx) => (
-              <tr key={`os-${f.kind}-${idx}`}>
-                <td className="mono" style={{ fontSize: 11.5 }}>
-                  {f.kind}
-                </td>
-                <td
-                  className="mono"
-                  style={{ fontSize: 11, color: 'var(--r-ink-3)', wordBreak: 'break-all' }}
-                  title={f.path}
-                >
-                  {f.path}
-                </td>
-                <td>
-                  {f.tokens.length === 0 ? (
-                    <span className="muted">—</span>
-                  ) : (
-                    <div className="row-tight" style={{ gap: 4, flexWrap: 'wrap' }}>
-                      {f.tokens.map((t) => (
-                        <span
-                          key={t}
-                          className="mono"
-                          style={{
-                            fontSize: 10.5,
-                            padding: '2px 6px',
-                            background: 'var(--r-panel-muted, #f1f5f9)',
-                            borderRadius: 3,
-                          }}
-                          title="Name only — value never read"
-                        >
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
-}
+   AAP-100 — the L3 (macOS Keychain) and L4 (cross-cutting OS credentials)
+   tables that lived here were removed alongside their readers. */
 
 function WorkspaceEnvTable({ discovery }: { discovery: LocalDiscoveryData }) {
   const rows: LocalWorkspaceEnvFile[] = discovery.workspaceEnv ?? [];
@@ -887,7 +815,7 @@ function WorkspaceEnvTable({ discovery }: { discovery: LocalDiscoveryData }) {
   return (
     <>
       <div className="tier-label">
-        <span>Workspace env vars (L5) — variable names only, never values</span>
+        <span>Workspace env vars — variable names only, never values</span>
         <span className="tier-count">
           {rows.reduce((n, r) => n + r.keys.length, 0)}
         </span>
@@ -932,45 +860,6 @@ function WorkspaceEnvTable({ discovery }: { discovery: LocalDiscoveryData }) {
                       ))}
                     </div>
                   )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
-}
-
-function KeychainServicesTable({ discovery }: { discovery: LocalDiscoveryData }) {
-  const rows: LocalKeychainServiceFinding[] = discovery.keychainServices ?? [];
-  if (rows.length === 0) return null;
-  return (
-    <>
-      <div className="tier-label">
-        <span>macOS Keychain services (L3) — service names only, never passwords</span>
-        <span className="tier-count">{rows.length}</span>
-      </div>
-      <div className="tbl-wrap" style={{ marginBottom: 18 }}>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th style={{ width: 160 }}>Category</th>
-              <th>Service name</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s, idx) => (
-              <tr key={`kc-${s.service}-${idx}`}>
-                <td className="mono" style={{ fontSize: 11.5 }}>
-                  {s.category}
-                </td>
-                <td
-                  className="mono"
-                  style={{ fontSize: 12, wordBreak: 'break-all' }}
-                  title={s.service}
-                >
-                  {s.service}
                 </td>
               </tr>
             ))}

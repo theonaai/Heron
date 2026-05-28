@@ -129,6 +129,7 @@ describe('POST /api/discovery/scan — workspaceRoot validation (AAP-58)', () =>
       jsonRequest(`${ORIGIN}/api/discovery/scan`, {
         sessionId,
         workspaceRoot: '/this/path/definitely/does/not/exist/anywhere',
+        runtime: 'codex',
       }),
     );
     expect(res.status).toBe(400);
@@ -148,6 +149,7 @@ describe('POST /api/discovery/scan — workspaceRoot validation (AAP-58)', () =>
     const res = await scanPOST(
       jsonRequest(`${ORIGIN}/api/discovery/scan`, {
         sessionId,
+        runtime: 'codex',
       }),
     );
     // 200 OR 403 (consent_required) — never a 400 from a missing
@@ -183,8 +185,28 @@ describe('POST /api/discovery/scan — workspaceRoot validation (AAP-58)', () =>
     const res = await scanPOST(
       jsonRequest(`${ORIGIN}/api/discovery/scan`, {
         sessionId: created.id,
+        runtime: 'codex',
       }),
     );
     expect(res.status).toBe(200);
+  });
+
+  // AAP-100 — `runtime` is required when filesystem discovery runs.
+  it('rejects when runtime is omitted (AAP-100)', async () => {
+    await consentPOST(
+      jsonRequest(`${ORIGIN}/api/discovery/consent`, {
+        workspace: workspaceDir,
+        decision: 'allow-for-workspace',
+      }),
+    );
+    const res = await scanPOST(
+      jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+        sessionId,
+        workspaceRoot: workspaceDir,
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await readJson<{ error: string; code?: string }>(res);
+    expect(body.code).toBe('invalid_runtime');
   });
 });

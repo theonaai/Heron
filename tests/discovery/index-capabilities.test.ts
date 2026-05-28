@@ -53,7 +53,7 @@ enabled = false
       JSON.stringify({ openai_api_key: 'sk-fake1234567890abcdef' }),
     );
 
-    const result = await runDiscovery({ homeDir });
+    const result = await runDiscovery({ runtime: 'codex', homeDir });
     expect(result.agents.length).toBe(1);
     const codex = result.agents[0]!;
     expect(codex.runtime).toBe('codex');
@@ -79,7 +79,7 @@ enabled = false
       join(homeDir, '.codex/auth.json'),
       JSON.stringify({ some_provider: 'token-but-not-classified-as-secret' }),
     );
-    const result = await runDiscovery({ homeDir });
+    const result = await runDiscovery({ runtime: 'codex', homeDir });
     expect(result.agents.length).toBe(1);
     const codex = result.agents[0]!;
     expect(codex.runtime).toBe('codex');
@@ -94,7 +94,70 @@ enabled = false
       join(homeDir, '.codex/auth.json'),
       JSON.stringify({ openai_api_key: 'sk-DO-NOT-LEAK-mePLEASE12345678' }),
     );
-    const result = await runDiscovery({ homeDir });
+    const result = await runDiscovery({ runtime: 'codex', homeDir });
     expect(JSON.stringify(result)).not.toContain('sk-DO-NOT-LEAK-mePLEASE12345678');
+  });
+
+  it('AAP-100 — per-runtime scope: a Codex audit does not surface Claude Code findings', async () => {
+    // Seed BOTH ~/.codex/* and ~/.claude.json with MCP servers.
+    await mkdir(join(homeDir, '.codex'), { recursive: true });
+    await writeFile(
+      join(homeDir, '.codex/config.toml'),
+      `
+[mcp_servers.slack]
+url = "https://slack-mcp.example.com"
+`,
+    );
+    await writeFile(
+      join(homeDir, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {
+          postgres: { command: 'postgres-mcp' },
+        },
+      }),
+    );
+
+    const result = await runDiscovery({ runtime: 'codex', homeDir });
+
+    // Only the Codex agent should be present.
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]!.runtime).toBe('codex');
+    const names = result.agents[0]!.mcpServers.map((s) => s.name);
+    expect(names).toContain('slack');
+    expect(names).not.toContain('postgres');
+
+    // None of the scanned paths should touch ~/.claude.json.
+    const claudePaths = result.scannedPaths.filter((p) => p.includes('.claude'));
+    expect(claudePaths).toEqual([]);
+  });
+
+  it('AAP-100 — per-runtime scope: a Claude Code audit does not surface Codex findings', async () => {
+    await mkdir(join(homeDir, '.codex'), { recursive: true });
+    await writeFile(
+      join(homeDir, '.codex/config.toml'),
+      `
+[mcp_servers.slack]
+url = "https://slack-mcp.example.com"
+`,
+    );
+    await writeFile(
+      join(homeDir, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {
+          postgres: { command: 'postgres-mcp' },
+        },
+      }),
+    );
+
+    const result = await runDiscovery({ runtime: 'claude-code', homeDir });
+
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]!.runtime).toBe('claude-code');
+    const names = result.agents[0]!.mcpServers.map((s) => s.name);
+    expect(names).toContain('postgres');
+    expect(names).not.toContain('slack');
+
+    const codexPaths = result.scannedPaths.filter((p) => p.includes('.codex'));
+    expect(codexPaths).toEqual([]);
   });
 });
