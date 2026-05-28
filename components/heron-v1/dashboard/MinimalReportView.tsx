@@ -29,7 +29,7 @@ import {
   SEVERITY_BAND_LABEL,
   type CodedVerdictFinding,
 } from '@/src/report/finding-display';
-import { getMitigationHint } from '@/src/report/mitigation-catalog';
+import { getMitigationHint, getSlfMitigationHint } from '@/src/report/mitigation-catalog';
 import type {
   EvidenceSource,
   ReportSeverityBand,
@@ -108,15 +108,27 @@ interface MinimalReportJson {
   localAgentDiscovery?: unknown;
 }
 
-// ─── Project name extraction (Q1 answer) ──────────────────────────────
+// ─── Project name extraction ──────────────────────────────────────────
 //
-// The runtime "Codex desktop agent in /path" name is uninformative. We
-// try to extract the project name from the interview transcript's Q1
-// answer (category=purpose, asks for project/product name). The
-// pattern that works on the Codex demo: "1. Project/product name: <name>".
+// AAP-105 C1: the runtime "Codex desktop agent in /path" name is
+// uninformative — every Codex audit ends up with the same header. We
+// extract the project name from two sources, in order of reliability:
 //
-// If extraction fails we fall back to a labelled placeholder so it's
-// obvious the analyzer needs a fix.
+//   1. `agentPurpose` (LLM-distilled summary on report.json) — the
+//      analyzer already picked the canonical pipeline / product name
+//      from Q1 + Q26-Q28 answers. It's the highest-signal field, and
+//      the noun phrase before the first comma / "for" / "that" is
+//      almost always the right answer.
+//   2. Q1 transcript answer — structured "1. Project/product name: <X>"
+//      block. The Codex desktop probe stuffs runtime metadata into the
+//      first line ("Codex desktop GPT-5 coding agent operating in
+//      workspace …, whose repository is `mvp-edu-content-agent`"), so
+//      we also look for a backticked repo identifier as a secondary
+//      signal and humanize it (`mvp-edu-content-agent` → "MVP Edu
+//      Content Agent"). The "1. … name: …" lookup remains the last
+//      structured fallback.
+//   3. Runtime metadata (fallback only) — surfaces a `fallback name`
+//      badge so it's visually obvious extraction failed.
 
 interface TranscriptEntry {
   category?: string;
@@ -124,45 +136,234 @@ interface TranscriptEntry {
   answer?: string;
 }
 
+const NAME_NOISE_PHRASES = [
+  /codex desktop( gpt-?5)?( coding)? agent/i,
+  /coding agent/i,
+  /local workspace/i,
+  /the agent/i,
+];
+
+function isUsefulName(name: string): boolean {
+  if (!name) return false;
+  const trimmed = name.trim();
+  if (trimmed.length < 3 || trimmed.length > 80) return false;
+  for (const noise of NAME_NOISE_PHRASES) {
+    if (noise.test(trimmed)) return false;
+  }
+  return true;
+}
+
+/**
+ * AAP-105 C2: derive a short human-readable system name from the
+ * analyzer's kebab-case `systemId`.
+ *
+ *   "google-sheets-api"      → "Google Sheets"
+ *   "openai-codex-runtime"   → "OpenAI Codex"
+ *   "telegram-bot-api"       → "Telegram"
+ *   "gemini-api"             → "Gemini"
+ *   "wellkid-api"            → "Wellkid"
+ *
+ * Strips trailing noise suffixes (`-api`, `-rest`, `-v1`, `-prod`,
+ * `-runtime`, etc.). Caps at the first 3 meaningful tokens so the
+ * label fits the System column.
+ */
+function humanizeSystemId(systemId: string): string {
+  if (!systemId) return 'Unknown';
+  const id = systemId.trim().toLowerCase();
+  // If it's already a sentence (analyzer leaked prose), give up gracefully:
+  // collapse whitespace and cap at 40 chars.
+  if (/\s/.test(systemId) || systemId.length > 50) {
+    const collapsed = systemId.replace(/\s+/g, ' ').trim();
+    return collapsed.length <= 40 ? collapsed : collapsed.slice(0, 40).trim() + '…';
+  }
+  // Tokenize, drop trailing noise tokens.
+  let tokens = id.split(/[-_]/).filter((t) => t.length > 0);
+  const NOISE = new Set([
+    'api', 'rest', 'graphql', 'grpc', 'rpc',
+    'v1', 'v2', 'v3', 'v4', 'v5',
+    'prod', 'production', 'dev', 'staging',
+    'runtime', 'service', 'endpoint', 'backend',
+  ]);
+  // Strip noise from the END only (keep "openai" in "openai-codex-runtime").
+  while (tokens.length > 1 && NOISE.has(tokens[tokens.length - 1]!)) {
+    tokens = tokens.slice(0, -1);
+  }
+  // Cap at the first 3 tokens for column-fit.
+  tokens = tokens.slice(0, 3);
+  // Title-case with brand-aware overrides.
+  const BRANDS: Record<string, string> = {
+    google: 'Google',
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    gemini: 'Gemini',
+    gamma: 'Gamma',
+    telegram: 'Telegram',
+    slack: 'Slack',
+    github: 'GitHub',
+    gitlab: 'GitLab',
+    aws: 'AWS',
+    gcp: 'GCP',
+    azure: 'Azure',
+    notion: 'Notion',
+    airtable: 'Airtable',
+    salesforce: 'Salesforce',
+    hubspot: 'HubSpot',
+    sheets: 'Sheets',
+    docs: 'Docs',
+    drive: 'Drive',
+    gmail: 'Gmail',
+    calendar: 'Calendar',
+    bot: 'Bot',
+    codex: 'Codex',
+    wellkid: 'Wellkid',
+  };
+  return tokens
+    .map((t) => BRANDS[t] ?? (t.charAt(0).toUpperCase() + t.slice(1)))
+    .join(' ');
+}
+
+function humanizeKebab(s: string): string {
+  return s
+    .split(/[-_]/)
+    .filter((p) => p.length > 0)
+    .map((p) => {
+      // Keep common short uppercase tokens as-is (MVP, API, AI, OCR, etc.).
+      if (/^[a-z]{2,4}$/.test(p) && /^(mvp|api|ai|ml|llm|ui|ux|sdk|crm|cms|cli|aws|gcp|qa)$/i.test(p)) {
+        return p.toUpperCase();
+      }
+      // Title-case other words; map known abbreviations.
+      if (p.toLowerCase() === 'edu') return 'Educational';
+      return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
+/**
+ * Extract a project name from `agentPurpose` prose. Looks for the
+ * standout noun phrase the LLM almost always emits: the lead clause
+ * describing the pipeline / agent / product.
+ *
+ * Heuristics, in order:
+ *   - "<X> pipeline" / "<X> system" / "<X> agent" / "<X> service" / "<X> platform"
+ *   - first noun phrase up to ~6 capitalized-or-lowercase words before
+ *     a verb / preposition. We bias toward including descriptors like
+ *     "MVP educational content".
+ */
+function extractFromAgentPurpose(purpose: string): string | null {
+  if (!purpose) return null;
+  const text = purpose.trim();
+
+  // Pattern A: "<a|an|the> <X> <noun>" where noun ∈ pipeline / system /
+  // platform / service / agent / orchestrator / workflow / app.
+  //
+  // The key constraint: we anchor on a leading article ("an MVP …
+  // pipeline"), which forces the regex to pick the OUTERMOST noun
+  // phrase rather than a sub-phrase like "Russian educational
+  // lessons". `[\s\S]+?` is non-greedy so the article-to-noun span
+  // stays minimal, but article-anchoring guarantees we cover the
+  // full descriptor up to the head noun.
+  const articlePattern = /\b(?:a|an|the)\s+([A-Za-z][\w-]*(?:\s+(?!for\b|that\b|which\b|to\b|in\b|on\b|and\b)[\w-]+){0,7})\s+(pipeline|system|platform|service|orchestrator|workflow|app|backend|product|application)\b/i;
+  const m1 = text.match(articlePattern);
+  if (m1 && m1[1]) {
+    const titled = titleCasePhrase(`${m1[1]} ${m1[2]}`);
+    if (isUsefulName(titled)) return titled;
+  }
+
+  // Pattern B: agent-specific — "the X agent" but only when X is at
+  // least 2 tokens. Avoid matching "the agent edits" (Pattern A's
+  // negative lookahead already blocks single-token verbs but this
+  // adds a safety net for the bare phrase).
+  const agentPattern = /\b(?:a|an|the)\s+([A-Z][\w-]+(?:\s+[\w-]+){1,5})\s+agent\b/;
+  const m2 = text.match(agentPattern);
+  if (m2 && m2[1]) {
+    const titled = titleCasePhrase(`${m2[1]} agent`);
+    if (isUsefulName(titled)) return titled;
+  }
+
+  // Pattern C: "for <X>" lead-in for short prose lacking the article
+  // anchor. Last-resort heuristic.
+  const forMatch = text.match(/\bfor\s+(?:a|an|the)\s+([A-Z][A-Za-z0-9 -]{4,60})\b/);
+  if (forMatch && forMatch[1] && isUsefulName(forMatch[1])) {
+    return titleCasePhrase(forMatch[1].trim());
+  }
+
+  return null;
+}
+
+function titleCasePhrase(s: string): string {
+  const stopwords = new Set([
+    'a', 'an', 'and', 'or', 'of', 'for', 'in', 'on', 'the', 'to', 'with', 'by',
+  ]);
+  return s
+    .split(/\s+/)
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      if (i > 0 && stopwords.has(lower)) return lower;
+      // Preserve internal capitalization (MVP, GPT-5, API, etc.) if already
+      // present, otherwise title-case.
+      if (/^[A-Z]{2,}$/.test(w)) return w;
+      if (/^[A-Z][a-z0-9]+$/.test(w)) return w;
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(' ')
+    .trim();
+}
+
 function extractProjectName(
   transcript: TranscriptEntry[] | undefined,
   fallback: string | undefined,
+  agentPurpose: string | undefined,
 ): { name: string; isFallback: boolean } {
-  if (!transcript || transcript.length === 0) {
-    return { name: fallback || 'Unnamed agent', isFallback: true };
-  }
-  // Look at the first 3 transcript entries for a purpose-category answer.
-  const candidates = transcript
-    .slice(0, 3)
-    .filter((t) => (t.category || '').toLowerCase() === 'purpose');
-  for (const c of candidates) {
-    const a = (c.answer || '').trim();
-    if (!a) continue;
-    // Pattern 1: "1. Project/product name: <name>"
-    const m1 = a.match(/(?:project\/product name|project name|product name)\s*[:\-]\s*([^\n.]+)/i);
-    if (!m1 || !m1[1]) continue;
-    let name = m1[1].trim();
-    // Strip backticks and asterisks.
-    name = name.replace(/[`*]/g, '');
-    // Form 1: "Codex3 workspace for MVP Edu Content Agent (mvp-edu-content-agent)"
-    //         → take what comes after "for " up to the open paren / comma.
-    const forMatch = name.match(/for\s+([A-Z][^()]+?)(?:\s*\(|\s*,|\s*\.|$)/);
-    if (forMatch && forMatch[1]) {
-      name = forMatch[1].trim();
-    } else {
-      // Form 2: "MVP Edu Content Agent, running in the local workspace..."
-      //         → trim at the first ", running" / ", deployed" / "; " etc.
-      // Also strip parenthetical clarifications.
-      name = name.split(/[,;]/)[0].trim();
-      name = name.split('(')[0].trim();
-    }
-    // Strip trailing punctuation.
-    name = name.replace(/[.,;]+$/, '').trim();
-    if (name.length > 0 && name.length < 80) {
-      return { name, isFallback: false };
+  // Source #1: agentPurpose (LLM-distilled, highest signal).
+  if (agentPurpose) {
+    const fromPurpose = extractFromAgentPurpose(agentPurpose);
+    if (fromPurpose && isUsefulName(fromPurpose)) {
+      return { name: fromPurpose, isFallback: false };
     }
   }
-  // Fallback path
+
+  // Source #2: Q1 transcript answer ("1. Project/product name: ...").
+  if (transcript && transcript.length > 0) {
+    const candidates = transcript
+      .slice(0, 3)
+      .filter((t) => (t.category || '').toLowerCase() === 'purpose');
+
+    for (const c of candidates) {
+      const a = (c.answer || '').trim();
+      if (!a) continue;
+
+      // Sub-pattern 2a: backticked repo identifier (Codex desktop probe pattern).
+      // "whose repository is `mvp-edu-content-agent`" → "MVP Edu Content Agent"
+      const repoMatch = a.match(/repositor(?:y|ies)\s+(?:is|are|named|called)\s+`([a-z0-9_-]{3,60})`/i);
+      if (repoMatch && repoMatch[1]) {
+        const humanized = humanizeKebab(repoMatch[1]);
+        if (isUsefulName(humanized)) {
+          return { name: humanized, isFallback: false };
+        }
+      }
+
+      // Sub-pattern 2b: structured "1. Project/product name: <X>" header.
+      const m1 = a.match(/(?:project\/product name|project name|product name)\s*[:\-]\s*([^\n.]+)/i);
+      if (m1 && m1[1]) {
+        let name = m1[1].trim().replace(/[`*]/g, '');
+        // Strip trailing "operating in workspace …" / "running in the local …".
+        name = name.split(/\s+(?:operating|running|deployed|hosted|located)\s+in\b/i)[0]!.trim();
+        // "Codex3 workspace for MVP Edu Content Agent (mvp-edu-content-agent)"
+        const forMatch = name.match(/for\s+([A-Z][^()]+?)(?:\s*\(|\s*,|\s*\.|$)/);
+        if (forMatch && forMatch[1]) {
+          name = forMatch[1].trim();
+        } else {
+          name = name.split(/[,;]/)[0]!.trim().split('(')[0]!.trim();
+        }
+        name = name.replace(/[.,;]+$/, '').trim();
+        if (isUsefulName(name)) {
+          return { name, isFallback: false };
+        }
+      }
+    }
+  }
+
+  // Source #3: runtime metadata (last resort).
   return { name: fallback || 'Unnamed agent', isFallback: true };
 }
 
@@ -453,10 +654,13 @@ function PurposeBlock({ json }: { json: MinimalReportJson }) {
   }, [initialOpen]);
   const purpose = (json.agentPurpose || '').trim();
   if (!purpose) return null;
-  // Fix 2 / Fix 6: truncate to the first sentence (split on ". " boundary).
-  // If the first sentence runs >300 chars, fall back to char-based cut at
-  // the previous word boundary. Always append the Details ▸ toggle.
-  const pitch = useMemo(() => firstSentence(purpose, 300), [purpose]);
+  // Fix 2 / Fix 6 / AAP-105 NEW-2: collapsed pitch shows the first 2
+  // sentences (or up to ~360 chars at a sentence boundary). G7 iter 2
+  // truncated at the first period, which was too curt for the demo
+  // session — readers lost the bit explaining what the pipeline
+  // actually does. Two sentences gives the reader a useful peek
+  // without dumping the full LLM analyzer paragraph.
+  const pitch = useMemo(() => firstSentences(purpose, 2, 440), [purpose]);
   return (
     <section
       style={{
@@ -534,30 +738,63 @@ function PurposeBlock({ json }: { json: MinimalReportJson }) {
 }
 
 /**
- * Fix 2 / Fix 6: split on the first ". " (or "! " / "? ") boundary and
- * return that first sentence verbatim. If the first sentence is longer
- * than `charFallback`, fall back to a word-boundary char cut so we don't
- * dump a 600-char "sentence" into the collapsed view. The collapsed body
- * always reads as a complete clause, never mid-word.
+ * Fix 2 / Fix 6 / AAP-105 NEW-2: walk forward through sentence-end
+ * markers (". ", "! ", "? ") and return up to `maxSentences` sentences
+ * worth of text, capped at `charLimit`. The collapsed body always
+ * reads as a complete clause, never mid-word.
+ *
+ *   - If the first sentence already runs past `charLimit`, we fall
+ *     back to a single sentence + char-based truncation with ellipsis.
+ *   - If we hit `maxSentences` before `charLimit`, we return that.
+ *   - If the text contains fewer than `maxSentences` sentences, we
+ *     return what's there.
+ *
+ * On the demo session this picks up the second sentence ("The
+ * pipeline processes Google Sheets rows through Gemini/OpenAI content
+ * generation…") which is what readers actually need to understand
+ * what the agent does.
  */
-function firstSentence(text: string, charFallback: number): string {
+function firstSentences(text: string, maxSentences: number, charLimit: number): string {
   const t = text.trim();
   if (!t) return '';
-  // Prefer the earliest sentence-end marker.
-  const candidates = ['. ', '! ', '? ']
-    .map((m) => t.indexOf(m))
-    .filter((i) => i > 0);
-  if (candidates.length > 0) {
-    const cut = Math.min(...candidates);
-    const first = t.slice(0, cut + 1); // include the period.
-    if (first.length <= charFallback) return first;
-  } else if (t.length <= charFallback) {
-    return t;
+  if (t.length <= charLimit && maxSentences <= 0) return t;
+
+  // Build the list of sentence-end positions in order. A sentence-end
+  // is either ". " / "! " / "? " mid-text, or terminal "." / "!" / "?"
+  // at end of string (otherwise the LAST sentence — which has no
+  // trailing space — never registers as a boundary).
+  const ends: number[] = [];
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (c !== '.' && c !== '!' && c !== '?') continue;
+    const next = i + 1 < t.length ? t[i + 1] : '';
+    if (next === ' ' || next === '') {
+      ends.push(i + 1); // include the punctuation
+    }
   }
-  // Fallback: char-based, cut at the last whitespace before the limit.
-  const window = t.slice(0, charFallback);
+
+  // Walk forward picking up sentences until we have `maxSentences` or
+  // would exceed `charLimit`.
+  let cut = -1;
+  let count = 0;
+  for (const e of ends) {
+    if (e > charLimit) break;
+    cut = e;
+    count += 1;
+    if (count >= maxSentences) break;
+  }
+
+  if (cut > 0) {
+    // Found a clean sentence boundary within the limit.
+    return t.slice(0, cut).trimEnd();
+  }
+
+  // No sentence boundary within the limit — char-based truncation at
+  // the last whitespace before `charLimit`.
+  if (t.length <= charLimit) return t;
+  const window = t.slice(0, charLimit);
   const ws = window.lastIndexOf(' ');
-  return t.slice(0, ws > 0 ? ws : charFallback).trimEnd() + '…';
+  return t.slice(0, ws > 0 ? ws : charLimit).trimEnd() + '…';
 }
 
 // ─── Block 3: Systems & access ────────────────────────────────────────
@@ -644,6 +881,14 @@ function SystemRow({
     ? `${findingsCount} verified finding(s) touch this system`
     : 'No verified discrepancies for this system';
 
+  // AAP-105 C2: surface a short canonical name (e.g. "Google Sheets")
+  // as the primary row label, with the raw kebab id shown beneath in
+  // muted mono type. Some analyzer outputs still ship long technical
+  // prose in `systemId`; if `humanizeSystemId` can't shorten further
+  // we fall back to the systemId verbatim.
+  const displayName = humanizeSystemId(system.systemId);
+  const showRawId = displayName.toLowerCase() !== system.systemId.toLowerCase().replace(/[-_]/g, ' ');
+
   return (
     <>
       <tr
@@ -652,11 +897,21 @@ function SystemRow({
       >
         <td style={{ padding: '10px 8px 10px 0', borderBottom: '1px solid #f1f5f9', verticalAlign: 'middle' }}>
           <span style={{ marginRight: 6, color: '#a1a1aa', fontSize: 11 }}>{open ? '▼' : '▸'}</span>
-          <span
-            className="mono"
-            style={{ fontSize: 13, fontWeight: 500, color: '#18181b' }}
-          >
-            {system.systemId}
+          <span style={{ display: 'inline-flex', flexDirection: 'column', verticalAlign: 'middle' }}>
+            <span
+              style={{ fontSize: 13, fontWeight: 600, color: '#18181b', lineHeight: 1.2 }}
+            >
+              {displayName}
+            </span>
+            {showRawId && (
+              <span
+                className="mono"
+                style={{ fontSize: 10.5, color: '#a1a1aa', lineHeight: 1.2, marginTop: 1 }}
+                title={system.systemId}
+              >
+                {system.systemId}
+              </span>
+            )}
           </span>
         </td>
         <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9' }}>
@@ -1182,7 +1437,16 @@ function MinimalFindingCard({ finding }: { finding: CodedVerdictFinding }) {
     ...(finding.severityComponents.brA !== undefined && { brA: finding.severityComponents.brA }),
   });
 
-  const fallbackHint = getMitigationHint({ evidenceSource: finding.evidenceSource });
+  // AAP-105 B6: SLF findings get a subcategory-specific mitigation
+  // (oauth-scope / write-log / secrets / vendor / alerting / …) so
+  // each card carries actionable evidence-collection guidance rather
+  // than the same generic "ask the deployer for the MCP config /
+  // OAuth scope grant / .env keys / production audit log" boilerplate.
+  // Non-SLF findings keep the evidence-source fallback.
+  const fallbackHint =
+    finding.evidenceSource === 'SLF'
+      ? getSlfMitigationHint({ title: finding.title, description: finding.description })
+      : getMitigationHint({ evidenceSource: finding.evidenceSource });
   const analyzerNotes = (finding as { analyzerNotes?: string }).analyzerNotes;
   const mitigation = analyzerNotes && analyzerNotes.length > 0 ? analyzerNotes : fallbackHint;
 
@@ -1729,7 +1993,11 @@ export default function MinimalReportView({
       </div>
     );
   }
-  const { name: projectName, isFallback } = extractProjectName(transcript, runtimeAgentName);
+  const { name: projectName, isFallback } = extractProjectName(
+    transcript,
+    runtimeAgentName,
+    reportJson.agentPurpose,
+  );
   return (
     <div className="report" style={{ paddingTop: 16 }}>
       <HeaderBlock
