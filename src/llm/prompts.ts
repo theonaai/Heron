@@ -72,8 +72,8 @@ Also assess:
 
 OUTPUT FIELD CONSTRAINTS — fields below have strict shape requirements. Violations cause re-prompts.
 
-- systemId: short kebab-case identifier, ≤50 chars, matches /^[a-z][a-z0-9_-]*$/. Examples: "openai-codex-backend", "greenhouse-prod", "slack-workspace". NOT a sentence. Long descriptive text goes into systemDescription.
-- systemDescription: optional, ≤800 chars. The full prose description of what this system is and how it's accessed.
+- systemId: short kebab-case identifier, ≤50 chars, matches /^[a-z][a-z0-9_-]*$/. Examples: "openai-codex-backend", "greenhouse-prod", "slack-workspace". NOT a sentence. Long descriptive text goes into systemDescription. Use the canonical product / brand stem ("google-sheets", "openai-codex", "telegram-bot") so the dashboard can render a short human-readable label on the row. Do NOT pack version / auth / scope detail into the id ("google-sheets-api-v4-oauth2-user-token" is wrong; "google-sheets" is right).
+- systemDescription: optional, ≤800 chars. The full prose description of what this system is and how it's accessed. ALL technical detail (API version, REST/GraphQL, auth method, OAuth scopes, environment variable names, base URLs, model IDs) belongs here, NOT in systemId. The dashboard renders this under "Implementation notes" in the expanded system row.
 - sources: array of source refs like ["A3", "A4", "A11"]. Source references MUST go here, NOT inline in body text. Each ref MUST correspond to an actual Q/A in the transcript.
 - scopesRequested / scopesNeeded / scopesDelta: arrays of BARE permission tokens, each ≤80 chars. Examples: "drive.readonly", "candidates.read", "shell-execution". NOT prose. NOT prefixed with phrases like "Unused in this task:". The semantic meaning comes from which array the entry is in, not from per-item lead-ins.
 - frequency: structured object with fields runsLastWeek (number | null), callsPerRun (short string like "10-15"), batchSize (number | string), concurrency (one of "sequential" | "parallel" | "mixed" | "unknown"), notes (short paragraph for caveats). NOT a single wall-of-text string.
