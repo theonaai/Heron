@@ -5,7 +5,6 @@ import { analyzeTranscript } from '../analysis/analyzer.js';
 import {
   computeRiskScore,
   applySeverityOverrides,
-  calibrateOverallRiskLevel,
 } from '../analysis/risk-scorer.js';
 import { mapFindingsToRiskCategories } from '../compliance/mapper.js';
 import { renderMarkdownReport } from '../report/templates.js';
@@ -277,12 +276,11 @@ export class SessionManager {
       // AAP-43 P1 #6: compute DQ AFTER analysis so we can penalize extracted NOT_PROVIDED
       const dataQuality = computeDataQuality(transcript, analysis.systems);
       const riskScore = computeRiskScore(analysis.systems, analysis.risks);
-      // AAP-69: reconcile overallRiskLevel pill with the verdict — DENY
-      // cannot ship as `medium`, bare APPROVE cannot ship as `critical`.
-      const calibratedOverall = calibrateOverallRiskLevel(
-        riskScore.overall,
-        analysis.recommendation,
-      );
+      // AAP-102 — `calibrateOverallRiskLevel` removed. The rubric's
+      // honest `riskScore.overall` is the legacy compatibility field;
+      // posture (FIPS 199 high-water-mark) on the verdict drives the
+      // new gradient bar.
+      const calibratedOverall = riskScore.overall;
       const compliance = mapFindingsToRiskCategories({
         systems: analysis.systems,
         transcript,

@@ -120,15 +120,10 @@ describe('report templates', () => {
     expect(md).toContain('crm.objects.contacts.write');
   });
 
-  it('renders recommendation verdict', () => {
-    // AAP-93 H8 — the calibrated verdict label is computed from
-    // `verification.status` + `hasHighFindings`. The sample report has
-    // no `verification.status` (defaults to interrogation-only) and
-    // a HIGH finding, so the renderer picks
-    // `PROVISIONAL — VERIFY HIGH FINDINGS BEFORE APPROVAL`.
-    const md = renderMarkdownReport(sampleReport);
-    expect(md).toContain('PROVISIONAL');
-  });
+  // AAP-102 — `renders recommendation verdict` removed. The calibrated
+  // verdict label ('PROVISIONAL — VERIFY HIGH FINDINGS BEFORE APPROVAL'
+  // etc.) is no longer produced; `calibrateVerdictLabel` returns ''.
+  // G4 (AAP-103) redesigns the verdict display.
 
   it('renders risks sorted by severity', () => {
     const md = renderMarkdownReport(sampleReport);

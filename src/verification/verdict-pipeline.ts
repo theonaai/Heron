@@ -18,7 +18,7 @@
 
 import type { DiscoveryFinding, DiscoveryResult } from '../discovery/types.js';
 import type { ReportVerificationStatus, Risk } from '../report/types.js';
-import { updateSessionMeta, type RiskLevel as SessionRiskLevel } from '../storage/sessions.js';
+import { updateSessionMeta } from '../storage/sessions.js';
 import type { TranscriptEntry } from '../storage/sessions.js';
 import type { SourceVerification } from './types.js';
 import { computeVerdict, type Verdict } from './verdict.js';
@@ -50,9 +50,8 @@ function extractDiscoveryFindings(reportJson: unknown): DiscoveryFinding[] | und
   return j.localAgentDiscovery.findings;
 }
 
-function transcriptToText(transcript: TranscriptEntry[]): string {
-  return transcript.map((t) => `${t.question}\n${t.answer}`).join('\n');
-}
+// AAP-102 — `transcriptToText` removed. The verdict no longer consumes
+// raw transcript text (the discrepancy detector was the only caller).
 
 /**
  * Build a `Verdict` from a session's analyzer report.json blob,
@@ -84,13 +83,10 @@ export function computeVerdictFromArtifacts(args: {
   } else {
     discoveryFindings = extractDiscoveryFindings(args.reportJson);
   }
-  const interviewTranscriptText = args.transcript
-    ? transcriptToText(args.transcript)
-    : '';
 
   // AAP-75 — surface enumerated MCP servers so the verdict can factor
-  // write-tool count into the deterministic ramp. Pull from the
-  // fresh-scan override when present (avoids a race with patchReportJson);
+  // write-tool count into the BR-W axis. Pull from the fresh-scan
+  // override when present (avoids a race with patchReportJson);
   // otherwise dig into the persisted reportJson shape.
   const discoveredAgents = args.discoveryOverride
     ? args.discoveryOverride.agents
@@ -102,9 +98,10 @@ export function computeVerdictFromArtifacts(args: {
   if (args.oauthVerificationsOverride !== undefined) {
     inputs.oauthVerifications = args.oauthVerificationsOverride;
   }
-  if (interviewTranscriptText.length > 0) {
-    inputs.interviewTranscriptText = interviewTranscriptText;
-  }
+  // AAP-102 — `interviewTranscriptText` removed (discrepancy detector
+  // was the only consumer). Transcript no longer participates in
+  // verdict computation; SLF findings carry the agent's claims as
+  // structured data instead.
   if (discoveredAgents !== undefined) inputs.discoveredAgents = discoveredAgents;
   return computeVerdict(inputs);
 }
@@ -134,28 +131,41 @@ function extractDiscoveredAgents(
 /**
  * Persist a verdict onto session meta. Sets:
  *   - verificationStatus
- *   - deterministicRiskLevel (when present)
- *   - interviewRiskLevel (when present)
- *   - riskLevel — legacy alias. Set to primaryRiskLevel so the existing
- *     dashboard / report download paths keep working without a code
- *     change. The string 'unverified' is a valid value here; the
- *     dashboard renders it as the new "VERIFICATION REQUIRED" badge.
+ *   - riskLevel — legacy alias. AAP-102 maps the posture band onto the
+ *     legacy `low/medium/high/critical` enum so existing dashboard /
+ *     report download paths keep working without a code change.
+ *     `'unverified'` flows through when no Surface 2 evidence exists so
+ *     the dashboard still renders the "VERIFICATION REQUIRED" pill.
  */
 export async function persistVerdict(sessionId: string, verdict: Verdict): Promise<void> {
   const patch: Parameters<typeof updateSessionMeta>[1] = {
     verificationStatus: verdict.status,
-    // The legacy field stays a free-form string; primaryRiskLevel widens
-    // it to include 'unverified', which is exactly what we want for the
-    // dashboard's red "verification required" pill on pre-AAP-63 sessions.
-    riskLevel: verdict.primaryRiskLevel,
+    riskLevel: postureToLegacyRiskLevel(verdict),
   };
-  if (verdict.deterministicRiskLevel !== undefined) {
-    patch.deterministicRiskLevel = verdict.deterministicRiskLevel as SessionRiskLevel;
-  }
-  if (verdict.interviewRiskLevel !== undefined) {
-    patch.interviewRiskLevel = verdict.interviewRiskLevel as SessionRiskLevel;
-  }
   await updateSessionMeta(sessionId, patch);
+}
+
+/**
+ * AAP-102 — map the new posture model back onto the legacy free-form
+ * `riskLevel` string for storage-side back-compat. The field on
+ * `AuditSession.riskLevel` is `string | undefined` (not the strict
+ * RiskLevel enum) so 'unverified' flows through cleanly. G4 will remove
+ * this once dashboard reads `posture` directly.
+ */
+function postureToLegacyRiskLevel(verdict: Verdict): string {
+  if (verdict.status === 'unverified') return 'unverified';
+  switch (verdict.postureBand) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+      return 'high';
+    case 'medium':
+      return 'medium';
+    case 'low':
+    case 'informational':
+    default:
+      return 'low';
+  }
 }
 
 /**
