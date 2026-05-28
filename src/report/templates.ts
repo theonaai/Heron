@@ -1685,37 +1685,16 @@ function recommendationTitle(body: string): string {
 function renderVerdict(
   report: AuditReport,
   discoveryFindings: ReadonlyArray<DiscoveryFinding> = [],
-  verdictContext?: Verdict,
+  _verdictContext?: Verdict,
 ): string {
-  // AAP-93 H8 — verdict label is calibrated against the verification
-  // status and the combined HIGH-finding stream (Surface 1 risks +
-  // Surface 2 discovery HIGHs + verdict-level deterministic HIGH).
-  // Pre-fix `APPROVE WITH CONDITIONS` would fire for partial-verified
-  // + 1 HIGH self-reported, which reads as Heron rubber-stamping a
-  // risky deployment. The new matrix lives in `calibrateVerdictLabel`;
-  // the analyzer's original `report.recommendation` is preserved on
-  // the JSON for back-compat.
-  //
-  // Codex round 6 P2: discoveryFindings can be empty when only OAuth
-  // ran (the `skipFilesystem: true` path) but OAuth introspection
-  // can still produce a deterministic HIGH. The verdict's
-  // `deterministicRiskLevel` captures the combined Surface 2 ramp
-  // (discovery + OAuth) so we read it here as a third HIGH-finding
-  // source.
-  const hasHighSelfReported = report.risks.some(
-    (r) => r.severity === 'high' || r.severity === 'critical',
-  );
-  const hasHighDeterministic = discoveryFindings.some(
-    (f) => f.severity === 'HIGH',
-  );
-  const verdictDeterministicHigh =
-    verdictContext?.deterministicRiskLevel === 'high' ||
-    verdictContext?.deterministicRiskLevel === 'critical';
+  // AAP-104 D1 — `calibrateVerdictLabel` is the AAP-102 stub that
+  // returns ''. The `hasHighFindings` argument no longer affects the
+  // output. Kept the call so the deprecation chain stays explicit;
+  // the verdict empty-string carve-out below renders no bold label.
   const verdict = calibrateVerdictLabel({
     recommendation: report.recommendation,
     verificationStatus: report.verification?.status,
-    hasHighFindings:
-      hasHighSelfReported || hasHighDeterministic || verdictDeterministicHigh,
+    hasHighFindings: false,
   });
   const recs = report.recommendations;
 
@@ -1754,7 +1733,15 @@ function renderVerdict(
     }
   }
 
-  let body = `**${verdict}**`;
+  // AAP-104 D1 — `calibrateVerdictLabel` is the AAP-102 no-op stub
+  // returning the empty-string sentinel. When the renderer just emits
+  // `**${verdict}**` the markdown body is left with a bare `****` line
+  // (and the dashboard mirrors it via VerdictBanner). Skip the line
+  // entirely when there is no label. The reviewer decides the verdict;
+  // Heron computes posture. The empty-string carve-out below preserves
+  // the legacy path for any pre-AAP-102 persisted report that still
+  // carries a string label (`APPROVE WITH CONDITIONS`, …).
+  let body = verdict ? `**${verdict}**` : '';
 
   if (allRecs.length > 0) {
     // AAP-64 — each recommendation becomes a markdown blockquote card.
