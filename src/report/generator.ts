@@ -241,8 +241,13 @@ export class AnalysisFailedError extends Error {
 // generator.ts calls mapFindingsToRiskCategories() directly and stores the
 // result in AuditReport.compliance (StructuredCompliance / CategorizedCompliance).
 
-/** Compute data quality metrics from the interview transcript (CLI path) */
-function computeDataQualityFromTranscript(
+/**
+ * Compute data quality metrics from the interview transcript (CLI path).
+ *
+ * Exported for AAP-104 regression tests around the structured `frequency`
+ * vs legacy `frequencyAndVolume` mismatch — see `hasFrequencyEvidence`.
+ */
+export function computeDataQualityFromTranscript(
   transcript: QAPair[],
   systems?: SystemAssessment[],
 ): DataQuality {
@@ -301,11 +306,40 @@ function computeNotProvidedPenalty(systems: SystemAssessment[]): number {
   let gaps = 0;
   for (const s of systems) {
     if (!isProvided(s.dataSensitivity)) gaps++;
-    if (!isProvided(s.frequencyAndVolume)) gaps++;
+    // AAP-104 B7 — AAP-65 introduced the structured `frequency` object.
+    // Pre-AAP-104 we still required the legacy prose `frequencyAndVolume`
+    // string to mark the field provided, so Codex sessions that populate
+    // only the structured shape were penalised 8 points per system —
+    // pushing a clean 7-of-7 fieldsProvided session down to score=50.
+    // Now we accept either shape (legacy prose OR a structured frequency
+    // with at least one meaningful subfield).
+    if (!hasFrequencyEvidence(s)) gaps++;
     if (s.scopesRequested.length === 0 || !s.scopesRequested.some(isProvided)) gaps++;
     for (const w of s.writeOperations) {
       if (!isProvided(w.volumePerDay)) gaps++;
     }
   }
   return Math.min(50, gaps * 8);
+}
+
+/**
+ * AAP-104 B7 — true when the system has either:
+ *   - a non-empty legacy `frequencyAndVolume` string, OR
+ *   - a structured `frequency` object with at least one populated
+ *     non-trivial subfield (callsPerRun / batchSize / runsLastWeek /
+ *     concurrency / notes).
+ *
+ * Keeps the data-quality penalty honest for both pre-AAP-65 and
+ * post-AAP-65 sessions.
+ */
+function hasFrequencyEvidence(s: SystemAssessment): boolean {
+  if (isProvided(s.frequencyAndVolume)) return true;
+  const f = s.frequency;
+  if (!f) return false;
+  if (typeof f.callsPerRun === 'string' && f.callsPerRun.trim().length > 0) return true;
+  if (f.batchSize !== undefined && f.batchSize !== null) return true;
+  if (typeof f.runsLastWeek === 'number') return true;
+  if (typeof f.concurrency === 'string' && f.concurrency.length > 0) return true;
+  if (typeof f.notes === 'string' && f.notes.trim().length > 0) return true;
+  return false;
 }
