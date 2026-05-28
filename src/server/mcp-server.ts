@@ -859,12 +859,30 @@ export class HeronMCPServer {
     );
 
     // start_verification (AAP-79) — runtime-permission-gated discovery scan
+    //
+    // AAP-104 A1: the SDK-side `inputSchema` MUST mirror the public
+    // JSON schema in START_VERIFICATION_DEF.inputSchema and the
+    // Zod validator below (startVerificationInputSchema). AAP-100 added
+    // a required `runtime` field to both the public JSON schema and the
+    // Zod validator, but the SDK registration here still only listed
+    // session_id + workspace_hint, so Codex saw a schema without
+    // `runtime` over the wire (tools/list), omitted it, and the Zod
+    // validator rejected the call as invalid_input: runtime missing.
+    // Wire shape, JSON catalog, and Zod schema now match.
     server.registerTool(
       START_VERIFICATION_DEF.name,
       {
         description: START_VERIFICATION_DEF.description,
         inputSchema: {
           session_id: z.string(),
+          runtime: z.enum([
+            'claude-code',
+            'codex',
+            'cursor',
+            'continue',
+            'windsurf',
+            'claude-desktop',
+          ]),
           workspace_hint: z.string().optional(),
         },
       },
@@ -2225,10 +2243,15 @@ export function buildStartVerificationHint(sessionId: string): string {
   return (
     'Analysis complete. This report is based on the interview only. Declared scope ' +
     'is not yet verified against your runtime environment.\n\n' +
-    'To produce a verified report, call the `start_verification` tool. You will be asked ' +
-    'for permission to scan your filesystem for deterministic evidence (MCP configs, ' +
-    'plugin / skill / auth credential names, .env files). No secret values are read.\n\n' +
-    `Session ID: ${sessionId}`
+    'NEXT STEP: call the `start_verification` tool now. Required arguments:\n' +
+    `  - session_id: ${sessionId}\n` +
+    '  - runtime: the runtime under audit, one of: ' +
+    '"claude-code", "codex", "cursor", "continue", "windsurf", "claude-desktop"\n\n' +
+    'You will be asked for permission to scan that runtime\'s filesystem ' +
+    'evidence (MCP configs, plugin / skill / auth credential names, .env ' +
+    'files). No secret values are read.\n\n' +
+    'Until you call `start_verification`, the report stays "unverified" ' +
+    'and the user will not see deterministic evidence.'
   );
 }
 
