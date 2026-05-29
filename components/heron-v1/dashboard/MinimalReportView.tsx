@@ -106,6 +106,16 @@ interface MinimalReportJson {
     }>;
   };
   localAgentDiscovery?: unknown;
+  // AAP-105 A5: L6 OAuth scope-verification results. Present (with a
+  // non-empty `sources`) only when an OAuth introspection actually ran.
+  // The header's "Verified by" line reads this to decide whether to show
+  // "OAuth" vs "OAuth N/A" — derived from real evidence, not the
+  // aggregate verification.status. Mirrors `OAuthScopeVerificationSection`
+  // in lib/report-json.ts.
+  oauthScopeVerification?: {
+    capturedAt?: string;
+    sources?: Array<{ connector?: string; verdict?: string }>;
+  };
 }
 
 // ─── Project name extraction ──────────────────────────────────────────
@@ -464,14 +474,16 @@ function HeaderBlock({
   projectName,
   isFallback,
   verdict,
-  verification,
   metadata,
+  localAgentDiscovery,
+  oauthScopeVerification,
 }: {
   projectName: string;
   isFallback: boolean;
   verdict?: VerdictSnapshot;
-  verification?: MinimalReportJson['verification'];
   metadata?: MinimalReportJson['metadata'];
+  localAgentDiscovery?: unknown;
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
 }) {
   const posture = verdict?.posture ?? 0;
   const band = verdict?.postureBand ?? 'informational';
@@ -494,13 +506,47 @@ function HeaderBlock({
   );
   const countsLine = renderBucketCountsLine(counts);
 
-  // Verified by line — derive from verification + local discovery presence
+  // AAP-105 A5: "Verified by X" must reflect which evidence sources
+  // ACTUALLY ran, not the aggregate verification.status. The old code
+  // showed "Filesystem" whenever status was verified / partially-verified
+  // — but an OAuth-only verification (skipFilesystem with OAuth sources)
+  // also lands those statuses, so it falsely claimed a filesystem scan it
+  // never ran. We derive each source from the real evidence on the report:
+  //
+  //   - Filesystem ran  ⇐  localAgentDiscovery carries scan output
+  //     (agents / findings / scannedPaths / workspaceEnv). The persisted
+  //     `verification` object has no explicit "filesystem ran" flag, so
+  //     localAgentDiscovery presence is the best available proxy — its
+  //     existence means runDiscovery's filesystem readers produced a
+  //     result for this session.
+  //   - OAuth ran       ⇐  oauthScopeVerification.sources is non-empty
+  //     (a real introspection result per connector). Absent / empty →
+  //     OAuth genuinely wasn't in scope → "OAuth N/A".
   const sourcesLine = (() => {
     const parts: string[] = [];
-    if (verification?.status === 'verified' || verification?.status === 'partially-verified') {
-      parts.push('Filesystem');
-    }
-    parts.push('OAuth N/A');
+    const disc =
+      localAgentDiscovery && typeof localAgentDiscovery === 'object'
+        ? (localAgentDiscovery as {
+            agents?: unknown[];
+            findings?: unknown[];
+            scannedPaths?: unknown[];
+            workspaceEnv?: unknown[];
+          })
+        : null;
+    const filesystemRan =
+      !!disc &&
+      ((disc.agents?.length ?? 0) > 0 ||
+        (disc.findings?.length ?? 0) > 0 ||
+        (disc.scannedPaths?.length ?? 0) > 0 ||
+        (disc.workspaceEnv?.length ?? 0) > 0);
+    if (filesystemRan) parts.push('Filesystem');
+
+    const oauthRan = (oauthScopeVerification?.sources?.length ?? 0) > 0;
+    parts.push(oauthRan ? 'OAuth' : 'OAuth N/A');
+
+    // Guard the degenerate case (no filesystem, no OAuth) so the line is
+    // never empty / misleading.
+    if (parts.length === 0) return 'No deterministic sources';
     return parts.join(' · ');
   })();
 
@@ -2325,8 +2371,9 @@ export default function MinimalReportView({
         projectName={projectName}
         isFallback={isFallback}
         verdict={reportJson.verdict}
-        verification={reportJson.verification}
         metadata={reportJson.metadata}
+        localAgentDiscovery={reportJson.localAgentDiscovery}
+        oauthScopeVerification={reportJson.oauthScopeVerification}
       />
       <PurposeBlock json={reportJson} />
       <SystemsBlock systems={reportJson.systems || []} verdict={reportJson.verdict} />
