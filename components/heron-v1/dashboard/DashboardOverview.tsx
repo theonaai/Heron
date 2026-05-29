@@ -2,7 +2,7 @@
 
 import type { AuditSession } from '@/lib/api';
 import StartAuditPanel from './StartAuditPanel';
-import { RiskDot, StatusDot, SectionLabel, relTime } from './atoms';
+import { RiskDot, StatusDot, SectionLabel, relTime, sessionDisplayName } from './atoms';
 
 type KpiTone = 'neutral' | 'pending' | 'high' | 'success';
 
@@ -49,6 +49,15 @@ export default function DashboardOverview({
   const inProgress = sessions.filter(
     (s) => s.status === 'interviewing' || s.status === 'analyzing',
   ).length;
+  // #26 A2 — the TOTAL-vs-COMPLETED gap is by-design (a session can be
+  // analysis_failed / errored / still interviewing), but with the old
+  // "Reports ready" delta the gap read like a bug. Count the sessions that
+  // are neither complete nor actively in progress (failed / errored) so the
+  // Completed delta can spell out the relationship ("7 of 8 · 1 failed")
+  // instead of leaving the missing one unexplained.
+  const failedOrErrored = sessions.filter(
+    (s) => s.status === 'analysis_failed' || s.status === 'error',
+  ).length;
   const highRisk = sessions.filter((s) => {
     const level = s.riskLevel?.toLowerCase();
     return level === 'high' || level === 'critical';
@@ -84,7 +93,18 @@ export default function DashboardOverview({
         <KpiCell
           label="Completed"
           value={complete}
-          delta={complete > 0 ? 'Reports ready' : '—'}
+          // #26 A2 — make the Completed-vs-Total relationship explicit so the
+          // (correct-by-design) gap doesn't read as a miscount. Calls out
+          // failed runs when any exist.
+          delta={
+            complete > 0
+              ? failedOrErrored > 0
+                ? `${complete} of ${total} · ${failedOrErrored} failed`
+                : `${complete} of ${total} · reports ready`
+              : failedOrErrored > 0
+                ? `0 of ${total} · ${failedOrErrored} failed`
+                : '—'
+          }
           tone={complete > 0 ? 'success' : 'neutral'}
         />
         <KpiCell
@@ -147,7 +167,9 @@ export default function DashboardOverview({
               </thead>
               <tbody>
                 {recent.map((s) => {
-                  const displayName = s.agentName || s.id.replace('sess_', '').slice(0, 12);
+                  // #26 A1 — use the shared label resolver so this row matches
+                  // the report card + sidebar (Q1-extracted name preferred).
+                  const displayName = sessionDisplayName(s);
                   return (
                     <tr
                       key={s.id}

@@ -150,3 +150,23 @@ export function relTime(iso: string | null | undefined): string {
   if (d < 30) return `${d}d ago`;
   return new Date(iso).toLocaleDateString();
 }
+
+/**
+ * #26 A1 — single source of truth for the session label shown in the
+ * dashboard OVERVIEW row and the left SIDEBAR. Prefers the Q1-derived
+ * `extractedAgentName` (the same name the report CARD shows), then the
+ * runtime `agentName`, then a truncated session id. Before this, the
+ * overview/sidebar read `agentName` directly and showed "Codex" while the
+ * card showed "MVP Edu Content Agent" for the same session.
+ */
+export function sessionDisplayName(s: {
+  id: string;
+  agentName?: string;
+  extractedAgentName?: string;
+}): string {
+  const extracted = s.extractedAgentName?.trim();
+  if (extracted) return extracted;
+  const runtime = s.agentName?.trim();
+  if (runtime) return runtime;
+  return s.id.replace('sess_', '').replace('sess-', '').slice(0, 12);
+}

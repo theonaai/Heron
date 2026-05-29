@@ -133,6 +133,93 @@ describe('local-files audit-session store', () => {
     expect(detail!.status).toBe('complete');
   });
 
+  // ─── #26 A1 — extractedAgentName stamp + lazy backfill ───────────────
+  describe('extractedAgentName (#26 A1)', () => {
+    // The demo-session Q1 shape: runtime agentName "Codex", but the report
+    // carries the Q1 "Project/product name: MVP Edu Content Agent" answer.
+    const demoReportJson = {
+      agentPurpose:
+        'The agent is an educational content generation and publishing pipeline that processes lesson rows.',
+      transcript: [
+        {
+          category: 'purpose',
+          question: '1. …',
+          answer:
+            '1. Project/product name: MVP Edu Content Agent, in workspace /tmp/x.\n2. Owner: local user.',
+        },
+      ],
+      riskLevel: 'medium',
+    };
+
+    it('writeReport stamps the Q1-extracted name onto meta', async () => {
+      const { id } = await createSession({ agentName: 'Codex' });
+      await writeReport(id, { markdown: '# r', json: demoReportJson });
+      const detail = await getSession(id);
+      expect(detail!.extractedAgentName).toBe('MVP Edu Content Agent');
+      // Runtime name is untouched — the extracted name is additive.
+      expect(detail!.agentName).toBe('Codex');
+      // Persisted to disk (not just computed on read).
+      const meta = JSON.parse(
+        await readFile(join(getSessionsDir(), id, 'meta.json'), 'utf8'),
+      );
+      expect(meta.extractedAgentName).toBe('MVP Edu Content Agent');
+    });
+
+    it('does NOT stamp the runtime name when extraction falls back', async () => {
+      const { id } = await createSession({ agentName: 'Codex' });
+      // No agentPurpose noun phrase, no Q1 name → extraction falls back.
+      await writeReport(id, {
+        markdown: '# r',
+        json: { riskLevel: 'low', transcript: [], agentPurpose: 'does stuff' },
+      });
+      const detail = await getSession(id);
+      expect(detail!.extractedAgentName).toBeUndefined();
+    });
+
+    it('listSessions surfaces extractedAgentName', async () => {
+      const { id } = await createSession({ agentName: 'Codex' });
+      await writeReport(id, { markdown: '# r', json: demoReportJson });
+      const list = await listSessions();
+      const row = list.find((s) => s.id === id);
+      expect(row!.extractedAgentName).toBe('MVP Edu Content Agent');
+    });
+
+    it('lazily backfills sessions whose meta predates the field, WITHOUT bumping updatedAt', async () => {
+      const { id } = await createSession({ agentName: 'Codex' });
+      await writeReport(id, { markdown: '# r', json: demoReportJson });
+      // Simulate a pre-feature session: strip extractedAgentName from meta.
+      const metaPath = join(getSessionsDir(), id, 'meta.json');
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      const originalUpdatedAt = meta.updatedAt;
+      delete meta.extractedAgentName;
+      await writeFile(metaPath, JSON.stringify(meta, null, 2));
+
+      // A read backfills it.
+      const detail = await getSession(id);
+      expect(detail!.extractedAgentName).toBe('MVP Edu Content Agent');
+      const after = JSON.parse(await readFile(metaPath, 'utf8'));
+      expect(after.extractedAgentName).toBe('MVP Edu Content Agent');
+      // Critical: the backfill must NOT reorder the list / shift the
+      // "Updated" column — updatedAt is preserved (#26 A2).
+      expect(after.updatedAt).toBe(originalUpdatedAt);
+    });
+
+    it('listSessions backfill also preserves updatedAt (no list reorder)', async () => {
+      const { id } = await createSession({ agentName: 'Codex' });
+      await writeReport(id, { markdown: '# r', json: demoReportJson });
+      const metaPath = join(getSessionsDir(), id, 'meta.json');
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      const originalUpdatedAt = meta.updatedAt;
+      delete meta.extractedAgentName;
+      await writeFile(metaPath, JSON.stringify(meta, null, 2));
+
+      const list = await listSessions();
+      expect(list.find((s) => s.id === id)!.extractedAgentName).toBe('MVP Edu Content Agent');
+      const after = JSON.parse(await readFile(metaPath, 'utf8'));
+      expect(after.updatedAt).toBe(originalUpdatedAt);
+    });
+  });
+
   it('getSession returns null for unknown id', async () => {
     const out = await getSession('sess-20260101-000000-aaaaaa');
     expect(out).toBeNull();
