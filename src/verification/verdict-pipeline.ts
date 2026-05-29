@@ -22,6 +22,7 @@ import { updateSessionMeta } from '../storage/sessions.js';
 import type { TranscriptEntry } from '../storage/sessions.js';
 import type { SourceVerification } from './types.js';
 import { computeVerdict, type Verdict } from './verdict.js';
+import type { RiskScorableSystem, SystemRiskResult } from './systems-risk.js';
 
 /**
  * Loose shape of the analyzer JSON we care about for verdict computation.
@@ -33,6 +34,7 @@ interface AnalyzerJsonSubset {
   risks?: Risk[];
   overallRiskLevel?: string;
   localAgentDiscovery?: { findings?: DiscoveryFinding[] };
+  systems?: RiskScorableSystem[];
 }
 
 function extractInterviewFindings(reportJson: unknown): Risk[] | undefined {
@@ -40,6 +42,21 @@ function extractInterviewFindings(reportJson: unknown): Risk[] | undefined {
   const j = reportJson as AnalyzerJsonSubset;
   if (!Array.isArray(j.risks)) return undefined;
   return j.risks;
+}
+
+/**
+ * G9 (AAP-106) — pull the declared `systems[]` so the verdict can score
+ * per-system deployment risk into posture. Loosely typed: a malformed /
+ * partial blob degrades to undefined and the systems-risk dimension is
+ * simply absent (posture falls back to the discrepancy HWM).
+ */
+function extractSystemAssessments(
+  reportJson: unknown,
+): RiskScorableSystem[] | undefined {
+  if (!reportJson || typeof reportJson !== 'object') return undefined;
+  const j = reportJson as AnalyzerJsonSubset;
+  if (!Array.isArray(j.systems)) return undefined;
+  return j.systems;
 }
 
 function extractDiscoveryFindings(reportJson: unknown): DiscoveryFinding[] | undefined {
@@ -92,9 +109,15 @@ export function computeVerdictFromArtifacts(args: {
     ? args.discoveryOverride.agents
     : extractDiscoveredAgents(args.reportJson);
 
+  // G9 — declared systems for per-system deployment-risk scoring. Always
+  // sourced from the persisted reportJson (systems don't change with a fresh
+  // discovery scan; they come from the interview analyzer).
+  const systemAssessments = extractSystemAssessments(args.reportJson);
+
   const inputs: Parameters<typeof computeVerdict>[0] = {};
   if (interviewFindings !== undefined) inputs.interviewFindings = interviewFindings;
   if (discoveryFindings !== undefined) inputs.discoveryFindings = discoveryFindings;
+  if (systemAssessments !== undefined) inputs.systemAssessments = systemAssessments;
   if (args.oauthVerificationsOverride !== undefined) {
     inputs.oauthVerifications = args.oauthVerificationsOverride;
   }
@@ -168,6 +191,13 @@ export function buildVerdictSnapshot(verdict: Verdict): {
   status: 'verified' | 'partial' | 'unverified';
   posture: number;
   postureBand: import('./severity-scoring.js').SeverityBand;
+  discrepancyPosture: number;
+  systemsRisk: {
+    posture: number;
+    postureBand: import('./severity-scoring.js').SeverityBand;
+    scanned: boolean;
+    systems: SystemRiskResult[];
+  };
   findings: Array<{
     id: string;
     band: import('./severity-scoring.js').SeverityBand;
@@ -198,6 +228,13 @@ export function buildVerdictSnapshot(verdict: Verdict): {
     status: verdict.status,
     posture: verdict.posture ?? 0,
     postureBand: verdict.postureBand ?? 'informational',
+    discrepancyPosture: verdict.discrepancyPosture ?? 0,
+    systemsRisk: {
+      posture: verdict.systemsRisk?.posture ?? 0,
+      postureBand: verdict.systemsRisk?.postureBand ?? 'informational',
+      scanned: verdict.systemsRisk?.scanned ?? false,
+      systems: verdict.systemsRisk?.systems ?? [],
+    },
     findings: (verdict.findings ?? []).map((f) => ({
       id: f.id,
       band: f.band,

@@ -409,6 +409,36 @@ function classifyDS(prose: string): { tier: 'T1' | 'T2' | 'T3'; label: string } 
   return { tier: 'T1', label: 'T1 (Standard)' };
 }
 
+// ─── G9 (AAP-106): PII / sensitivity basis inline ─────────────────────
+//
+// Surface a compact "why this DS tier" basis next to the sensitivity badge.
+// Prefer the backend-computed `dsBasis` (persisted on `verdict.systemsRisk`,
+// same classifier that drives the risk DS axis — single source of truth).
+// Fall back to a short clause from the sensitivity prose when the snapshot
+// predates G9. Returns '' when there is nothing to show.
+
+function systemDsBasis(
+  system: SystemAssessment,
+  verdict?: VerdictSnapshot,
+): string {
+  const fromSnapshot = verdict?.systemsRisk?.systems?.find(
+    (r) => r.systemId === system.systemId,
+  )?.dsBasis;
+  if (fromSnapshot && fromSnapshot.trim().length > 0) return fromSnapshot.trim();
+  return shortBasisFromProse(system.dataSensitivity || '');
+}
+
+/** First clause of the sensitivity prose, capped — the fallback basis. */
+function shortBasisFromProse(prose: string): string {
+  const p = (prose || '').trim();
+  if (!p) return '';
+  const clause = p.split(/[;.]|,(?=\s)/)[0]?.trim() ?? p;
+  if (clause.length <= 90) return clause;
+  const window = clause.slice(0, 90);
+  const ws = window.lastIndexOf(' ');
+  return clause.slice(0, ws > 0 ? ws : 90).trimEnd() + '…';
+}
+
 // ─── Access tier derivation (read / write / admin) ────────────────────
 
 function classifyAccess(system: SystemAssessment): 'read' | 'write' | 'admin' {
@@ -492,12 +522,54 @@ function HeaderBlock({
 }) {
   const posture = verdict?.posture ?? 0;
   const band = verdict?.postureBand ?? 'informational';
-  const markerPct = posture > 0 ? gradientPercentForSeverity(posture) : 0;
-  const markerColor = posture > 0 ? colorForSeverity(posture) : '#cbd5e1';
-  const postureText =
-    posture === 0
-      ? 'No Verified findings'
-      : `${formatSeverityNumber(posture)} ${SEVERITY_BAND_LABEL[band]}`;
+
+  // G9 (AAP-106) — posture now reflects DEPLOYMENT RISK (per-system blast
+  // radius × sensitivity), not just verified discrepancies. The label must be
+  // positive + risk-based, and distinguish two zero-ish cases:
+  //   - clean + low/no risk (a scan ran, low blast radius, no discrepancies)
+  //     → green "Low risk · no discrepancies", NOT the empty gray "no findings"
+  //   - no scan (discovery never ran, no systems) → gray "Not yet verified"
+  //
+  // `scanned` is true when the systems-risk pass had systems to score OR any
+  // Surface 2 source ran (status left 'unverified' only on a pure no-evidence
+  // baseline). The gradient marker is colored by the risk band whenever there
+  // IS a scan — gray only for the genuine no-scan state.
+  const scanned =
+    (verdict?.systemsRisk?.scanned ?? false) ||
+    (verdict?.status !== undefined && verdict.status !== 'unverified');
+  const verifiedDiscrepancyCount = (verdict?.findings ?? []).filter(
+    (f) => f.evidenceSource !== 'SLF',
+  ).length;
+  const discrepancySubNote =
+    verifiedDiscrepancyCount === 0
+      ? 'no discrepancies'
+      : `${verifiedDiscrepancyCount} discrepanc${verifiedDiscrepancyCount === 1 ? 'y' : 'ies'}`;
+
+  // Marker: colored by band when scanned (green at the low end, ramping to
+  // red); gray only for the no-scan state. When scanned with posture 0 we
+  // still want a green marker at the low end of the gradient, so snap to the
+  // lowest stop rather than hiding the marker.
+  const markerPct = scanned
+    ? gradientPercentForSeverity(posture > 0 ? posture : 1)
+    : 0;
+  const markerColor = scanned
+    ? colorForSeverity(posture > 0 ? posture : 1)
+    : '#cbd5e1';
+
+  let postureText: string;
+  let postureSubNote: string | null;
+  if (posture > 0) {
+    postureText = `${formatSeverityNumber(posture)} ${SEVERITY_BAND_LABEL[band]} risk`;
+    postureSubNote = discrepancySubNote;
+  } else if (scanned) {
+    // Scan ran, low/no blast radius, no discrepancies — honest clean state.
+    postureText = 'Low risk';
+    postureSubNote = discrepancySubNote;
+  } else {
+    // No deterministic scan and no systems scored — genuine no-evidence state.
+    postureText = 'Not yet verified';
+    postureSubNote = null;
+  }
   const counts = countVerifiedByBucket(
     (verdict?.findings ?? []) as Array<{
       evidenceSource: EvidenceSource;
@@ -509,7 +581,17 @@ function HeaderBlock({
       severityComponents: { br: number; ds: number; dm: number };
     }>,
   );
-  const countsLine = renderBucketCountsLine(counts);
+  // G9 (AAP-106) — the bucket-counts line counts VERIFIED DISCREPANCY findings.
+  // With G9 the headline posture can be risk-based even with zero such
+  // findings, so the raw "No verified findings" reads as a contradiction next
+  // to "Medium risk". When the risk is sourced from the systems surface
+  // (posture > 0, no verified discrepancies), say so explicitly; otherwise
+  // keep the bucket breakdown.
+  const systemsScored = verdict?.systemsRisk?.systems?.length ?? 0;
+  const countsLine =
+    verifiedDiscrepancyCount === 0 && posture > 0 && systemsScored > 0
+      ? `Risk from ${systemsScored} system${systemsScored === 1 ? '' : 's'} · 0 verified discrepancies`
+      : renderBucketCountsLine(counts);
 
   // AAP-105 A5: "Verified by X" must reflect which evidence sources
   // ACTUALLY ran, not the aggregate verification.status. The old code
@@ -639,6 +721,19 @@ function HeaderBlock({
             }}
           >
             {postureText}
+            {postureSubNote && (
+              <span
+                style={{
+                  fontSize: 12.5,
+                  fontWeight: 500,
+                  color: '#71717a',
+                  marginLeft: 8,
+                  fontVariantNumeric: 'normal',
+                }}
+              >
+                · {postureSubNote}
+              </span>
+            )}
           </div>
           <div style={{ marginTop: 6 }}>
             <MiniGradientBar markerPct={markerPct} markerColor={markerColor} />
@@ -924,6 +1019,14 @@ function SystemRow({
   const [open, setOpen] = useState(preOpen);
   const access = classifyAccess(system);
   const ds = classifyDS(system.dataSensitivity || '');
+  // G9 (AAP-106) — PII-basis inline. Surface WHY this system got its DS tier
+  // so a reviewer can judge over-classification (e.g. Google Sheets is T2
+  // because "responsible fields may contain names" — operators/staff, a
+  // possibility, not data-subject PII). Prefer the backend-computed basis
+  // (single source of truth, aligned with the risk DS axis); fall back to a
+  // short clause from the prose. We do NOT change how T2 is assigned here —
+  // basis-inline only (the detection re-tune is a later pass).
+  const dsBasis = systemDsBasis(system, verdict);
   const irreversible = hasIrreversibleWrites(system);
   const findingsCount = findingsTouchingSystem(system.systemId, verdict);
   const verifiedGlyph = findingsCount > 0 ? '⚠' : '✓';
@@ -968,8 +1071,22 @@ function SystemRow({
         <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9' }}>
           <AccessBadge tier={access} />
         </td>
-        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9' }}>
-          <SensitivityBadge label={ds.label} tier={ds.tier} />
+        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', maxWidth: 240 }}>
+          <SensitivityBadge label={ds.label} tier={ds.tier} basis={dsBasis} />
+          {dsBasis && (
+            <div
+              style={{
+                fontSize: 10.5,
+                color: '#a1a1aa',
+                lineHeight: 1.35,
+                marginTop: 3,
+                fontStyle: 'italic',
+              }}
+              title={dsBasis}
+            >
+              {ds.tier} — {dsBasis}
+            </div>
+          )}
         </td>
         <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
           {system.writeOperations.length === 0 ? (
@@ -1051,7 +1168,15 @@ function AccessBadge({ tier }: { tier: 'read' | 'write' | 'admin' }) {
   );
 }
 
-function SensitivityBadge({ label, tier }: { label: string; tier: 'T1' | 'T2' | 'T3' }) {
+function SensitivityBadge({
+  label,
+  tier,
+  basis,
+}: {
+  label: string;
+  tier: 'T1' | 'T2' | 'T3';
+  basis?: string;
+}) {
   const color =
     tier === 'T3'
       ? { bg: '#fef2f2', bd: '#fecaca', ink: '#991b1b' }
@@ -1060,6 +1185,7 @@ function SensitivityBadge({ label, tier }: { label: string; tier: 'T1' | 'T2' | 
         : { bg: '#f4f4f5', bd: '#e4e4e7', ink: '#3f3f46' };
   return (
     <span
+      title={basis ? `${tier} — ${basis}` : undefined}
       style={{
         display: 'inline-block',
         padding: '2px 8px',
