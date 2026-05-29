@@ -15,7 +15,7 @@
  * Active when the page URL carries `?layout=minimal`.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 
 import {
   assignFindingCodes,
@@ -1415,11 +1415,32 @@ function CredentialsBlock({ discovery }: { discovery: unknown }) {
   // Narrow `unknown` once at the top. If the field isn't shaped right
   // we render nothing — keeps minimal layout safe for legacy reports
   // without a discovery scan.
+  //
+  // Rules-of-Hooks: the discovery-dependent `useMemo`s live in
+  // `CredentialsBlockInner`, NOT here. This parent's hooks
+  // (`useExpandFlag`, `useState`, `useEffect`) run unconditionally on
+  // every render, so the early return below never changes the hook
+  // count for THIS component. The data hooks then run unconditionally
+  // inside the child whenever it is mounted. Without this split, opening
+  // the report mid-audit (no `localAgentDiscovery`) and then letting
+  // polling populate it would change the number of hooks called between
+  // renders and crash React with an "order of Hooks changed" error.
   if (!discovery || typeof discovery !== 'object') return null;
   const d = discovery as MinimalLocalDiscovery;
+  return <CredentialsBlockInner d={d} open={open} setOpen={setOpen} />;
+}
+
+function CredentialsBlockInner({
+  d,
+  open,
+  setOpen,
+}: {
+  d: MinimalLocalDiscovery;
+  open: boolean;
+  setOpen: Dispatch<SetStateAction<boolean>>;
+}) {
   const keys = useMemo(() => collectEnvKeys(d), [d]);
   const groups = useMemo(() => groupEnvKeysByFamily(keys), [keys]);
-  if (keys.length === 0) return null;
 
   // Collapsed-state preview: prefer recognizable provider-family keys
   // first so the reader sees the wedge-shaped evidence (OPENAI_API_KEY,
@@ -1448,6 +1469,10 @@ function CredentialsBlock({ discovery }: { discovery: unknown }) {
     return picks;
   }, [groups, keys]);
   const hiddenCount = Math.max(0, keys.length - preview.length);
+
+  // All hooks above run unconditionally on every render of this inner
+  // component, so this early return is safe (no hook follows it).
+  if (keys.length === 0) return null;
 
   return (
     <section
