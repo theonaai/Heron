@@ -40,14 +40,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 
-import { claudeCodeReader } from './readers/claude-code.js';
-import { claudeCodeAuthReader } from './readers/claude-code-auth.js';
-import { claudeDesktopReader } from './readers/claude-desktop.js';
-import { codexReader } from './readers/codex.js';
-import { codexAuthReader } from './readers/codex-auth.js';
-import { continueReader } from './readers/continue.js';
-import { cursorReader } from './readers/cursor.js';
-import { windsurfReader } from './readers/windsurf.js';
+import { RUNTIME_REGISTRY } from './registry.js';
 import { readWorkspaceEnv } from './readers/workspace-env.js';
 import {
   enumerateAllServers,
@@ -65,17 +58,15 @@ import type {
   SkillCapability,
 } from './types.js';
 
-const READERS: AgentReader[] = [
-  claudeCodeReader,
-  codexReader,
-  cursorReader,
-  continueReader,
-  windsurfReader,
-  claudeDesktopReader,
-];
+// AAP-105 (G8a) — the reader sets are now derived from the declarative
+// `RUNTIME_REGISTRY` rather than hand-maintained literal arrays. Order is
+// preserved from the registry, which preserves the pre-G8a scan order
+// (claude-code, then codex). Adding/removing a runtime is a single edit
+// in `registry.ts` — no more four-place enum drift.
+const READERS: AgentReader[] = RUNTIME_REGISTRY.map((r) => r.reader);
 
 /** AAP-58 — auth-file readers, run alongside the MCP/plugin readers. */
-const AUTH_READERS: AuthReader[] = [codexAuthReader, claudeCodeAuthReader];
+const AUTH_READERS: AuthReader[] = RUNTIME_REGISTRY.map((r) => r.auth);
 
 export interface DiscoveryOptions {
   /**

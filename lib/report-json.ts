@@ -221,13 +221,20 @@ export interface LocalMcpToolEnumeration {
   attemptedAt: string;
 }
 
-export type LocalDiscoveryRuntime =
-  | 'claude-code'
-  | 'codex'
-  | 'cursor'
-  | 'continue'
-  | 'windsurf'
-  | 'claude-desktop';
+// AAP-105 (G8a) — `LocalDiscoveryRuntime` is the SAME union as
+// `DiscoveredRuntime`, derived from the declarative runtime registry
+// (`src/discovery/registry.ts`), the single source of truth. It used to
+// be hand-copied here (and drifted from the three other copies).
+//
+// This is a TYPE-ONLY import: with `isolatedModules` it is fully erased
+// at compile time, so no runtime edge to `registry.ts` (which imports the
+// node-only readers) is added to the client bundler graph. The original
+// "mirror the type so the dashboard doesn't import node-only types"
+// boundary therefore still holds — we import the *type*, never the value.
+// Imported under the local alias for the annotations below AND re-exported
+// so existing `LocalDiscoveryRuntime` import sites keep working.
+import type { DiscoveredRuntime as LocalDiscoveryRuntime } from '../src/discovery/registry.js';
+export type { DiscoveredRuntime as LocalDiscoveryRuntime } from '../src/discovery/registry.js';
 
 /** AAP-58 — non-MCP capability rows surfaced alongside `mcpServers`. */
 export type LocalDiscoveryAuthShape = 'token' | 'apiKey' | 'oauth' | 'unknown';

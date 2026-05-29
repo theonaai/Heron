@@ -134,13 +134,18 @@ export interface McpToolEnumeration {
   source?: DiscoveredMcpToolSource;
 }
 
-export type DiscoveredRuntime =
-  | 'claude-code'
-  | 'codex'
-  | 'cursor'
-  | 'continue'
-  | 'windsurf'
-  | 'claude-desktop';
+/**
+ * AAP-105 (G8a) — `DiscoveredRuntime` is now DERIVED from the declarative
+ * runtime registry (`./registry.ts`), the single source of truth. It used
+ * to be a hand-written union duplicated in four files. Imported here for
+ * the local annotations below AND re-exported, so every existing
+ * `import { DiscoveredRuntime } from '../types.js'` site keeps working.
+ *
+ * Type-only import → erased at compile time, so the registry↔types cycle
+ * (registry imports `AgentReader`/`AuthReader` from here) is harmless.
+ */
+import type { DiscoveredRuntime } from './registry.js';
+export type { DiscoveredRuntime } from './registry.js';
 
 /**
  * AAP-58 — discovered capability union.

@@ -36,8 +36,11 @@ const agents: DiscoveredAgent[] = [
     ],
   },
   {
-    runtime: 'cursor',
-    configPath: '/home/me/.cursor/mcp.json',
+    // AAP-105 (G8a) — was the cut `cursor` runtime; the diff logic is
+    // runtime-agnostic, so the github fixture moves to a kept runtime
+    // (codex, distinct configPath from the slack codex entry above).
+    runtime: 'codex',
+    configPath: '/home/me/work/.codex/config.toml',
     mcpServers: [
       {
         name: 'github',
@@ -78,8 +81,10 @@ describe('diffAgainstTranscript', () => {
 
   it('downgrades EXTRA severity to MEDIUM for credentialless servers', () => {
     const filler: DiscoveredAgent = {
-      runtime: 'windsurf',
-      configPath: '/home/me/.codeium/windsurf/mcp_config.json',
+      // AAP-105 (G8a) — was the cut `windsurf` runtime; moved to a kept
+      // runtime since the diff severity logic is runtime-agnostic.
+      runtime: 'claude-code',
+      configPath: '/home/me/.claude.json',
       mcpServers: [
         {
           name: 'public-search',

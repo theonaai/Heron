@@ -54,6 +54,9 @@ import {
 import { consumeAllowOnce, getConsent } from '@/src/discovery/consent';
 import { diffAgainstTranscript } from '@/src/discovery/diff';
 import { runDiscovery } from '@/src/discovery/index';
+// AAP-105 (G8a) — runtime enum derives from the declarative registry,
+// the single source of truth, instead of a hand-copied literal list.
+import { RUNTIME_IDS } from '@/src/discovery/registry';
 import { overlayAgentReportedToolEnumerations } from '@/src/discovery/mcp-tools-enumerator';
 import { secretlintScrub } from '@/src/discovery/secretlint-scrub';
 import {
@@ -186,16 +189,7 @@ const ScanBodySchema = z
     // discovery runs (i.e. `skipFilesystem` is not set). Constrains
     // discovery to the audited runtime's evidence directories — a
     // Codex audit only reads ~/.codex/*, etc.
-    runtime: z
-      .enum([
-        'claude-code',
-        'codex',
-        'cursor',
-        'continue',
-        'windsurf',
-        'claude-desktop',
-      ])
-      .optional(),
+    runtime: z.enum(RUNTIME_IDS).optional(),
     // AAP-74 — optional L4 OAuth introspection sources. When present,
     // the route runs `runVerification` after the filesystem readers and
     // merges the result into the session's report.json. Capped at 8

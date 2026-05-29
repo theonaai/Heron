@@ -50,13 +50,9 @@
           "type": "string",
           "enum": [
             "claude-code",
-            "codex",
-            "cursor",
-            "continue",
-            "windsurf",
-            "claude-desktop"
+            "codex"
           ],
-          "description": "The runtime under audit. Discovery reads only this runtime's evidence directories — when auditing Codex, only ~/.codex/* is scanned; ~/.claude/*, ~/.cursor/*, etc. are not touched."
+          "description": "The runtime under audit. Discovery reads only this runtime's evidence directories — when auditing Codex, only ~/.codex/* is scanned; ~/.claude/* is not touched."
         },
         "workspace_hint": {
           "type": "string",

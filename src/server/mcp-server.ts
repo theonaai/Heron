@@ -88,6 +88,9 @@ import {
   reportVerificationStatusFromVerdict,
 } from '../verification/verdict-pipeline.js';
 import { runDiscovery } from '../discovery/index.js';
+// AAP-105 (G8a) — runtime enums (JSON schema + Zod) derive from the
+// declarative registry, the single source of truth, not hand-copied lists.
+import { RUNTIME_IDS } from '../discovery/registry.js';
 import { diffAgainstTranscript } from '../discovery/diff.js';
 import {
   overlayAgentReportedToolEnumerations,
@@ -402,18 +405,12 @@ const START_VERIFICATION_DEF: ToolDefinition = {
       },
       runtime: {
         type: 'string',
-        enum: [
-          'claude-code',
-          'codex',
-          'cursor',
-          'continue',
-          'windsurf',
-          'claude-desktop',
-        ],
+        // AAP-105 (G8a) — derived from the runtime registry.
+        enum: [...RUNTIME_IDS],
         description:
           'The runtime under audit. Discovery reads only this runtime\'s ' +
           'evidence directories — when auditing Codex, only ~/.codex/* is ' +
-          'scanned; ~/.claude/*, ~/.cursor/*, etc. are not touched.',
+          'scanned; ~/.claude/* is not touched.',
       },
       workspace_hint: {
         type: 'string',
@@ -539,14 +536,8 @@ const startVerificationInputSchema = z.object({
     .regex(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/, 'invalid session_id format'),
   // AAP-100 — `runtime` is required so discovery scopes reads to the
   // audited runtime's evidence directories only.
-  runtime: z.enum([
-    'claude-code',
-    'codex',
-    'cursor',
-    'continue',
-    'windsurf',
-    'claude-desktop',
-  ], { required_error: 'runtime is required' }),
+  // AAP-105 (G8a) — enum derived from the runtime registry.
+  runtime: z.enum(RUNTIME_IDS, { required_error: 'runtime is required' }),
   workspace_hint: z
     .string()
     .min(1)
@@ -877,14 +868,8 @@ export class HeronMCPServer {
         description: START_VERIFICATION_DEF.description,
         inputSchema: {
           session_id: z.string(),
-          runtime: z.enum([
-            'claude-code',
-            'codex',
-            'cursor',
-            'continue',
-            'windsurf',
-            'claude-desktop',
-          ]),
+          // AAP-105 (G8a) — enum derived from the runtime registry.
+          runtime: z.enum(RUNTIME_IDS),
           workspace_hint: z.string().optional(),
         },
       },
@@ -2256,7 +2241,9 @@ export function buildStartVerificationHint(sessionId: string): string {
     'NEXT STEP: call the `start_verification` tool now. Required arguments:\n' +
     `  - session_id: ${sessionId}\n` +
     '  - runtime: the runtime under audit, one of: ' +
-    '"claude-code", "codex", "cursor", "continue", "windsurf", "claude-desktop"\n\n' +
+    // AAP-105 (G8a) — runtime list derived from the registry.
+    RUNTIME_IDS.map((id) => `"${id}"`).join(', ') +
+    '\n\n' +
     'You will be asked for permission to scan that runtime\'s filesystem ' +
     'evidence (MCP configs, plugin / skill / auth credential names, .env ' +
     'files). No secret values are read.\n\n' +
