@@ -38,6 +38,7 @@
  */
 
 import type { DiscoveredAgent, DiscoveryFinding } from '../discovery/types.js';
+import { runtimeEntry, type DiscoveredRuntime } from '../discovery/registry.js';
 import type { EvidenceSource, Risk } from '../report/types.js';
 import {
   computeSeverity,
@@ -135,6 +136,40 @@ export interface VerdictFinding {
   kind?: string;
 }
 
+/**
+ * AAP-105 (G8b) — a discovered MCP server reclassified OUT of the
+ * Verified findings list because the audited runtime's `scopeRule` is
+ * `'global'`.
+ *
+ * The whole point of G8b: Heron audits a SPECIFIC AGENT WITH A TASK, not
+ * the IDE. For a `global`-scope runtime (codex) the MCP config has NO
+ * project binding — `~/.codex/config.toml` is shared by every project on
+ * the box. So a discovered-but-undeclared (EXTRA-direction) global server
+ * is the IDE's HOST CAPABILITY SURFACE, not a deviation by the audited
+ * agent. It must NOT be a Verified `EXTRA` finding and must NOT move
+ * posture (`computePosture` never sees these — they live here, not in
+ * `findings`). The dashboard renders them as an informational note.
+ *
+ * Only EXTRA-direction findings reclassify. MISSING-direction findings
+ * (the interview declared something absent on disk) stay Verified
+ * regardless of scopeRule — that is a declared-vs-actual gap about a
+ * thing the agent named, not a host-wide extra.
+ *
+ * `project-local` runtimes (claude-code) are unaffected: their per-
+ * workspace MCP IS attributable to the audited agent, so EXTRA findings
+ * there remain real Verified findings.
+ */
+export interface HostCapability {
+  /** MCP server name as discovered (e.g. `supabase`). */
+  serverName: string;
+  /** Runtime whose host-wide config declared it (e.g. `codex`). */
+  runtime: string;
+  /** Transport, looked up from the discovered server. `unknown` when not resolvable. */
+  transport: string;
+  /** Human-readable note that this is IDE-global, not agent-bound. */
+  note: string;
+}
+
 export interface VerdictInputs {
   /** Surface 2 — filesystem discovery findings from src/discovery/diff.ts. */
   discoveryFindings?: DiscoveryFinding[];
@@ -166,6 +201,13 @@ export interface Verdict {
   postureBand: SeverityBand;
   /** Every finding (Verified + SLF), with severity and provenance attached. */
   findings: VerdictFinding[];
+  /**
+   * AAP-105 (G8b) — global-scope MCP servers reclassified out of
+   * `findings`. Informational only: no severity, NOT in `computePosture`,
+   * rendered as a "host capability" note (not a finding card). Empty when
+   * the audited runtime is `project-local` or had no global EXTRA servers.
+   */
+  hostCapabilities: HostCapability[];
 
   // ── Legacy / deprecated fields (compile-time back-compat for G4) ──────
   // These exist purely so the unmodified display layer
@@ -411,6 +453,52 @@ export function computePosture(findings: ReadonlyArray<VerdictFinding>): number 
   return max;
 }
 
+// ── AAP-105 (G8b) — per-runtime scope gate ────────────────────────────
+
+/**
+ * Look up the transport of a discovered MCP server by name + runtime.
+ * Used when reclassifying a global EXTRA finding into a `HostCapability`
+ * so the note can say `(stdio)` / `(http)`. Falls back to `'unknown'`
+ * when the server is not found in the agents array (e.g. plugin EXTRA
+ * rows have no `DiscoveredMcpServer`).
+ */
+function transportForDiscoveredServer(
+  serverName: string,
+  runtime: string,
+  agents: ReadonlyArray<DiscoveredAgent>,
+): string {
+  const lowered = serverName.toLowerCase();
+  for (const agent of agents) {
+    if (agent.runtime !== runtime) continue;
+    for (const s of agent.mcpServers) {
+      if (s.name.toLowerCase() === lowered) return s.transport;
+    }
+  }
+  return 'unknown';
+}
+
+/**
+ * AAP-105 (G8b) — decide whether a discovery finding is an EXTRA-direction
+ * row on a `global`-scope runtime and therefore must be reclassified out
+ * of the Verified findings list (see `HostCapability`).
+ *
+ * Gate is BOTH conditions:
+ *   1. `kind === 'EXTRA'` — discovered-but-undeclared. MISSING /
+ *      HIDDEN-CREDENTIALS are about declared things and stay Verified.
+ *   2. the finding's `runtime` resolves to a registry entry whose
+ *      `scopeRule === 'global'` (codex). Unknown runtimes and
+ *      `project-local` runtimes (claude-code) are NOT reclassified.
+ *
+ * MISSING findings carry `runtime: '—'` which never resolves to a
+ * registry entry, so they always fall through to the Verified path —
+ * belt-and-suspenders on top of the `kind` check.
+ */
+function isGlobalScopeExtra(finding: DiscoveryFinding): boolean {
+  if (finding.kind !== 'EXTRA') return false;
+  const entry = runtimeEntry(finding.runtime as DiscoveredRuntime);
+  return entry?.scopeRule === 'global';
+}
+
 // ── Public entry point ──────────────────────────────────────────────
 
 export function computeVerdict(inputs: VerdictInputs): Verdict {
@@ -449,7 +537,28 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
   // ── Findings ──
   const findings: VerdictFinding[] = [];
 
-  discoveryFindings.forEach((f, idx) => {
+  // AAP-105 (G8b) — global-scope EXTRA servers are reclassified out of
+  // the Verified findings list into host-capability notes (see
+  // `HostCapability` JSDoc). They never become VerdictFindings, so they
+  // never reach `computePosture`. Everything else (EXTRA on
+  // project-local runtimes, all MISSING, all HIDDEN-CREDENTIALS) flows
+  // through the normal Verified path unchanged.
+  const hostCapabilities: HostCapability[] = [];
+  const verifiedDiscoveryFindings: DiscoveryFinding[] = [];
+  for (const f of discoveryFindings) {
+    if (isGlobalScopeExtra(f)) {
+      hostCapabilities.push({
+        serverName: f.serverName,
+        runtime: f.runtime,
+        transport: transportForDiscoveredServer(f.serverName, f.runtime, discoveredAgents),
+        note: `Configured in the ${f.runtime} IDE on this host, not specific to this audited agent/task.`,
+      });
+    } else {
+      verifiedDiscoveryFindings.push(f);
+    }
+  }
+
+  verifiedDiscoveryFindings.forEach((f, idx) => {
     findings.push(
       discoveryFindingToVerdictFinding(f, idx, discoveredAgents, oauthVerifications),
     );
@@ -489,6 +598,7 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
     posture,
     postureBand,
     findings,
+    hostCapabilities,
     discrepancies: [],
     primaryRiskLevel: legacyRisk,
     primaryRiskSource:

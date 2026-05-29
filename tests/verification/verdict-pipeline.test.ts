@@ -14,8 +14,13 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { reportVerificationStatusFromVerdict } from '../../src/verification/verdict-pipeline.js';
+import {
+  reportVerificationStatusFromVerdict,
+  buildVerdictSnapshot,
+} from '../../src/verification/verdict-pipeline.js';
+import { computeVerdict } from '../../src/verification/verdict.js';
 import type { Verdict } from '../../src/verification/verdict.js';
+import type { DiscoveryFinding } from '../../src/discovery/types.js';
 
 function verdict(status: Verdict['status']): Verdict {
   return {
@@ -89,5 +94,37 @@ describe('reportVerificationStatusFromVerdict (AAP-80)', () => {
         surface2Attempted: false,
       }),
     ).toBe('partially-verified');
+  });
+});
+
+// AAP-105 (G8b) — the snapshot is what persists to report.json and reaches
+// the dashboard, so it must carry the reclassified host capabilities.
+describe('buildVerdictSnapshot — G8b hostCapabilities propagation (AAP-105)', () => {
+  it('propagates reclassified global-scope MCP servers into the snapshot', () => {
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'supabase', runtime: 'codex', description: 'x' },
+      { kind: 'MISSING', severity: 'MEDIUM', serverName: 'drive', runtime: '—', description: 'y' },
+    ];
+    const v = computeVerdict({ discoveryFindings });
+    const snap = buildVerdictSnapshot(v);
+
+    expect(snap.hostCapabilities).toHaveLength(1);
+    expect(snap.hostCapabilities[0].serverName).toBe('supabase');
+    expect(snap.hostCapabilities[0].runtime).toBe('codex');
+    // The drive MISSING is still a Verified finding in the snapshot.
+    expect(snap.findings.filter((f) => f.evidenceSource === 'MCP')).toHaveLength(1);
+    expect(snap.findings.find((f) => f.title.includes('supabase'))).toBeUndefined();
+  });
+
+  it('snapshot hostCapabilities is an empty array when none reclassified', () => {
+    const v = computeVerdict({
+      discoveryFindings: [
+        { kind: 'EXTRA', severity: 'HIGH', serverName: 'postgres', runtime: 'claude-code', description: 'x' },
+      ],
+    });
+    const snap = buildVerdictSnapshot(v);
+    expect(snap.hostCapabilities).toEqual([]);
+    // claude-code EXTRA still a Verified finding in the snapshot.
+    expect(snap.findings.filter((f) => f.evidenceSource === 'MCP')).toHaveLength(1);
   });
 });

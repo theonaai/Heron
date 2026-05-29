@@ -400,6 +400,21 @@ export const verdictFindingSnapshotSchema = z.object({
 });
 export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;
 
+/**
+ * AAP-105 (G8b) — one reclassified host-wide MCP server. A discovered
+ * EXTRA server on a `global`-scope runtime (codex) is NOT a deviation by
+ * the audited agent — `~/.codex/config.toml` is shared host-wide — so it
+ * is lifted out of `findings` into here. Informational only: no severity,
+ * does not move posture, rendered as a muted note (not a finding card).
+ */
+export const hostCapabilitySnapshotSchema = z.object({
+  serverName: z.string(),
+  runtime: z.string(),
+  transport: z.string(),
+  note: z.string(),
+});
+export type HostCapabilitySnapshot = z.infer<typeof hostCapabilitySnapshotSchema>;
+
 export const verdictSnapshotSchema = z.object({
   /** Technical execution state: 'verified' / 'partial' / 'unverified'. */
   status: z.enum(['verified', 'partial', 'unverified']),
@@ -409,6 +424,12 @@ export const verdictSnapshotSchema = z.object({
   postureBand: severityBandSchema,
   /** Every finding (Verified + SLF), with severity + provenance attached. */
   findings: z.array(verdictFindingSnapshotSchema),
+  /**
+   * AAP-105 (G8b) — global-scope MCP servers reclassified out of
+   * `findings` (host capability, not agent-bound). Optional + defaulted
+   * so report.json blobs persisted before G8b deserialise cleanly.
+   */
+  hostCapabilities: z.array(hostCapabilitySnapshotSchema).optional().default([]),
 });
 export type VerdictSnapshot = z.infer<typeof verdictSnapshotSchema>;
 

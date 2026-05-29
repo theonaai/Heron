@@ -1656,7 +1656,16 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
   useEffect(() => {
     if (initialOpen) setSlfOpen(true);
   }, [initialOpen]);
-  if (!verdict || !verdict.findings || verdict.findings.length === 0) {
+  // AAP-105 (G8b) — host capabilities can exist with zero findings (a
+  // clean codex agent whose only MCP servers are all host-wide globals).
+  // Only short-circuit to "No findings." when there is genuinely nothing
+  // to show: no findings AND no host-capability note.
+  const earlyHostCapabilities =
+    (verdict?.hostCapabilities as VerdictSnapshot['hostCapabilities'] | undefined) ?? [];
+  if (
+    (!verdict || !verdict.findings || verdict.findings.length === 0) &&
+    earlyHostCapabilities.length === 0
+  ) {
     return (
       <section
         style={{
@@ -1683,7 +1692,9 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
     );
   }
 
-  const coded = assignFindingCodes(verdict.findings as unknown as CodedVerdictFinding[]);
+  const coded = assignFindingCodes(
+    (verdict?.findings ?? []) as unknown as CodedVerdictFinding[],
+  );
   const verified = coded
     .filter((f) => f.evidenceSource !== 'SLF')
     .slice()
@@ -1692,6 +1703,9 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
     .filter((f) => f.evidenceSource === 'SLF')
     .slice()
     .sort((a, b) => b.severityScore - a.severityScore);
+  // AAP-105 (G8b) — global-scope MCP servers reclassified out of the
+  // Verified list. Rendered as a muted note, NOT as finding cards.
+  const hostCapabilities = earlyHostCapabilities;
 
   return (
     <section
@@ -1740,6 +1754,7 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
             ))}
           </div>
         )}
+        <HostCapabilityNote capabilities={hostCapabilities} />
       </div>
 
       {/* Self-attested — collapsed by default */}
@@ -1791,6 +1806,53 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
         </div>
       )}
     </section>
+  );
+}
+
+// ─── G8b: host-capability note (NOT a finding) ────────────────────────
+//
+// AAP-105 (G8b) — for a `global`-scope runtime (codex) the MCP config has
+// no project binding: `~/.codex/config.toml` is shared by every project
+// on the box. A discovered-but-undeclared server there is the IDE's host
+// capability surface, NOT a deviation by the audited agent. So it is NOT
+// a Verified discrepancy card and does NOT move posture (it never enters
+// `computePosture`). We surface it here as a compact, muted, clearly-
+// informational note so a reviewer sees the host's reachable tools
+// without mistaking them for findings against this agent.
+
+function HostCapabilityNote({
+  capabilities,
+}: {
+  capabilities: VerdictSnapshot['hostCapabilities'];
+}) {
+  if (!capabilities || capabilities.length === 0) return null;
+  // Group the (likely single) runtime so the lead-in reads naturally
+  // ("the Codex IDE"). Multiple runtimes in one audit is not a thing
+  // today, but join the names defensively.
+  const runtimes = Array.from(new Set(capabilities.map((c) => c.runtime))).join(', ');
+  const serverList = capabilities
+    .map((c) => (c.transport && c.transport !== 'unknown' ? `${c.serverName} (${c.transport})` : c.serverName))
+    .join(', ');
+  return (
+    <div
+      aria-label="Host capability"
+      style={{
+        marginTop: 12,
+        padding: '11px 13px',
+        background: '#f8fafc',
+        border: '1px dashed #e2e8f0',
+        borderRadius: 6,
+        fontSize: 12,
+        color: '#64748b',
+        lineHeight: 1.55,
+      }}
+    >
+      <span style={{ fontWeight: 600, color: '#475569' }}>
+        IDE host capability (not bound to this agent):
+      </span>{' '}
+      {serverList}. Configured in the {runtimes} IDE on this host, not specific to this
+      audited agent/task — informational, not a deviation, does not move posture.
+    </div>
   );
 }
 
