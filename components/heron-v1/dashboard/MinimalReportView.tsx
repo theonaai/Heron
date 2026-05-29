@@ -96,6 +96,11 @@ interface MinimalReportJson {
       severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
       controlId: string;
       controlName?: string;
+      // AAP-105 A7: why a control is partial/fail and what evidence drove it.
+      // Persisted in report.json; surfaced inline in the expanded framework
+      // accordion so a reviewer can read the reasoning, not just the verdict.
+      rationale?: string;
+      evidenceRefs?: Array<{ kind?: string; ref?: string }>;
     }>;
     mandatory?: unknown;
     voluntary?: unknown;
@@ -2069,9 +2074,11 @@ function ComplianceBlock({
             ))}
           </div>
           <p style={{ marginTop: 14, fontSize: 11.5, color: '#71717a', lineHeight: 1.6 }}>
-            Verified = deterministic evidence matches the agent&apos;s declaration. Partial =
-            signal present but no typed detector. Out-of-scope controls are hidden by default —
-            toggle in each card to include them.
+            Verified = deterministic evidence matches the agent&apos;s declaration. Partial = a
+            typed detector found a relevant signal or applicable obligation, but Heron cannot
+            prove the control is fully satisfied (e.g. documentation or an attestation is still
+            required). Out-of-scope controls are hidden by default — toggle in each card to
+            include them.
           </p>
         </div>
       )}
@@ -2079,7 +2086,11 @@ function ComplianceBlock({
   );
 }
 
-type ControlResult = NonNullable<
+// Exported for AAP-105 A7 unit coverage: the framework accordion is behind
+// two collapsed `useState` toggles, so renderToStaticMarkup (no jsdom) can't
+// reach a control row from the top-level component. The row's rationale /
+// evidence rendering is verified by mounting ControlRow directly.
+export type ControlResult = NonNullable<
   NonNullable<MinimalReportJson['regulatoryCompliance']>['controlResults']
 >[number];
 
@@ -2196,7 +2207,7 @@ function severityRank(s: ControlResult['severity']): number {
   return s === 'critical' ? 4 : s === 'high' ? 3 : s === 'medium' ? 2 : s === 'low' ? 1 : 0;
 }
 
-function ControlRow({ control }: { control: ControlResult }) {
+export function ControlRow({ control }: { control: ControlResult }) {
   const verdictPalette =
     control.verdict === 'verified'
       ? { bg: '#f0fdf4', ink: '#15803d' }
@@ -2217,56 +2228,103 @@ function ControlRow({ control }: { control: ControlResult }) {
           : control.severity === 'low'
             ? { bg: '#facc15', ink: '#3f3f46' }
             : { bg: '#e5e7eb', ink: '#52525b' };
+  // AAP-105 A7: compact evidence summary under the rationale. Each ref is
+  // like "mcp:linear (http)" or "env:/path/.env: KEY → AI provider ...".
+  // Show the first few, mono-styled, with an overflow count — keeps the row
+  // honest about what drove the verdict without unrolling the full list.
+  const refs = (control.evidenceRefs || [])
+    .map((e) => (e?.ref || '').trim())
+    .filter((r) => r.length > 0);
+  const refsShown = refs.slice(0, 4);
+  const refsExtra = refs.length - refsShown.length;
+  const rationale = (control.rationale || '').trim();
+
   return (
     <li
       style={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(110px, max-content) 1fr max-content max-content',
-        gap: 10,
-        padding: '5px 0',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        padding: '6px 0',
         borderBottom: '1px solid #f1f5f9',
-        alignItems: 'center',
       }}
     >
-      <span
-        className="mono"
-        style={{ fontSize: 11.5, color: '#3f3f46', whiteSpace: 'nowrap' }}
-      >
-        {control.controlId}
-      </span>
-      <span style={{ fontSize: 12, color: '#52525b', lineHeight: 1.4 }}>
-        {control.controlName || ''}
-      </span>
-      <span
+      <div
         style={{
-          fontSize: 10,
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-          padding: '2px 7px',
-          borderRadius: 3,
-          background: verdictPalette.bg,
-          color: verdictPalette.ink,
-          whiteSpace: 'nowrap',
+          display: 'grid',
+          gridTemplateColumns: 'minmax(110px, max-content) 1fr max-content max-content',
+          gap: 10,
+          alignItems: 'center',
         }}
       >
-        {control.verdict}
-      </span>
-      <span
-        style={{
-          fontSize: 10,
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-          padding: '2px 7px',
-          borderRadius: 3,
-          background: sevPalette.bg,
-          color: sevPalette.ink,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {control.severity}
-      </span>
+        <span
+          className="mono"
+          style={{ fontSize: 11.5, color: '#3f3f46', whiteSpace: 'nowrap' }}
+        >
+          {control.controlId}
+        </span>
+        <span style={{ fontSize: 12, color: '#52525b', lineHeight: 1.4 }}>
+          {control.controlName || ''}
+        </span>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            padding: '2px 7px',
+            borderRadius: 3,
+            background: verdictPalette.bg,
+            color: verdictPalette.ink,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {control.verdict}
+        </span>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            padding: '2px 7px',
+            borderRadius: 3,
+            background: sevPalette.bg,
+            color: sevPalette.ink,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {control.severity}
+        </span>
+      </div>
+      {rationale && (
+        <p
+          style={{
+            margin: 0,
+            fontSize: 11.5,
+            color: '#71717a',
+            lineHeight: 1.5,
+            maxWidth: '62ch',
+          }}
+        >
+          {rationale}
+        </p>
+      )}
+      {refsShown.length > 0 && (
+        <p
+          className="mono"
+          style={{
+            margin: 0,
+            fontSize: 10.5,
+            color: '#a1a1aa',
+            lineHeight: 1.5,
+            wordBreak: 'break-word',
+          }}
+        >
+          Evidence: {refsShown.join(', ')}
+          {refsExtra > 0 && ` +${refsExtra} more`}
+        </p>
+      )}
     </li>
   );
 }
