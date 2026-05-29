@@ -282,9 +282,13 @@ describe('AAP-105 D4 — MCP inventory presence detector', () => {
     );
     expect(inventoryHits).toHaveLength(2);
     for (const r of inventoryHits) {
-      expect(r.verdict).toBe('verified');
+      // AAP-105 A3: an MCP server present in config is real evidence of
+      // AI tooling, but NOT proof of a documented inventory artefact —
+      // so ISO A.4.4 / NIST MAP 2.1 fire `partial`, not `verified`.
+      expect(r.verdict).toBe('partial');
       expect(r.path).toBe('typed');
       expect(r.rationale.toLowerCase()).toContain('mcp server');
+      expect(r.rationale.toLowerCase()).toContain('documented');
     }
   });
 

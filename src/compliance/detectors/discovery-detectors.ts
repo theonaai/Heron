@@ -231,19 +231,24 @@ function makeProcessorDetector(
 // ─── Detector — MCP tool inventory presence ────────────────────────────────
 
 /**
- * AAP-105 D4 quick-win #3 — fires `verified` when the discovery surface
- * lists at least one MCP server. The detector intentionally treats the
- * presence of any MCP entry as evidence that the operator HAS an AI-
- * tooling inventory available; the verdict is therefore `verified`,
- * mirroring the audit semantics of ISO A.4.4 / NIST MAP 2.1: "the
- * operator can produce an inventory of AI components and tasks they
- * cover".
+ * AAP-105 D4 quick-win #3, corrected in AAP-105 A3 — fires `partial`
+ * when the discovery surface lists at least one MCP server.
  *
- * Note: a tougher reading of these controls would also require a
- * declared / documented inventory, but Heron's evidence model treats
- * the live inventory itself as the primary artefact. Operators who
- * lack any MCP server (no AI tooling) legitimately fall outside the
- * control's scope — the detector returns null, leaving the row inert.
+ * The original D4 pass emitted `verified` here, reasoning that the live
+ * MCP list *was* the inventory. That overclaims. ISO 42001 A.4.4 / NIST
+ * AI RMF MAP 2.1 ask for a documented, categorised AI-system inventory
+ * ARTEFACT — a maintained register of AI components and the tasks they
+ * cover — not merely the fact that some MCP servers exist in a config.
+ * "An MCP server is present in config" is real, deterministic evidence
+ * that AI tooling is in use, but it is NOT proof the operator maintains
+ * the inventory process the control requires. Emitting `verified` on
+ * that basis is exactly the self-report / compliance-theater pattern
+ * Heron exists to replace, so the verdict is `partial`: Heron observed
+ * a live inventory, and a documented register would upgrade it.
+ *
+ * Operators who lack any MCP server (no AI tooling) legitimately fall
+ * outside the control's scope — the detector returns null, leaving the
+ * row inert.
  */
 function makeMcpInventoryDetector(
   frameworkId: FrameworkId,
@@ -272,9 +277,9 @@ function makeMcpInventoryDetector(
       controlName,
       path: 'typed',
       surface: 'actual',
-      verdict: 'verified',
+      verdict: 'partial',
       severity: 'info',
-      rationale: `Discovery enumerated ${mcpRefs.length} MCP server${mcpRefs.length === 1 ? '' : 's'} — an inventory of AI tooling is available for ${frameworkId} ${controlId}.`,
+      rationale: `Heron observed a live inventory of ${mcpRefs.length} MCP server${mcpRefs.length === 1 ? '' : 's'} in the agent's configuration. ${frameworkId === 'iso-42001' ? 'ISO 42001 A.4.4' : 'NIST AI RMF MAP 2.1'} also expects a documented, categorised AI-system inventory artefact. Supply that to upgrade this control to verified.`,
       evidenceRefs: mcpRefs.slice(0, 24),
     };
     return out;
