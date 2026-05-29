@@ -47,6 +47,8 @@ import type {
   ProgressNotification,
   ReportMcpToolsListInput,
   ReportMcpToolsListOutput,
+  ReportOAuthScopesInput,
+  ReportOAuthScopesOutput,
   RequestContext,
   StartAuditSessionInput,
   StartAuditSessionOutput,
@@ -66,11 +68,13 @@ import {
   createSession,
   getSession,
   listReportedMcpTools,
+  listReportedOAuthScopes,
   mergeWorkspaceHints,
   patchReportAndMeta,
   patchReportJson,
   ReportedMcpToolsPerSessionCapExceeded,
   saveReportedMcpToolsList,
+  saveReportedOAuthScopes,
   setPendingQuestion,
   submitToolCallAnswer,
   updateSessionMeta,
@@ -96,6 +100,13 @@ import {
   overlayAgentReportedToolEnumerations,
   parseAgentReportedToolsList,
 } from '../discovery/mcp-tools-enumerator.js';
+// G10 — agent-forwarded OAuth introspection (token never read by Heron).
+import {
+  parseForwardedTokenInfo,
+  runForwardedOAuthScopeVerification,
+  type ForwardedOAuthProvider,
+  type ForwardedOAuthRecord,
+} from '../verification/forwarded-oauth-introspection.js';
 import { secretlintScrub } from '../discovery/secretlint-scrub.js';
 import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
 import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
@@ -471,11 +482,65 @@ const REPORT_MCP_TOOLS_LIST_DEF: ToolDefinition = {
   },
 };
 
+// G10 — `report_oauth_scopes` tool. The OAuth analog of
+// `report_mcp_tools_list`: the audited agent introspects its OWN OAuth
+// token and forwards Heron the raw introspection response, so Heron gets
+// deterministic granted scopes WITHOUT ever reading the token (the
+// name-only / wedge-defensibility contract stays intact). The agent calls
+// this after Q14.6 (`oauth_scopes_forward_directive`) for every OAuth
+// provider it uses. Decision locked by Ilya 2026-05-29.
+const REPORT_OAUTH_SCOPES_DEF: ToolDefinition = {
+  name: 'report_oauth_scopes',
+  description:
+    "Forward your OAuth provider's token-introspection response to Heron so it can " +
+    'verify your GRANTED scopes deterministically.\n\n' +
+    'For each OAuth provider you use (Google Workspace, etc.):\n' +
+    '  1. Call the provider\'s introspection endpoint with YOUR access token.\n' +
+    '     Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<your-token>\n' +
+    '  2. Forward the RAW introspection response here (it contains the granted ' +
+    '`scope` field). Do NOT send the token itself — only the introspection response.\n\n' +
+    'Heron will:\n' +
+    '  - Parse the granted scopes from the response\n' +
+    '  - Diff them against your declared usage to surface over-broad grants\n\n' +
+    'NEVER:\n' +
+    '  - Reads, stores, or asks for your access/refresh token — only the ' +
+    'introspection response\n\n' +
+    'If the introspection call fails (token expired/invalid), forward the error ' +
+    'response anyway — Heron records an honest "introspection attempted" state.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description:
+          'The session id returned by a prior start_audit_session call. The forwarded ' +
+          'scopes are attached to this audit run.',
+      },
+      provider: {
+        type: 'string',
+        description:
+          'The OAuth provider you introspected, e.g. "google-workspace". Used to ' +
+          'deduplicate forwards: a second report for the same provider replaces the first.',
+      },
+      raw_response: {
+        type: 'object',
+        description:
+          "The verbatim introspection response body your OAuth provider returned " +
+          '(for Google, the tokeninfo JSON with the `scope` field). Heron parses the ' +
+          'granted scopes from it. This is the introspection RESPONSE, never the token.',
+      },
+    },
+    required: ['session_id', 'provider', 'raw_response'],
+    additionalProperties: false,
+  },
+};
+
 const TOOL_DEFINITIONS: ToolDefinition[] = [
   START_AUDIT_SESSION_DEF,
   SUBMIT_ANSWER_DEF,
   START_VERIFICATION_DEF,
   REPORT_MCP_TOOLS_LIST_DEF,
+  REPORT_OAUTH_SCOPES_DEF,
   GET_REPORT_DEF,
   COMPARE_REPORTS_DEF,
 ];
@@ -668,6 +733,80 @@ function locateToolsArray(payload: Record<string, unknown>): unknown[] | null {
   return null;
 }
 
+/**
+ * G10 — max bytes allowed in a serialized `report_oauth_scopes`
+ * `raw_response`. A tokeninfo response is tiny (~500 B); 64 KiB matches
+ * the connector's own body-size cap and bounds a hostile/oversized
+ * forward before it reaches the parser or the storage layer.
+ */
+export const REPORT_OAUTH_SCOPES_MAX_PAYLOAD_BYTES = 64 * 1024;
+
+/**
+ * G10 — Zod schema for `report_oauth_scopes`. session_id carries the same
+ * path-traversal-tight regex used everywhere else. `provider` is bounded
+ * and free of path separators (it becomes a storage key). `raw_response`
+ * is treated as opaque JSON — the parser
+ * (`parseForwardedTokenInfo`) does the structural validation — with a
+ * payload-size guard so an oversized forward never reaches it.
+ *
+ * Name-only contract: the schema additionally rejects a `raw_response`
+ * that is a single `access_token` field with no introspection content,
+ * so an agent that mistakenly tries to hand Heron the token (instead of
+ * the introspection RESULT) is bounced at the boundary rather than having
+ * the token land in a session record.
+ */
+const reportOAuthScopesInputSchema = z.object({
+  session_id: z
+    .string({ required_error: 'session_id is required' })
+    .regex(/^sess-\d{8}-\d{6}-[a-z0-9]{6}$/, 'invalid session_id format'),
+  provider: z
+    .string({ required_error: 'provider is required' })
+    .min(1, 'provider must not be empty')
+    .max(64, 'provider must be 64 characters or fewer')
+    .regex(/^[^/\\\0]+$/, 'provider must not contain `/`, `\\`, or null bytes'),
+  raw_response: z
+    .record(z.unknown(), {
+      required_error: 'raw_response is required',
+      invalid_type_error: 'raw_response must be a JSON object (the introspection response body)',
+    })
+    .superRefine((value, ctx) => {
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(value);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `raw_response is not JSON-serialisable: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+      const byteLen = Buffer.byteLength(serialized, 'utf8');
+      if (byteLen > REPORT_OAUTH_SCOPES_MAX_PAYLOAD_BYTES) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `raw_response payload is ${byteLen} bytes, above the ${REPORT_OAUTH_SCOPES_MAX_PAYLOAD_BYTES}-byte cap`,
+        });
+        return;
+      }
+      // Name-only guard: refuse a body whose ONLY meaningful field is a
+      // raw token. A genuine introspection response carries `scope` /
+      // `error` / a status field — not just `access_token`. This stops a
+      // confused agent from leaking the secret into a session record.
+      const keys = Object.keys(value as Record<string, unknown>);
+      const tokenOnly =
+        keys.length > 0 &&
+        keys.every((k) => k === 'access_token' || k === 'refresh_token' || k === 'token');
+      if (tokenOnly) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'raw_response looks like a bare token, not an introspection response. Forward the ' +
+            'introspection RESULT (e.g. the tokeninfo body with a `scope` field), never the token.',
+        });
+      }
+    }),
+});
+
 // ─── Wrapper ──────────────────────────────────────────────────────────────
 
 export type ToolName =
@@ -676,7 +815,8 @@ export type ToolName =
   | 'start_audit_session'
   | 'submit_answer'
   | 'start_verification'
-  | 'report_mcp_tools_list';
+  | 'report_mcp_tools_list'
+  | 'report_oauth_scopes';
 
 type InvokeMap = {
   get_report: { input: GetReportInput; output: GetReportOutput };
@@ -687,6 +827,10 @@ type InvokeMap = {
   report_mcp_tools_list: {
     input: ReportMcpToolsListInput;
     output: ReportMcpToolsListOutput;
+  };
+  report_oauth_scopes: {
+    input: ReportOAuthScopesInput;
+    output: ReportOAuthScopesOutput;
   };
 };
 
@@ -764,6 +908,10 @@ export class HeronMCPServer {
         case 'report_mcp_tools_list':
           return (await this.handleReportMcpToolsList(
             input as ReportMcpToolsListInput,
+          )) as MCPServerResult<InvokeMap[N]['output']>;
+        case 'report_oauth_scopes':
+          return (await this.handleReportOAuthScopes(
+            input as ReportOAuthScopesInput,
           )) as MCPServerResult<InvokeMap[N]['output']>;
         default:
           return {
@@ -903,6 +1051,31 @@ export class HeronMCPServer {
         const result = await this.invoke(
           'report_mcp_tools_list',
           args as ReportMcpToolsListInput,
+          bridge.ctx,
+        );
+        await bridge.flush();
+        return toolResultFromMcp(result);
+      },
+    );
+
+    // report_oauth_scopes (G10) — agent-forwarded OAuth introspection.
+    // Heron never reads the agent's OAuth token; the agent introspects its
+    // own token and forwards the raw introspection response body.
+    server.registerTool(
+      REPORT_OAUTH_SCOPES_DEF.name,
+      {
+        description: REPORT_OAUTH_SCOPES_DEF.description,
+        inputSchema: {
+          session_id: z.string(),
+          provider: z.string(),
+          raw_response: z.record(z.unknown()),
+        },
+      },
+      async (args, extra) => {
+        const bridge = contextFromExtra(extra);
+        const result = await this.invoke(
+          'report_oauth_scopes',
+          args as ReportOAuthScopesInput,
           bridge.ctx,
         );
         await bridge.flush();
@@ -1674,6 +1847,27 @@ export class HeronMCPServer {
       };
     }
 
+    // G10 — replay agent-forwarded OAuth introspection into the scope
+    // diff. The agent called its OAuth provider's introspection endpoint
+    // with its OWN token (Google: tokeninfo) and forwarded Heron the raw
+    // response via `report_oauth_scopes`; Heron parsed + persisted the
+    // granted scopes per provider. Here we run the SAME `runVerification`
+    // orchestrator the dashboard L4 path uses, but the source is the
+    // in-memory forwarded inventory — Heron never holds the token. This
+    // makes OAuth-based systems (Google Sheets/Drive/Docs) verifiable
+    // from the MCP path, not just the dashboard. Empty when the agent
+    // forwarded nothing (the OAuth section stays absent / "N/A").
+    const forwardedOAuthRecords = await listReportedOAuthScopes(sessionId);
+    const oauthForward = forwardedOAuthRecords.length > 0
+      ? await runForwardedOAuthScopeVerification({
+          records: forwardedOAuthRecords.map((r): ForwardedOAuthRecord => ({
+            provider: r.provider as ForwardedOAuthProvider,
+            introspection: r.introspection,
+          })),
+          agentLabel: sessionId,
+        })
+      : { verifications: [], section: null };
+
     // Re-compute Stage 3 framework mapping with the fresh evidence. This
     // is the load-bearing part of AAP-79 — pre-AAP-79 the mapper ran
     // once at analyzer time and never again. A transcript that never
@@ -1696,14 +1890,23 @@ export class HeronMCPServer {
     // hardcoded `'verified'`. We pass `reportJson` (the pre-patch
     // snapshot) plus `discoveryOverride: scrubbed` so the verdict
     // factors in the fresh scan without racing patchReportJson's
-    // fsync. `oauthVerificationsOverride` is intentionally absent
-    // here — the MCP `start_verification` path is filesystem-only;
-    // OAuth introspection is dashboard-exclusive today.
-    const verdict = computeVerdictFromArtifacts({
+    // fsync.
+    //
+    // G10 — `oauthVerificationsOverride` is now wired from the
+    // agent-forwarded introspection. When the agent forwarded scopes, the
+    // verdict factors deterministic OAuth diffs (granted-vs-declared) into
+    // posture as OAU findings — turning the self-attested SLF "broad OAuth
+    // permissions" claim into a Verified OAU finding. Absent when the
+    // agent forwarded nothing.
+    const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
       reportJson,
       transcript: session.transcript,
       discoveryOverride: scrubbed,
-    });
+    };
+    if (oauthForward.verifications.length > 0) {
+      verdictArgs.oauthVerificationsOverride = oauthForward.verifications;
+    }
+    const verdict = computeVerdictFromArtifacts(verdictArgs);
     const verificationStatus: ReportVerificationStatus =
       reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
 
@@ -1719,6 +1922,12 @@ export class HeronMCPServer {
       // without recomputing the verdict client-side.
       verdict: buildVerdictSnapshot(verdict),
     };
+    // G10 — persist the OAuth scope verification section so the dashboard
+    // renderer + the header "Verified by … OAuth" line reflect the
+    // forwarded introspection (was always "OAuth N/A" on the MCP path).
+    if (oauthForward.section) {
+      reportPatch.oauthScopeVerification = oauthForward.section;
+    }
     if (reportJson && Array.isArray(reportJson.systems)) {
       const analyzerSubset = {
         systems: reportJson.systems,
@@ -1756,11 +1965,27 @@ export class HeronMCPServer {
     // Shared with the dashboard scan route via
     // `persistVerifiedMarkdown` so both code paths produce byte-identical
     // .md output for the same merged report.
+    // G10 — when the agent forwarded OAuth introspection, surface a
+    // per-provider status row in the markdown "Verification Status"
+    // table (mirrors the dashboard L4 path). `ran` for any forward that
+    // produced a result (incl. honest introspection-error — the
+    // verdict already reflects whether it verified); the per-source
+    // verdict in the section carries the detail.
+    const oauthIntrospectionStatus =
+      oauthForward.section && oauthForward.section.sources.length > 0
+        ? oauthForward.section.sources.map((s) => ({
+            provider: s.connector,
+            status:
+              s.verdict === 'unverified' ? ('failed' as const) : ('ran' as const),
+          }))
+        : undefined;
+
     await persistVerifiedMarkdown({
       sessionId,
       merged,
       verdict,
       discoveryFindings: scrubbed.findings ?? [],
+      ...(oauthIntrospectionStatus !== undefined ? { oauthIntrospectionStatus } : {}),
     });
 
     publishSessionEvent(sessionId, {
@@ -1888,6 +2113,86 @@ export class HeronMCPServer {
       received_at: receivedAt,
     };
     if (enumeration.reason !== undefined) output.reason = enumeration.reason;
+    if (stored.replacedPrevious) output.replaced_previous = true;
+    return { ok: true, value: output };
+  }
+
+  // ─── report_oauth_scopes (G10) ───────────────────────────────────────
+
+  /**
+   * G10 — ingest an agent-forwarded OAuth introspection response. The
+   * agent introspected its OWN token (Google: tokeninfo) and forwarded
+   * the raw response; Heron parses the granted scopes from it and
+   * persists the projection. The token value never reaches this handler —
+   * only the introspection RESPONSE. Mirrors `handleReportMcpToolsList`.
+   */
+  private async handleReportOAuthScopes(
+    rawInput: ReportOAuthScopesInput,
+  ): Promise<MCPServerResult<ReportOAuthScopesOutput>> {
+    const parsed = reportOAuthScopesInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return {
+        ok: false,
+        error: {
+          kind: 'invalid_input',
+          field: issue?.path?.[0]?.toString() ?? 'unknown',
+          message: issue?.message ?? 'invalid input',
+        },
+      };
+    }
+
+    const { session_id: sessionId, provider, raw_response: rawResponse } = parsed.data;
+    const session = await getSession(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'session_not_found',
+          message: `Session not found: ${sessionId}`,
+        },
+      };
+    }
+
+    // Parse + project before persisting. The parser never throws — an
+    // error from the agent's introspection call (expired/invalid token)
+    // collapses to `state: 'introspection-error'`, a malformed body to
+    // `state: 'parse-error'`, both of which we still persist so the
+    // report can render the honest "introspection attempted" state
+    // instead of silently dropping the forward.
+    const introspection = parseForwardedTokenInfo(provider, rawResponse);
+    const receivedAt = introspection.attemptedAt;
+
+    let stored: { replacedPrevious?: boolean };
+    try {
+      stored = await saveReportedOAuthScopes(sessionId, {
+        provider,
+        receivedAt,
+        introspection,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        error: {
+          kind: 'tool_failure',
+          cause: 'storage_error',
+          message: `Failed to persist reported OAuth scopes: ${message}`,
+        },
+      };
+    }
+
+    const scopeCount =
+      introspection.state === 'ok' ? introspection.inventory.scopes?.length ?? 0 : 0;
+    const output: ReportOAuthScopesOutput = {
+      session_id: sessionId,
+      provider,
+      state: introspection.state,
+      scope_count: scopeCount,
+      received_at: receivedAt,
+    };
+    if (introspection.state !== 'ok') output.reason = introspection.reason;
     if (stored.replacedPrevious) output.replaced_previous = true;
     return { ok: true, value: output };
   }

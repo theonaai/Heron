@@ -295,6 +295,64 @@ export interface ReportMcpToolsListOutput {
   replaced_previous?: boolean;
 }
 
+// ─── report_oauth_scopes (G10) ────────────────────────────────────────────
+
+/**
+ * G10 — input for the `report_oauth_scopes` MCP tool.
+ *
+ * The agent-as-transport pattern, applied to OAuth (mirrors AAP-82's
+ * `report_mcp_tools_list`). For each OAuth provider it uses, the audited
+ * agent calls that provider's introspection endpoint with its OWN token
+ * (Google: `GET https://oauth2.googleapis.com/tokeninfo?access_token=<token>`)
+ * and forwards Heron the RAW introspection RESPONSE — never the token.
+ *
+ * `session_id` ties the forward to the live audit. `provider` is the
+ * provider id (e.g. `google-workspace`). `raw_response` is the verbatim
+ * introspection JSON (the tokeninfo body, which carries the granted
+ * `scope` field). Heron parses the granted scopes from it; the token
+ * value never crosses into Heron.
+ *
+ * Trust model: same as AAP-82 / transcript answers. Heron never sees the
+ * token. An honest agent forwards the real introspection response; an
+ * adversarial agent can omit or rewrite it. The win is that the scopes
+ * now come from a deterministic introspection response, not the agent's
+ * prose answer.
+ */
+export interface ReportOAuthScopesInput {
+  session_id: string;
+  provider: string;
+  raw_response: Record<string, unknown>;
+}
+
+/**
+ * G10 — output for `report_oauth_scopes`. Echoes the parse outcome so the
+ * agent can log whether Heron accepted the granted scopes, recorded an
+ * honest introspection-error (expired/invalid token), or could not parse
+ * the forwarded body.
+ */
+export interface ReportOAuthScopesOutput {
+  session_id: string;
+  provider: string;
+  /**
+   * Parse outcome:
+   *  - `ok`                    — granted scopes parsed from the response.
+   *  - `introspection-error`   — the agent's introspection call failed
+   *                              (token expired / revoked / invalid). NOT
+   *                              verified, recorded with the reason.
+   *  - `parse-error`           — the forwarded body was unusable.
+   *  - `unsupported-provider`  — no parser for this provider in this build.
+   */
+  state: 'ok' | 'introspection-error' | 'parse-error' | 'unsupported-provider';
+  /** Count of distinct granted scopes when `state === 'ok'`. */
+  scope_count: number;
+  /** Short human-readable reason when `state !== 'ok'`. */
+  reason?: string;
+  /** ISO-8601 timestamp the forward was accepted at. */
+  received_at: string;
+  /** True when this call replaced an earlier forward for the same provider. */
+  replaced_previous?: boolean;
+}
+
 /**
  * Output for `start_verification`. The handler returns a structured
  * summary; the dashboard's discovery section + the markdown report

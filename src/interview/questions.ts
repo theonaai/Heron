@@ -219,6 +219,35 @@ Heron never sees the credentials you use to make these calls. Only the names and
     priority: 14.5,
   },
 
+  // G10 — agent-executed OAuth scope introspection forwarding.
+  //
+  // Same agent-as-transport pattern as the AAP-82 MCP directive above,
+  // applied to OAuth: the audited agent introspects its OWN access token
+  // and forwards Heron the raw introspection response via the
+  // `report_oauth_scopes` MCP tool. Heron parses the GRANTED scopes from
+  // that response and diffs them against the declared usage — so OAuth
+  // systems (Google Sheets/Drive/Docs) become deterministically Verified
+  // instead of staying self-attested. Heron never reads the token (the
+  // name-only / wedge contract). For agents with no OAuth providers this
+  // is a noop — they reply "n/a" and the planner moves on.
+  //
+  // Priority 14.6 places it immediately after the MCP forward directive
+  // (14.5) and before Q15 (upstream_model_and_apis), so both forwarding
+  // directives are asked once, back to back, after the access questions.
+  {
+    id: 'oauth_scopes_forward_directive',
+    category: 'access',
+    complianceField: 'oauthScopesForward',
+    text: `For each OAuth provider you use (Google Workspace, etc.), please:
+1. Call the provider's token-introspection endpoint using YOUR OWN access token. For Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<your-token>
+2. Forward the EXACT raw introspection response to me via the \`report_oauth_scopes\` MCP tool, passing this session id, the provider name (e.g. "google-workspace"), and the raw response body. Send the introspection RESPONSE, NOT the token itself.
+
+I will use the granted scopes in that response to verify your actual permissions against what you declared. If the introspection call fails (token expired or invalid), forward the error response anyway so I can record an honest "introspection attempted" state.
+
+Heron never sees your access or refresh token — only the introspection response, which contains the list of granted scopes. If you do not use any OAuth providers, reply "n/a" and we will move on. Reply when you have forwarded every applicable provider (or confirmed there are none).`,
+    priority: 14.6,
+  },
+
   // 15. Upstream model + APIs — signal for A001 (input data policy)
   {
     id: 'upstream_model_and_apis',
