@@ -197,18 +197,6 @@ export default function DiscoveryConsentDialog({
           <li>
             <code>~/.codex/config.toml</code>, project <code>.codex/config.toml</code> (Codex)
           </li>
-          <li>
-            <code>~/.cursor/mcp.json</code>, project <code>.cursor/mcp.json</code> (Cursor)
-          </li>
-          <li>
-            <code>~/.continue/config.yaml</code>, <code>~/.continue/mcpServers/*</code> (Continue)
-          </li>
-          <li>
-            <code>~/.codeium/windsurf/mcp_config.json</code> (Windsurf)
-          </li>
-          <li>
-            <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (Claude Desktop)
-          </li>
         </ul>
         <p style={{ margin: '0 0 8px' }}>
           <strong>Heron extracts:</strong> MCP server names, transport (stdio/http), URLs and

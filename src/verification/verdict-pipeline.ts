@@ -185,6 +185,14 @@ export function buildVerdictSnapshot(verdict: Verdict): {
     description: string;
     kind?: string;
   }>;
+  // AAP-105 (G8b) — global-scope MCP servers reclassified out of
+  // `findings`. Informational, no severity, never moves posture.
+  hostCapabilities: Array<{
+    serverName: string;
+    runtime: string;
+    transport: string;
+    note: string;
+  }>;
 } {
   return {
     status: verdict.status,
@@ -199,6 +207,12 @@ export function buildVerdictSnapshot(verdict: Verdict): {
       title: f.title,
       description: f.description,
       ...(f.kind !== undefined ? { kind: f.kind } : {}),
+    })),
+    hostCapabilities: (verdict.hostCapabilities ?? []).map((h) => ({
+      serverName: h.serverName,
+      runtime: h.runtime,
+      transport: h.transport,
+      note: h.note,
     })),
   };
 }

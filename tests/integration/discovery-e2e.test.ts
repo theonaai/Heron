@@ -1,8 +1,11 @@
 /**
- * Discovery end-to-end integration test — AAP-53 / AAP-100.
+ * Discovery end-to-end integration test — AAP-53 / AAP-100 / AAP-105.
  *
- * Spins up a temp $HOME, writes three fixture configs (codex, cursor,
- * claude-code), and runs `runDiscovery` once per runtime. Asserts:
+ * Spins up a temp $HOME, writes fixture configs for the two supported
+ * runtimes (codex, claude-code), and runs `runDiscovery` once per
+ * runtime. (AAP-105/G8a cut the cursor/continue/windsurf/claude-desktop
+ * readers; fixtures that lived under cursor folded into claude-code,
+ * which reads the same canonical `mcpServers` JSON shape.) Asserts:
  *
  *   1. Each per-runtime call surfaces only that runtime's agent.
  *   2. Redacted env-key NAMES survive; their VALUES never appear
@@ -69,10 +72,14 @@ SLACK_BOT_TOKEN = "xoxb-fake"
 `,
     );
 
-    // 2. Cursor (JSON) — github with credentials, MENTIONED in transcript.
-    await mkdir(join(homeDir, '.cursor'), { recursive: true });
+    // 2. Claude Code (~/.claude.json) — github (MENTIONED in transcript)
+    //    + postgres (NOT mentioned), both with credentials.
+    //    AAP-105 (G8a) — github used to live in a separate `cursor`
+    //    fixture; cursor was cut, so it folds into the claude-code config
+    //    here. The reader path is the same canonical top-level
+    //    `mcpServers` shape, so coverage is unchanged.
     await writeFile(
-      join(homeDir, '.cursor/mcp.json'),
+      join(homeDir, '.claude.json'),
       JSON.stringify({
         mcpServers: {
           github: {
@@ -80,15 +87,6 @@ SLACK_BOT_TOKEN = "xoxb-fake"
             args: ['mcp-server-github'],
             env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp-fake' },
           },
-        },
-      }),
-    );
-
-    // 3. Claude Code (~/.claude.json) — postgres with credentials, NOT in transcript.
-    await writeFile(
-      join(homeDir, '.claude.json'),
-      JSON.stringify({
-        mcpServers: {
           postgres: {
             command: 'postgres-mcp',
             env: { POSTGRES_CONNECTION_STRING: 'postgres://u:p@h/db' },
@@ -100,24 +98,19 @@ SLACK_BOT_TOKEN = "xoxb-fake"
     // AAP-100 — run discovery once per runtime under audit. Each call
     // only reads that runtime's config directory.
     const codexResult = await runDiscovery({ runtime: 'codex', homeDir });
-    const cursorResult = await runDiscovery({ runtime: 'cursor', homeDir });
     const claudeResult = await runDiscovery({ runtime: 'claude-code', homeDir });
 
     // ── Per-runtime scope: each call surfaces only its own runtime ─
     expect(codexResult.agents.map((a) => a.runtime)).toEqual(['codex']);
-    expect(cursorResult.agents.map((a) => a.runtime)).toEqual(['cursor']);
     expect(claudeResult.agents.map((a) => a.runtime)).toEqual(['claude-code']);
 
-    // Cross-runtime isolation: scannedPaths never touch the other runtimes' dirs.
-    expect(codexResult.scannedPaths.some((p) => p.includes('.cursor'))).toBe(false);
+    // Cross-runtime isolation: scannedPaths never touch the other runtime's dir.
     expect(codexResult.scannedPaths.some((p) => p.includes('.claude'))).toBe(false);
     expect(claudeResult.scannedPaths.some((p) => p.includes('.codex'))).toBe(false);
-    expect(claudeResult.scannedPaths.some((p) => p.includes('.cursor'))).toBe(false);
 
-    // ── Combine the three results for the shared assertions below ─
+    // ── Combine the two results for the shared assertions below ─
     const allAgents: DiscoveredAgent[] = [
       ...codexResult.agents,
-      ...cursorResult.agents,
       ...claudeResult.agents,
     ];
     const allServers = allAgents.flatMap((a) => a.mcpServers);
@@ -134,7 +127,7 @@ SLACK_BOT_TOKEN = "xoxb-fake"
     expect(postgres.redactedEnvKeys).toEqual(['POSTGRES_CONNECTION_STRING']);
 
     // ── Deep-grep secret check (the load-bearing assertion) ────
-    for (const result of [codexResult, cursorResult, claudeResult]) {
+    for (const result of [codexResult, claudeResult]) {
       const serialized = JSON.stringify(result);
       for (const secret of SECRET_VALUES) {
         expect(serialized.includes(secret)).toBe(false);
@@ -187,10 +180,17 @@ url = "https://${INLINE_BASIC_AUTH}@private-mcp.example.com/mcp"
 `,
     );
 
-    // Cursor (JSON) — inline --token=ghp_xxx in args.
-    await mkdir(join(homeDir, '.cursor'), { recursive: true });
+    // Claude Code (~/.claude.json) — exercises every redaction layer:
+    //   - inline --token=ghp_xxx in args (Layer 3 args-trim)
+    //   - standalone --token <secret> positional (Layer 3 args-trim)
+    //   - inline RSA block in a command string (Layer 4 secretlint)
+    //   - inline JWT in an http url (Layer 2 url-scrub + Layer 4)
+    // AAP-105 (G8a) — the two `--token` servers used to live in a
+    // separate `cursor` fixture; cursor was cut, so they fold into the
+    // claude-code config (same canonical `mcpServers` JSON shape, so the
+    // args-trim coverage is identical).
     await writeFile(
-      join(homeDir, '.cursor/mcp.json'),
+      join(homeDir, '.claude.json'),
       JSON.stringify({
         mcpServers: {
           'inline-token': {
@@ -201,19 +201,6 @@ url = "https://${INLINE_BASIC_AUTH}@private-mcp.example.com/mcp"
             command: 'mcp',
             args: ['--token', INLINE_GHP, '--workspace', './foo'],
           },
-        },
-      }),
-    );
-
-    // Claude Code (~/.claude.json) — JWT in headers, RSA private key blob in env.
-    // After whitelist projection these are dropped at READ TIME (env / headers
-    // values never enter memory), but we ALSO test inline JWT in url and an
-    // inline RSA block in command string to make sure Layer 4 catches anything
-    // that slips through.
-    await writeFile(
-      join(homeDir, '.claude.json'),
-      JSON.stringify({
-        mcpServers: {
           'rsa-in-command': {
             command: `bash -c "echo ${INLINE_RSA_BEGIN}"`,
           },
@@ -228,13 +215,11 @@ url = "https://${INLINE_BASIC_AUTH}@private-mcp.example.com/mcp"
     // AAP-100 — combine per-runtime calls so the grep assertion runs
     // over the unioned scrubbed inventory.
     const codex = await runDiscovery({ runtime: 'codex', homeDir });
-    const cursor = await runDiscovery({ runtime: 'cursor', homeDir });
     const claude = await runDiscovery({ runtime: 'claude-code', homeDir });
 
     // Pass through Layer 4 (secretlint) — same path the API route uses.
     const scrubbed = [
       ...(await secretlintScrub(codex.agents)),
-      ...(await secretlintScrub(cursor.agents)),
       ...(await secretlintScrub(claude.agents)),
     ];
     const json = JSON.stringify(scrubbed);

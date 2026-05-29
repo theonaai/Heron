@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 
 import { computeVerdict, computePosture } from '../../src/verification/verdict.js';
 import type { VerdictFinding } from '../../src/verification/verdict.js';
-import type { DiscoveryFinding } from '../../src/discovery/types.js';
+import type { DiscoveryFinding, DiscoveredAgent } from '../../src/discovery/types.js';
 import type { Risk } from '../../src/report/types.js';
 import type { SourceVerification } from '../../src/verification/types.js';
 
@@ -65,12 +65,16 @@ describe('computeVerdict', () => {
   });
 
   it('stamps discovery findings with evidenceSource = MCP and scores them via computeSeverity', () => {
+    // AAP-105 (G8b) — `claude-code` is a `project-local` runtime, so an
+    // EXTRA server IS attributable to the audited agent and stays a
+    // Verified MCP finding. (A `codex` EXTRA would reclassify to a
+    // host-capability note instead — see the dedicated G8b suite below.)
     const discoveryFindings: DiscoveryFinding[] = [
       {
         kind: 'EXTRA',
         severity: 'HIGH',
         serverName: 'slack',
-        runtime: 'codex',
+        runtime: 'claude-code',
         description: 'undisclosed slack server with credentials',
       },
     ];
@@ -232,7 +236,9 @@ describe('computeVerdict', () => {
         kind: 'EXTRA',
         severity: 'HIGH',
         serverName: 'slack',
-        runtime: 'codex',
+        // AAP-105 (G8b) — project-local runtime so the EXTRA stays a
+        // Verified MCP finding (codex would reclassify to host-capability).
+        runtime: 'claude-code',
         description: 'undisclosed server',
       },
     ];
@@ -262,7 +268,9 @@ describe('computeVerdict', () => {
 
   it('exposes a finding for every input row (discovery + oauth + interview)', () => {
     const discoveryFindings: DiscoveryFinding[] = [
-      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'slack', runtime: 'codex', description: 'a' },
+      // AAP-105 (G8b) — project-local so the EXTRA produces a Verified
+      // finding (codex EXTRA would reclassify out and drop the count to 4).
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'slack', runtime: 'claude-code', description: 'a' },
       { kind: 'MISSING', severity: 'LOW', serverName: 'jira', runtime: '—', description: 'b' },
     ];
     const oauthVerifications: SourceVerification[] = [
@@ -408,8 +416,9 @@ describe('computeVerdict — per-finding SLF severity (AAP-105 A6)', () => {
     ];
     // One Verified MCP finding. With this evidence shape (one EXTRA server,
     // no write tools, no OAuth) the Verified severity computes to 3.
+    // AAP-105 (G8b) — project-local runtime so the EXTRA stays Verified.
     const discoveryFindings: DiscoveryFinding[] = [
-      { kind: 'EXTRA', severity: 'HIGH', serverName: 'slack', runtime: 'codex', description: 'undisclosed' },
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'slack', runtime: 'claude-code', description: 'undisclosed' },
     ];
     const verdict = computeVerdict({ interviewFindings, discoveredAgents: undefined, discoveryFindings });
 
@@ -425,5 +434,147 @@ describe('computeVerdict — per-finding SLF severity (AAP-105 A6)', () => {
     expect(verdict.posture).not.toBe(13.5);
     // computePosture directly: SLF excluded even at 13.5.
     expect(computePosture(verdict.findings)).toBe(verified.severityScore);
+  });
+});
+
+// ─── AAP-105 (G8b) — per-runtime MCP scope gate ───────────────────────
+//
+// Heron audits a SPECIFIC AGENT WITH A TASK, not the IDE. For a
+// `global`-scope runtime (codex) the MCP config has no project binding —
+// `~/.codex/config.toml` is shared host-wide — so a discovered EXTRA
+// server is the IDE's host capability surface, NOT a deviation by the
+// audited agent. It must be reclassified OUT of the Verified findings
+// list into `verdict.hostCapabilities` and must NOT move posture. For a
+// `project-local` runtime (claude-code) the per-workspace MCP IS
+// attributable, so its EXTRA findings stay Verified.
+describe('computeVerdict — G8b per-runtime scope gate (AAP-105)', () => {
+  it('global-scope (codex) EXTRA → reclassified to hostCapabilities, NOT a Verified finding', () => {
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'supabase', runtime: 'codex', description: 'host-wide supabase' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings });
+
+    // Not in findings.
+    expect(verdict.findings.find((f) => f.title.includes('supabase'))).toBeUndefined();
+    expect(verdict.findings.filter((f) => f.evidenceSource === 'MCP')).toHaveLength(0);
+    // Lifted into hostCapabilities instead.
+    expect(verdict.hostCapabilities).toHaveLength(1);
+    expect(verdict.hostCapabilities[0].serverName).toBe('supabase');
+    expect(verdict.hostCapabilities[0].runtime).toBe('codex');
+    expect(verdict.hostCapabilities[0].note.toLowerCase()).toContain('host');
+  });
+
+  it('WEDGE INVARIANT: global-scope EXTRA servers do NOT move posture', () => {
+    // Three host-wide codex EXTRA servers, the strongest at HIGH. With no
+    // other Verified evidence, posture must stay 0 — none of them is a
+    // deviation by the audited agent.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'supabase', runtime: 'codex', description: 'a' },
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'chrome-devtools', runtime: 'codex', description: 'b' },
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'computer-use@openai-bundled', runtime: 'codex', description: 'c' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings });
+
+    expect(verdict.hostCapabilities).toHaveLength(3);
+    // No Verified findings → posture 0 (FIPS HWM over an empty Verified set).
+    expect(verdict.findings.filter((f) => f.evidenceSource !== 'SLF')).toHaveLength(0);
+    expect(verdict.posture).toBe(0);
+    expect(computePosture(verdict.findings)).toBe(0);
+  });
+
+  it('global-scope MISSING stays a Verified finding (declared-but-absent is not a host extra)', () => {
+    // MISSING carries runtime '—' by construction; even forcing 'codex'
+    // here, the kind gate keeps it Verified — it is about a thing the
+    // interview declared, not a host-wide extra.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'MISSING', severity: 'MEDIUM', serverName: 'drive', runtime: '—', description: 'interview named drive, none on disk' },
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'supabase', runtime: 'codex', description: 'host-wide' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings });
+
+    // drive MISSING survives as Verified; supabase EXTRA reclassifies.
+    const verified = verdict.findings.filter((f) => f.evidenceSource !== 'SLF');
+    expect(verified).toHaveLength(1);
+    expect(verified[0].title).toContain('drive');
+    expect(verdict.hostCapabilities.map((h) => h.serverName)).toEqual(['supabase']);
+    // Posture comes from the legit MISSING, not the host-wide extra.
+    expect(verdict.posture).toBe(verified[0].severityScore);
+    expect(verdict.posture).toBeGreaterThan(0);
+  });
+
+  it('DEMO PARITY: 3 codex EXTRA reclassify, 1 MISSING drive stays, posture from drive only', () => {
+    // Mirrors demo session sess-20260529-045403-c634da exactly.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'supabase', runtime: 'codex', description: 'x' },
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'chrome-devtools', runtime: 'codex', description: 'x' },
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'computer-use@openai-bundled', runtime: 'codex', description: 'x' },
+      { kind: 'MISSING', severity: 'MEDIUM', serverName: 'drive', runtime: '—', description: 'interview named drive' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings });
+
+    const verifiedMcp = verdict.findings.filter((f) => f.evidenceSource === 'MCP');
+    // Only the MISSING drive remains a Verified MCP card.
+    expect(verifiedMcp).toHaveLength(1);
+    expect(verifiedMcp[0].title).toBe('MISSING drive');
+    // The three host-wide servers are reclassified, none of them Verified.
+    expect(verdict.hostCapabilities.map((h) => h.serverName).sort()).toEqual(
+      ['chrome-devtools', 'computer-use@openai-bundled', 'supabase'],
+    );
+    for (const name of ['supabase', 'chrome-devtools', 'computer-use@openai-bundled']) {
+      expect(verdict.findings.find((f) => f.title.includes(name))).toBeUndefined();
+    }
+  });
+
+  it('project-local (claude-code) EXTRA is UNAFFECTED — stays a Verified MCP finding', () => {
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'postgres', runtime: 'claude-code', description: 'project-scoped postgres' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings });
+
+    // No reclassification: project-scoped MCP is attributable to the agent.
+    expect(verdict.hostCapabilities).toHaveLength(0);
+    const mcp = verdict.findings.filter((f) => f.evidenceSource === 'MCP');
+    expect(mcp).toHaveLength(1);
+    expect(mcp[0].title).toContain('postgres');
+    // It moves posture (Verified).
+    expect(verdict.posture).toBe(mcp[0].severityScore);
+    expect(verdict.posture).toBeGreaterThan(0);
+  });
+
+  it('host-capability entries carry the transport looked up from discovered agents', () => {
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'supabase', runtime: 'codex', description: 'x' },
+    ];
+    const discoveredAgents: DiscoveredAgent[] = [
+      {
+        runtime: 'codex',
+        configPath: '/home/me/.codex/config.toml',
+        mcpServers: [
+          { name: 'supabase', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+        ],
+      },
+    ];
+    const verdict = computeVerdict({ discoveryFindings, discoveredAgents });
+    expect(verdict.hostCapabilities[0].transport).toBe('http');
+  });
+
+  it('host-capability transport falls back to "unknown" when the server is not in agents', () => {
+    // Plugin EXTRA rows (e.g. computer-use@openai-bundled) have no
+    // DiscoveredMcpServer entry, so transport resolution misses.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'computer-use@openai-bundled', runtime: 'codex', description: 'x' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings, discoveredAgents: [] });
+    expect(verdict.hostCapabilities[0].transport).toBe('unknown');
+  });
+
+  it('hostCapabilities is always an array (empty when no global EXTRA present)', () => {
+    const verdict = computeVerdict({
+      discoveryFindings: [
+        { kind: 'MISSING', severity: 'LOW', serverName: 'jira', runtime: '—', description: 'x' },
+      ],
+    });
+    expect(Array.isArray(verdict.hostCapabilities)).toBe(true);
+    expect(verdict.hostCapabilities).toHaveLength(0);
   });
 });

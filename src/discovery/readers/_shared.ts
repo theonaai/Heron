@@ -1,12 +1,17 @@
 /**
  * Shared parser helpers for filesystem readers (AAP-53).
  *
- * The canonical Claude Desktop `mcpServers` shape is reused by Cursor,
- * Windsurf, and Claude Code's own ~/.claude.json. Projection lives here
- * so each reader is a thin paths() + parse() wrapper.
+ * `projectServer` is the single projection point: it maps one raw MCP
+ * server config blob onto `DiscoveredMcpServer`, dropping every field
+ * not on the whitelist (whitelist contract from AAP-53). Both surviving
+ * readers (claude-code, codex) call it.
  *
- * EVERY projection goes through `projectServer`. Unknown fields on the
- * input are silently dropped — whitelist contract from AAP-53.
+ * AAP-105 (G8a) — the standalone `parseCanonicalMcpServers` helper was
+ * removed when its only callers (the cursor / windsurf / claude-desktop
+ * readers) were cut. Claude Code parses its own `~/.claude.json` shape
+ * (per-project + top-level), and Codex parses TOML; neither needs a
+ * generic canonical-JSON parser. Re-add one here if a backlog runtime
+ * with the canonical `{ mcpServers: { … } }` shape is restored.
  */
 
 import type { DiscoveredMcpServer, DiscoveredTransport } from '../types.js';
@@ -110,28 +115,5 @@ export function projectServer(
   }
   if (toolsAllowed) out.toolsAllowed = toolsAllowed;
   if (toolsDenied) out.toolsDenied = toolsDenied;
-  return out;
-}
-
-/**
- * Parse the canonical `{ mcpServers: { <name>: <config> } }` shape used
- * by Claude Desktop, Cursor, Windsurf, and Claude Code.
- */
-export function parseCanonicalMcpServers(content: string): DiscoveredMcpServer[] {
-  let json: unknown;
-  try {
-    json = JSON.parse(content);
-  } catch {
-    return [];
-  }
-  if (!json || typeof json !== 'object') return [];
-  const root = json as Unknown;
-  const servers = root.mcpServers;
-  if (!servers || typeof servers !== 'object') return [];
-  const out: DiscoveredMcpServer[] = [];
-  for (const [name, config] of Object.entries(servers as Unknown)) {
-    if (!config || typeof config !== 'object') continue;
-    out.push(projectServer(name, config as Unknown));
-  }
   return out;
 }
