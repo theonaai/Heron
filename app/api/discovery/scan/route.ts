@@ -482,7 +482,7 @@ export async function POST(request: Request): Promise<Response> {
         discovery: finalResult,
       });
       patch.compliance = compliance;
-      // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
+      // AAP-69 alias — the dashboard minimal report reads `regulatoryCompliance`.
       patch.regulatoryCompliance = compliance;
     }
   }
@@ -505,7 +505,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // AAP-103 — always persist the verdict snapshot (posture +
   // postureBand + findings) onto report.json so the dashboard's
-  // ReportView renders the gradient indicator + Vijil-style cards
+  // minimal report renders the gradient indicator + findings
   // against the freshly computed verdict. Independent of
   // surface2Attempted because even a pre-scan verdict (interrogation-only)
   // carries SLF findings the dashboard needs to render.

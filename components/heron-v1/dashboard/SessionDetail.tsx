@@ -9,7 +9,6 @@ import {
   type VersionDiff,
 } from '@/lib/api';
 import TranscriptView from './TranscriptView';
-import ReportView from './ReportView';
 import MinimalReportView from './MinimalReportView';
 import DiffView from './DiffView';
 import DiscoveryConsentDialog from './DiscoveryConsentDialog';
@@ -179,25 +178,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
 
   const { sessions: allSessions } = useSessions();
   const [consentOpen, setConsentOpen] = useState(false);
-
-  // G7 PROTOTYPE — layout flag from URL `?layout=minimal`.
-  // Lives on a feature branch only; flip via the toggle in the
-  // tab row or by appending the query param to the URL.
-  const [layout, setLayout] = useState<'full' | 'minimal'>('full');
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const p = new URLSearchParams(window.location.search);
-    if (p.get('layout') === 'minimal') setLayout('minimal');
-    else setLayout('full');
-  }, []);
-  const toggleLayout = (next: 'full' | 'minimal') => {
-    if (typeof window === 'undefined') return;
-    setLayout(next);
-    const url = new URL(window.location.href);
-    if (next === 'minimal') url.searchParams.set('layout', 'minimal');
-    else url.searchParams.delete('layout');
-    window.history.replaceState({}, '', url.toString());
-  };
 
   // AAP-53 + AAP-79: callout appears only when the audit is complete
   // AND no discovery scan has run yet. Pre-AAP-79 the gate was a simple
@@ -580,29 +560,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
             Compare
           </button>
         )}
-        {/* G7 PROTOTYPE — Fix 5: layout toggle removed from the tab row
-            (Minimal/Full looked like a tab). Now lives bottom-right of the
-            minimal report area (see MinimalReportView FooterToggle), and in
-            the full layout footer (see below). */}
-        {tab === 'report' && hasReport && layout === 'full' && (
-          <button
-            type="button"
-            onClick={() => toggleLayout('minimal')}
-            style={{
-              marginLeft: 'auto',
-              background: 'transparent',
-              border: '1px solid #e4e4e7',
-              borderRadius: 4,
-              padding: '3px 10px',
-              fontSize: 11.5,
-              color: '#52525b',
-              cursor: 'pointer',
-              fontWeight: 500,
-            }}
-          >
-            Switch to Minimal layout (G7)
-          </button>
-        )}
       </div>
 
       <div className="body">
@@ -682,23 +639,11 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
                 </div>
               </div>
             )}
-            {layout === 'minimal' ? (
-              <MinimalReportView
-                reportJson={liveSession.reportJson as Parameters<typeof MinimalReportView>[0]['reportJson']}
-                transcript={liveSession.transcript as Parameters<typeof MinimalReportView>[0]['transcript']}
-                runtimeAgentName={effectiveAgentName}
-                onSwitchToFullLayout={() => toggleLayout('full')}
-              />
-            ) : (
-              <ReportView
-                report={liveSession.report}
-                reportJson={liveSession.reportJson}
-                riskLevel={liveSession.riskLevel}
-                onRunVerification={
-                  isComplete && !isAnalysisFailed ? () => setConsentOpen(true) : undefined
-                }
-              />
-            )}
+            <MinimalReportView
+              reportJson={liveSession.reportJson as Parameters<typeof MinimalReportView>[0]['reportJson']}
+              transcript={liveSession.transcript as Parameters<typeof MinimalReportView>[0]['transcript']}
+              runtimeAgentName={effectiveAgentName}
+            />
           </>
         ) : tab === 'diff' && diff ? (
           isAnalysisFailed ? (
