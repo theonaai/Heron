@@ -286,60 +286,25 @@ function makeMcpInventoryDetector(
   };
 }
 
-// ─── Detector — EU AI Act Art. 5 attestation gate ─────────────────────────
-
-/**
- * AAP-105 D4 quick-win #2 — EU AI Act Art. 5 prohibited-practice landing.
- *
- * The article forbids specific AI uses (subliminal manipulation,
- * exploitation of vulnerabilities, social scoring, real-time remote
- * biometric ID in public for law enforcement, emotion recognition in
- * workplace / education). Heron's evidence cannot prove a NEGATIVE
- * (the agent does not engage in these practices) — that's an
- * operator attestation.
- *
- * What this detector can honestly do: when discovery surfaces an
- * agent with ≥1 MCP server (= real AI tooling in use), fire `partial`
- * with the rationale "operator must attest none of the listed Art. 5
- * prohibited practices apply". This makes Art. 5 visible in the
- * framework accordion rather than silently absent, while preserving
- * the honest-partial discipline: the verdict deliberately is not
- * `verified`, because Heron has not proven the negative.
- */
-function makeEUAct5AttestationDetector(): TypedDetector {
-  return (evidence: TypedEvidenceEnvelope): ControlResult | null => {
-    if (!evidence.discovery) return null;
-    let mcpCount = 0;
-    for (const agent of evidence.discovery.agents ?? []) {
-      mcpCount += (agent.mcpServers ?? []).length;
-    }
-    if (mcpCount === 0) return null;
-
-    const findingType: FindingType = 'regulatory-flags';
-    const frameworkId: FrameworkId = 'eu-ai-act';
-    const controlId = 'Art. 5';
-    const out: ControlResult = {
-      stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
-      findingType,
-      frameworkId,
-      controlId,
-      controlName:
-        'Prohibited practices — subliminal manipulation, exploitation, social scoring, real-time biometric ID in public spaces, emotion recognition in workplace.',
-      path: 'typed',
-      surface: 'actual',
-      verdict: 'partial',
-      severity: 'medium',
-      rationale: `Discovery confirms ${mcpCount} MCP server${mcpCount === 1 ? '' : 's'} are in use; operator must attest that none of the practices listed in EU AI Act Art. 5 (subliminal manipulation, social scoring, real-time biometric ID in public spaces, emotion recognition in workplace) apply to this agent.`,
-      evidenceRefs: [
-        {
-          kind: 'absence',
-          ref: `No operator attestation against Art. 5 prohibited practices found; ${mcpCount} MCP server(s) discovered.`,
-        },
-      ],
-    };
-    return out;
-  };
-}
+// ─── EU AI Act Art. 5 — prose-only (no typed detector) ─────────────────────
+//
+// AAP-105 A4 (Ilya, 2026-05-28, final): Art. 5 prohibited practices
+// (subliminal manipulation, exploitation, social scoring, predictive
+// policing, untargeted facial scraping, emotion recognition at work /
+// school, biometric categorisation, real-time biometric ID) are almost
+// entirely about the agent's PURPOSE / USE. None of them is detectable
+// deterministically from tools / .env / OAuth — they are only knowable
+// from what the agent SAYS about itself (interview transcript). So Art. 5
+// belongs to the prose engine only, not a typed detector.
+//
+// The D4 pass added `makeEUAct5AttestationDetector`, which fired `partial`
+// whenever discovery showed ≥1 MCP server. That link ("MCP server present"
+// → "Art. 5 prohibited practices") is fabricated: it made every agent with
+// any tooling show an Art. 5 partial, which is noise, not defensible
+// evidence. The typed detector + its adapter row were removed in A4. The
+// prose catalog row for Art. 5 stays in `control-mappings.ts` so the prose
+// engine still catches it from the transcript when an agent describes a
+// prohibited practice.
 
 // ─── Detector — .env secret-pattern presence ───────────────────────────────
 
@@ -553,14 +518,8 @@ export const DISCOVERY_DETECTOR_ADAPTERS: ReadonlyArray<DiscoveryAdapterRow> = [
       'Security of processing — protect credentials from disclosure.',
     ),
   },
-  // ── AAP-105 D4 quick-win #2: EU AI Act Art. 5 attestation gate ──────────
-  // Surface Art. 5 in the EU AI Act framework card so the reviewer can
-  // see the article was checked. Verdict is intentionally `partial` to
-  // preserve the honest-partial discipline.
-  {
-    findingType: 'regulatory-flags',
-    frameworkId: 'eu-ai-act',
-    controlId: 'Art. 5',
-    detector: makeEUAct5AttestationDetector(),
-  },
+  // AAP-105 A4: the EU AI Act Art. 5 typed detector (D4 quick-win #2) was
+  // removed. Art. 5 prohibited practices are about the agent's purpose /
+  // use and are only knowable from the interview prose, so Art. 5 is a
+  // prose-only control now (catalog row stays in control-mappings.ts).
 ];

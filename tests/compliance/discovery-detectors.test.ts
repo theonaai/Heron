@@ -332,8 +332,14 @@ describe('AAP-105 D4 — env secret-pattern detector (GDPR Art. 32)', () => {
   });
 });
 
-describe('AAP-105 D4 — EU AI Act Art. 5 attestation gate', () => {
-  it('any MCP server lights EU AI Act Art. 5 with partial verdict', () => {
+// AAP-105 A4: the EU AI Act Art. 5 typed attestation detector (D4
+// quick-win #2) was removed. Art. 5 prohibited practices are about the
+// agent's purpose / use, only knowable from interview prose, so a typed
+// detector that fired `partial` on "≥1 MCP server present" was fabricated
+// signal. Art. 5 is now a prose-only control. This regression test pins
+// that a discovery-only surface NO LONGER emits a typed Art. 5 finding.
+describe('AAP-105 A4 — EU AI Act Art. 5 has no typed detector', () => {
+  it('an MCP server does NOT light a typed EU AI Act Art. 5 ControlResult', () => {
     const discovery: DiscoveryResult = {
       agents: [
         {
@@ -361,20 +367,6 @@ describe('AAP-105 D4 — EU AI Act Art. 5 attestation gate', () => {
     const art5 = out.controlResults.find(
       (r) => r.frameworkId === 'eu-ai-act' && r.controlId === 'Art. 5',
     );
-    expect(art5).toBeDefined();
-    expect(art5!.verdict).toBe('partial');
-    expect(art5!.path).toBe('typed');
-    expect(art5!.rationale.toLowerCase()).toContain('subliminal');
-  });
-
-  it('empty discovery does NOT light Art. 5', () => {
-    const out = mapFindings({
-      declared: { systems: [], transcript: [] },
-      actual: { discovery: { agents: [], findings: [], scannedAt: '2026-05-28T00:00:00.000Z', scannedPaths: [] } },
-    });
-    const ids = out.controlResults.map(
-      (r) => `${r.frameworkId}:${r.controlId}`,
-    );
-    expect(ids).not.toContain('eu-ai-act:Art. 5');
+    expect(art5).toBeUndefined();
   });
 });
