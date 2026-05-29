@@ -19,7 +19,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { diffAgainstTranscript } from '../../src/discovery/diff.js';
-import type { DiscoveredAgent } from '../../src/discovery/types.js';
+import type {
+  DiscoveredAgent,
+  WorkspaceEnvFile,
+} from '../../src/discovery/types.js';
 
 const agents: DiscoveredAgent[] = [
   {
@@ -156,5 +159,116 @@ describe('diffAgainstTranscript', () => {
     const onlyGithub = [agents[1]];
     const findings = diffAgainstTranscript(onlyGithub, transcript);
     expect(findings.filter((f) => f.kind === 'HIDDEN-CREDENTIALS')).toEqual([]);
+  });
+});
+
+/**
+ * AAP-105 (G8c) — MISSING is gated on the FULL evidence surface (MCP +
+ * plugin inventory + workspace env REST/OAuth keys), not the MCP
+ * inventory alone. A declared service wired via REST/OAuth env keys
+ * (e.g. Google Drive via GOOGLE_* keys) must NOT be flagged MISSING just
+ * because it isn't an MCP server. Mirror of the G8b EXTRA host-capability
+ * fix on the MISSING side. A genuinely declared-but-absent service (no
+ * MCP, no plugin, no env signal) still flags.
+ */
+describe('diffAgainstTranscript — MISSING gated on REST/env evidence (G8c)', () => {
+  // Agent with NO MCP server for drive/google. The only "evidence" of
+  // Google is the workspace env keys passed separately.
+  const bareAgent: DiscoveredAgent = {
+    runtime: 'codex',
+    configPath: '/home/me/.codex/config.toml',
+    mcpServers: [],
+  };
+
+  const googleEnv: WorkspaceEnvFile[] = [
+    {
+      path: '/home/me/proj/.env',
+      workspace: '/home/me/proj',
+      // Mirrors the demo workspace: Google Drive used via REST/OAuth,
+      // never as an MCP server.
+      keys: [
+        'OPENAI_API_KEY',
+        'GOOGLE_OAUTH_CLIENT_ID',
+        'GOOGLE_OAUTH_TOKEN_FILE',
+        'GOOGLE_DRIVE_FOLDER_ID',
+        'GOOGLE_SHEETS_SPREADSHEET_ID',
+      ],
+    },
+  ];
+
+  const driveTranscript = [
+    {
+      category: 'systems',
+      question: 'Which systems do you touch?',
+      answer: 'I read and write files in google drive.',
+    },
+  ];
+
+  it('SUPPRESSES MISSING when the service is evidenced by workspace env keys (REST/OAuth)', () => {
+    const findings = diffAgainstTranscript([bareAgent], driveTranscript, googleEnv);
+    // drive is wired via GOOGLE_* env keys → present as REST/OAuth, not MCP.
+    expect(findings.filter((f) => f.kind === 'MISSING' && f.serverName === 'drive')).toEqual([]);
+  });
+
+  it('still flags MISSING for drive when NO env evidence is passed', () => {
+    // Same transcript + agent, but no workspace env → MCP-only view, so
+    // drive is genuinely undiscovered and the finding stands. Proves the
+    // suppression is driven by the env evidence, not the transcript.
+    const findings = diffAgainstTranscript([bareAgent], driveTranscript);
+    expect(
+      findings.some((f) => f.kind === 'MISSING' && f.serverName === 'drive'),
+    ).toBe(true);
+  });
+
+  it('still flags MISSING for a genuinely-absent service (no MCP, no plugin, no env signal)', () => {
+    // Transcript names salesforce; env only has unrelated Google keys.
+    // No salesforce evidence anywhere → MISSING stays legit.
+    const transcript = [
+      {
+        category: 'systems',
+        question: 'Which systems?',
+        answer: 'we push leads into salesforce.',
+      },
+    ];
+    const findings = diffAgainstTranscript([bareAgent], transcript, googleEnv);
+    expect(
+      findings.some((f) => f.kind === 'MISSING' && f.serverName === 'salesforce'),
+    ).toBe(true);
+  });
+
+  it('does not let an unrelated env key cancel an unrelated service mention', () => {
+    // Transcript names notion; env has only Google + OpenAI keys. The
+    // brand-specific token map means GOOGLE_* / OPENAI_* never satisfy a
+    // notion mention → MISSING stays.
+    const transcript = [
+      {
+        category: 'systems',
+        question: 'Which systems?',
+        answer: 'docs live in notion.',
+      },
+    ];
+    const findings = diffAgainstTranscript([bareAgent], transcript, googleEnv);
+    expect(
+      findings.some((f) => f.kind === 'MISSING' && f.serverName === 'notion'),
+    ).toBe(true);
+  });
+
+  it('suppresses MISSING for a non-Google service via its own brand token (slack → SLACK_)', () => {
+    const slackEnv: WorkspaceEnvFile[] = [
+      {
+        path: '/home/me/proj/.env',
+        workspace: '/home/me/proj',
+        keys: ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'],
+      },
+    ];
+    const transcript = [
+      {
+        category: 'systems',
+        question: 'Which systems?',
+        answer: 'alerts go to slack.',
+      },
+    ];
+    const findings = diffAgainstTranscript([bareAgent], transcript, slackEnv);
+    expect(findings.filter((f) => f.kind === 'MISSING' && f.serverName === 'slack')).toEqual([]);
   });
 });

@@ -380,7 +380,16 @@ export async function POST(request: Request): Promise<Response> {
     const scrubbedWorkspaceEnv = result.workspaceEnv
       ? await secretlintScrub(result.workspaceEnv)
       : undefined;
-    const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+    // AAP-105 (G8c) — thread workspace env (variable NAMES only) into the
+    // diff so a transcript-mentioned service wired via REST/OAuth env
+    // keys (e.g. Google Drive via GOOGLE_*) is not flagged as a false
+    // MISSING just because it isn't an MCP server. Same fix as the MCP
+    // start_verification path.
+    const findings = diffAgainstTranscript(
+      scrubbedAgents,
+      session.transcript,
+      scrubbedWorkspaceEnv ?? [],
+    );
     // AAP-82 Blocker 1: surface "agent reported a server Heron did not
     // discover" via the existing warnings channel. The diff is already
     // wired to flag servers that aren't in the transcript; this catches
