@@ -300,3 +300,130 @@ describe('computeVerdict', () => {
     expect(verdict.findings).toHaveLength(5);
   });
 });
+
+// ─── AAP-105 A6 — per-finding SLF severity ────────────────────────────────
+//
+// Pre-A6, every SLF finding was scored by the session-wide blast radius, so
+// they all collapsed to one number on the dashboard (`9 HIGH` on the demo).
+// A6 lets the analyzer assess each risk's own BR × DS × DM axes
+// (`risk.severityInputs`); when present the SLF path scores from those, so
+// different SLF risks get different severities. When absent, the legacy
+// session-wide path is preserved (no regression for old report.json on disk).
+describe('computeVerdict — per-finding SLF severity (AAP-105 A6)', () => {
+  it('scores different SLF risks differently from their own severityInputs', () => {
+    // A low-blast-radius alerting risk vs a high-reach broad-OAuth risk.
+    // Pre-A6 both would have collapsed to the same session-wide number.
+    const interviewFindings: Risk[] = [
+      {
+        severity: 'high',
+        title: 'Telegram alerting fails open',
+        description: 'monitoring gap — orthogonal to blast radius',
+        // BR = max(1,1,2) = 2, DS = 1, DM = 1.0 → severity 2 (low band).
+        severityInputs: { brW: 1, brR: 1, brA: 2, ds: 1, dm: 1.0 },
+      },
+      {
+        severity: 'high',
+        title: 'Broad Google OAuth permissions',
+        description: 'full Drive write across many systems',
+        // BR = max(3,3,3) = 3, DS = 2, DM = 1.0 → severity 6 (medium band).
+        severityInputs: { brW: 3, brR: 3, brA: 3, ds: 2, dm: 1.0 },
+      },
+    ];
+    // Surface 2 evidence so the findings get scored (the unverified path
+    // returns no findings at all).
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'LOW', serverName: 'tiny', runtime: 'codex', description: 'x' },
+    ];
+    const verdict = computeVerdict({ interviewFindings, discoveryFindings });
+
+    const slf = verdict.findings.filter((f) => f.evidenceSource === 'SLF');
+    expect(slf).toHaveLength(2);
+    const alerting = slf.find((f) => f.title === 'Telegram alerting fails open')!;
+    const oauth = slf.find((f) => f.title === 'Broad Google OAuth permissions')!;
+
+    // The two diverge — the whole point of A6.
+    expect(alerting.severityScore).toBe(2);
+    expect(alerting.band).toBe('low');
+    expect(oauth.severityScore).toBe(6);
+    expect(oauth.band).toBe('medium');
+    expect(alerting.severityScore).not.toBe(oauth.severityScore);
+
+    // severityComponents reflect the per-finding inputs, not session-wide.
+    expect(alerting.severityComponents).toMatchObject({ br: 2, ds: 1, dm: 1.0, brW: 1, brR: 1, brA: 2 });
+    expect(oauth.severityComponents).toMatchObject({ br: 3, ds: 2, dm: 1.0, brW: 3, brR: 3, brA: 3 });
+  });
+
+  it('falls back to session-wide scoring when severityInputs is absent', () => {
+    // No severityInputs → legacy path. Two HIGH risks land on the SAME
+    // session-wide number (the pre-A6 behaviour we must not regress).
+    const interviewFindings: Risk[] = [
+      { severity: 'high', title: 'risk one', description: 'a' },
+      { severity: 'high', title: 'risk two', description: 'b' },
+    ];
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'LOW', serverName: 'tiny', runtime: 'codex', description: 'x' },
+    ];
+    const verdict = computeVerdict({ interviewFindings, discoveryFindings });
+    const slf = verdict.findings.filter((f) => f.evidenceSource === 'SLF');
+    expect(slf).toHaveLength(2);
+    // Both fall back to the same session-wide score (HIGH → DS floor 3,
+    // BR-A default 3, no writes/reach) → 9. The legacy collapse is intact
+    // for sessions that predate A6.
+    expect(slf[0].severityScore).toBe(slf[1].severityScore);
+    expect(slf[0].severityScore).toBe(9);
+    // No throw, finding well-formed.
+    expect(slf[0].band).toBe('high');
+  });
+
+  it('mixes per-finding and fallback risks in one report without throwing', () => {
+    const interviewFindings: Risk[] = [
+      // Per-finding: low.
+      { severity: 'high', title: 'with inputs', description: 'a', severityInputs: { brW: 1, brR: 1, brA: 1, ds: 1, dm: 1.0 } },
+      // Fallback: session-wide.
+      { severity: 'medium', title: 'no inputs', description: 'b' },
+    ];
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'LOW', serverName: 'tiny', runtime: 'codex', description: 'x' },
+    ];
+    const verdict = computeVerdict({ interviewFindings, discoveryFindings });
+    const withInputs = verdict.findings.find((f) => f.title === 'with inputs')!;
+    const noInputs = verdict.findings.find((f) => f.title === 'no inputs')!;
+    expect(withInputs.severityScore).toBe(1); // 1×1×1.0
+    // Fallback medium → DS floor 2, BR 3 → 6.
+    expect(noInputs.severityScore).toBe(6);
+  });
+
+  it('WEDGE INVARIANT: a per-finding SLF scoring 13.5 does NOT move posture', () => {
+    // The most aggressive per-finding SLF score (BR=3, DS=3, DM=1.5 = 13.5)
+    // must still be excluded from posture. Posture stays at the max VERIFIED
+    // finding. This guards the strategy v3.0 §3 wedge through the new path:
+    // a richer per-finding SLF severity cannot leak into the gradient.
+    const interviewFindings: Risk[] = [
+      {
+        severity: 'critical',
+        title: 'agent claims unbounded shell',
+        description: 'self-attested worst case',
+        severityInputs: { brW: 3, brR: 3, brA: 3, ds: 3, dm: 1.5 },
+      },
+    ];
+    // One Verified MCP finding. With this evidence shape (one EXTRA server,
+    // no write tools, no OAuth) the Verified severity computes to 3.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'slack', runtime: 'codex', description: 'undisclosed' },
+    ];
+    const verdict = computeVerdict({ interviewFindings, discoveredAgents: undefined, discoveryFindings });
+
+    const slf = verdict.findings.find((f) => f.evidenceSource === 'SLF')!;
+    const verified = verdict.findings.find((f) => f.evidenceSource !== 'SLF')!;
+
+    // The SLF finding really did score 13.5 from its per-finding inputs.
+    expect(slf.severityScore).toBe(13.5);
+    expect(slf.band).toBe('critical');
+
+    // Posture equals the Verified finding's score, NOT the SLF 13.5.
+    expect(verdict.posture).toBe(verified.severityScore);
+    expect(verdict.posture).not.toBe(13.5);
+    // computePosture directly: SLF excluded even at 13.5.
+    expect(computePosture(verdict.findings)).toBe(verified.severityScore);
+  });
+});

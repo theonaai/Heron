@@ -419,6 +419,24 @@ export async function mergeWorkspaceHints(
   await writeMeta(id, next);
 }
 
+/**
+ * AAP-105 A2 — map the report.json `verification.status` vocabulary
+ * onto the meta-level `verificationStatus` enum. The two stores use
+ * different terms historically (`partially-verified` vs `partial`,
+ * `interrogation-only`/`verification-failed` vs `unverified`), and
+ * collapsing them here lets `getSession()` treat report.json as the
+ * canonical source without leaking the report vocabulary into every
+ * consumer of `AuditSessionDetail.verificationStatus`.
+ */
+function mapReportVerificationToMeta(status: unknown): VerificationStatus | undefined {
+  if (typeof status !== 'string') return undefined;
+  if (status === 'verified') return 'verified';
+  if (status === 'partially-verified') return 'partial';
+  if (status === 'interrogation-only') return 'unverified';
+  if (status === 'verification-failed') return 'unverified';
+  return undefined;
+}
+
 export async function getSession(id: string): Promise<AuditSessionDetail | null> {
   const meta = await readMeta(id);
   if (!meta) return null;
@@ -449,6 +467,31 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
   if (meta.interviewRiskLevel !== undefined) detail.interviewRiskLevel = meta.interviewRiskLevel;
   if (reportMd !== undefined) detail.report = reportMd;
   if (reportJson !== null) detail.reportJson = reportJson;
+
+  // AAP-105 A2 — `report.json:verification.status` is the canonical
+  // verification record (strategy v3.0 §3: "verifiable from a
+  // deterministic source of truth"). `meta.verificationStatus` is a
+  // denormalised cache that the sidebar / list path consults for
+  // performance. The two are written by separate code paths
+  // (`patchReportJson` writes report.json, `persistVerdict` writes
+  // meta) — a transient race window during the verification flow can
+  // leave them disagreeing for the duration of a fsync + rename. When
+  // the detail view detects disagreement, prefer the report value so
+  // operators do not see stale "unverified" state in the dashboard
+  // while the audit artefact already shows `partially-verified`.
+  // listSessions() intentionally does NOT do this — the sidebar tier
+  // is cache-only and tolerates short drift.
+  const reportVerificationStatus =
+    reportJson !== null &&
+    typeof reportJson === 'object' &&
+    'verification' in (reportJson as Record<string, unknown>)
+      ? (reportJson as { verification?: { status?: unknown } }).verification?.status
+      : undefined;
+  const mappedFromReport = mapReportVerificationToMeta(reportVerificationStatus);
+  if (mappedFromReport !== undefined) {
+    detail.verificationStatus = mappedFromReport;
+  }
+
   return detail;
 }
 
@@ -641,6 +684,72 @@ export async function patchReportJson(
   const merged = { ...existing, ...patch };
   await atomicWriteFile(path, JSON.stringify(merged, null, 2));
   const next: StoredMeta = { ...meta, updatedAt: nowIso() };
+  await writeMeta(id, next);
+  return merged;
+}
+
+/**
+ * AAP-105 A2 — atomic "patch report.json + update meta verdict fields"
+ * helper. Replaces the prior pattern of calling `patchReportJson` and
+ * then `persistVerdict` back-to-back, which left an observable race
+ * window where `report.json:verification.status` had already flipped
+ * to `partially-verified` while `meta.verificationStatus` still read
+ * `unverified`. In production this race was observed to persist for
+ * up to 51 seconds.
+ *
+ * Ordering contract:
+ *   1. Read existing report.json + meta (single sync point).
+ *   2. atomicWriteFile(report.json) — rename commits first.
+ *   3. writeMeta — rename commits second.
+ *
+ * If a reader hits between step 2 and step 3, it observes fresh
+ * report.json (canonical) and stale meta (cache). `getSession()`
+ * defensively prefers report.json when both are present, so the
+ * dashboard detail view will render the fresh value either way.
+ * `listSessions()` reads only meta and tolerates the brief lag.
+ *
+ * Returns the merged report.json (callers like the dashboard scan
+ * route consume it to re-render the .md artefact).
+ */
+export async function patchReportAndMeta(
+  id: string,
+  args: {
+    reportPatch: Record<string, unknown>;
+    metaPatch: SessionMetaPatch;
+  },
+): Promise<Record<string, unknown>> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const dir = await ensureSessionsDir();
+  await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
+  const reportPath = join(dir, id, 'report.json');
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = await readFile(reportPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ENOENT or malformed — treat as empty.
+  }
+  const merged = { ...existing, ...args.reportPatch };
+  // STEP 1: commit report.json first. This is the canonical record.
+  await atomicWriteFile(reportPath, JSON.stringify(merged, null, 2));
+
+  // STEP 2: build + commit the new meta. Use the original meta we
+  // already read above as the base (no second readMeta call — avoids
+  // a TOCTOU window where an unrelated meta write between read and
+  // write would be silently clobbered).
+  const next: StoredMeta = { ...meta };
+  for (const key of META_PATCH_FIELDS) {
+    const val = args.metaPatch[key];
+    if (val !== undefined) {
+      (next as unknown as Record<string, unknown>)[key] = val;
+    }
+  }
+  next.updatedAt = nowIso();
   await writeMeta(id, next);
   return merged;
 }

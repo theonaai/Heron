@@ -138,11 +138,24 @@ function extractDiscoveredAgents(
  *     the dashboard still renders the "VERIFICATION REQUIRED" pill.
  */
 export async function persistVerdict(sessionId: string, verdict: Verdict): Promise<void> {
-  const patch: Parameters<typeof updateSessionMeta>[1] = {
+  const patch: Parameters<typeof updateSessionMeta>[1] = buildVerdictMetaPatch(verdict);
+  await updateSessionMeta(sessionId, patch);
+}
+
+/**
+ * AAP-105 A2 — verdict → SessionMetaPatch projection. Pulled out so the
+ * atomic `patchReportAndMeta(...)` writer path can apply the same
+ * fields as `persistVerdict` without round-tripping through
+ * updateSessionMeta. Keeps both paths byte-identical at the meta
+ * layer.
+ */
+export function buildVerdictMetaPatch(
+  verdict: Verdict,
+): Parameters<typeof updateSessionMeta>[1] {
+  return {
     verificationStatus: verdict.status,
     riskLevel: postureToLegacyRiskLevel(verdict),
   };
-  await updateSessionMeta(sessionId, patch);
 }
 
 /**

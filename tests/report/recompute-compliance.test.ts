@@ -136,10 +136,16 @@ describe('AAP-79 / AAP-86 — recomputeComplianceWithDiscovery', () => {
     expect(ids).toContain('gdpr:Art. 35');
     expect(ids).toContain('gdpr:Art. 33');
     expect(ids).toContain('aiuc-1:A006');
+    // PII-keyed detectors must fire `fail`; env-secret-pattern detector
+    // (GDPR Art. 32, AAP-105 D4) legitimately fires `partial` for the
+    // same input. Pin verdicts per control rather than uniformly.
+    const failControlIds = new Set(['Art. 6', 'Art. 35', 'Art. 33', 'A006']);
     for (const r of typedSensitive) {
       expect(r.path).toBe('typed');
       expect(r.surface).toBe('actual');
-      expect(r.verdict).toBe('fail');
+      if (failControlIds.has(r.controlId)) {
+        expect(r.verdict).toBe('fail');
+      }
     }
   });
 

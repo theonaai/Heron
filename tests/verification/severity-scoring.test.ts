@@ -33,6 +33,7 @@ import {
   computeSeverity,
   countWriteToolsForBR,
   severityBand,
+  severityFromInputs,
   type SeverityEvidence,
 } from '../../src/verification/severity-scoring.js';
 import type { DiscoveredAgent, DiscoveryResult } from '../../src/discovery/types.js';
@@ -981,5 +982,63 @@ describe('AAP-101 — computeSeverity output contract', () => {
     expect(result.ds).toBe(1);
     expect(result.dm).toBe(1.0);
     expect(result.severity).toBe(3);
+  });
+});
+
+// ─── AAP-105 A6 — severityFromInputs (per-finding axis math) ──────────────
+//
+// Same BR × DS × DM math as `computeSeverity` but the axes are supplied
+// directly (the analyzer's per-risk self-attested estimate) rather than
+// derived from session-wide discovery / OAuth evidence. Used by the SLF
+// path in verdict.ts. Must land on the SAME 9-value scale as the
+// evidence-derived path.
+describe('severityFromInputs (AAP-105 A6)', () => {
+  it('BR = max(brW, brR, brA) — the high-water-mark axis drives BR', () => {
+    // brR is the max here (3); brW/brA lower. BR must be 3, not an average.
+    const r = severityFromInputs({ brW: 1, brR: 3, brA: 2, ds: 1, dm: 1.0 });
+    expect(r.br).toBe(3);
+    expect(r.severity).toBe(3); // 3 × 1 × 1.0
+    expect(r.components).toEqual({ brW: 1, brR: 3, brA: 2 });
+  });
+
+  it('different inputs produce different severities (the whole point of A6)', () => {
+    // Low-blast-radius alerting risk vs high-reach OAuth risk.
+    const alerting = severityFromInputs({ brW: 1, brR: 1, brA: 2, ds: 1, dm: 1.0 });
+    const oauth = severityFromInputs({ brW: 3, brR: 3, brA: 3, ds: 2, dm: 1.0 });
+    expect(alerting.severity).toBe(2); // 2 × 1 × 1.0
+    expect(oauth.severity).toBe(6); // 3 × 2 × 1.0
+    expect(alerting.severity).not.toBe(oauth.severity);
+    expect(severityBand(alerting.severity)).toBe('low');
+    expect(severityBand(oauth.severity)).toBe('medium');
+  });
+
+  it('DM 1.5 multiplies — BR=3, DS=3, DM=1.5 → 13.5 (critical), the scale ceiling', () => {
+    const r = severityFromInputs({ brW: 3, brR: 3, brA: 3, ds: 3, dm: 1.5 });
+    expect(r.severity).toBe(13.5);
+    expect(severityBand(r.severity)).toBe('critical');
+    expect(r.br).toBe(3);
+    expect(r.ds).toBe(3);
+    expect(r.dm).toBe(1.5);
+  });
+
+  it('lands on the canonical 9-value scale across the input space', () => {
+    // Enumerate the band combinations and assert every output is one of the
+    // documented severity values (no floating-point dust, same scale as
+    // computeSeverity).
+    const allowed = new Set([1, 1.5, 2, 3, 4, 4.5, 6, 9, 13.5]);
+    for (const brW of [1, 2, 3] as const) {
+      for (const ds of [1, 2, 3] as const) {
+        for (const dm of [1.0, 1.5] as const) {
+          const r = severityFromInputs({ brW, brR: 1, brA: 1, ds, dm });
+          expect(allowed.has(r.severity)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('minimum inputs floor at severity 1 (BR=1, DS=1, DM=1.0)', () => {
+    const r = severityFromInputs({ brW: 1, brR: 1, brA: 1, ds: 1, dm: 1.0 });
+    expect(r.severity).toBe(1);
+    expect(severityBand(r.severity)).toBe('informational');
   });
 });

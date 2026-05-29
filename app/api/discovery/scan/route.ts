@@ -59,13 +59,13 @@ import { secretlintScrub } from '@/src/discovery/secretlint-scrub';
 import {
   getSession,
   listReportedMcpTools,
-  patchReportJson,
+  patchReportAndMeta,
 } from '@/src/storage/sessions';
 import { publishSessionEvent } from '@/src/storage/session-events';
 import {
+  buildVerdictMetaPatch,
   buildVerdictSnapshot,
   computeVerdictFromArtifacts,
-  persistVerdict,
   reportVerificationStatusFromVerdict,
 } from '@/src/verification/verdict-pipeline';
 import {
@@ -482,7 +482,7 @@ export async function POST(request: Request): Promise<Response> {
         discovery: finalResult,
       });
       patch.compliance = compliance;
-      // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
+      // AAP-69 alias — the dashboard minimal report reads `regulatoryCompliance`.
       patch.regulatoryCompliance = compliance;
     }
   }
@@ -505,22 +505,24 @@ export async function POST(request: Request): Promise<Response> {
 
   // AAP-103 — always persist the verdict snapshot (posture +
   // postureBand + findings) onto report.json so the dashboard's
-  // ReportView renders the gradient indicator + Vijil-style cards
+  // minimal report renders the gradient indicator + findings
   // against the freshly computed verdict. Independent of
   // surface2Attempted because even a pre-scan verdict (interrogation-only)
   // carries SLF findings the dashboard needs to render.
   patch.verdict = buildVerdictSnapshot(verdict);
 
-  const merged = await patchReportJson(body.data.sessionId, patch);
-
-  // AAP-63 + AAP-74 — Surface 2 evidence just landed. Re-run
-  // computeVerdict with the fresh discovery findings + fresh OAuth
-  // verifications so the session meta flips from 'unverified' to
-  // 'partial' (or 'verified') and the dashboard pill moves from the
-  // yellow "VERIFICATION REQUIRED" to the deterministic risk level.
-  // Overrides avoid the brief race window where patchReportJson has
-  // fsync'd but a stale getSession() snapshot is still in-flight.
-  await persistVerdict(body.data.sessionId, verdict);
+  // AAP-105 A2 — atomic write of report.json + meta verdict fields.
+  // Replaces the prior `patchReportJson(...)` + `persistVerdict(...)`
+  // pair, which left a race window where report.json had
+  // `verification.status: 'partially-verified'` while meta still read
+  // `verificationStatus: 'unverified'` until persistVerdict's rename
+  // landed (observed up to 51s drift in production). The new helper
+  // commits report.json first (canonical) and meta second, with both
+  // patches assembled from the single in-memory verdict.
+  const merged = await patchReportAndMeta(body.data.sessionId, {
+    reportPatch: patch,
+    metaPatch: buildVerdictMetaPatch(verdict),
+  });
 
   // AAP-79 — re-render `report.md` so the downloadable artefact tracks
   // the verified verdict + the recomputed compliance mapping. Pre-fix

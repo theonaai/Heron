@@ -164,9 +164,12 @@ describe('AAP-103 — Failure Pattern cards', () => {
     expect(md).toContain('BR 3');
     expect(md).toContain('DS 3');
     expect(md).toContain('DM 1');
-    // Mitigations callout (markdown blockquote).
+    // Mitigations callout (markdown blockquote). AAP-105 F3 removed the
+    // trailing `See https://docs.heron/...` placeholder URL, so assert the
+    // bullet carries an actionable hint and no dead docs link survives.
     expect(md).toMatch(/> \*\*Mitigations\*\*/);
-    expect(md).toMatch(/> - .+ See https:\/\/docs\.heron/);
+    expect(md).toMatch(/> - \S.{20,}/);
+    expect(md).not.toMatch(/docs\.heron/);
   });
 
   it('serials reset within each prefix per audit', () => {
@@ -247,9 +250,12 @@ describe('AAP-103 — Failure Pattern cards', () => {
       ],
     }), { verdict });
     expect(md).toContain('SLF-001 — Excessive Drive scope');
-    // Either the typed-FindingType hint or the SLF fallback should
-    // produce a docs link.
-    expect(md).toMatch(/See https:\/\/docs\.heron\/findings\//);
+    // AAP-105 F3: the placeholder `See https://docs.heron/findings/...` link
+    // was removed. Either the typed-FindingType hint or the SLF fallback
+    // still produces an actionable Mitigations bullet — assert that, and that
+    // no dead docs link survives.
+    expect(md).toMatch(/> \*\*Mitigations\*\*\n> - \S.{20,}/);
+    expect(md).not.toMatch(/docs\.heron/);
   });
 
   it('falls back to flat-table layout when no verdict is attached', () => {

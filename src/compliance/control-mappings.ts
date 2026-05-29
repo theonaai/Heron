@@ -135,6 +135,16 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
       c('iso-42001', 'A.5.2', 'AI policy addresses sector-specific obligations.'),
       c('iso-42001', 'A.9.3', 'Management review includes regulatory findings.'),
       // ── EU AI Act baseline ──
+      // AAP-105 D4 quick-win #2: Art. 5 prohibited-practice catalog row.
+      // Prose-only landing so the reviewer can see "Heron checked for
+      // prohibited practices (subliminal manipulation, social scoring,
+      // emotion recognition in workplace, real-time biometric ID in
+      // public space)" rather than a silent omission. A typed detector
+      // is reachable from the existing typed Annex III signals
+      // (biometric vendor + employment vendor combo, etc.) but is left
+      // for a follow-on commit — the catalog row alone makes the article
+      // visible in the framework accordion.
+      c('eu-ai-act', 'Art. 5', 'Prohibited practices — subliminal manipulation, exploitation, social scoring, real-time biometric ID in public spaces (baseline).'),
       c('eu-ai-act', 'Art. 12', 'Record-keeping for regulated contexts (baseline).'),
       // ── EU AI Act Annex III (high-risk regulated domains) ──
       c('eu-ai-act', 'Art. 6(2) + Annex III', 'High-risk classification — regulated sector reference.', { annexIII: true }),

@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   getMitigationHint,
+  getSlfMitigationHint,
   MITIGATION_CATALOG,
 } from '../../src/report/mitigation-catalog.js';
 import { FINDING_TYPES } from '../../src/compliance/types.js';
@@ -22,8 +23,12 @@ describe('mitigation-catalog', () => {
     for (const ft of FINDING_TYPES) {
       const hint = MITIGATION_CATALOG.byFindingType[ft];
       expect(hint, `missing hint for ${ft}`).toBeTruthy();
-      expect(hint, `hint too short for ${ft}`).toMatch(/\S{20,}/);
-      expect(hint, `hint missing docs link for ${ft}`).toMatch(/docs\.heron/);
+      // AAP-105 F3: assert the hint is a substantive sentence. The old check
+      // was /\S{20,}/ (20+ chars with no whitespace), which only ever passed
+      // because each hint ended in a long unbroken `docs.heron` URL. That URL
+      // was a placeholder domain (never a real docs site) and has been
+      // removed, so we now assert overall length on the actionable sentence.
+      expect(hint.trim().length, `hint too short for ${ft}`).toBeGreaterThanOrEqual(40);
     }
   });
 
@@ -31,8 +36,9 @@ describe('mitigation-catalog', () => {
     for (const ev of evidenceSourceValues) {
       const hint = MITIGATION_CATALOG.byEvidenceSource[ev];
       expect(hint, `missing hint for ${ev}`).toBeTruthy();
-      expect(hint, `hint too short for ${ev}`).toMatch(/\S{20,}/);
-      expect(hint, `hint missing docs link for ${ev}`).toMatch(/docs\.heron/);
+      // AAP-105 F3: see note above — length check replaces the old /\S{20,}/
+      // that implicitly required the removed docs.heron URL token.
+      expect(hint.trim().length, `hint too short for ${ev}`).toBeGreaterThanOrEqual(40);
     }
   });
 
@@ -65,5 +71,111 @@ describe('mitigation-catalog', () => {
       hints.add(getMitigationHint({ evidenceSource: ev }));
     }
     expect(hints.size).toBe(evidenceSourceValues.length);
+  });
+});
+
+// AAP-105 B6 — per-SLF-subcategory mitigations.
+//
+// Previously every SLF card on a 5-finding session shared the same
+// generic "ask the deployer for the MCP config, OAuth scope grant, .env
+// keys, or production audit log" line. The new lookup matches against
+// title + description substrings so each card gets a finding-specific
+// remediation hint.
+describe('getSlfMitigationHint — AAP-105 B6 per-subcategory variants', () => {
+  it('OAuth-scope finding → OAuth scope grant hint (wins over the "credentials" substring)', () => {
+    const got = getSlfMitigationHint({
+      title: 'Broad Google OAuth permissions',
+      description:
+        'The deployment currently uses OAuth user credentials with spreadsheets, documents, and full Drive scope.',
+    });
+    expect(got).toMatch(/OAuth scope grant/i);
+    expect(got).not.toMatch(/\.env file or credential vault/);
+  });
+
+  it('write-operations finding → production audit log hint', () => {
+    const got = getSlfMitigationHint({
+      title: 'Bulk Wellkid writes can affect a catalog',
+      description:
+        'Wellkid scripts can create, move, patch, publish, or archive catalogs/materials.',
+    });
+    expect(got).toMatch(/production audit log/i);
+  });
+
+  it('alerting / SLA finding → runbook hint', () => {
+    const got = getSlfMitigationHint({
+      title: 'Telegram alerting fails open',
+      description:
+        'Telegram is used as an operator notification stream, but no SLA, owner, or escalation path is documented.',
+    });
+    expect(got).toMatch(/runbook/i);
+    expect(got).toMatch(/SLA/);
+  });
+
+  it('secrets / credential files finding → .env / vault hint', () => {
+    const got = getSlfMitigationHint({
+      title: 'Secrets and credential files are local operational assets',
+      description:
+        'The deployment reads local API keys, bot tokens, and login/password values from environment or credential files.',
+    });
+    expect(got).toMatch(/\.env file or credential vault/i);
+  });
+
+  it('external-vendor finding → vendor retention contract hint', () => {
+    const got = getSlfMitigationHint({
+      title: 'Confidential content sent to generation vendors',
+      description:
+        'Gemini receives prompts with course metadata; Gamma receives slide content and returns generated presentation exports.',
+    });
+    expect(got).toMatch(/vendor data-retention contract/i);
+  });
+
+  it('falls back to the generic SLF copy when nothing matches', () => {
+    const got = getSlfMitigationHint({
+      title: 'Some bespoke finding nobody anticipated',
+      description: 'Plain prose that hits none of the subcategory patterns.',
+    });
+    // Same as the byEvidenceSource SLF entry.
+    expect(got).toBe(MITIGATION_CATALOG.byEvidenceSource.SLF);
+  });
+
+  it('produces distinct hints across the 5 SLF subcategories seen on the demo session', () => {
+    const hints = new Set<string>();
+    hints.add(
+      getSlfMitigationHint({
+        title: 'Broad Google OAuth permissions',
+        description: 'OAuth user credentials with full Drive scope.',
+      }),
+    );
+    hints.add(
+      getSlfMitigationHint({
+        title: 'Bulk Wellkid writes can affect a catalog',
+        description: 'Bulk writes can affect catalog tree.',
+      }),
+    );
+    hints.add(
+      getSlfMitigationHint({
+        title: 'Telegram alerting fails open',
+        description: 'No SLA or escalation path documented.',
+      }),
+    );
+    hints.add(
+      getSlfMitigationHint({
+        title: 'Secrets and credential files are local operational assets',
+        description: 'Reads local API keys and bot tokens from .env files.',
+      }),
+    );
+    hints.add(
+      getSlfMitigationHint({
+        title: 'Confidential content sent to generation vendors',
+        description: 'Gemini receives prompts; Gamma receives slide content.',
+      }),
+    );
+    expect(hints.size).toBe(5);
+  });
+
+  it('never returns empty string', () => {
+    expect(getSlfMitigationHint({})).toBeTruthy();
+    expect(getSlfMitigationHint({ title: '' })).toBeTruthy();
+    expect(getSlfMitigationHint({ title: 'x', description: 'y' })).toBeTruthy();
   });
 });
