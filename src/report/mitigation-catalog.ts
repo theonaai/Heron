@@ -20,9 +20,12 @@
  *   - heron-session-context-2026-05-28.md §"Mitigation hints (MVP)"
  *   - Linear AAP-103 §"Mitigation hints lookup"
  *
- * Docs link convention: `https://docs.heron/findings/<slug>`. The
- * domain is a placeholder until the docs site ships; the lookup
- * structure stays valid once real URLs land.
+ * Doc links: deferred until a real docs site ships. Earlier drafts
+ * appended `See https://docs.heron/findings/<slug>` to each hint, but
+ * `docs.heron` was never a real domain and a dead link in a security
+ * report erodes trust, so the suffix was removed (AAP-105 F3). Hints
+ * carry only the actionable "what to do" sentence. When real docs
+ * exist, links get added back in a future pass.
  */
 
 import type { FindingType } from '../compliance/types.js';
@@ -34,13 +37,13 @@ import type { EvidenceSource } from './types.js';
  * literal members of the `FindingType` union.
  */
 const FINDING_TYPE_HINTS: Record<FindingType, string> = {
-  'excessive-access': 'Either restrict the granted scope at the provider, or update the declared scope with business justification. See https://docs.heron/findings/excessive-access',
-  'write-risk': 'Confirm each write operation is necessary, reversible, and bounded — or move it behind a human-in-the-loop gate. See https://docs.heron/findings/write-risk',
-  'sensitive-data': 'Classify data sensitivity at the source, document the legal basis under GDPR Art. 6, and tighten access if the data is not strictly required. See https://docs.heron/findings/sensitive-data',
-  'scope-creep': 'Reconcile declared scope with enumerated scope: either remove the extra tools / scopes or update the declared inventory with business justification. See https://docs.heron/findings/scope-creep',
-  'regulatory-flags': 'Map the affected control to its regulatory framework (EU AI Act, GDPR, ISO 42001, NIST AI RMF) and assign an owner to close the gap. See https://docs.heron/findings/regulatory-flags',
-  'risk-score': 'Review the contributing factors (blast radius, data sensitivity, domain) and document why the residual risk is acceptable, or remediate to lower it. See https://docs.heron/findings/risk-score',
-  'decisions-about-people': 'Document the GDPR Art. 22 / EU AI Act Annex III legal basis and add a human-review gate for any automated decision with legal or significant effect. See https://docs.heron/findings/decisions-about-people',
+  'excessive-access': 'Either restrict the granted scope at the provider, or update the declared scope with business justification.',
+  'write-risk': 'Confirm each write operation is necessary, reversible, and bounded — or move it behind a human-in-the-loop gate.',
+  'sensitive-data': 'Classify data sensitivity at the source, document the legal basis under GDPR Art. 6, and tighten access if the data is not strictly required.',
+  'scope-creep': 'Reconcile declared scope with enumerated scope: either remove the extra tools / scopes or update the declared inventory with business justification.',
+  'regulatory-flags': 'Map the affected control to its regulatory framework (EU AI Act, GDPR, ISO 42001, NIST AI RMF) and assign an owner to close the gap.',
+  'risk-score': 'Review the contributing factors (blast radius, data sensitivity, domain) and document why the residual risk is acceptable, or remediate to lower it.',
+  'decisions-about-people': 'Document the GDPR Art. 22 / EU AI Act Annex III legal basis and add a human-review gate for any automated decision with legal or significant effect.',
 };
 
 /**
@@ -49,15 +52,15 @@ const FINDING_TYPE_HINTS: Record<FindingType, string> = {
  * diffs, discovery server-detection findings).
  */
 const EVIDENCE_SOURCE_HINTS: Record<EvidenceSource, string> = {
-  MCP: 'Either remove the tool from the MCP server config, or update the declared scope to include it with business justification. See https://docs.heron/findings/mcp-write-tool',
-  OAU: 'Either restrict the OAuth scope at the provider, or update the declared scope with business justification. See https://docs.heron/findings/oauth-scope-extra',
-  ENV: 'Move credentials to a secret manager (Vault, AWS Secrets Manager, OS keychain) and remove the value from the workspace .env file. See https://docs.heron/findings/env-sensitive-pii',
-  PLG: 'Audit the plugin / skill grant: either tighten the declared filesystem / network scope, or remove the plugin from the agent runtime. See https://docs.heron/findings/plugin-grant',
+  MCP: 'Either remove the tool from the MCP server config, or update the declared scope to include it with business justification.',
+  OAU: 'Either restrict the OAuth scope at the provider, or update the declared scope with business justification.',
+  ENV: 'Move credentials to a secret manager (Vault, AWS Secrets Manager, OS keychain) and remove the value from the workspace .env file.',
+  PLG: 'Audit the plugin / skill grant: either tighten the declared filesystem / network scope, or remove the plugin from the agent runtime.',
   // AAP-104 B4 — SLF fallback rewritten as a concrete instruction ("how
   // to convert to Verified") instead of a meta-restatement of "this is
   // self-reported". The SLF badge already labels the row; the
   // mitigation block now tells the reviewer what evidence to attach.
-  SLF: 'How to convert to Verified: ask the deployer for the MCP config, OAuth scope grant, .env keys, or production audit log that backs this claim. Heron will rerun the BR×DS×DM scoring against the supplied evidence. See https://docs.heron/findings/self-attested',
+  SLF: 'How to convert to Verified: ask the deployer for the MCP config, OAuth scope grant, .env keys, or production audit log that backs this claim. Heron will rerun the BR×DS×DM scoring against the supplied evidence.',
 };
 
 /**
@@ -98,43 +101,43 @@ const SLF_SUBCATEGORY_HINTS: Array<{
     // user credentials with spreadsheets, drive scope") and we'd
     // misclassify them as a secrets-management finding otherwise.
     pattern: /\b(oauth\s+(?:scope|permission|access|grant|consent|credentials?)|broad\s+(?:google|microsoft|github|slack)\s+oauth|scope\s+grant|spreadsheets\s+scope|drive\s+scope|gmail\s+scope|full\s+drive|drive\s+full|google\s+oauth\s+(?:scope|permission)|excessive\s+(?:scope|oauth))/i,
-    hint: 'How to convert to Verified: ask the deployer for the OAuth scope grant document or the provider consent screen for this account so Heron can compare granted scopes against declared usage. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the OAuth scope grant document or the provider consent screen for this account so Heron can compare granted scopes against declared usage.',
   },
   {
     // Secrets / credentials / .env / API keys. After OAuth — we want the
     // OAuth-scope class to win when both signals overlap.
     pattern: /\b(secret|credential\s+file|api[-\s]?key\b|env(?:ironment)?[-\s]?file|\.env\b|token[-\s]?file|service[-\s]account|password|vault|bot\s+token|login\/password)/i,
-    hint: 'How to convert to Verified: ask the deployer for the .env file or credential vault export so Heron can verify which keys are actually deployed and rotate any leaked secrets. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the .env file or credential vault export so Heron can verify which keys are actually deployed and rotate any leaked secrets.',
   },
   {
     // Bulk write / production audit log of write actions.
     pattern: /\b(bulk\s+(?:write|publish|upload|patch|create|update)|writes?\s+can\s+affect|catalog\s+writes|mass\s+update|batch\s+writes?|publish\s+(?:lessons|materials|catalogs))/i,
-    hint: 'How to convert to Verified: ask the deployer for the production audit log of write actions in the last quarter so Heron can verify actual blast radius, frequency, and reversibility. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the production audit log of write actions in the last quarter so Heron can verify actual blast radius, frequency, and reversibility.',
   },
   {
     // External vendor / data sent to third-party generation provider.
     pattern: /\b(sent\s+to\s+(?:generation|external|third[-\s]party|vendor)|vendor[-\s]side|generation\s+vendor|external\s+model|gemini\s+receives|gamma\s+receives|openai\s+receives|llm\s+vendor|retention\s+contract|data[-\s]use\s+control)/i,
-    hint: 'How to convert to Verified: ask the deployer for the vendor data-retention contract and data-use control terms for each external provider so Heron can confirm what the third party can do with sent content. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the vendor data-retention contract and data-use control terms for each external provider so Heron can confirm what the third party can do with sent content.',
   },
   {
     // Alerting / monitoring / SLA / fail-open / runbook.
     pattern: /\b(alerting|alerts?\s+fail|fail[-\s]open|notification\s+(?:fails?|stream)|runbook|on[-\s]call|sla\b|monitoring|observability|escalation\s+path)/i,
-    hint: 'How to convert to Verified: ask the deployer for the alerting runbook plus SLA / escalation documentation so Heron can verify that operational failures are actually caught and acted on. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the alerting runbook plus SLA / escalation documentation so Heron can verify that operational failures are actually caught and acted on.',
   },
   {
     // MCP tool inventory / tool grants the agent has access to.
     pattern: /\b(mcp\s+(?:config|tool|server)|tool\s+inventory|skill\s+grant|plugin\s+grant|tool[-\s]calling\s+capability)/i,
-    hint: 'How to convert to Verified: ask the deployer for the MCP server config / plugin manifest so Heron can compare declared tools against the live inventory. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the MCP server config / plugin manifest so Heron can compare declared tools against the live inventory.',
   },
   {
     // PII / data sensitivity / data minimization.
     pattern: /\b(pii\b|personal\s+data|personally[-\s]identifiable|data\s+minimization|article\s+(?:6|9)|gdpr\s+art|sensitive\s+data\s+stored|retention\s+polic)/i,
-    hint: 'How to convert to Verified: ask the deployer for the data inventory or DPIA documenting which PII fields the agent actually reads and writes, plus the retention / deletion policy. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the data inventory or DPIA documenting which PII fields the agent actually reads and writes, plus the retention / deletion policy.',
   },
   {
     // Human-in-the-loop / approval claims.
     pattern: /\b(human[-\s]in[-\s]the[-\s]loop|hitl|manual\s+review|human\s+(?:reviews?|approves?)|approval\s+gate)/i,
-    hint: 'How to convert to Verified: ask the deployer for the review SOP, throughput numbers, and a sampling audit of recent decisions so Heron can confirm review is meaningful rather than rubber-stamping. See https://docs.heron/findings/self-attested',
+    hint: 'How to convert to Verified: ask the deployer for the review SOP, throughput numbers, and a sampling audit of recent decisions so Heron can confirm review is meaningful rather than rubber-stamping.',
   },
 ];
 

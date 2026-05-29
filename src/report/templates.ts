@@ -1324,7 +1324,9 @@ function renderFindingCard(
   //      findings (OAuth diff → "scope creep", etc.).
   const implications = renderImplications(finding, legacyRisk);
 
-  // Mitigations callout — 1-line hint + docs link.
+  // Mitigations callout — 1-line actionable hint. (Doc links were removed
+  // in AAP-105 F3: `docs.heron` was a placeholder domain, not a real docs
+  // site; they get added back when real docs exist.)
   const mitigationHint = getMitigationHint({
     ...(findingType ? { findingType } : {}),
     evidenceSource: finding.evidenceSource,

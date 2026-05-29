@@ -23,8 +23,12 @@ describe('mitigation-catalog', () => {
     for (const ft of FINDING_TYPES) {
       const hint = MITIGATION_CATALOG.byFindingType[ft];
       expect(hint, `missing hint for ${ft}`).toBeTruthy();
-      expect(hint, `hint too short for ${ft}`).toMatch(/\S{20,}/);
-      expect(hint, `hint missing docs link for ${ft}`).toMatch(/docs\.heron/);
+      // AAP-105 F3: assert the hint is a substantive sentence. The old check
+      // was /\S{20,}/ (20+ chars with no whitespace), which only ever passed
+      // because each hint ended in a long unbroken `docs.heron` URL. That URL
+      // was a placeholder domain (never a real docs site) and has been
+      // removed, so we now assert overall length on the actionable sentence.
+      expect(hint.trim().length, `hint too short for ${ft}`).toBeGreaterThanOrEqual(40);
     }
   });
 
@@ -32,8 +36,9 @@ describe('mitigation-catalog', () => {
     for (const ev of evidenceSourceValues) {
       const hint = MITIGATION_CATALOG.byEvidenceSource[ev];
       expect(hint, `missing hint for ${ev}`).toBeTruthy();
-      expect(hint, `hint too short for ${ev}`).toMatch(/\S{20,}/);
-      expect(hint, `hint missing docs link for ${ev}`).toMatch(/docs\.heron/);
+      // AAP-105 F3: see note above — length check replaces the old /\S{20,}/
+      // that implicitly required the removed docs.heron URL token.
+      expect(hint.trim().length, `hint too short for ${ev}`).toBeGreaterThanOrEqual(40);
     }
   });
 
