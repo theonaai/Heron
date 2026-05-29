@@ -2209,6 +2209,35 @@ function severityRank(s: ControlResult['severity']): number {
   return s === 'critical' ? 4 : s === 'high' ? 3 : s === 'medium' ? 2 : s === 'low' ? 1 : 0;
 }
 
+// AAP-105 F4 — collapse a raw evidenceRef string to a short, readable
+// identifier for the compact Evidence line. The raw refs are verbose and
+// repetitive, e.g.:
+//   "capability:OPENAI_API_KEY: OPENAI_API_KEY → AI provider (international transfer)"
+//   "env:/Users/me/Codex3/.env: GOOGLE_API_KEY → cloud provider (international transfer)"
+//   "env:/Users/me/Codex3/.env: GAMMA_API_KEY (plaintext secret-pattern key)"
+//   "mcp:linear (http)"
+// We want just the load-bearing token the reviewer scans for: the env key
+// name (GOOGLE_API_KEY) or the MCP server handle (mcp:linear). Drop the
+// absolute path, the "→ AI provider (...)" classification tail, the
+// "(plaintext secret-pattern key)" annotation, and the duplicated key in
+// the capability: form. Returns '' for refs we can't shorten so the caller
+// can skip them.
+export function shortEvidenceLabel(ref: string): string {
+  const raw = (ref || '').trim();
+  if (!raw) return '';
+  // MCP refs: keep the "mcp:<server>" handle, drop the " (transport)" tail.
+  if (raw.startsWith('mcp:')) {
+    return raw.replace(/\s*\(.*$/, '').trim();
+  }
+  // env: / capability: refs carry the key after the last ": " (this also
+  // discards the absolute path in env:<path>: KEY and the duplicated key in
+  // capability:KEY: KEY). Then cut the " → ..." tail or the " (...)"
+  // annotation so only the bare key name remains.
+  const afterColon = raw.includes(': ') ? raw.slice(raw.lastIndexOf(': ') + 2) : raw;
+  const key = afterColon.split(' →')[0].split(' (')[0].trim();
+  return key;
+}
+
 export function ControlRow({ control }: { control: ControlResult }) {
   const verdictPalette =
     control.verdict === 'verified'
@@ -2230,13 +2259,20 @@ export function ControlRow({ control }: { control: ControlResult }) {
           : control.severity === 'low'
             ? { bg: '#facc15', ink: '#3f3f46' }
             : { bg: '#e5e7eb', ink: '#52525b' };
-  // AAP-105 A7: compact evidence summary under the rationale. Each ref is
-  // like "mcp:linear (http)" or "env:/path/.env: KEY → AI provider ...".
-  // Show the first few, mono-styled, with an overflow count — keeps the row
-  // honest about what drove the verdict without unrolling the full list.
-  const refs = (control.evidenceRefs || [])
-    .map((e) => (e?.ref || '').trim())
-    .filter((r) => r.length > 0);
+  // AAP-105 A7 + F4: compact evidence summary under the rationale. Raw refs
+  // ("env:/abs/path/.env: KEY → AI provider (international transfer)") are
+  // shortened to bare tokens (KEY, mcp:linear) via shortEvidenceLabel, then
+  // deduplicated — the same key often appears as both a capability: and an
+  // env: ref, and across .env / .env.example. Show the first few mono-styled
+  // with an overflow count; keeps the row honest about what drove the
+  // verdict without unrolling a noisy, path-heavy list.
+  const refs = Array.from(
+    new Set(
+      (control.evidenceRefs || [])
+        .map((e) => shortEvidenceLabel(e?.ref || ''))
+        .filter((r) => r.length > 0),
+    ),
+  );
   const refsShown = refs.slice(0, 4);
   const refsExtra = refs.length - refsShown.length;
   const rationale = (control.rationale || '').trim();

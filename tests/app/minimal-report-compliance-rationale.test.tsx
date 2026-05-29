@@ -29,7 +29,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { ControlRow, type ControlResult } from '@/components/heron-v1/dashboard/MinimalReportView';
+import {
+  ControlRow,
+  shortEvidenceLabel,
+  type ControlResult,
+} from '@/components/heron-v1/dashboard/MinimalReportView';
 
 function render(control: ControlResult): string {
   return renderToStaticMarkup(<ControlRow control={control} />);
@@ -74,11 +78,16 @@ describe('MinimalReportView compliance ControlRow rationale (AAP-105 A7)', () =>
   it('surfaces a compact evidence summary capped at four refs with an overflow count', () => {
     const html = render(a44);
     expect(html).toContain('Evidence:');
-    expect(html).toContain('mcp:heron (http)');
-    expect(html).toContain('mcp:chrome-devtools (stdio)');
+    // AAP-105 F4: refs are shortened to bare tokens — the "mcp:<server>"
+    // handle keeps its prefix but drops the " (transport)" tail.
+    expect(html).toContain('mcp:heron');
+    expect(html).toContain('mcp:chrome-devtools');
+    // The verbose transport-suffixed form must NOT survive.
+    expect(html).not.toContain('mcp:heron (http)');
+    expect(html).not.toContain('(stdio)');
     // 5 refs → 4 shown + "+1 more"; the 5th must not be inlined.
     expect(html).toContain('+1 more');
-    expect(html).not.toContain('mcp:github (stdio)');
+    expect(html).not.toContain('mcp:github');
   });
 
   it('renders no rationale/evidence elements when both are absent', () => {
@@ -103,8 +112,79 @@ describe('MinimalReportView compliance ControlRow rationale (AAP-105 A7)', () =>
       evidenceRefs: [{ ref: '   ' }, { ref: '' }, { kind: 'inventory', ref: 'mcp:only (http)' }],
     };
     const html = render(withBlanks);
-    expect(html).toContain('mcp:only (http)');
+    // AAP-105 F4: shortened to the bare "mcp:only" handle (transport dropped).
+    expect(html).toContain('mcp:only');
+    expect(html).not.toContain('mcp:only (http)');
     // One usable ref → no overflow count.
+    expect(html).not.toContain('more');
+  });
+});
+
+// AAP-105 F4 — the evidence-line shortener is the load-bearing bit: raw refs
+// carry absolute paths, a "→ AI provider (international transfer)" tail, a
+// "(plaintext secret-pattern key)" annotation, and the capability: form
+// duplicates the key. All of that must collapse to a bare token.
+describe('shortEvidenceLabel (AAP-105 F4)', () => {
+  it('extracts the bare key from an env:<path>: KEY → tail ref', () => {
+    expect(
+      shortEvidenceLabel(
+        'env:/Users/me/Codex3/.env: GOOGLE_API_KEY → cloud provider (international transfer)',
+      ),
+    ).toBe('GOOGLE_API_KEY');
+  });
+
+  it('strips the "(plaintext secret-pattern key)" annotation', () => {
+    expect(
+      shortEvidenceLabel('env:/Users/me/Codex3/.env.example: GAMMA_API_KEY (plaintext secret-pattern key)'),
+    ).toBe('GAMMA_API_KEY');
+  });
+
+  it('collapses the duplicated key in the capability: form', () => {
+    expect(
+      shortEvidenceLabel('capability:OPENAI_API_KEY: OPENAI_API_KEY → AI provider (international transfer)'),
+    ).toBe('OPENAI_API_KEY');
+  });
+
+  it('keeps the mcp:<server> handle but drops the transport tail', () => {
+    expect(shortEvidenceLabel('mcp:linear (http)')).toBe('mcp:linear');
+    expect(shortEvidenceLabel('mcp:chrome-devtools (stdio)')).toBe('mcp:chrome-devtools');
+  });
+
+  it('returns empty string for empty/blank input', () => {
+    expect(shortEvidenceLabel('')).toBe('');
+    expect(shortEvidenceLabel('   ')).toBe('');
+  });
+});
+
+describe('ControlRow evidence dedup + path stripping (AAP-105 F4)', () => {
+  // The same key shows up as both a capability: and an env: ref, and across
+  // .env / .env.example — the rendered line must show it once, with no path.
+  const dupes: ControlResult = {
+    frameworkId: 'aiuc-1',
+    controlId: 'A001',
+    controlName: 'Input data policy.',
+    verdict: 'partial',
+    severity: 'medium',
+    evidenceRefs: [
+      { kind: 'inventory', ref: 'capability:OPENAI_API_KEY: OPENAI_API_KEY → AI provider (international transfer)' },
+      { kind: 'inventory', ref: 'env:/Users/me/Codex3/.env: OPENAI_API_KEY → AI provider (international transfer)' },
+      { kind: 'inventory', ref: 'env:/Users/me/Codex3/.env.example: OPENAI_API_KEY → AI provider (international transfer)' },
+      { kind: 'inventory', ref: 'env:/Users/me/Codex3/.env: GOOGLE_API_KEY → cloud provider (international transfer)' },
+    ],
+  };
+
+  it('deduplicates a key seen under multiple prefixes and drops paths + tails', () => {
+    const html = render(dupes);
+    expect(html).toContain('Evidence:');
+    expect(html).toContain('OPENAI_API_KEY');
+    expect(html).toContain('GOOGLE_API_KEY');
+    // No absolute path, no classification tail, no source prefix leaks.
+    expect(html).not.toContain('/Users/');
+    expect(html).not.toContain('.env');
+    expect(html).not.toContain('AI provider');
+    expect(html).not.toContain('international transfer');
+    expect(html).not.toContain('capability:');
+    // 4 raw refs collapse to 2 distinct keys → no overflow.
     expect(html).not.toContain('more');
   });
 });
