@@ -1633,7 +1633,15 @@ export class HeronMCPServer {
       const scrubbedWorkspaceEnv = result.workspaceEnv
         ? await secretlintScrub(result.workspaceEnv)
         : undefined;
-      const findings = diffAgainstTranscript(scrubbedAgents, session.transcript);
+      // AAP-105 (G8c) — pass the scrubbed workspace env (variable NAMES
+      // only) so the MISSING pass can recognise REST/OAuth integrations
+      // that are NOT MCP servers (e.g. Google Drive via GOOGLE_* keys)
+      // and suppress the false MISSING the MCP-only view produced.
+      const findings = diffAgainstTranscript(
+        scrubbedAgents,
+        session.transcript,
+        scrubbedWorkspaceEnv ?? [],
+      );
       const mergedWarnings = [
         ...(result.warnings ?? []),
         ...overlayWarnings,

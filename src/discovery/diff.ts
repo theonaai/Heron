@@ -7,8 +7,12 @@
  *
  *   EXTRA — discovered but never mentioned in the transcript. HIGH if
  *           the server has credentials, MEDIUM otherwise.
- *   MISSING — mentioned in the transcript but not discovered on disk.
- *           MEDIUM.
+ *   MISSING — mentioned in the transcript but not discovered on disk
+ *           as an MCP server, a host plugin, OR a REST/OAuth integration
+ *           (workspace `.env` keys). MEDIUM. AAP-105 (G8c): a declared
+ *           service wired via REST/OAuth (env keys) rather than as an
+ *           MCP server is NOT missing — the MCP-only view would emit a
+ *           false positive (mirror of the G8b EXTRA host-capability fix).
  *   HIDDEN-CREDENTIALS — discovered with credentials AND mentioned in
  *           the transcript, BUT the transcript text never mentions
  *           "credentials", "token", "auth". HIGH.
@@ -27,6 +31,7 @@ import type {
   DiscoveredAgent,
   DiscoveredMcpServer,
   DiscoveryFinding,
+  WorkspaceEnvFile,
 } from './types.js';
 
 interface TranscriptEntry {
@@ -51,6 +56,55 @@ const CANONICAL_KEYWORDS = [
   'hubspot',
   'salesforce',
 ];
+
+/**
+ * AAP-105 (G8c) — canonical-service → workspace env-key token map.
+ *
+ * The MISSING pass below fires when a transcript-mentioned canonical
+ * service is absent from the MCP inventory (and the plugin inventory).
+ * But Heron audits a SPECIFIC AGENT and a declared integration can be
+ * wired three ways — MCP server, host plugin, OR a plain REST/OAuth
+ * integration configured through workspace `.env` keys. The MCP-only
+ * view conflates "not an MCP server" with "not present at all" and
+ * emits a false MISSING.
+ *
+ * Mirror of the G8b EXTRA fix: G8b stopped flagging a discovered-but-
+ * undeclared HOST capability as a deviation by the audited agent; G8c
+ * stops flagging a declared-but-not-an-MCP-server service as absent
+ * when the workspace env proves it IS present as a REST/OAuth wiring.
+ *
+ * Each value is the list of UPPER-CASE env-key tokens that, when found
+ * as a prefix/substring of a discovered `.env` variable NAME (values
+ * are never read — `WorkspaceEnvFile.keys` is names-only), evidence
+ * that service. Conservative by construction:
+ *   - tokens are service-specific brand prefixes (`SLACK_`, `NOTION_`),
+ *     NOT generic words, so an unrelated key cannot cancel a mention;
+ *   - Google's suite (drive / gmail / calendar) all map to `GOOGLE_`
+ *     plus their own brand tokens, matching how a single Google OAuth
+ *     credential block (the demo's 11 `GOOGLE_*` keys incl.
+ *     `GOOGLE_DRIVE_FOLDER_ID`) backs every Google surface.
+ *
+ * Reused, not invented: the keyword set is exactly `CANONICAL_KEYWORDS`
+ * above — every entry maps 1:1 so the MISSING loop iterating those
+ * keywords always has an evidence rule to consult.
+ */
+const SERVICE_ENV_TOKENS: Record<string, readonly string[]> = {
+  slack: ['SLACK_'],
+  github: ['GITHUB_', 'GH_'],
+  postgres: ['POSTGRES_', 'POSTGRESQL_', 'PGHOST', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'DATABASE_URL'],
+  // Google Workspace suite — one Google credential block backs Drive,
+  // Gmail, and Calendar. Brand tokens first, then the shared GOOGLE_ /
+  // GMAIL_ / GCAL_ prefixes.
+  gmail: ['GMAIL_', 'GOOGLE_'],
+  calendar: ['GCAL_', 'GOOGLE_CALENDAR', 'GOOGLE_'],
+  drive: ['GDRIVE_', 'GOOGLE_DRIVE', 'GOOGLE_'],
+  jira: ['JIRA_', 'ATLASSIAN_'],
+  linear: ['LINEAR_'],
+  sentry: ['SENTRY_'],
+  notion: ['NOTION_'],
+  hubspot: ['HUBSPOT_'],
+  salesforce: ['SALESFORCE_', 'SFDC_'],
+};
 
 const CREDENTIAL_VOCABULARY = [
   'credential',
@@ -214,9 +268,59 @@ function transcriptMentionsCredentials(body: string): boolean {
   return false;
 }
 
+/**
+ * AAP-105 (G8c) — flatten every workspace `.env` variable NAME into a
+ * single UPPER-CASE set for the REST/OAuth-evidence check. `keys` are
+ * names only (values are dropped at parse time and the payload is
+ * secretlint-scrubbed before it reaches here), so this set never holds
+ * a credential value.
+ */
+function collectWorkspaceEnvKeys(
+  workspaceEnv: ReadonlyArray<WorkspaceEnvFile>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const file of workspaceEnv) {
+    for (const k of file.keys) {
+      const upper = k.toUpperCase();
+      if (upper.length > 0) out.add(upper);
+    }
+  }
+  return out;
+}
+
+/**
+ * AAP-105 (G8c) — does the workspace env evidence a canonical service as
+ * a REST/OAuth integration? True when ANY discovered env-key NAME starts
+ * with (or contains) one of the service's brand tokens. Used to suppress
+ * a false MISSING: the service is declared and IS present, just wired
+ * via REST/OAuth rather than as an MCP server. Conservative — tokens are
+ * service-specific prefixes, so an unrelated key cannot satisfy an
+ * unrelated mention. Returns false for keywords with no mapping (none
+ * today; every CANONICAL_KEYWORDS entry has a SERVICE_ENV_TOKENS rule).
+ */
+function serviceEvidencedByEnv(
+  keyword: string,
+  envKeys: ReadonlySet<string>,
+): boolean {
+  const tokens = SERVICE_ENV_TOKENS[keyword];
+  if (!tokens || tokens.length === 0) return false;
+  for (const key of envKeys) {
+    for (const token of tokens) {
+      if (key.startsWith(token) || key.includes(token)) return true;
+    }
+  }
+  return false;
+}
+
 export function diffAgainstTranscript(
   agents: DiscoveredAgent[],
   transcript: TranscriptEntry[],
+  // AAP-105 (G8c) — workspace `.env` evidence (variable NAMES only).
+  // Threaded so the MISSING pass can see REST/OAuth integrations that
+  // are NOT MCP servers. Optional: callers that don't collect env
+  // evidence (most tests, legacy paths) pass nothing and the MISSING
+  // pass behaves exactly as before (MCP + plugin inventory only).
+  workspaceEnv: ReadonlyArray<WorkspaceEnvFile> = [],
 ): DiscoveryFinding[] {
   // AAP-93 H10 — body used for mention checks is ANSWER-only. The
   // joint body (question + answer) is reserved for credential-vocab
@@ -226,6 +330,9 @@ export function diffAgainstTranscript(
   // the discovered entity names so a bare "Yes" to "Do you use
   // theona?" still credits the custom server name.
   const discoveredEntities = collectDiscoveredEntityNames(agents);
+  // AAP-105 (G8c) — flattened env-key NAME set for the REST/OAuth-
+  // evidence check in the MISSING pass.
+  const workspaceEnvKeys = collectWorkspaceEnvKeys(workspaceEnv);
   const body = transcriptAnswerText(transcript, discoveredEntities);
   const jointBody = transcriptJointText(transcript);
   const credentialsDiscussed = transcriptMentionsCredentials(jointBody);
@@ -321,7 +428,17 @@ export function diffAgainstTranscript(
   }
 
   // MISSING pass — transcript mentions a canonical keyword that no
-  // discovered server OR plugin name contains.
+  // discovered server OR plugin name contains AND no workspace `.env`
+  // key evidences as a REST/OAuth integration.
+  //
+  // AAP-105 (G8c) — the evidence surface is MCP inventory + plugin
+  // inventory + workspace env (REST/OAuth wiring). A declared service
+  // present only via env keys (e.g. Google Drive used through 11
+  // `GOOGLE_*` keys, not an MCP server) is NOT missing — it IS present,
+  // just not as MCP. Suppressing those mirrors the G8b EXTRA fix on the
+  // MISSING side; both stem from Heron conflating "declared integration"
+  // (REST / OAuth / MCP) with "MCP server". A genuinely declared-but-
+  // absent service (no MCP, no plugin, no env signal) still flags.
   for (const kw of CANONICAL_KEYWORDS) {
     if (!transcriptMentionsKeyword(body, kw)) continue;
     let matched = false;
@@ -339,13 +456,19 @@ export function diffAgainstTranscript(
         }
       }
     }
+    // AAP-105 (G8c) — REST/OAuth evidence via workspace env keys. Only
+    // a service-specific brand token (SERVICE_ENV_TOKENS) counts, so an
+    // unrelated key cannot cancel an unrelated mention.
+    if (!matched && serviceEvidencedByEnv(kw, workspaceEnvKeys)) {
+      matched = true;
+    }
     if (!matched) {
       findings.push({
         kind: 'MISSING',
         severity: 'MEDIUM',
         serverName: kw,
         runtime: '—',
-        description: `The interview mentioned "${kw}" but no MCP server or plugin with that name was discovered on disk.`,
+        description: `The interview mentioned "${kw}" but no MCP server, plugin, or REST/OAuth integration (workspace env key) with that name was discovered on disk.`,
         // MISSING findings have no sourcePath — the evidence is the
         // absence of a config file, not the presence of one.
       });
