@@ -42,8 +42,12 @@ import type { EvidenceSource, Risk } from '../report/types.js';
 import {
   computeSeverity,
   severityBand,
+  severityFromInputs,
+  type AxisBand,
+  type DomainMultiplier,
   type SeverityBand,
   type SeverityEvidence,
+  type SeverityResult,
 } from './severity-scoring.js';
 import type {
   SourceVerification,
@@ -293,16 +297,30 @@ function oauthDiffToVerdictFinding(
 // ── Interview Risk → VerdictFinding (SLF) ──────────────────────────────
 
 /**
- * Map an interview-derived Risk into a VerdictFinding. Score via
- * `computeSeverity` with no typed evidence — the call degrades to the
- * conservative band (BR-A = 3 autonomous default, BR-W = 0, BR-R = 0)
- * giving BR = 3 unless the caller passes hints. The `Risk` carries
- * `severity` (low/medium/high/critical) as a categorical signal which
- * we honour as a DS floor (high+ → DS=3, medium → DS=2).
+ * Map an interview-derived Risk into a VerdictFinding.
  *
- * SLF findings are scored so the renderer can render them in their own
- * column, but they NEVER move the posture gradient (high-water-mark
- * skips them).
+ * AAP-105 A6 — TWO scoring paths:
+ *
+ *   1. Per-finding (preferred). When the analyzer assessed THIS risk's own
+ *      blast-radius / data-sensitivity / domain axes (`risk.severityInputs`),
+ *      score from those via `severityFromInputs` — BR = max(brW, brR, brA),
+ *      severity = BR × DS × DM, same math and same 9-value scale as
+ *      deterministic findings. This is what stops every SLF card collapsing to
+ *      the session-wide blast-radius number: "Telegram alerting fails open"
+ *      (low BR) and "Broad Google OAuth permissions" (high reach) now diverge.
+ *      Still self-attested — the inputs came from the agent's interview, not a
+ *      verified scan — and the renderer labels it as such.
+ *
+ *   2. Session-wide fallback (legacy / no inputs). When `severityInputs` is
+ *      absent (old report.json on disk, or an LLM extraction that omitted it),
+ *      keep the prior behaviour: `computeSeverity` against the session-wide
+ *      discovery + OAuth evidence, with the LLM's categorical `severity`
+ *      honoured as a DS floor (high+ → DS=3, medium → DS=2). No regression for
+ *      sessions produced before A6.
+ *
+ * Either way the finding is stamped SLF and NEVER moves the posture gradient —
+ * `computePosture` skips SLF rows by `evidenceSource`, independent of the score
+ * (Heron strategy v3.0 §3: the agent's self-report cannot move the gradient).
  */
 function interviewRiskToVerdictFinding(
   risk: Risk,
@@ -310,18 +328,34 @@ function interviewRiskToVerdictFinding(
   discoveredAgents: DiscoveredAgent[],
   oauthVerifications: SourceVerification[],
 ): VerdictFinding {
-  // Honour the LLM's categorical severity as a DS floor: a HIGH/CRITICAL
-  // SLF risk carries DS ≥ 2 even when typed evidence is silent.
-  let dsFloor: 1 | 2 | 3 = 1;
-  if (risk.severity === 'critical' || risk.severity === 'high') dsFloor = 3;
-  else if (risk.severity === 'medium') dsFloor = 2;
+  let result: SeverityResult;
+  if (risk.severityInputs) {
+    // Path 1 — per-finding. The schema already constrains each axis to a
+    // valid band (1/2/3) and dm to 1.0/1.5; cast through the axis types so
+    // the math helper sees the narrowed literals.
+    const si = risk.severityInputs;
+    result = severityFromInputs({
+      brW: si.brW as AxisBand,
+      brR: si.brR as AxisBand,
+      brA: si.brA as AxisBand,
+      ds: si.ds as AxisBand,
+      dm: si.dm as DomainMultiplier,
+    });
+  } else {
+    // Path 2 — session-wide fallback. Honour the LLM's categorical severity
+    // as a DS floor: a HIGH/CRITICAL SLF risk carries DS ≥ 2 even when typed
+    // evidence is silent.
+    let dsFloor: 1 | 2 | 3 = 1;
+    if (risk.severity === 'critical' || risk.severity === 'high') dsFloor = 3;
+    else if (risk.severity === 'medium') dsFloor = 2;
 
-  const evidence: SeverityEvidence = {
-    discovery: { agents: discoveredAgents } as SeverityEvidence['discovery'],
-    oauthVerifications,
-    findingContext: { dataSensitivityFloor: dsFloor },
-  };
-  const result = computeSeverity(evidence);
+    const evidence: SeverityEvidence = {
+      discovery: { agents: discoveredAgents } as SeverityEvidence['discovery'],
+      oauthVerifications,
+      findingContext: { dataSensitivityFloor: dsFloor },
+    };
+    result = computeSeverity(evidence);
+  }
   // Risks SHOULD carry a title (riskSchema requires it), but the verdict
   // pipeline can be called with hand-built JSON blobs from test fakes /
   // legacy report.json files that pre-date schema enforcement. Be defensive:

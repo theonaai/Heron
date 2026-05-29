@@ -749,6 +749,37 @@ export function computeSeverity(input: SeverityEvidence): SeverityResult {
   };
 }
 
+/**
+ * AAP-105 A6 — compute severity from PER-FINDING axis inputs.
+ *
+ * Same math as {@link computeSeverity} (BR = max(brW, brR, brA), severity =
+ * BR × DS × DM, rounded to one decimal), but the axes are supplied directly
+ * rather than derived from the session-wide discovery / OAuth evidence. Used
+ * by the SLF path in `verdict.ts` when the analyzer assessed a risk's own
+ * blast radius. The rounding is identical to `computeSeverity` so per-finding
+ * SLF severities land on the same 9-value scale (1 … 13.5) as deterministic
+ * findings.
+ *
+ * MATH ONLY — does not consult thresholds, verdict labels, or finding codes.
+ */
+export function severityFromInputs(inputs: {
+  brW: AxisBand;
+  brR: AxisBand;
+  brA: AxisBand;
+  ds: AxisBand;
+  dm: DomainMultiplier;
+}): SeverityResult {
+  const br = Math.max(inputs.brW, inputs.brR, inputs.brA) as AxisBand;
+  const severity = Math.round(br * inputs.ds * inputs.dm * 10) / 10;
+  return {
+    severity,
+    br,
+    ds: inputs.ds,
+    dm: inputs.dm,
+    components: { brW: inputs.brW, brR: inputs.brR, brA: inputs.brA },
+  };
+}
+
 // ─── Severity bands (for renderer / consumers) ──────────────────────────
 
 /**

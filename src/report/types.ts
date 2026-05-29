@@ -163,6 +163,46 @@ export const severityComponentsSchema = z.object({
 });
 export type SeverityComponents = z.infer<typeof severityComponentsSchema>;
 
+// AAP-105 A6 — per-finding severity inputs for self-attested (SLF) risks.
+//
+// Pre-A6, every SLF finding was scored by the SESSION-WIDE blast radius
+// (`computeSeverity` with no per-finding hint), so all of them collapsed to
+// the same severity number (e.g. `9 HIGH` on the demo). That pasted the whole
+// agent's blast radius onto every card — "Telegram alerting fails open" (low
+// real blast radius) scored identically to "Broad Google OAuth permissions"
+// (genuinely high reach). It misrepresented both.
+//
+// A6 lets the analyzer LLM assess EACH risk's own BR × DS × DM axes (the same
+// rubric used by deterministic findings, see
+// `src/verification/severity-scoring.ts`). The field is OPTIONAL: old sessions
+// and any LLM extraction that omits it fall back to the prior session-wide
+// path in `interviewRiskToVerdictFinding`, so there is no regression for legacy
+// data. This stays honest because SLF findings are self-attested by
+// definition — a per-finding severity estimate from the same interview source,
+// scored by the same rubric and clearly marked "self-attested estimate, not
+// verified", is strictly more accurate than the agent-level number on
+// everything.
+//
+//   - brW / brR / brA: blast-radius axes (write scope / reach / autonomy),
+//     each 1 / 2 / 3 — assessed for THIS risk, not the whole agent.
+//   - ds: data sensitivity 1 (T1) / 2 (T2 PII) / 3 (T3 GDPR Art. 9 / financial
+//     creds / gov IDs).
+//   - dm: domain multiplier 1.0 default / 1.5 if EU AI Act Annex III domain OR
+//     GDPR Art. 35(3) DPIA trigger applies.
+//
+// severity = max(brW, brR, brA) × ds × dm — identical math to
+// `computeSeverity`, just sourced per-risk.
+export const axisBandSchema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
+export const domainMultiplierSchema = z.union([z.literal(1), z.literal(1.5)]);
+export const severityInputsSchema = z.object({
+  brW: axisBandSchema,
+  brR: axisBandSchema,
+  brA: axisBandSchema,
+  ds: axisBandSchema,
+  dm: domainMultiplierSchema,
+});
+export type SeverityInputs = z.infer<typeof severityInputsSchema>;
+
 export const riskSchema = z.object({
   severity: severitySchema,
   title: z.string(),
@@ -174,6 +214,13 @@ export const riskSchema = z.object({
   severityComponents: severityComponentsSchema.optional(),
   /** AAP-102 — provenance: MCP / OAU / ENV / PLG (Verified) vs SLF (Self-attested). */
   evidenceSource: evidenceSourceSchema.optional(),
+  /**
+   * AAP-105 A6 — per-finding severity axes for SLF risks. Optional; when
+   * present, `interviewRiskToVerdictFinding` scores THIS risk from these
+   * inputs instead of the session-wide blast radius. Absent → legacy
+   * session-wide fallback. See `severityInputsSchema` doc above.
+   */
+  severityInputs: severityInputsSchema.optional(),
 });
 export type Risk = z.infer<typeof riskSchema>;
 

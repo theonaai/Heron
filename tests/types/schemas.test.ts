@@ -190,6 +190,55 @@ describe('Zod schemas', () => {
       });
       expect(result.mitigation).toBe('Restrict to read-only');
     });
+
+    // AAP-105 A6 — optional per-finding severity axes for SLF risks.
+    it('accepts a risk with no severityInputs (optional — legacy/back-compat)', () => {
+      const result = riskSchema.parse({
+        severity: 'high',
+        title: 'Telegram alerting fails open',
+        description: 'monitoring gap',
+      });
+      expect(result.severityInputs).toBeUndefined();
+    });
+
+    it('validates severityInputs when present', () => {
+      const result = riskSchema.parse({
+        severity: 'high',
+        title: 'Broad Google OAuth permissions',
+        description: 'full Drive write',
+        severityInputs: { brW: 3, brR: 3, brA: 3, ds: 2, dm: 1.0 },
+      });
+      expect(result.severityInputs).toEqual({ brW: 3, brR: 3, brA: 3, ds: 2, dm: 1.0 });
+    });
+
+    it('rejects out-of-band axis values (e.g. brW: 4 or dm: 2)', () => {
+      expect(() =>
+        riskSchema.parse({
+          severity: 'high',
+          title: 'x',
+          description: 'y',
+          severityInputs: { brW: 4, brR: 1, brA: 1, ds: 1, dm: 1.0 },
+        }),
+      ).toThrow();
+      expect(() =>
+        riskSchema.parse({
+          severity: 'high',
+          title: 'x',
+          description: 'y',
+          severityInputs: { brW: 1, brR: 1, brA: 1, ds: 1, dm: 2 },
+        }),
+      ).toThrow();
+    });
+
+    it('accepts dm: 1.5 (elevated domain multiplier)', () => {
+      const result = riskSchema.parse({
+        severity: 'critical',
+        title: 'x',
+        description: 'y',
+        severityInputs: { brW: 3, brR: 3, brA: 3, ds: 3, dm: 1.5 },
+      });
+      expect(result.severityInputs?.dm).toBe(1.5);
+    });
   });
 
   describe('analysisResultSchema', () => {

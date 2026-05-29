@@ -1779,7 +1779,9 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <p style={{ margin: 0, fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
                 Derived from the agent&apos;s interview answers only. Working hypotheses — confirm
-                with deterministic evidence before relying on them.
+                with deterministic evidence before relying on them. Severity here is the
+                agent&apos;s own estimate, scored per finding by the BR×DS×DM rubric, not a
+                verified measurement.
               </p>
               {selfAttested.map((f) => (
                 <MinimalFindingCard key={f.code} finding={f} />
