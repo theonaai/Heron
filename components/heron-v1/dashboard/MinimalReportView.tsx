@@ -29,6 +29,7 @@ import {
   SEVERITY_BAND_LABEL,
   type CodedVerdictFinding,
 } from '@/src/report/finding-display';
+import { extractProjectName } from '@/src/report/agent-name';
 import { getMitigationHint, getSlfMitigationHint } from '@/src/report/mitigation-catalog';
 import type {
   EvidenceSource,
@@ -125,47 +126,20 @@ interface MinimalReportJson {
 
 // ─── Project name extraction ──────────────────────────────────────────
 //
-// AAP-105 C1: the runtime "Codex desktop agent in /path" name is
-// uninformative — every Codex audit ends up with the same header. We
-// extract the project name from two sources, in order of reliability:
+// AAP-105 C1 / #26 A1: the agent display-name extraction now lives in the
+// shared, environment-agnostic `src/report/agent-name.ts` so the Node
+// storage layer can stamp the same name onto `meta.extractedAgentName` and
+// every surface (card / overview / sidebar) reads one field. The card here
+// still calls `extractProjectName` (imported above) as the runtime path
+// and for sessions whose meta predates the stamp.
 //
-//   1. `agentPurpose` (LLM-distilled summary on report.json) — the
-//      analyzer already picked the canonical pipeline / product name
-//      from Q1 + Q26-Q28 answers. It's the highest-signal field, and
-//      the noun phrase before the first comma / "for" / "that" is
-//      almost always the right answer.
-//   2. Q1 transcript answer — structured "1. Project/product name: <X>"
-//      block. The Codex desktop probe stuffs runtime metadata into the
-//      first line ("Codex desktop GPT-5 coding agent operating in
-//      workspace …, whose repository is `mvp-edu-content-agent`"), so
-//      we also look for a backticked repo identifier as a secondary
-//      signal and humanize it (`mvp-edu-content-agent` → "MVP Edu
-//      Content Agent"). The "1. … name: …" lookup remains the last
-//      structured fallback.
-//   3. Runtime metadata (fallback only) — surfaces a `fallback name`
-//      badge so it's visually obvious extraction failed.
+// `TranscriptEntry` is the local alias used by the props below; it matches
+// the shared `TranscriptEntryLike` shape.
 
 interface TranscriptEntry {
   category?: string;
   question?: string;
   answer?: string;
-}
-
-const NAME_NOISE_PHRASES = [
-  /codex desktop( gpt-?5)?( coding)? agent/i,
-  /coding agent/i,
-  /local workspace/i,
-  /the agent/i,
-];
-
-function isUsefulName(name: string): boolean {
-  if (!name) return false;
-  const trimmed = name.trim();
-  if (trimmed.length < 3 || trimmed.length > 80) return false;
-  for (const noise of NAME_NOISE_PHRASES) {
-    if (noise.test(trimmed)) return false;
-  }
-  return true;
 }
 
 /**
@@ -235,151 +209,6 @@ function humanizeSystemId(systemId: string): string {
   return tokens
     .map((t) => BRANDS[t] ?? (t.charAt(0).toUpperCase() + t.slice(1)))
     .join(' ');
-}
-
-function humanizeKebab(s: string): string {
-  return s
-    .split(/[-_]/)
-    .filter((p) => p.length > 0)
-    .map((p) => {
-      // Keep common short uppercase tokens as-is (MVP, API, AI, OCR, etc.).
-      if (/^[a-z]{2,4}$/.test(p) && /^(mvp|api|ai|ml|llm|ui|ux|sdk|crm|cms|cli|aws|gcp|qa)$/i.test(p)) {
-        return p.toUpperCase();
-      }
-      // Title-case other words; map known abbreviations.
-      if (p.toLowerCase() === 'edu') return 'Educational';
-      return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
-    })
-    .join(' ');
-}
-
-/**
- * Extract a project name from `agentPurpose` prose. Looks for the
- * standout noun phrase the LLM almost always emits: the lead clause
- * describing the pipeline / agent / product.
- *
- * Heuristics, in order:
- *   - "<X> pipeline" / "<X> system" / "<X> agent" / "<X> service" / "<X> platform"
- *   - first noun phrase up to ~6 capitalized-or-lowercase words before
- *     a verb / preposition. We bias toward including descriptors like
- *     "MVP educational content".
- */
-function extractFromAgentPurpose(purpose: string): string | null {
-  if (!purpose) return null;
-  const text = purpose.trim();
-
-  // Pattern A: "<a|an|the> <X> <noun>" where noun ∈ pipeline / system /
-  // platform / service / agent / orchestrator / workflow / app.
-  //
-  // The key constraint: we anchor on a leading article ("an MVP …
-  // pipeline"), which forces the regex to pick the OUTERMOST noun
-  // phrase rather than a sub-phrase like "Russian educational
-  // lessons". `[\s\S]+?` is non-greedy so the article-to-noun span
-  // stays minimal, but article-anchoring guarantees we cover the
-  // full descriptor up to the head noun.
-  const articlePattern = /\b(?:a|an|the)\s+([A-Za-z][\w-]*(?:\s+(?!for\b|that\b|which\b|to\b|in\b|on\b|and\b)[\w-]+){0,7})\s+(pipeline|system|platform|service|orchestrator|workflow|app|backend|product|application)\b/i;
-  const m1 = text.match(articlePattern);
-  if (m1 && m1[1]) {
-    const titled = titleCasePhrase(`${m1[1]} ${m1[2]}`);
-    if (isUsefulName(titled)) return titled;
-  }
-
-  // Pattern B: agent-specific — "the X agent" but only when X is at
-  // least 2 tokens. Avoid matching "the agent edits" (Pattern A's
-  // negative lookahead already blocks single-token verbs but this
-  // adds a safety net for the bare phrase).
-  const agentPattern = /\b(?:a|an|the)\s+([A-Z][\w-]+(?:\s+[\w-]+){1,5})\s+agent\b/;
-  const m2 = text.match(agentPattern);
-  if (m2 && m2[1]) {
-    const titled = titleCasePhrase(`${m2[1]} agent`);
-    if (isUsefulName(titled)) return titled;
-  }
-
-  // Pattern C: "for <X>" lead-in for short prose lacking the article
-  // anchor. Last-resort heuristic.
-  const forMatch = text.match(/\bfor\s+(?:a|an|the)\s+([A-Z][A-Za-z0-9 -]{4,60})\b/);
-  if (forMatch && forMatch[1] && isUsefulName(forMatch[1])) {
-    return titleCasePhrase(forMatch[1].trim());
-  }
-
-  return null;
-}
-
-function titleCasePhrase(s: string): string {
-  const stopwords = new Set([
-    'a', 'an', 'and', 'or', 'of', 'for', 'in', 'on', 'the', 'to', 'with', 'by',
-  ]);
-  return s
-    .split(/\s+/)
-    .map((w, i) => {
-      const lower = w.toLowerCase();
-      if (i > 0 && stopwords.has(lower)) return lower;
-      // Preserve internal capitalization (MVP, GPT-5, API, etc.) if already
-      // present, otherwise title-case.
-      if (/^[A-Z]{2,}$/.test(w)) return w;
-      if (/^[A-Z][a-z0-9]+$/.test(w)) return w;
-      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-    })
-    .join(' ')
-    .trim();
-}
-
-function extractProjectName(
-  transcript: TranscriptEntry[] | undefined,
-  fallback: string | undefined,
-  agentPurpose: string | undefined,
-): { name: string; isFallback: boolean } {
-  // Source #1: agentPurpose (LLM-distilled, highest signal).
-  if (agentPurpose) {
-    const fromPurpose = extractFromAgentPurpose(agentPurpose);
-    if (fromPurpose && isUsefulName(fromPurpose)) {
-      return { name: fromPurpose, isFallback: false };
-    }
-  }
-
-  // Source #2: Q1 transcript answer ("1. Project/product name: ...").
-  if (transcript && transcript.length > 0) {
-    const candidates = transcript
-      .slice(0, 3)
-      .filter((t) => (t.category || '').toLowerCase() === 'purpose');
-
-    for (const c of candidates) {
-      const a = (c.answer || '').trim();
-      if (!a) continue;
-
-      // Sub-pattern 2a: backticked repo identifier (Codex desktop probe pattern).
-      // "whose repository is `mvp-edu-content-agent`" → "MVP Edu Content Agent"
-      const repoMatch = a.match(/repositor(?:y|ies)\s+(?:is|are|named|called)\s+`([a-z0-9_-]{3,60})`/i);
-      if (repoMatch && repoMatch[1]) {
-        const humanized = humanizeKebab(repoMatch[1]);
-        if (isUsefulName(humanized)) {
-          return { name: humanized, isFallback: false };
-        }
-      }
-
-      // Sub-pattern 2b: structured "1. Project/product name: <X>" header.
-      const m1 = a.match(/(?:project\/product name|project name|product name)\s*[:\-]\s*([^\n.]+)/i);
-      if (m1 && m1[1]) {
-        let name = m1[1].trim().replace(/[`*]/g, '');
-        // Strip trailing "operating in workspace …" / "running in the local …".
-        name = name.split(/\s+(?:operating|running|deployed|hosted|located)\s+in\b/i)[0]!.trim();
-        // "Codex3 workspace for MVP Edu Content Agent (mvp-edu-content-agent)"
-        const forMatch = name.match(/for\s+([A-Z][^()]+?)(?:\s*\(|\s*,|\s*\.|$)/);
-        if (forMatch && forMatch[1]) {
-          name = forMatch[1].trim();
-        } else {
-          name = name.split(/[,;]/)[0]!.trim().split('(')[0]!.trim();
-        }
-        name = name.replace(/[.,;]+$/, '').trim();
-        if (isUsefulName(name)) {
-          return { name, isFallback: false };
-        }
-      }
-    }
-  }
-
-  // Source #3: runtime metadata (last resort).
-  return { name: fallback || 'Unnamed agent', isFallback: true };
 }
 
 // ─── DS classifier — T1 / T2 / T3 ─────────────────────────────────────
@@ -1267,34 +1096,105 @@ function SystemDetail({ system }: { system: SystemAssessment }) {
         </div>
       )}
 
-      {/* Write operations — list with reversible / approval badges (kept). */}
+      {/* #26 A3 — Write operations as a compact table (Operation / Target /
+          Reversibility) instead of a flowing "op → target [badge]" line list.
+          The line list was hard to scan once a system had several writes; a
+          table lets the reviewer compare targets and reversibility down a
+          column. The reversible/irreversible distinction keeps its colored
+          badge; an approval-required write keeps its info badge next to the
+          reversibility cell. */}
       {system.writeOperations.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <SectionLabel>Write operations</SectionLabel>
-          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
-            {system.writeOperations.map((w, i) => (
-              <li key={i} style={{ marginBottom: 3 }}>
-                {w.operation} → {w.target}
-                {' '}
-                <WriteOpBadge
-                  text={w.reversible ? 'reversible' : 'irreversible'}
-                  variant={w.reversible ? 'neutral' : 'danger'}
-                />
-                {w.approvalRequired && (
-                  <>
-                    {' '}
-                    <WriteOpBadge text="approval required" variant="info" />
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+          <table
+            style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              marginTop: 6,
+              fontSize: 12,
+              tableLayout: 'fixed',
+            }}
+          >
+            <thead>
+              <tr
+                style={{
+                  textAlign: 'left',
+                  color: '#71717a',
+                  fontSize: 10,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                <th style={{ padding: '4px 8px 4px 0', borderBottom: '1px solid #e5e7eb', fontWeight: 600, width: '38%' }}>
+                  Operation
+                </th>
+                <th style={{ padding: '4px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 600, width: '34%' }}>
+                  Target
+                </th>
+                <th style={{ padding: '4px 0 4px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 600, width: '28%' }}>
+                  Reversibility
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {system.writeOperations.map((w, i) => (
+                <tr key={i}>
+                  <td
+                    style={{
+                      padding: '6px 8px 6px 0',
+                      borderBottom: '1px solid #f1f5f9',
+                      color: '#18181b',
+                      verticalAlign: 'top',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {w.operation}
+                  </td>
+                  <td
+                    style={{
+                      padding: '6px 8px',
+                      borderBottom: '1px solid #f1f5f9',
+                      color: '#3f3f46',
+                      verticalAlign: 'top',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {w.target}
+                  </td>
+                  <td
+                    style={{
+                      padding: '6px 0 6px 8px',
+                      borderBottom: '1px solid #f1f5f9',
+                      verticalAlign: 'top',
+                    }}
+                  >
+                    <WriteOpBadge
+                      text={w.reversible ? 'reversible' : 'irreversible'}
+                      variant={w.reversible ? 'neutral' : 'danger'}
+                    />
+                    {w.approvalRequired && (
+                      <>
+                        {' '}
+                        <WriteOpBadge text="approval required" variant="info" />
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
       {/* Implementation notes — the long technical `system` / description
-          prose, demoted to italic secondary text at the bottom. */}
-      {(system.systemDescription || system.dataSensitivity || blastRadius) && (
+          prose, demoted to italic secondary text at the bottom.
+
+          #26 A4 — blast radius is shown ONCE, as the chip at the top of this
+          expansion (BlastRadiusBadge above). The earlier "Blast radius:
+          <prose>" line here was a second rendering of the same fact, so it's
+          dropped. The notes section now gates only on the description /
+          sensitivity prose. */}
+      {(system.systemDescription || system.dataSensitivity) && (
         <div style={{ marginTop: 8, paddingTop: 10, borderTop: '1px dashed #e5e7eb' }}>
           <SectionLabel>Implementation notes</SectionLabel>
           {system.systemDescription && (
@@ -1306,12 +1206,6 @@ function SystemDetail({ system }: { system: SystemAssessment }) {
             <p style={{ margin: '4px 0 0', fontSize: 11.5, lineHeight: 1.55, color: '#52525b', fontStyle: 'italic' }}>
               <strong style={{ fontWeight: 600, fontStyle: 'normal', color: '#71717a' }}>Data sensitivity:</strong>{' '}
               {system.dataSensitivity}
-            </p>
-          )}
-          {blastRadius && (
-            <p style={{ margin: '4px 0 0', fontSize: 11.5, lineHeight: 1.55, color: '#52525b', fontStyle: 'italic' }}>
-              <strong style={{ fontWeight: 600, fontStyle: 'normal', color: '#71717a' }}>Blast radius:</strong>{' '}
-              {blastRadius}
             </p>
           )}
         </div>

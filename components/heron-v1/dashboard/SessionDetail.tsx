@@ -418,10 +418,22 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const sessionShort = liveSession.id.startsWith('sess_')
     ? liveSession.id.slice(5, 17)
     : liveSession.id.slice(0, 12);
-  const liveAgentName = (allSessions || []).find((s) => s.id === liveSession.id)?.agentName;
+  const liveSummary = (allSessions || []).find((s) => s.id === liveSession.id);
+  const liveAgentName = liveSummary?.agentName;
   const effectiveAgentName = liveAgentName?.trim() || liveSession.agentName?.trim() || '';
-  const displayName = effectiveAgentName || sessionShort;
-  const showIdSuffix = !!effectiveAgentName;
+  // #26 A1 — the topbar title (right above the report card) shows the same
+  // Q1-extracted name as the card / overview / sidebar. Prefer the
+  // stamped `extractedAgentName` (live summary first, then the detail blob),
+  // falling back to the runtime agent name, then the short id. The runtime
+  // `effectiveAgentName` is kept separately below as the card's honest
+  // fallback input.
+  const extractedName =
+    liveSummary?.extractedAgentName?.trim() ||
+    liveSession.extractedAgentName?.trim() ||
+    '';
+  const titleName = extractedName || effectiveAgentName;
+  const displayName = titleName || sessionShort;
+  const showIdSuffix = !!titleName;
 
   // AAP-56: analysis_failed gets its own red pill set — no risk level
   // shown, status pill is critical-red, banner explains why the verdict

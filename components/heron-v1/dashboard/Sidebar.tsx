@@ -12,7 +12,7 @@ import {
 import { useState, useRef } from 'react';
 import type { AuditSession } from '@/lib/api';
 import { renameAuditSession, deleteAuditSession } from '@/lib/api';
-import { RiskDot, StatusDot, relTime } from './atoms';
+import { RiskDot, StatusDot, relTime, sessionDisplayName } from './atoms';
 
 // Local placeholder for the user header — no auth in OSS.
 const LOCAL_USER_LABEL = 'Local user';
@@ -61,7 +61,10 @@ export default function Sidebar({
   const startEditing = (s: AuditSession, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(s.id);
-    setEditValue(s.agentName || s.id.replace('sess_', '').slice(0, 10));
+    // #26 A1 — seed the rename box with the label the user actually sees
+    // (the resolved display name), not the raw runtime agentName, so editing
+    // starts from "MVP Edu Content Agent" rather than the hidden "Codex".
+    setEditValue(sessionDisplayName(s));
     setTimeout(() => editRef.current?.focus(), 0);
   };
 
@@ -123,8 +126,11 @@ export default function Sidebar({
         <div className="flex-1 w-full overflow-y-auto py-2 space-y-1.5 flex flex-col items-center">
           {sessions.slice(0, 12).map((s) => {
             const active = selectedId === s.id;
+            // #26 A1 — initials + tooltip key off the same resolved label as
+            // the overview/card (Q1-extracted name preferred over runtime).
+            const label = sessionDisplayName(s);
             const initials =
-              (s.agentName || s.id.replace('sess_', ''))
+              label
                 .replace(/[^a-z0-9]/gi, '')
                 .slice(0, 4)
                 .toUpperCase() || '··';
@@ -135,7 +141,7 @@ export default function Sidebar({
                 className={`group relative w-9 flex flex-col items-center gap-0.5 py-1 rounded-md transition ${
                   active ? 'bg-slate-100' : 'hover:bg-slate-50'
                 }`}
-                title={`${s.agentName ?? s.id} — ${s.riskLevel ?? s.status}`}
+                title={`${label} — ${s.riskLevel ?? s.status}`}
               >
                 {dotForSession(s)}
                 <span
@@ -223,8 +229,8 @@ export default function Sidebar({
             <div className="space-y-0">
               {sessions.map((s) => {
                 const active = selectedId === s.id;
-                const displayName =
-                  s.agentName || s.id.replace('sess_', '').slice(0, 10);
+                // #26 A1 — same resolved label as overview row + report card.
+                const displayName = sessionDisplayName(s);
                 const isEditing = editingId === s.id;
                 const isDeleting = deletingId === s.id;
                 return (
@@ -281,7 +287,11 @@ export default function Sidebar({
                       </div>
                       <div className="flex items-center gap-2 pl-3.5 mt-0.5">
                         <span className="text-[10.5px] text-slate-400 font-mono">
-                          {relTime(s.createdAt)}
+                          {/* #26 A2 — match the overview row's timestamp basis
+                              (updatedAt ?? createdAt). The sidebar used to show
+                              createdAt only, so the same session reported two
+                              different "updated" times across the two surfaces. */}
+                          {relTime(s.updatedAt || s.createdAt)}
                         </span>
                         <span className="text-slate-300">·</span>
                         <span className="text-[10.5px] text-slate-400 capitalize">

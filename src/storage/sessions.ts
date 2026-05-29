@@ -36,6 +36,8 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { extractProjectName, type TranscriptEntryLike } from '../report/agent-name.js';
+
 /**
  * Persisted session lifecycle states.
  *
@@ -117,6 +119,18 @@ export interface AuditSession {
    */
   riskLevel?: string;
   agentName?: string;
+  /**
+   * #26 A1 — the project name extracted from Q1 / `agentPurpose`
+   * (`extractProjectName`), stamped onto meta at report-write time so the
+   * dashboard OVERVIEW row + SIDEBAR + report CARD all read one canonical
+   * field instead of each re-deriving (or silently falling back to the
+   * uninformative runtime `agentName`, e.g. "Codex"). Absent on sessions
+   * persisted before this field shipped; `listSessions` / `getSession`
+   * lazily backfill it from report.json. Undefined when extraction fell
+   * back to the runtime name (so callers can still show a "fallback"
+   * affordance and we don't pin a useless value).
+   */
+  extractedAgentName?: string;
   createdAt: string;
   updatedAt: string;
   /**
@@ -287,6 +301,22 @@ async function writeMeta(id: string, meta: StoredMeta): Promise<void> {
   await atomicWriteFile(join(dir, id, 'meta.json'), JSON.stringify(meta, null, 2));
 }
 
+/**
+ * #26 A1 — write-back the derived `extractedAgentName` onto an existing
+ * meta WITHOUT touching `updatedAt`. This is a denormalisation cache fill,
+ * not a real session mutation: bumping `updatedAt` would reorder the
+ * newest-first list and shift the "Updated" column the moment a stale
+ * session is first read, which is exactly the kind of time inconsistency
+ * #26 A2 is fixing. Preserving the timestamp keeps the backfill invisible.
+ */
+async function backfillExtractedAgentName(
+  id: string,
+  meta: StoredMeta,
+  extractedAgentName: string,
+): Promise<void> {
+  await writeMeta(id, { ...meta, extractedAgentName });
+}
+
 async function readMeta(id: string): Promise<StoredMeta | null> {
   if (!SESSION_ID_REGEX.test(id)) return null;
   const dir = getSessionsDir();
@@ -437,6 +467,41 @@ function mapReportVerificationToMeta(status: unknown): VerificationStatus | unde
   return undefined;
 }
 
+/**
+ * #26 A1 — derive the canonical display name from a report.json blob.
+ *
+ * Reads the same two signals the report CARD uses (`agentPurpose` +
+ * embedded `transcript`), via the shared `extractProjectName`. Returns the
+ * extracted name only when extraction SUCCEEDS (not the runtime fallback)
+ * — we don't want to pin the uninformative "Codex" onto meta, so a
+ * fall-through leaves `extractedAgentName` absent and surfaces keep
+ * showing the runtime `agentName`.
+ *
+ * `runtimeName` is passed as the fallback so `extractProjectName`'s
+ * `isFallback` flag reliably flips when nothing better is found.
+ */
+function deriveExtractedAgentName(
+  reportJson: unknown,
+  runtimeName: string | undefined,
+): string | undefined {
+  if (!reportJson || typeof reportJson !== 'object') return undefined;
+  const blob = reportJson as {
+    agentPurpose?: unknown;
+    transcript?: unknown;
+  };
+  const agentPurpose =
+    typeof blob.agentPurpose === 'string' ? blob.agentPurpose : undefined;
+  const transcript = Array.isArray(blob.transcript)
+    ? (blob.transcript as TranscriptEntryLike[])
+    : undefined;
+  const { name, isFallback } = extractProjectName(
+    transcript,
+    runtimeName,
+    agentPurpose,
+  );
+  return isFallback ? undefined : name;
+}
+
 export async function getSession(id: string): Promise<AuditSessionDetail | null> {
   const meta = await readMeta(id);
   if (!meta) return null;
@@ -454,6 +519,7 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
     viewerRole: 'owner',
   };
   if (meta.agentName !== undefined) detail.agentName = meta.agentName;
+  if (meta.extractedAgentName !== undefined) detail.extractedAgentName = meta.extractedAgentName;
   if (meta.riskLevel !== undefined) detail.riskLevel = meta.riskLevel;
   if (meta.mode !== undefined) detail.mode = meta.mode;
   if (meta.pendingQuestion !== undefined) detail.pendingQuestion = meta.pendingQuestion;
@@ -467,6 +533,24 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
   if (meta.interviewRiskLevel !== undefined) detail.interviewRiskLevel = meta.interviewRiskLevel;
   if (reportMd !== undefined) detail.report = reportMd;
   if (reportJson !== null) detail.reportJson = reportJson;
+
+  // #26 A1 — lazy backfill for sessions persisted before extractedAgentName
+  // shipped. When meta lacks the field but a report.json exists, derive it
+  // here and persist it so subsequent (meta-only) list reads are cheap. The
+  // detail view consumes the freshly-derived value either way.
+  if (meta.extractedAgentName === undefined && reportJson !== null) {
+    const derived = deriveExtractedAgentName(reportJson, meta.agentName);
+    if (derived !== undefined) {
+      detail.extractedAgentName = derived;
+      // Best-effort write-back (preserves updatedAt — see helper); a failure
+      // here must not break the read.
+      try {
+        await backfillExtractedAgentName(id, meta, derived);
+      } catch {
+        // Tolerate — the value is still returned on `detail` for this read.
+      }
+    }
+  }
 
   // AAP-105 A2 — `report.json:verification.status` is the canonical
   // verification record (strategy v3.0 §3: "verifiable from a
@@ -525,6 +609,27 @@ export async function listSessions(): Promise<AuditSession[]> {
       updatedAt: meta.updatedAt,
     };
     if (meta.agentName !== undefined) summary.agentName = meta.agentName;
+    // #26 A1 — surface the canonical extracted name so the overview row +
+    // sidebar render the same Q1-derived label as the report card. For
+    // sessions whose meta predates the field, lazily backfill from
+    // report.json (one-time cost; the derived value is written back so the
+    // next list read is meta-only again). The backfill never updates
+    // `updatedAt` — it must not reorder the list or shift the "Updated"
+    // column out from under the user.
+    let extractedAgentName = meta.extractedAgentName;
+    if (extractedAgentName === undefined) {
+      const reportJson = await readJson<unknown>(join(dir, name, 'report.json'));
+      const derived = deriveExtractedAgentName(reportJson, meta.agentName);
+      if (derived !== undefined) {
+        extractedAgentName = derived;
+        try {
+          await backfillExtractedAgentName(name, meta, derived);
+        } catch {
+          // Tolerate — still surfaced on this summary even if write-back fails.
+        }
+      }
+    }
+    if (extractedAgentName !== undefined) summary.extractedAgentName = extractedAgentName;
     if (meta.riskLevel !== undefined) summary.riskLevel = meta.riskLevel;
     if (meta.analysisError !== undefined) summary.analysisError = meta.analysisError;
     // AAP-63 — list rows surface verification status so the sidebar can
@@ -605,6 +710,12 @@ export async function writeReport(
   await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
   await atomicWriteFile(join(dir, id, 'report.md'), payload.markdown);
   await atomicWriteFile(join(dir, id, 'report.json'), JSON.stringify(payload.json, null, 2));
+  // #26 A1 — stamp the extracted display name onto meta the moment the
+  // report lands, so the overview / sidebar (which read meta-only) show the
+  // same Q1-derived name as the report card. Only set it when extraction
+  // succeeds; a fall-through leaves the field absent (surfaces keep the
+  // runtime agentName).
+  const extractedAgentName = deriveExtractedAgentName(payload.json, meta.agentName);
   const next: StoredMeta = {
     ...meta,
     status: 'complete',
@@ -612,6 +723,7 @@ export async function writeReport(
     // pipeline doesn't re-run a failed session, but writeReport's contract
     // is "this run succeeded" — leave no stale failure envelope behind.
     analysisError: null,
+    ...(extractedAgentName !== undefined ? { extractedAgentName } : {}),
     updatedAt: nowIso(),
   };
   await writeMeta(id, next);

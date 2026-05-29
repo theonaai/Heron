@@ -66,6 +66,14 @@ export interface AuditSession {
    */
   riskLevel?: string;
   agentName?: string;
+  /**
+   * #26 A1 — canonical display name extracted from Q1 / `agentPurpose`,
+   * stamped on the session meta by the report-generation path (and lazily
+   * backfilled for older sessions). The overview row + sidebar prefer this
+   * over the runtime `agentName` so they match the report card. Absent
+   * when extraction fell back to the runtime name.
+   */
+  extractedAgentName?: string;
   createdAt: string;
   updatedAt: string;
   analysisError?: AnalysisErrorRecord | null;

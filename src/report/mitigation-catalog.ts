@@ -56,11 +56,14 @@ const EVIDENCE_SOURCE_HINTS: Record<EvidenceSource, string> = {
   OAU: 'Either restrict the OAuth scope at the provider, or update the declared scope with business justification.',
   ENV: 'Move credentials to a secret manager (Vault, AWS Secrets Manager, OS keychain) and remove the value from the workspace .env file.',
   PLG: 'Audit the plugin / skill grant: either tighten the declared filesystem / network scope, or remove the plugin from the agent runtime.',
-  // AAP-104 B4 — SLF fallback rewritten as a concrete instruction ("how
-  // to convert to Verified") instead of a meta-restatement of "this is
-  // self-reported". The SLF badge already labels the row; the
-  // mitigation block now tells the reviewer what evidence to attach.
-  SLF: 'How to convert to Verified: ask the deployer for the MCP config, OAuth scope grant, .env keys, or production audit log that backs this claim. Heron will rerun the BR×DS×DM scoring against the supplied evidence.',
+  // #28 — honest SLF fallback. Heron has no document-upload / submit-and-
+  // compare flow; it verifies by introspecting the source directly on a
+  // re-scan (MCP config, OAuth introspection, .env, runtime). The earlier
+  // copy ("ask the deployer for the … document … Heron will rerun the
+  // BR×DS×DM scoring against the supplied evidence") promised a workflow
+  // that does not exist. Reframe as "this is self-attested; here is the
+  // deterministic source a re-scan would read to verify it."
+  SLF: 'Self-attested — Heron has no deterministic evidence for this claim. To verify, re-run the audit with source access (MCP config, OAuth introspection, .env, or runtime) so Heron can read it directly; until then a reviewer should confirm it manually.',
 };
 
 /**
@@ -75,20 +78,25 @@ const MITIGATION_FALLBACK =
 /**
  * AAP-105 B6 — per-subcategory SLF mitigation variants.
  *
- * The generic `EVIDENCE_SOURCE_HINTS.SLF` line ("ask the deployer for
- * the MCP config, OAuth scope grant, .env keys, or production audit
- * log…") was identical across every Self-Attested finding card. On a
- * 5-finding session this read as boilerplate noise. Each subcategory
- * here picks a more specific "ask for X" instruction matched against
- * substrings in the finding title + description.
+ * The generic `EVIDENCE_SOURCE_HINTS.SLF` line was identical across every
+ * Self-Attested finding card. On a 5-finding session this read as
+ * boilerplate noise. Each subcategory here picks a more specific
+ * remediation instruction matched against substrings in the finding title
+ * + description.
+ *
+ * #28 — honesty pass. The previous hints said "ask the deployer for the
+ * <document> so Heron can compare …", which implied an upload / submit-and-
+ * compare workflow that Heron does NOT have. Heron verifies by introspecting
+ * the source directly on a re-scan (and, for OAuth, by the agent forwarding
+ * its own introspected scopes via the G10 `report_oauth_scopes` flow — not
+ * by a human handing Heron a consent-screen screenshot). Each hint is
+ * reframed as either (a) the deterministic source a re-scan would read, or
+ * (b) honest reviewer guidance when there is no deterministic source.
  *
  * Order matters: the first matching pattern wins. Keep more specific
- * patterns above generic ones. The list is consulted in source order
- * by `getSlfMitigationHint`.
- *
- * The base SLF entry in `EVIDENCE_SOURCE_HINTS` stays as the final
- * fallback when none of these subcategories match — and so the
- * existing "every evidence source has a hint" test contract holds.
+ * patterns above generic ones. The list is consulted in source order by
+ * `getSlfMitigationHint`. The base SLF entry in `EVIDENCE_SOURCE_HINTS`
+ * stays as the final fallback when none of these match.
  */
 const SLF_SUBCATEGORY_HINTS: Array<{
   pattern: RegExp;
@@ -101,43 +109,63 @@ const SLF_SUBCATEGORY_HINTS: Array<{
     // user credentials with spreadsheets, drive scope") and we'd
     // misclassify them as a secrets-management finding otherwise.
     pattern: /\b(oauth\s+(?:scope|permission|access|grant|consent|credentials?)|broad\s+(?:google|microsoft|github|slack)\s+oauth|scope\s+grant|spreadsheets\s+scope|drive\s+scope|gmail\s+scope|full\s+drive|drive\s+full|google\s+oauth\s+(?:scope|permission)|excessive\s+(?:scope|oauth))/i,
-    hint: 'How to convert to Verified: ask the deployer for the OAuth scope grant document or the provider consent screen for this account so Heron can compare granted scopes against declared usage.',
+    // #28 — not verified from a document. Heron checks OAuth scopes by
+    // introspecting the token directly: the agent forwards its granted
+    // scopes via the OAuth introspection flow (G10). To upgrade, re-run
+    // with OAuth introspection enabled so Heron diffs granted vs declared.
+    hint: 'Self-attested OAuth scope — not verified from a document. Heron checks OAuth by introspecting the token directly; the agent forwards its granted scopes via the introspection flow. To verify, re-run with OAuth introspection enabled so granted scopes are diffed against declared usage.',
   },
   {
     // Secrets / credentials / .env / API keys. After OAuth — we want the
     // OAuth-scope class to win when both signals overlap.
     pattern: /\b(secret|credential\s+file|api[-\s]?key\b|env(?:ironment)?[-\s]?file|\.env\b|token[-\s]?file|service[-\s]account|password|vault|bot\s+token|login\/password)/i,
-    hint: 'How to convert to Verified: ask the deployer for the .env file or credential vault export so Heron can verify which keys are actually deployed and rotate any leaked secrets.',
+    // #28 — the deterministic source is the workspace .env / credential
+    // files, which Heron's discovery scan reads directly. Re-run discovery
+    // rather than "supplying" anything.
+    hint: 'Self-attested credential use — re-run discovery with workspace access so Heron reads the .env / credential files directly and confirms which keys are deployed. Rotate any secret found in plaintext.',
   },
   {
     // Bulk write / production audit log of write actions.
     pattern: /\b(bulk\s+(?:write|publish|upload|patch|create|update)|writes?\s+can\s+affect|catalog\s+writes|mass\s+update|batch\s+writes?|publish\s+(?:lessons|materials|catalogs))/i,
-    hint: 'How to convert to Verified: ask the deployer for the production audit log of write actions in the last quarter so Heron can verify actual blast radius, frequency, and reversibility.',
+    // #28 — Heron has no access to production write logs and no flow to
+    // ingest one. Honest reviewer guidance: confirm blast radius /
+    // frequency / reversibility against the live system.
+    hint: 'Self-attested write behavior — Heron cannot observe production writes from the source. A reviewer should confirm the actual blast radius, frequency, and reversibility against the live system before approving.',
   },
   {
     // External vendor / data sent to third-party generation provider.
     pattern: /\b(sent\s+to\s+(?:generation|external|third[-\s]party|vendor)|vendor[-\s]side|generation\s+vendor|external\s+model|gemini\s+receives|gamma\s+receives|openai\s+receives|llm\s+vendor|retention\s+contract|data[-\s]use\s+control)/i,
-    hint: 'How to convert to Verified: ask the deployer for the vendor data-retention contract and data-use control terms for each external provider so Heron can confirm what the third party can do with sent content.',
+    // #28 — vendor data-use terms are off-platform; Heron can't verify
+    // them by reading any source. Reviewer guidance.
+    hint: 'Self-attested vendor data handling — Heron cannot verify a third party\'s data-use terms from the source. A reviewer should confirm each external provider\'s retention and data-use controls against its contract / DPA.',
   },
   {
     // Alerting / monitoring / SLA / fail-open / runbook.
     pattern: /\b(alerting|alerts?\s+fail|fail[-\s]open|notification\s+(?:fails?|stream)|runbook|on[-\s]call|sla\b|monitoring|observability|escalation\s+path)/i,
-    hint: 'How to convert to Verified: ask the deployer for the alerting runbook plus SLA / escalation documentation so Heron can verify that operational failures are actually caught and acted on.',
+    // #28 — operational behavior under failure isn't readable from config;
+    // reviewer guidance, naming the artefacts to check.
+    hint: 'Self-attested alerting / SLA — Heron cannot verify operational failure handling from the source. A reviewer should confirm the runbook, SLA, and escalation path catch real failures (test a forced failure end to end).',
   },
   {
     // MCP tool inventory / tool grants the agent has access to.
     pattern: /\b(mcp\s+(?:config|tool|server)|tool\s+inventory|skill\s+grant|plugin\s+grant|tool[-\s]calling\s+capability)/i,
-    hint: 'How to convert to Verified: ask the deployer for the MCP server config / plugin manifest so Heron can compare declared tools against the live inventory.',
+    // #28 — this one IS deterministically verifiable: the MCP server
+    // config / plugin manifest is on disk and discovery reads it. Re-scan.
+    hint: 'Self-attested tool inventory — re-run discovery with workspace access so Heron reads the MCP server config / plugin manifest directly and diffs the live tool grants against what was declared.',
   },
   {
     // PII / data sensitivity / data minimization.
     pattern: /\b(pii\b|personal\s+data|personally[-\s]identifiable|data\s+minimization|article\s+(?:6|9)|gdpr\s+art|sensitive\s+data\s+stored|retention\s+polic)/i,
-    hint: 'How to convert to Verified: ask the deployer for the data inventory or DPIA documenting which PII fields the agent actually reads and writes, plus the retention / deletion policy.',
+    // #28 — Heron infers DS tiers from the interview, not from a data
+    // inventory it can read. Reviewer guidance.
+    hint: 'Self-attested data sensitivity — Heron infers the tier from the interview, not from a deterministic data inventory. A reviewer should confirm which PII fields are actually read/written and the retention / deletion policy.',
   },
   {
     // Human-in-the-loop / approval claims.
     pattern: /\b(human[-\s]in[-\s]the[-\s]loop|hitl|manual\s+review|human\s+(?:reviews?|approves?)|approval\s+gate)/i,
-    hint: 'How to convert to Verified: ask the deployer for the review SOP, throughput numbers, and a sampling audit of recent decisions so Heron can confirm review is meaningful rather than rubber-stamping.',
+    // #28 — review-quality claims aren't readable from any source;
+    // reviewer guidance naming what to sample.
+    hint: 'Self-attested human review — Heron cannot verify review quality from the source. A reviewer should sample recent decisions and check throughput against the review SOP to confirm the gate is meaningful, not rubber-stamping.',
   },
 ];
 
