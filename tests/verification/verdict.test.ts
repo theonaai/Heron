@@ -578,3 +578,140 @@ describe('computeVerdict — G8b per-runtime scope gate (AAP-105)', () => {
     expect(verdict.hostCapabilities).toHaveLength(0);
   });
 });
+
+// ─── G9 (AAP-106) — risk posture from systems blast radius ────────────────
+//
+// The core G9 change: posture reflects DEPLOYMENT RISK (per-system blast
+// radius × sensitivity), not just verified discrepancies. An honest agent
+// (0 discrepancies) with irreversible writes to sensitive data must surface
+// a real risk band, not "No findings". posture = max(per-system HWM,
+// verified-discrepancy HWM). SLF still NEVER moves posture.
+describe('computeVerdict — G9 risk posture from systems', () => {
+  // Mirrors the demo: 0 discrepancies (all 6 EXTRA reclassify as codex
+  // host-capabilities), but 7 systems carry real risk.
+  const RISKY_SYSTEMS = [
+    { systemId: 'google-sheets', dataSensitivity: 'PII; responsible fields may contain names', blastRadius: 'single-user', writeOperations: [
+      { operation: 'a', target: 'x', reversible: true }, { operation: 'b', target: 'x', reversible: true },
+    ] },
+    { systemId: 'gamma', dataSensitivity: 'slide prompt text and lesson title', blastRadius: 'single-user', writeOperations: [
+      { operation: 'create', target: 'gamma', reversible: false },
+    ] },
+    { systemId: 'telegram-bot', dataSensitivity: 'message previews and topic names', blastRadius: 'team-scope', writeOperations: [
+      { operation: 'send', target: 'chat', reversible: false },
+    ] },
+  ];
+
+  it('an HONEST agent (0 verified discrepancies) still gets a real risk posture from systems', () => {
+    // Reproduce the demo's verified-discrepancy state: codex EXTRA servers
+    // reclassify to host capabilities, so there are ZERO verified findings.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'linear', runtime: 'codex', description: 'host-wide' },
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'supabase', runtime: 'codex', description: 'host-wide' },
+    ];
+    const verdict = computeVerdict({
+      discoveryFindings,
+      systemAssessments: RISKY_SYSTEMS,
+    });
+
+    // Pre-G9 this was 0 ("No Verified findings"). Now telegram-bot drives it:
+    // team-scope(2) + irreversible(+1) = BR3, DS2 → 6 (Medium).
+    expect(verdict.discrepancyPosture).toBe(0);
+    expect(verdict.systemsRisk.posture).toBe(6);
+    expect(verdict.systemsRisk.scanned).toBe(true);
+    expect(verdict.posture).toBe(6);
+    expect(verdict.postureBand).toBe('medium');
+    // The host-capability reclassification (G8b) is intact alongside G9.
+    expect(verdict.hostCapabilities).toHaveLength(2);
+  });
+
+  it('posture = max(systems risk, verified discrepancy risk) — discrepancy wins when higher', () => {
+    // A project-local EXTRA (claude-code) is a Verified finding; with no
+    // write tools / OAuth it scores 3. systemsRisk here tops out at 6, so
+    // posture is the systems HWM (6 > 3).
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'postgres', runtime: 'claude-code', description: 'project-scoped' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings, systemAssessments: RISKY_SYSTEMS });
+    const verified = verdict.findings.find((f) => f.evidenceSource !== 'SLF')!;
+    expect(verdict.discrepancyPosture).toBe(verified.severityScore);
+    expect(verdict.posture).toBe(Math.max(verified.severityScore, verdict.systemsRisk.posture));
+    expect(verdict.posture).toBe(6); // systems HWM dominates here
+  });
+
+  it('verified discrepancy wins when its severity exceeds the systems HWM', () => {
+    // Low-risk systems (read-only single-user T1 = severity 1) but a strong
+    // Verified discrepancy. Posture must follow the discrepancy.
+    const lowSystems = [
+      { systemId: 'metrics', dataSensitivity: 'aggregate counts', blastRadius: 'single-user', writeOperations: [] },
+    ];
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'HIGH', serverName: 'postgres', runtime: 'claude-code', description: 'project-scoped' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings, systemAssessments: lowSystems });
+    const verified = verdict.findings.find((f) => f.evidenceSource !== 'SLF')!;
+    expect(verdict.systemsRisk.posture).toBe(1);
+    expect(verdict.posture).toBe(verified.severityScore);
+    expect(verdict.posture).toBeGreaterThan(1);
+  });
+
+  it('WEDGE INVARIANT EXTENDED: SLF findings still do NOT move posture even with systems present', () => {
+    // A critical SLF (13.5) + risky systems (HWM 6) + zero verified
+    // discrepancies. Posture must equal the SYSTEMS HWM, never the SLF 13.5.
+    const interviewFindings: Risk[] = [
+      { severity: 'critical', title: 'agent claims unbounded shell', description: 'self-attested',
+        severityInputs: { brW: 3, brR: 3, brA: 3, ds: 3, dm: 1.5 } },
+    ];
+    const verdict = computeVerdict({
+      interviewFindings,
+      systemAssessments: RISKY_SYSTEMS,
+      discoveryFindings: [], // Surface 2 ran, no verified discrepancies
+    });
+    const slf = verdict.findings.find((f) => f.evidenceSource === 'SLF')!;
+    expect(slf.severityScore).toBe(13.5);
+    expect(verdict.discrepancyPosture).toBe(0);
+    expect(verdict.systemsRisk.posture).toBe(6);
+    // Posture is the systems HWM — SLF 13.5 leaked NOWHERE.
+    expect(verdict.posture).toBe(6);
+    expect(verdict.posture).not.toBe(13.5);
+    // computePosture (discrepancy-only) still excludes SLF entirely.
+    expect(computePosture(verdict.findings)).toBe(0);
+  });
+
+  it('CLEAN-LOW-RISK label signal: systems scored, no discrepancies → scanned=true, posture low', () => {
+    // A genuinely low-risk honest agent — read-only single-user T1 system.
+    // systemsRisk.scanned distinguishes this from the no-scan state so the
+    // renderer shows a green "Low risk · no discrepancies", not gray.
+    const verdict = computeVerdict({
+      systemAssessments: [
+        { systemId: 'metrics', dataSensitivity: 'aggregate counts', blastRadius: 'single-user', writeOperations: [] },
+      ],
+      discoveryFindings: [],
+    });
+    expect(verdict.systemsRisk.scanned).toBe(true);
+    expect(verdict.findings.filter((f) => f.evidenceSource !== 'SLF')).toHaveLength(0);
+    expect(verdict.posture).toBe(1); // BR1 × DS1 = 1 (informational/low end)
+  });
+
+  it('NO-SCAN label signal: no systems and no Surface 2 → scanned=false, posture 0', () => {
+    // The genuine no-evidence baseline: scanned=false drives the gray
+    // "Not yet verified" state. SLF-only interview data does NOT count as a
+    // systems scan.
+    const verdict = computeVerdict({
+      interviewFindings: [{ severity: 'high', title: 'x', description: 'y' }],
+    });
+    expect(verdict.systemsRisk.scanned).toBe(false);
+    expect(verdict.systemsRisk.posture).toBe(0);
+    expect(verdict.posture).toBe(0);
+    expect(verdict.status).toBe('unverified');
+  });
+
+  it('systemsRisk breakdown carries per-system severity + dsBasis for the renderer', () => {
+    const verdict = computeVerdict({ systemAssessments: RISKY_SYSTEMS, discoveryFindings: [] });
+    expect(verdict.systemsRisk.systems).toHaveLength(3);
+    const tg = verdict.systemsRisk.systems.find((s) => s.systemId === 'telegram-bot')!;
+    expect(tg.severity).toBe(6);
+    expect(tg.dsTier).toBe('T2');
+    expect(tg.hasIrreversibleWrite).toBe(true);
+    expect(tg.dsBasis.length).toBeGreaterThan(0);
+  });
+});

@@ -178,6 +178,11 @@ async function buildSuccessReport(
   // spots mismatches by eye.
   const initialVerdict = computeVerdict({
     interviewFindings: analysis.risks,
+    // G9 (AAP-106) — declared systems carry deployment risk (blast radius /
+    // sensitivity / irreversible writes) into posture even before Surface 2
+    // runs, so an honest-but-risky agent reads as a real risk band on first
+    // load rather than "No Verified findings".
+    systemAssessments: analysis.systems,
   });
 
   // AAP-103 — persist the verdict snapshot onto the AuditReport so the

@@ -415,13 +415,61 @@ export const hostCapabilitySnapshotSchema = z.object({
 });
 export type HostCapabilitySnapshot = z.infer<typeof hostCapabilitySnapshotSchema>;
 
+/**
+ * G9 (AAP-106) — per-system deployment-risk row. The system's
+ * BR × DS × DM severity (same scale as findings) plus the T-tier + a short
+ * basis sentence for the PII-basis-inline transparency fix. Persisted in
+ * report.json so the dashboard can render the basis next to the sensitivity
+ * badge and explain why posture is what it is.
+ */
+export const systemRiskSnapshotSchema = z.object({
+  systemId: z.string(),
+  severity: z.number(),
+  band: severityBandSchema,
+  br: z.number(),
+  ds: z.number(),
+  dm: z.number(),
+  dsTier: z.enum(['T1', 'T2', 'T3']),
+  dsBasis: z.string(),
+  hasIrreversibleWrite: z.boolean(),
+});
+export type SystemRiskSnapshot = z.infer<typeof systemRiskSnapshotSchema>;
+
+/**
+ * G9 (AAP-106) — systems-risk summary: the per-system HWM posture + the
+ * breakdown. `scanned` distinguishes "systems were scored" (clean-low-risk
+ * green label) from "no systems at all" (gray Not-yet-verified label).
+ */
+export const systemsRiskSnapshotSchema = z.object({
+  posture: z.number(),
+  postureBand: severityBandSchema,
+  scanned: z.boolean(),
+  systems: z.array(systemRiskSnapshotSchema),
+});
+export type SystemsRiskSnapshot = z.infer<typeof systemsRiskSnapshotSchema>;
+
 export const verdictSnapshotSchema = z.object({
   /** Technical execution state: 'verified' / 'partial' / 'unverified'. */
   status: z.enum(['verified', 'partial', 'unverified']),
-  /** FIPS 199 high-water-mark across Verified findings. 0 when none. */
+  /**
+   * G9 (AAP-106) — DEPLOYMENT RISK posture: FIPS HWM of per-system risk and
+   * the verified-discrepancy HWM. > 0 for an honest-but-risky agent.
+   */
   posture: z.number(),
   /** Coarse band for `posture`. */
   postureBand: severityBandSchema,
+  /**
+   * G9 (AAP-106) — verified-discrepancy-only HWM (pre-G9 posture). Optional +
+   * defaulted so report.json blobs persisted before G9 deserialise cleanly.
+   */
+  discrepancyPosture: z.number().optional().default(0),
+  /**
+   * G9 (AAP-106) — per-system deployment-risk breakdown. Optional + defaulted
+   * for back-compat with pre-G9 report.json.
+   */
+  systemsRisk: systemsRiskSnapshotSchema
+    .optional()
+    .default({ posture: 0, postureBand: 'informational', scanned: false, systems: [] }),
   /** Every finding (Verified + SLF), with severity + provenance attached. */
   findings: z.array(verdictFindingSnapshotSchema),
   /**

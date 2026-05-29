@@ -50,6 +50,11 @@ import {
   type SeverityEvidence,
   type SeverityResult,
 } from './severity-scoring.js';
+import {
+  computeSystemsRisk,
+  type RiskScorableSystem,
+  type SystemsRiskSummary,
+} from './systems-risk.js';
 import type {
   SourceVerification,
   DiffEntry,
@@ -182,6 +187,17 @@ export interface VerdictInputs {
    * inventory which `computeSeverity` reads as BR-W input.
    */
   discoveredAgents?: DiscoveredAgent[];
+  /**
+   * G9 (AAP-106) — declared SYSTEMS from the analyzer (`report.json
+   * .systems[]`). Each row is scored on the BR × DS × DM scale
+   * (`systems-risk.ts`) and the high-water-mark feeds posture, so an honest
+   * agent (0 discrepancies) with irreversible writes to sensitive data still
+   * reads as a real risk band instead of "No findings". Structurally
+   * compatible with `SystemAssessment` / `ReportJsonSystem` — only the
+   * risk-bearing fields (dataSensitivity / blastRadius / writeOperations)
+   * are read.
+   */
+  systemAssessments?: RiskScorableSystem[];
 }
 
 export interface Verdict {
@@ -193,12 +209,36 @@ export interface Verdict {
    */
   status: VerificationStatus;
   /**
-   * FIPS 199 high-water-mark across Verified findings only.
-   * 0 when no Verified findings exist.
+   * G9 (AAP-106) — DEPLOYMENT RISK posture: the FIPS-199 high-water-mark of
+   *   max( per-system risk over `systems[]` , verified-discrepancy HWM ).
+   *
+   * Pre-G9 this was the verified-discrepancy HWM ONLY, so an honest agent
+   * (declared == actual, 0 discrepancies) scored 0 → "No Verified findings",
+   * ignoring its risk surface. Now an honest-but-risky agent (irreversible
+   * writes to sensitive data) carries the system risk into posture.
+   *
+   * SLF findings still NEVER move posture (wedge invariant). System risk is
+   * deterministic blast-radius/sensitivity of the DECLARED systems — it is
+   * not the agent's self-report about discrepancies, so it legitimately
+   * drives the gradient. 0 only when there are no systems AND no verified
+   * discrepancies (true "no scan").
    */
   posture: number;
   /** Coarse band for `posture` — informational / low / medium / high / critical. */
   postureBand: SeverityBand;
+  /**
+   * G9 (AAP-106) — verified-discrepancy-only HWM (the pre-G9 posture). Kept
+   * separate so the renderer can show "N discrepancies" alongside the
+   * risk-based headline. 0 when no verified discrepancy findings.
+   */
+  discrepancyPosture: number;
+  /**
+   * G9 (AAP-106) — per-system deployment-risk breakdown. `posture` /
+   * `postureBand` here are the systems-only HWM; `scanned` says whether any
+   * system was available to score (drives the clean-low-risk vs no-scan
+   * label split). Empty + unscanned when the report carried no `systems[]`.
+   */
+  systemsRisk: SystemsRiskSummary;
   /** Every finding (Verified + SLF), with severity and provenance attached. */
   findings: VerdictFinding[];
   /**
@@ -578,8 +618,16 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
     );
   });
 
-  // ── Posture (Verified-only FIPS HWM) ──
-  const posture = computePosture(findings);
+  // ── Posture (G9: max of verified-discrepancy HWM and per-system risk) ──
+  //
+  // discrepancyPosture is the pre-G9 posture: max severity over Verified
+  // discrepancy findings (SLF excluded — wedge invariant intact). systemsRisk
+  // scores the DECLARED systems on the same BR × DS × DM scale, so an honest
+  // agent with irreversible writes to sensitive data still surfaces a real
+  // risk band instead of "No findings". Final posture is the FIPS HWM of both.
+  const discrepancyPosture = computePosture(findings);
+  const systemsRisk = computeSystemsRisk(inputs.systemAssessments);
+  const posture = Math.max(discrepancyPosture, systemsRisk.posture);
   const postureBand = severityBand(posture);
 
   // ── Legacy compile-time aliases (G4 will delete) ──
@@ -597,6 +645,8 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
     status,
     posture,
     postureBand,
+    discrepancyPosture,
+    systemsRisk,
     findings,
     hostCapabilities,
     discrepancies: [],
