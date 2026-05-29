@@ -980,6 +980,120 @@ export async function listReportedMcpTools(
   return out;
 }
 
+// ─── G10 — agent-forwarded OAuth introspection ──────────────────────────────
+//
+// Mirrors the AAP-82 `reported-mcp-tools.json` persistence exactly: the
+// audited agent calls `report_oauth_scopes` once per OAuth provider it
+// uses, having introspected its OWN token; Heron persists the parsed
+// scope projection (NOT the token, NOT even the raw response) under
+// `<session>/reported-oauth-scopes.json` keyed by provider. The
+// `start_verification` pass replays these into the OAuth scope diff.
+
+/**
+ * G10 — one provider's parsed OAuth introspection as forwarded by the
+ * audited agent via `report_oauth_scopes`. Persisted per session under
+ * `<session>/reported-oauth-scopes.json` keyed by `provider`. Last write
+ * wins (an agent re-forwarding for the same provider replaces the prior
+ * record), matching the AAP-82 `reported-mcp-tools.json` semantics.
+ *
+ * Privacy contract (the wedge anchor): the cached `introspection`
+ * projection is the ONLY payload persisted. The agent's access/refresh
+ * token never reaches Heron, and the verbatim introspection body is NOT
+ * stored either — the parser (`parseForwardedTokenInfo`) extracts only the
+ * granted scope list (or an honest error reason) before this record is
+ * built. Dashboard / verdict readers consume `introspection` only.
+ */
+export interface ReportedOAuthScopesRecord {
+  /** Provider the agent attributed the introspection to (e.g. 'google-workspace'). */
+  provider: string;
+  /** ISO-8601 timestamp of when Heron received the forward. */
+  receivedAt: string;
+  /** Parsed introspection projection: granted scopes, or an honest error state. */
+  introspection: import('../verification/forwarded-oauth-introspection.js').ForwardedOAuthIntrospection;
+  /** True when this write replaced an earlier record for the same provider. */
+  replacedPrevious?: boolean;
+}
+
+/**
+ * Persist one agent-forwarded OAuth introspection projection. Subsequent
+ * writes for the same `provider` REPLACE the earlier record (last write
+ * wins). Returns the freshly stored record so the `report_oauth_scopes`
+ * handler can echo the parse outcome back to the agent.
+ */
+export async function saveReportedOAuthScopes(
+  id: string,
+  record: Omit<ReportedOAuthScopesRecord, 'replacedPrevious'>,
+): Promise<ReportedOAuthScopesRecord> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const dir = await ensureSessionsDir();
+  await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
+  const path = join(dir, id, 'reported-oauth-scopes.json');
+  // Read existing index (tolerate missing / malformed file by treating as empty).
+  let existing: Record<string, ReportedOAuthScopesRecord> = {};
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, ReportedOAuthScopesRecord>;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // SyntaxError / read error — fall through to a fresh write rather
+      // than crashing the audit loop because of a corrupt cache file.
+    }
+  }
+
+  const replacedPrevious = Object.prototype.hasOwnProperty.call(existing, record.provider);
+  const stored: ReportedOAuthScopesRecord = { ...record, replacedPrevious };
+  existing[record.provider] = stored;
+  await atomicWriteFile(path, JSON.stringify(existing, null, 2));
+  const next: StoredMeta = { ...meta, updatedAt: nowIso() };
+  await writeMeta(id, next);
+  return stored;
+}
+
+/**
+ * Read every reported OAuth introspection record persisted for this
+ * session. Returns `[]` when the session has no
+ * `reported-oauth-scopes.json` yet (no agent ever called
+ * `report_oauth_scopes`). Order is insertion order of the JSON object —
+ * readers must not rely on it.
+ */
+export async function listReportedOAuthScopes(
+  id: string,
+): Promise<ReportedOAuthScopesRecord[]> {
+  if (!SESSION_ID_REGEX.test(id)) return [];
+  const path = join(getSessionsDir(), id, 'reported-oauth-scopes.json');
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const out: ReportedOAuthScopesRecord[] = [];
+  for (const value of Object.values(parsed as Record<string, unknown>)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      typeof (value as ReportedOAuthScopesRecord).provider === 'string'
+    ) {
+      out.push(value as ReportedOAuthScopesRecord);
+    }
+  }
+  return out;
+}
+
 export async function softDeleteSession(id: string): Promise<void> {
   assertValidId(id);
   const meta = await readMeta(id);

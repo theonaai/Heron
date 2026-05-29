@@ -395,9 +395,12 @@ describe('synthetic walk: total follow-ups respects 16 × 2 ceiling (AAP-77 sani
       expect(count, `core ${qid} exceeded per-Q cap of 2`).toBeLessThanOrEqual(2);
     }
 
-    // Total follow-ups must respect 16 × 2 = 32 (AAP-82 added one core).
+    // Total follow-ups must respect the structural ceiling (length × 2).
+    // Derived from the live bank size (AAP-82 added the MCP forward
+    // directive; G10 added the OAuth forward directive) so adding a
+    // question does not require touching this number.
     const total = [...followUpsPerCore.values()].reduce((a, b) => a + b, 0);
-    expect(total, `total follow-ups across all cores`).toBeLessThanOrEqual(32);
+    expect(total, `total follow-ups across all cores`).toBeLessThanOrEqual(core.length * 2);
 
     // Pre-fix: in multi-core categories the cap never fired so the
     // outer loop's `for (j ... < 5)` bound was reached — count would be
