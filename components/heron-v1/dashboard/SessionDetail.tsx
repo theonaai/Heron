@@ -104,6 +104,69 @@ export function shouldAutoFlipToReport(input: {
   return false;
 }
 
+// ────────────────────────────────────────────────────────────────
+// AAP-105 F1 — keep refetching after `complete` until verification
+// reaches a terminal verdict.
+//
+// The bug: deterministic verification runs AFTER the audit reaches
+// `complete`. Observed live: `analyzing` → `complete`
+// (report.verification.status still absent / `unverified`) → ~75s later
+// a separate writer flips `report.json:verification.status` to
+// `partially-verified`. But the instant status became `complete`,
+// `isLive` went false, so both the SSE listener and the polling
+// fallback tore down. The one-shot refetch the SSE `complete` handler
+// fires captures the report while verification is still unverified, and
+// when the real verdict lands ~75s later nothing is listening — the
+// header keeps the stale "VERIFICATION REQUIRED" badge until a manual
+// reload (a reload reads the final state via SSR getSession, which is
+// why a reload masks the bug).
+//
+// `isVerificationPending` is the pure predicate the polling effect uses
+// to decide whether to keep polling past `complete`. It reads the
+// REPORT vocabulary (`report.json:verification.status`):
+//   - pending  → status is `complete` AND verification is one of
+//     {undefined, 'unverified', 'interrogation-only'} (no terminal
+//     verdict yet). Keep polling.
+//   - terminal → verification ∈ {'verified', 'partially-verified',
+//     'verification-failed'}. Stop polling.
+//   - not complete (live or otherwise) → not "pending" in this sense;
+//     the live SSE/poll path owns those states. Returns false so a
+//     still-interviewing session does not double-count as pending.
+//
+// getSession (AAP-105 A2) maps the report vocabulary onto the meta-level
+// `verificationStatus` (`partially-verified` → `partial`, etc.) and
+// prefers report.json when the two disagree, so a refetched blob carries
+// the terminal status straight through to `liveSession.verificationStatus`
+// — which is exactly what the topbar "VERIFICATION REQUIRED" pill keys
+// off (`isUnverified`). Refetching therefore clears the badge.
+//
+// Exported for unit tests (no jsdom in this project's vitest config).
+const VERIFICATION_TERMINAL = new Set([
+  'verified',
+  'partially-verified',
+  'verification-failed',
+]);
+
+export function isVerificationPending(input: {
+  status: string;
+  reportVerificationStatus: string | undefined;
+}): boolean {
+  // Only meaningful once the audit itself is complete — the live path
+  // (SSE + isLive polling) owns interviewing / analyzing / awaiting.
+  if (input.status !== 'complete') return false;
+  // Terminal verdict present → done, stop polling.
+  if (
+    input.reportVerificationStatus !== undefined &&
+    VERIFICATION_TERMINAL.has(input.reportVerificationStatus)
+  ) {
+    return false;
+  }
+  // complete + (no verification field yet | 'unverified' |
+  // 'interrogation-only') → the verdict writer has not landed a terminal
+  // status yet. Keep polling for it.
+  return true;
+}
+
 export default function SessionDetail({ session }: { session: AuditSessionDetail }) {
   // AAP-52: live state. The initial value is the SSR snapshot; while the
   // session is still 'interviewing' or 'analyzing' we replace it from the
@@ -130,6 +193,24 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
     liveSession.status === 'interviewing' ||
     liveSession.status === 'analyzing' ||
     liveSession.status === 'awaiting_answer';
+  // AAP-105 F1 — verification runs AFTER `complete`, so `isLive` alone
+  // is not enough to keep the live view fresh. Read the report-vocabulary
+  // verification status off the live blob and poll past `complete` until
+  // it reaches a terminal verdict. See `isVerificationPending`.
+  const reportVerificationStatusRaw = (
+    liveSession.reportJson as
+      | { verification?: { status?: string } }
+      | undefined
+  )?.verification?.status;
+  const verificationPending = isVerificationPending({
+    status: liveSession.status,
+    reportVerificationStatus: reportVerificationStatusRaw,
+  });
+  // Keep the polling effect alive while EITHER the audit is live OR the
+  // post-complete verification verdict has not landed yet. Goes false the
+  // moment verification is terminal, which tears the interval down (no
+  // infinite polling on a complete + verified session).
+  const shouldPoll = isLive || verificationPending;
   const [tab, setTab] = useState<Tab>(hasReport ? 'report' : 'transcript');
   const [diff, setDiff] = useState<VersionDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
@@ -270,10 +351,20 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
     };
   }, [liveSession.id, isLive]);
 
-  // Polling fallback. Fires every POLL_INTERVAL_MS while the run is live;
-  // refreshes the entire session blob.
+  // Polling fallback. Fires every POLL_INTERVAL_MS while the run is live
+  // (SSE-blocked environments) AND — AAP-105 F1 — through the
+  // post-`complete` verification window until the verdict lands. Each
+  // tick refreshes the entire session blob, so the refetched
+  // `verificationStatus` (mapped by getSession from the canonical
+  // report.json) clears the topbar "VERIFICATION REQUIRED" pill the
+  // instant verification reaches a terminal verdict — no manual reload.
+  //
+  // `shouldPoll` goes false the moment verification is terminal (or the
+  // run was already complete + verified on mount), so the cleanup below
+  // clears the interval and the effect re-runs into the early return:
+  // no infinite polling against a settled session.
   useEffect(() => {
-    if (!isLive) return;
+    if (!shouldPoll) return;
     pollRef.current = setInterval(() => {
       fetch(`/api/audit/sessions/${liveSession.id}`)
         .then((r) => (r.ok ? r.json() : null))
@@ -286,7 +377,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = null;
     };
-  }, [liveSession.id, isLive]);
+  }, [liveSession.id, shouldPoll]);
 
   useEffect(() => {
     if (!isComplete) return;
