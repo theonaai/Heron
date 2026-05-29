@@ -45,6 +45,7 @@ describe('heron mcp-serve — stdio CLI', () => {
         'compare_reports',
         'get_report',
         'report_mcp_tools_list',
+        'report_oauth_scopes',
         'start_audit_session',
         'start_verification',
         'submit_answer',

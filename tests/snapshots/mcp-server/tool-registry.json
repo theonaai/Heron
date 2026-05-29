@@ -94,6 +94,33 @@
     }
   },
   {
+    "name": "report_oauth_scopes",
+    "description": "Forward your OAuth provider's token-introspection response to Heron so it can verify your GRANTED scopes deterministically.\n\nFor each OAuth provider you use (Google Workspace, etc.):\n  1. Call the provider's introspection endpoint with YOUR access token.\n     Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<your-token>\n  2. Forward the RAW introspection response here (it contains the granted `scope` field). Do NOT send the token itself — only the introspection response.\n\nHeron will:\n  - Parse the granted scopes from the response\n  - Diff them against your declared usage to surface over-broad grants\n\nNEVER:\n  - Reads, stores, or asks for your access/refresh token — only the introspection response\n\nIf the introspection call fails (token expired/invalid), forward the error response anyway — Heron records an honest \"introspection attempted\" state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session id returned by a prior start_audit_session call. The forwarded scopes are attached to this audit run."
+        },
+        "provider": {
+          "type": "string",
+          "description": "The OAuth provider you introspected, e.g. \"google-workspace\". Used to deduplicate forwards: a second report for the same provider replaces the first."
+        },
+        "raw_response": {
+          "type": "object",
+          "description": "The verbatim introspection response body your OAuth provider returned (for Google, the tokeninfo JSON with the `scope` field). Heron parses the granted scopes from it. This is the introspection RESPONSE, never the token."
+        }
+      },
+      "required": [
+        "session_id",
+        "provider",
+        "raw_response"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "get_report",
     "description": "Retrieve a previously-generated Heron audit report by its id.",
     "inputSchema": {

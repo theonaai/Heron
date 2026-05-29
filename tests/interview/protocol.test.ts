@@ -84,7 +84,10 @@ describe('protocol', () => {
       q = protocol.nextQuestion();
     }
 
-    expect(questions.length).toBe(16); // 10 core + 5 AIUC-1 (AAP-44) + 1 AAP-82 directive
+    // 10 core + 5 AIUC-1 (AAP-44) + 1 AAP-82 MCP directive + 1 G10 OAuth
+    // directive. Derived from the live bank so adding a question does not
+    // require touching this number.
+    expect(questions.length).toBe(getAllQuestionsSorted().length);
     for (let i = 1; i < questions.length; i++) {
       expect(questions[i].priority).toBeGreaterThanOrEqual(questions[i - 1].priority);
     }
@@ -173,18 +176,21 @@ describe('protocol', () => {
 // ─── AAP-71: global follow-up cap removed ────────────────────────────────────
 
 describe('AAP-71: no global follow-up cap by default', () => {
-  it('default protocol has no session-wide cap (16-Q vague transcript stays under per-Q cap)', async () => {
-    // Walk all 16 core questions with vague answers. Without the global
+  it('default protocol has no session-wide cap (full-bank vague transcript stays under per-Q cap)', async () => {
+    // Walk every core question with vague answers. Without the global
     // cap, the protocol should be able to issue follow-ups on later
     // questions too, bounded only by the per-question cap of 2.
-    // Upper bound on total follow-ups: 16 cores * 2 = 32 (15 originals
-    // plus the AAP-82 mcp_tools_forward_directive). In practice it's
-    // lower because not every question's vague answer trips the
-    // per-question cap, but the test asserts the floor (every core
-    // question got at least one follow-up opportunity) and the ceiling
-    // (no more than 32 follow-ups total).
+    // Upper bound on total follow-ups: CORE_QUESTIONS.length * 2 (the bank
+    // includes the AAP-82 mcp_tools_forward_directive + the G10
+    // oauth_scopes_forward_directive). In practice it's lower because not
+    // every question's vague answer trips the per-question cap, but the
+    // test asserts the floor (every core question got at least one
+    // follow-up opportunity) and the ceiling (no more than length*2
+    // follow-ups total). Derived from the live bank size so adding a
+    // question does not require touching this number.
     const protocol = createProtocol(alwaysFollowsUpLLM()); // undefined ceiling
     const core = getAllQuestionsSorted();
+    const structuralCeiling = core.length * 2;
 
     const followUpsPerCore = new Map<string, number>();
     for (let i = 0; i < core.length; i++) {
@@ -207,9 +213,9 @@ describe('AAP-71: no global follow-up cap by default', () => {
       expect(count, `core question ${qid} exceeded per-Q cap`).toBeLessThanOrEqual(2);
     }
 
-    // Total follow-ups stays under the structural ceiling 16 * 2 = 32.
+    // Total follow-ups stays under the structural ceiling (length * 2).
     const total = [...followUpsPerCore.values()].reduce((a, b) => a + b, 0);
-    expect(total).toBeLessThanOrEqual(32);
+    expect(total).toBeLessThanOrEqual(structuralCeiling);
 
     // The bug we're fixing: previously the global cap of 3 silently
     // blocked follow-ups on Q4+. Now at least one core question past
