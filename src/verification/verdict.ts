@@ -539,6 +539,93 @@ function isGlobalScopeExtra(finding: DiscoveryFinding): boolean {
   return entry?.scopeRule === 'global';
 }
 
+/** A discovered runtime is global-scope when its registry `scopeRule` is
+ *  `'global'` (codex). Unknown runtimes are treated as NOT global. */
+function isGlobalScopeRuntime(runtime: string): boolean {
+  const entry = runtimeEntry(runtime as DiscoveredRuntime);
+  return entry?.scopeRule === 'global';
+}
+
+/**
+ * G8 host-capability completeness fix — build the host-capability note
+ * from the FULL discovered inventory of every global-scope runtime, NOT
+ * from the mention-gated EXTRA findings.
+ *
+ * FINAL DECISION 2026-05-29 (heron-per-task-scope-design-2026-05-28.md
+ * §3-5): for a `global`-scope runtime (codex) there is NO project binding
+ * — `~/.codex/config.toml` is shared host-wide — so EVERY discovered MCP
+ * server (AND every enabled global plugin) is an IDE host capability,
+ * independent of whether the audited agent named it in the interview.
+ *
+ * Pre-fix the note was sourced from EXTRA findings, which only exist for
+ * UNMENTIONED servers (the `isMentioned` gate in src/discovery/diff.ts).
+ * A thorough agent that named every server it has (esp. under the Q39 /
+ * AAP-82 `report_mcp_tools_list` directive) produced zero EXTRA findings,
+ * collapsing the note to empty (sess-20260530-041854-a3e95b). Sourcing
+ * from `discoveredAgents` makes the note complete regardless of mention.
+ *
+ * Product-owner decision (2026-05-30): EXCLUDE the `heron` audit server
+ * itself from the note. Heron injects its own MCP server (named `heron` in
+ * `[mcp_servers.heron]` of `~/.codex/config.toml`) so it can run the audit;
+ * it is the audit endpoint we inject, NOT part of the audited agent's host
+ * environment, so it should not appear as a host capability. Only MCP
+ * servers are filtered — enabled plugins (capabilities of kind 'plugin')
+ * are still included, so the note's shape does not regress versus the old
+ * EXTRA-reclassification path (which surfaced plugins like
+ * `github@openai-curated`). Deduped by (serverName, runtime). Returns []
+ * when no global-scope agent is present.
+ */
+/**
+ * Config name of Heron's own injected audit MCP server, as it appears in the
+ * audited host config (`[mcp_servers.heron]` in `~/.codex/config.toml`).
+ * Matched case-insensitively. Excluded from the host-capability note because
+ * it is the audit endpoint Heron injects, not a capability of the host.
+ */
+const HERON_AUDIT_SERVER_NAME = 'heron';
+
+function hostCapabilitiesFromDiscoveredAgents(
+  agents: ReadonlyArray<DiscoveredAgent>,
+): HostCapability[] {
+  const out: HostCapability[] = [];
+  const seen = new Set<string>();
+  const push = (serverName: string, runtime: string, transport: string) => {
+    const key = `${serverName.toLowerCase()}|${runtime}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      serverName,
+      runtime,
+      transport,
+      note: `Configured in the ${runtime} IDE on this host, not specific to this audited agent/task.`,
+    });
+  };
+  for (const agent of agents) {
+    if (!isGlobalScopeRuntime(agent.runtime)) continue;
+    // All discovered MCP servers EXCEPT heron. Heron is Heron's own injected
+    // audit endpoint (the [mcp_servers.heron] we add to run the audit), not
+    // part of the audited agent's host environment, so it must not appear in
+    // the host-capability note. Transport comes straight from the discovered
+    // server.
+    for (const server of agent.mcpServers) {
+      if (server.name.toLowerCase() === HERON_AUDIT_SERVER_NAME) continue;
+      push(server.name, agent.runtime, server.transport);
+    }
+    // Enabled global host plugins. These have no DiscoveredMcpServer, so
+    // transport resolution falls back to 'unknown' (same as the old
+    // EXTRA-reclassification path produced for plugin rows).
+    for (const cap of agent.capabilities ?? []) {
+      if (cap.kind !== 'plugin') continue;
+      if (!cap.enabled) continue;
+      push(
+        cap.name,
+        agent.runtime,
+        transportForDiscoveredServer(cap.name, agent.runtime, agents),
+      );
+    }
+  }
+  return out;
+}
+
 // ── Public entry point ──────────────────────────────────────────────
 
 export function computeVerdict(inputs: VerdictInputs): Verdict {
@@ -578,16 +665,15 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
   const findings: VerdictFinding[] = [];
 
   // AAP-105 (G8b) — global-scope EXTRA servers are reclassified out of
-  // the Verified findings list into host-capability notes (see
-  // `HostCapability` JSDoc). They never become VerdictFindings, so they
-  // never reach `computePosture`. Everything else (EXTRA on
-  // project-local runtimes, all MISSING, all HIDDEN-CREDENTIALS) flows
-  // through the normal Verified path unchanged.
-  const hostCapabilities: HostCapability[] = [];
+  // the Verified findings list. They never become VerdictFindings, so they
+  // never reach `computePosture`. Everything else (EXTRA on project-local
+  // runtimes, all MISSING, all HIDDEN-CREDENTIALS) flows through the normal
+  // Verified path unchanged.
   const verifiedDiscoveryFindings: DiscoveryFinding[] = [];
+  const reclassifiedHostCapabilities: HostCapability[] = [];
   for (const f of discoveryFindings) {
     if (isGlobalScopeExtra(f)) {
-      hostCapabilities.push({
+      reclassifiedHostCapabilities.push({
         serverName: f.serverName,
         runtime: f.runtime,
         transport: transportForDiscoveredServer(f.serverName, f.runtime, discoveredAgents),
@@ -597,6 +683,20 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
       verifiedDiscoveryFindings.push(f);
     }
   }
+
+  // G8 host-capability completeness fix — the host-capability NOTE is
+  // sourced from the FULL discovered inventory of every global-scope
+  // runtime, not from the mention-gated EXTRA findings. For a global
+  // runtime there is no project binding, so every discovered MCP server
+  // and enabled plugin is a host capability regardless of interview
+  // mention (see `hostCapabilitiesFromDiscoveredAgents` JSDoc + the
+  // sess-20260530-041854-a3e95b empty-note bug). When `discoveredAgents`
+  // carries no global-scope agent (legacy callers / tests that pass only
+  // `discoveryFindings`), fall back to the EXTRA-reclassification set so
+  // the existing behaviour is preserved byte-for-byte.
+  const fromAgents = hostCapabilitiesFromDiscoveredAgents(discoveredAgents);
+  const hostCapabilities: HostCapability[] =
+    fromAgents.length > 0 ? fromAgents : reclassifiedHostCapabilities;
 
   verifiedDiscoveryFindings.forEach((f, idx) => {
     findings.push(
