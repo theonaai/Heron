@@ -577,6 +577,164 @@ describe('computeVerdict — G8b per-runtime scope gate (AAP-105)', () => {
     expect(Array.isArray(verdict.hostCapabilities)).toBe(true);
     expect(verdict.hostCapabilities).toHaveLength(0);
   });
+
+  // ── G8 host-capability completeness (the bug this branch fixes) ──────
+  //
+  // FINAL DECISION 2026-05-29 §3-5: for a GLOBAL-scope runtime (codex)
+  // there is NO project binding, so EVERY discovered MCP server is a host
+  // capability note — regardless of whether the agent happened to mention
+  // it in the interview. The pre-fix note was built ONLY from EXTRA
+  // findings (the mention-gated diff), so a thorough agent that named all
+  // its servers (esp. with the Q39 / AAP-82 report_mcp_tools_list
+  // directive) collapsed the note to empty. The note must be sourced from
+  // the FULL discovered set (`discoveredAgents`), not the EXTRA diff.
+
+  it('global note lists ALL global MCP servers (EXCEPT heron) even when the interview mentioned every one (no EXTRA findings)', () => {
+    // Reproduces sess-20260530-041854-a3e95b: the agent mentioned all 5
+    // global codex servers, so diff produced ZERO EXTRA findings, yet the
+    // host-capability note was empty. It must instead list the host servers
+    // — but NOT the `heron` audit server itself (product-owner decision:
+    // heron is Heron's own injected audit endpoint, not part of the audited
+    // agent's host environment, so it is excluded from the note).
+    const discoveredAgents: DiscoveredAgent[] = [
+      {
+        runtime: 'codex',
+        configPath: '/home/me/.codex/config.toml',
+        mcpServers: [
+          { name: 'heron', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'linear', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'supabase', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'chrome-devtools', transport: 'stdio', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'node_repl', transport: 'stdio', hasCredentials: false, redactedEnvKeys: [] },
+        ],
+      },
+    ];
+    // The agent named every server, so the mention-gated diff yields NO
+    // EXTRA findings — the exact condition that collapsed the old note.
+    const verdict = computeVerdict({ discoveryFindings: [], discoveredAgents });
+
+    // The note carries the four host servers, with heron dropped — it is
+    // Heron's injected audit endpoint, not a capability of the host.
+    expect(verdict.hostCapabilities.map((h) => h.serverName).sort()).toEqual(
+      ['chrome-devtools', 'linear', 'node_repl', 'supabase'],
+    );
+    // heron is NEVER present even though it was discovered in the config.
+    expect(verdict.hostCapabilities.map((h) => h.serverName)).not.toContain('heron');
+    // Every note entry is correctly attributed and shaped.
+    for (const h of verdict.hostCapabilities) {
+      expect(h.runtime).toBe('codex');
+      expect(h.note.toLowerCase()).toContain('host');
+    }
+    // Transport is resolved from the discovered server, not 'unknown'.
+    const chrome = verdict.hostCapabilities.find((h) => h.serverName === 'chrome-devtools')!;
+    expect(chrome.transport).toBe('stdio');
+    const linear = verdict.hostCapabilities.find((h) => h.serverName === 'linear')!;
+    expect(linear.transport).toBe('http');
+
+    // WEDGE INVARIANT: none of these became a Verified finding or moved posture.
+    expect(verdict.findings.filter((f) => f.evidenceSource === 'MCP')).toHaveLength(0);
+    expect(verdict.posture).toBe(0);
+  });
+
+  it('global note includes global host plugins alongside MCP servers (proof-case shape parity)', () => {
+    // Mirrors the OLD proof case sess-20260529-085350-82c42d shape: the
+    // note must contain the MCP servers PLUS global host plugins
+    // (capabilities of kind 'plugin'). Sourcing from discoveredAgents must
+    // not regress that — both surfaces flow into the note.
+    const discoveredAgents: DiscoveredAgent[] = [
+      {
+        runtime: 'codex',
+        configPath: '/home/me/.codex/config.toml',
+        mcpServers: [
+          { name: 'linear', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'supabase', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'chrome-devtools', transport: 'stdio', hasCredentials: false, redactedEnvKeys: [] },
+        ],
+        capabilities: [
+          { kind: 'plugin', runtime: 'codex', configPath: '/home/me/.codex/config.toml', name: 'github@openai-curated', enabled: true },
+          { kind: 'plugin', runtime: 'codex', configPath: '/home/me/.codex/config.toml', name: 'linear@openai-curated', enabled: true },
+          { kind: 'plugin', runtime: 'codex', configPath: '/home/me/.codex/config.toml', name: 'computer-use@openai-bundled', enabled: true },
+        ],
+      },
+    ];
+    const verdict = computeVerdict({ discoveryFindings: [], discoveredAgents });
+
+    // Same set the old proof case rendered: 3 MCP servers + 3 plugins.
+    expect(verdict.hostCapabilities.map((h) => h.serverName).sort()).toEqual(
+      [
+        'chrome-devtools',
+        'computer-use@openai-bundled',
+        'github@openai-curated',
+        'linear',
+        'linear@openai-curated',
+        'supabase',
+      ],
+    );
+    // Plugin rows resolve transport to 'unknown' (no DiscoveredMcpServer).
+    const plugin = verdict.hostCapabilities.find((h) => h.serverName === 'github@openai-curated')!;
+    expect(plugin.transport).toBe('unknown');
+    expect(verdict.posture).toBe(0);
+  });
+
+  it('global note is deduped by (serverName, runtime) and unaffected by mention status (mixed mentioned/unmentioned)', () => {
+    // A mix: some servers produced EXTRA findings (unmentioned), some did
+    // not (mentioned). The note must list every global server exactly
+    // once, independent of whether an EXTRA finding exists for it.
+    const discoveredAgents: DiscoveredAgent[] = [
+      {
+        runtime: 'codex',
+        configPath: '/home/me/.codex/config.toml',
+        mcpServers: [
+          { name: 'heron', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'supabase', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'linear', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+        ],
+      },
+    ];
+    // supabase is also surfaced as an EXTRA finding (it was unmentioned);
+    // the note must not double-count it.
+    const discoveryFindings: DiscoveryFinding[] = [
+      { kind: 'EXTRA', severity: 'MEDIUM', serverName: 'supabase', runtime: 'codex', description: 'unmentioned host-wide supabase' },
+    ];
+    const verdict = computeVerdict({ discoveryFindings, discoveredAgents });
+
+    // Exactly one entry per server — supabase appears once despite the
+    // EXTRA finding overlapping the discovered-set entry. heron is excluded
+    // (Heron's own injected audit endpoint, not a host capability).
+    expect(verdict.hostCapabilities.map((h) => h.serverName).sort()).toEqual(
+      ['linear', 'supabase'],
+    );
+    expect(verdict.hostCapabilities.map((h) => h.serverName)).not.toContain('heron');
+    const supabaseEntries = verdict.hostCapabilities.filter((h) => h.serverName === 'supabase');
+    expect(supabaseEntries).toHaveLength(1);
+    // Nothing global became Verified or moved posture.
+    expect(verdict.findings.filter((f) => f.evidenceSource === 'MCP')).toHaveLength(0);
+    expect(verdict.posture).toBe(0);
+  });
+
+  it('heron audit server is NEVER present in hostCapabilities for a global-scope runtime even though it was discovered', () => {
+    // Heron injects its own MCP server (`heron`) into the codex host config
+    // to run the audit. It is discovered alongside the genuine host servers,
+    // but it is Heron's audit endpoint, not part of the audited agent's host
+    // environment — so it must be filtered out of the host-capability note.
+    const discoveredAgents: DiscoveredAgent[] = [
+      {
+        runtime: 'codex',
+        configPath: '/home/me/.codex/config.toml',
+        mcpServers: [
+          // Mixed-case to prove the filter is case-insensitive on the name.
+          { name: 'Heron', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+          { name: 'linear', transport: 'http', hasCredentials: false, redactedEnvKeys: [] },
+        ],
+      },
+    ];
+    const verdict = computeVerdict({ discoveryFindings: [], discoveredAgents });
+
+    // heron (any case) is dropped; only the genuine host server remains.
+    const names = verdict.hostCapabilities.map((h) => h.serverName);
+    expect(names.map((n) => n.toLowerCase())).not.toContain('heron');
+    expect(verdict.hostCapabilities.map((h) => h.serverName).sort()).toEqual(['linear']);
+  });
 });
 
 // ─── G9 (AAP-106) — risk posture from systems blast radius ────────────────
