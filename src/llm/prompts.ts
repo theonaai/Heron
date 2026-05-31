@@ -142,7 +142,7 @@ ${formatted}
         {
           "operation": "≤80-char verb-phrase from transcript",
           "target": "≤80-char target from transcript",
-          "reversible": true,
+          "reversible": true,                  // true ONLY if fully, safely undoable; "partly reversible" or "no automatic/bulk rollback" => false
           "approvalRequired": false,
           "volumePerDay": "≤40 chars, from transcript or 'NOT PROVIDED'"
         }
@@ -177,6 +177,11 @@ Apply this rubric DETERMINISTICALLY. Given the same facts, the same severity mus
 
 - LOW: Read-only access to non-sensitive data, single-user scope, no writes
 - MEDIUM: Read access to sensitive data OR write access to single-user non-sensitive data, reversible operations
+
+REVERSIBILITY CLASSIFICATION (per write operation):
+- Set "reversible": true ONLY when the write can be fully and safely undone (e.g. a draft that can be deleted, an edit with built-in version history/undo).
+- Set "reversible": false when the agent says the write is "partly reversible", "not fully reversible", requires manual cleanup, or has "no automatic rollback" / "no bulk/transactional rollback". Partial reversibility is NOT full reversibility — treat it as false for risk purposes.
+- When you set false because of partial/no-rollback nuance, copy the agent's exact phrasing into a "reversibilityNote" string on that write operation.
 - HIGH: Write access to team/org-scope data, or access to PII/financial data, or irreversible operations
 - CRITICAL: Org-wide write access, or cross-tenant access, or irreversible operations on sensitive data, or excessive permissions with no justification
 
