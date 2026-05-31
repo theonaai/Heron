@@ -43,7 +43,14 @@ export const writeOperationSchema = z.object({
   // AAP-65: cap each field at a short structured value.
   operation: z.string().max(80),
   target: z.string().max(80),
+  // AAP-109: true ONLY when the write is fully, safely undoable. Nuanced
+  // answers ("partly reversible", "no automatic rollback") are normalized to
+  // false by normalizeReversibilityInPayload (../analysis/reversibility.ts)
+  // before this schema runs, so the irreversibility signal the risk model
+  // keys off is not lost. The agent's original phrasing is kept in
+  // reversibilityNote.
   reversible: z.boolean().default(false),
+  reversibilityNote: z.string().max(200).optional(),
   approvalRequired: z.boolean().default(false),
   // AAP-43 P0 #2: default to empty string (not "NOT PROVIDED" sentinel).
   // Callers use isProvided() to detect missing fields, which now renders

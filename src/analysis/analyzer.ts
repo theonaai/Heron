@@ -6,6 +6,7 @@ import { ANALYSIS_SYSTEM_PROMPT, buildAnalysisPrompt } from '../llm/prompts.js';
 import * as logger from '../util/logger.js';
 import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
 import { sanitizeAnalyzerOutput } from './sanitize.js';
+import { normalizeReversibilityInPayload } from './reversibility.js';
 
 // Extended result that includes both new per-system data and legacy flat fields
 export interface FullAnalysisResult extends AnalysisResult {
@@ -238,6 +239,16 @@ async function tryParse(
     //   - near-duplicate risks merged
     // This runs BEFORE Zod parse so the schema's `.max()` + `.regex()`
     // constraints see clean input instead of failing on LLM prose.
+    // AAP-109: don't let nuanced reversibility ("partly reversible",
+    // "no automatic rollback") get flattened to reversible:true. Downgrade
+    // such writes to reversible:false (keeping the phrasing in
+    // reversibilityNote) BEFORE Zod validation so the irreversibility signal
+    // the risk model keys off survives. normalizeReversibilityInPayload is
+    // place-free, so copy its result back onto raw.systems.
+    if (raw && typeof raw === 'object' && Array.isArray(raw.systems)) {
+      raw.systems = normalizeReversibilityInPayload(raw).systems;
+    }
+
     sanitizeAnalyzerOutput(raw);
 
     // Zod validation — parse with defaults and coercion
