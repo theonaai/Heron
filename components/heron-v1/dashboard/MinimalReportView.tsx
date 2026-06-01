@@ -30,7 +30,12 @@ import {
   type CodedVerdictFinding,
 } from '@/src/report/finding-display';
 import { extractProjectName } from '@/src/report/agent-name';
-import { getMitigationHint, getSlfMitigationHint, type SlfMitigationState } from '@/src/report/mitigation-catalog';
+import {
+  buildSlfMitigationState,
+  getMitigationHint,
+  getSlfMitigationHint,
+  type SlfMitigationState,
+} from '@/src/report/mitigation-catalog';
 import type {
   EvidenceSource,
   ReportSeverityBand,
@@ -2145,43 +2150,12 @@ function EnvKeyChip({ name }: { name: string }) {
 
 // ─── Block 4: Findings ────────────────────────────────────────────────
 
-/**
- * AAP-110: collapse the report's live session data into the `SlfMitigationState`
- * that `getSlfMitigationHint` consumes, so a SLF mitigation never tells the
- * reviewer to re-run a check that already ran this session.
- *
- *   - `oauth.attempted` is true once at least one introspection source exists
- *     (the agent forwarded its tokeninfo via `report_oauth_scopes` this run);
- *     the first source carrying an `errorMessage` supplies the verdict + the
- *     message so an expired / invalid token is detected.
- *   - `discoveryRan` is true only when discovery actually read a workspace
- *     `.env` / credential file (`workspaceEnv` non-empty), which is the
- *     precondition the credentials mitigation checks before saying "re-run
- *     discovery".
- */
-export function buildSlfMitigationState(
-  oauthScopeVerification: MinimalReportJson['oauthScopeVerification'],
-  localAgentDiscovery: unknown,
-): SlfMitigationState {
-  const sources = oauthScopeVerification?.sources ?? [];
-  const erroredSource = sources.find((s) => s.errorMessage);
-  const oauth: SlfMitigationState['oauth'] =
-    sources.length > 0
-      ? {
-          attempted: true,
-          verdict: erroredSource?.verdict ?? sources[0]?.verdict,
-          errorMessage: erroredSource?.errorMessage,
-        }
-      : { attempted: false };
-
-  const disc =
-    localAgentDiscovery && typeof localAgentDiscovery === 'object'
-      ? (localAgentDiscovery as { workspaceEnv?: unknown[] })
-      : null;
-  const discoveryRan = (disc?.workspaceEnv?.length ?? 0) > 0;
-
-  return { oauth, discoveryRan };
-}
+// `buildSlfMitigationState` (collapse the report's OAuth-introspection +
+// discovery state into the `SlfMitigationState` each SLF card consumes) now
+// lives in the shared backend catalog `src/report/mitigation-catalog.ts`
+// alongside `getSlfMitigationHint`, so the dashboard and the markdown report
+// build the SLF mitigation state through ONE function and can never drift.
+// Imported at the top of this file.
 
 function FindingsBlock({
   verdict,

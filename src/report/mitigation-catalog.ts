@@ -312,6 +312,61 @@ function isKnownFindingType(s: string): s is FindingType {
 }
 
 /**
+ * Loose shape of the report's OAuth scope-verification section, narrowed to
+ * the only fields `buildSlfMitigationState` reads. Matches the persisted
+ * `report.oauthScopeVerification` blob (see `OAuthScopeVerificationSection`
+ * in `lib/report-json.ts` and `MinimalReportJson.oauthScopeVerification` in
+ * the dashboard). Kept local + permissive so this backend module stays
+ * decoupled from both the dashboard's `'use client'` types and the full
+ * report-json interface.
+ */
+export interface OAuthScopeVerificationLike {
+  sources?: Array<{ connector?: string; verdict?: string; errorMessage?: string }>;
+}
+
+/**
+ * Collapse the report's live session data into the `SlfMitigationState` that
+ * `getSlfMitigationHint` consumes, so a SLF mitigation never tells the
+ * reviewer to re-run a check that already ran this session.
+ *
+ *   - `oauth.attempted` is true once at least one introspection source exists
+ *     (the agent forwarded its tokeninfo via `report_oauth_scopes` this run);
+ *     the first source carrying an `errorMessage` supplies the verdict + the
+ *     message so an expired / invalid token is detected.
+ *   - `discoveryRan` is true only when discovery actually read a workspace
+ *     `.env` / credential file (`workspaceEnv` non-empty), which is the
+ *     precondition the credentials mitigation checks before saying "re-run
+ *     discovery".
+ *
+ * Shared by BOTH surfaces — the dashboard (`MinimalReportView.tsx`) and the
+ * markdown renderer (`templates.ts`) build the SLF mitigation state through
+ * this one function so the two can never drift again.
+ */
+export function buildSlfMitigationState(
+  oauthScopeVerification: OAuthScopeVerificationLike | undefined,
+  localAgentDiscovery: unknown,
+): SlfMitigationState {
+  const sources = oauthScopeVerification?.sources ?? [];
+  const erroredSource = sources.find((s) => s.errorMessage);
+  const oauth: SlfMitigationState['oauth'] =
+    sources.length > 0
+      ? {
+          attempted: true,
+          verdict: erroredSource?.verdict ?? sources[0]?.verdict,
+          errorMessage: erroredSource?.errorMessage,
+        }
+      : { attempted: false };
+
+  const disc =
+    localAgentDiscovery && typeof localAgentDiscovery === 'object'
+      ? (localAgentDiscovery as { workspaceEnv?: unknown[] })
+      : null;
+  const discoveryRan = (disc?.workspaceEnv?.length ?? 0) > 0;
+
+  return { oauth, discoveryRan };
+}
+
+/**
  * Expose the catalog itself for tests / introspection — callers should
  * prefer `getMitigationHint` for runtime use so the fallback contract
  * stays single-source.

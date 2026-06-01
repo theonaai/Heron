@@ -47,7 +47,12 @@ import {
   SEVERITY_STOPS,
   type CodedVerdictFinding,
 } from './finding-display.js';
-import { getMitigationHint } from './mitigation-catalog.js';
+import {
+  buildSlfMitigationState,
+  getMitigationHint,
+  getSlfMitigationHint,
+  type SlfMitigationState,
+} from './mitigation-catalog.js';
 import { extractProjectName, type TranscriptEntryLike } from './agent-name.js';
 
 // ─── AAP-43 P1 #5 / AAP-84 Phase 4 — overall regulatory status ────────────
@@ -248,6 +253,23 @@ export function renderMarkdownReport(
   const verdict = context.verdict;
   const discoveryFindings = context.discoveryFindings ?? [];
 
+  // SLF parity: build the SLF mitigation state ONCE from the report's live
+  // session data and hand it to the Findings renderer, so every self-attested
+  // card's mitigation is state-aware and identical to the dashboard. Both
+  // `oauthScopeVerification` and `localAgentDiscovery` live only on the
+  // persisted report.json blob (not the `AuditReport` type), so they're read
+  // via a narrow cast — the same pattern `oauthIntrospectionState` uses for
+  // `oauthScopeVerification`. The shared builder is the single source of truth:
+  // the dashboard's `FindingsBlock` calls the very same function.
+  const reportBlob = report as {
+    oauthScopeVerification?: { sources?: Array<{ connector?: string; verdict?: string; errorMessage?: string }> };
+    localAgentDiscovery?: unknown;
+  };
+  const slfState = buildSlfMitigationState(
+    reportBlob.oauthScopeVerification,
+    reportBlob.localAgentDiscovery,
+  );
+
   const sections = [
     renderHeader(report, verdict),
     // AAP-79 — interrogation-only banner sits ABOVE the existing
@@ -287,6 +309,7 @@ export function renderMarkdownReport(
           report.compliance as StructuredCompliance | undefined,
           verdict,
           discoveryFindings,
+          slfState,
         )
       : renderFindingsSplit(
           report.risks,
@@ -1500,6 +1523,12 @@ function renderFindingCard(
   finding: CodedVerdictFinding,
   compliance: StructuredCompliance | undefined,
   legacyRisk?: Risk,
+  // Live OAuth-introspection + discovery state for this session, built once by
+  // the caller via the shared `buildSlfMitigationState`. Consumed ONLY for SLF
+  // findings, so the markdown SLF mitigation is state-aware and identical to
+  // the dashboard (e.g. introspection attempted + rejected -> refresh the
+  // token; .env already read -> rotate). Ignored for non-SLF findings.
+  slfState?: SlfMitigationState,
 ): string {
   const sevText = formatSeverityNumber(finding.severityScore);
   const bandLabel = SEVERITY_BAND_LABEL[finding.band];
@@ -1539,10 +1568,25 @@ function renderFindingCard(
   // Mitigations callout — 1-line actionable hint. (Doc links were removed
   // in AAP-105 F3: `docs.heron` was a placeholder domain, not a real docs
   // site; they get added back when real docs exist.)
-  const mitigationHint = getMitigationHint({
-    ...(findingType ? { findingType } : {}),
-    evidenceSource: finding.evidenceSource,
-  });
+  //
+  // SLF parity: self-attested findings resolve their hint through
+  // `getSlfMitigationHint(finding, slfState)` — the SAME state-aware lookup the
+  // dashboard's `MinimalFindingCard` uses — so the markdown picks the
+  // subcategory variant (oauth / credentials / write / vendor / …) AND the
+  // state-aware copy (introspection attempted+rejected -> refresh the token;
+  // .env already read -> rotate) instead of the generic evidence-source SLF
+  // line that drifted from the dashboard. Non-SLF findings keep the existing
+  // findingType > evidenceSource lookup.
+  const mitigationHint =
+    finding.evidenceSource === 'SLF'
+      ? getSlfMitigationHint(
+          { title: finding.title, description: finding.description },
+          slfState,
+        )
+      : getMitigationHint({
+          ...(findingType ? { findingType } : {}),
+          evidenceSource: finding.evidenceSource,
+        });
 
   // Use a blockquote-style green callout in markdown (`>`). The HTML
   // renderer + dashboard map to a proper green-tinted box.
@@ -1674,6 +1718,11 @@ function renderFindingsCards(
   compliance: StructuredCompliance | undefined,
   verdict: Verdict,
   discoveryFindings: DiscoveryFinding[],
+  // Live session state (OAuth introspection + .env discovery) for the SLF
+  // mitigation hints, built once by `renderMarkdownReport` via the shared
+  // `buildSlfMitigationState`. Forwarded to each SLF card so the markdown SLF
+  // mitigation matches the dashboard's state-aware copy.
+  slfState?: SlfMitigationState,
 ): string {
   // Pair each VerdictFinding to a Risk for FindingType + mitigation
   // prose lookup. The match is positional: interview risks are
@@ -1754,7 +1803,7 @@ function renderFindingsCards(
   } else {
     for (const f of selfAttested) {
       const legacy = slfRiskByIndex.get(f.id);
-      lines.push(renderFindingCard(f, compliance, legacy));
+      lines.push(renderFindingCard(f, compliance, legacy, slfState));
       lines.push('');
     }
   }

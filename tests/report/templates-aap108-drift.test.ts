@@ -395,4 +395,128 @@ describe('AAP-108 — markdown drift vs dashboard (session 2ae330 fixture)', () 
     const execTable = exec.slice(0, exec.indexOf('\n\n', exec.indexOf('|')));
     expect(execTable).toContain('1 High');
   });
+
+  // ── SLF mitigation parity — the markdown SLF mitigation is STATE-AWARE,
+  //    identical to the dashboard, built through the shared
+  //    `buildSlfMitigationState` + `getSlfMitigationHint`. Pre-fix the
+  //    markdown used the generic `getMitigationHint({ evidenceSource: 'SLF' })`
+  //    line for every SLF card, so it drifted from the dashboard's state-aware
+  //    copy. ───────────────────────────────────────────────────────────────
+
+  /** A verdict whose ONLY finding is a self-attested OAuth-scope claim. */
+  function slfOAuthVerdict(): Verdict {
+    return {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'slf-0-broad-google-oauth',
+          band: 'medium',
+          severityScore: 6,
+          severityComponents: { br: 2, ds: 3, dm: 1 },
+          evidenceSource: 'SLF',
+          title: 'Broad Google OAuth permissions',
+          description:
+            'The deployment uses OAuth user credentials with spreadsheets and full Drive scope, self-reported.',
+        },
+      ],
+    } as unknown as Verdict;
+  }
+
+  /** A verdict whose ONLY finding is a self-attested credential-file claim. */
+  function slfCredentialsVerdict(): Verdict {
+    return {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'slf-0-credential-files',
+          band: 'medium',
+          severityScore: 5,
+          severityComponents: { br: 1, ds: 2, dm: 1 },
+          evidenceSource: 'SLF',
+          title: 'Secrets and credential files are local operational assets',
+          description:
+            'The deployment reads local API keys and bot tokens from a .env / credential file, self-reported.',
+        },
+      ],
+    } as unknown as Verdict;
+  }
+
+  it('SLF parity: OAuth introspection FAILED → md SLF mitigation carries the refresh-the-token variant, not "enable introspection"', () => {
+    // The demoReport fixture already carries an attempted-but-rejected
+    // (invalid_token) `oauthScopeVerification`, so the shared builder produces
+    // the "attempted + rejected" OAuth state.
+    const md = renderMarkdownReport(demoReport(), { verdict: slfOAuthVerdict() });
+
+    // State-aware OAuth variant (the exact dashboard copy from
+    // getSlfMitigationHint): provider rejected the token -> refresh + re-run.
+    expect(md).toMatch(/Refresh the token and re-run/i);
+    expect(md).toContain('the provider rejected the token');
+    // The stateless guidance ("re-run with OAuth introspection enabled") must
+    // be gone — that is the exact wrong advice when introspection already ran.
+    expect(md).not.toContain('re-run with OAuth introspection enabled');
+    // And it must NOT fall back to the generic evidence-source SLF copy.
+    expect(md).not.toContain('Heron has no deterministic evidence for this claim');
+  });
+
+  it('SLF parity: discovery READ the workspace .env → md SLF mitigation carries the rotate variant, not "re-run discovery"', () => {
+    // Discovery read the workspace .env this run -> the shared builder reports
+    // discoveryRan=true. No OAuth sources here so the OAuth branch is inert.
+    const report = demoReport({
+      oauthScopeVerification: { sources: [] },
+      // localAgentDiscovery is not on the AuditReport type (it lives only on
+      // the persisted report.json blob, same as oauthScopeVerification); the
+      // markdown SLF path reads it off the report via the shared builder.
+      localAgentDiscovery: {
+        agents: [],
+        findings: [],
+        scannedAt: '2026-05-30T09:28:50.000Z',
+        scannedPaths: ['/Users/ilaivanov/Codex/Codex3'],
+        workspaceEnv: [{ path: '.env', workspace: 'Codex3', keys: ['OPENAI_API_KEY', 'TELEGRAM_BOT_TOKEN'] }],
+      },
+    } as unknown as Partial<AuditReport>);
+
+    const md = renderMarkdownReport(report, { verdict: slfCredentialsVerdict() });
+
+    // State-aware credentials variant (the exact dashboard copy): .env already
+    // read -> rotate exposed secrets + move to a secret manager.
+    expect(md).toMatch(/rotate/i);
+    expect(md).toContain('secret manager');
+    expect(md).toContain('already read the workspace');
+    // The stateless "re-run discovery" guidance must be gone.
+    expect(md).not.toContain('Re-run discovery with workspace access');
+  });
+
+  it('SLF parity: non-SLF (verified) findings keep their existing evidence-source mitigation path', () => {
+    // A single VERIFIED OAuth-diff finding (evidenceSource 'OAU'). Its
+    // mitigation must come from getMitigationHint (evidence-source line), NOT
+    // the SLF subcategory copy.
+    const verifiedVerdict = {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'oau-0',
+          band: 'high',
+          severityScore: 9,
+          severityComponents: { br: 2, ds: 3, dm: 1.5 },
+          evidenceSource: 'OAU',
+          title: 'OAuth scope creep on google-drive',
+          description: 'Granted drive scope exceeds the requested drive.file scope.',
+        },
+      ],
+    } as unknown as Verdict;
+
+    const md = renderMarkdownReport(demoReport(), { verdict: verifiedVerdict });
+
+    // OAU evidence-source mitigation (from getMitigationHint).
+    expect(md).toContain('Either restrict the OAuth scope at the provider');
+    // Scope the SLF-leak check to the Findings section: the demoReport's failed
+    // `oauthScopeVerification` legitimately makes the Scope & Methodology
+    // limitations line mention "refresh the token", so asserting against the
+    // whole md would false-positive. The Findings section must carry the
+    // verified OAU hint and NOT the SLF state-aware OAuth variant.
+    const findings = md.slice(md.indexOf('## Findings'));
+    expect(findings).toContain('Either restrict the OAuth scope at the provider');
+    expect(findings).not.toContain('Refresh the token and re-run');
+    expect(findings).not.toContain('the provider rejected the token');
+  });
 });
