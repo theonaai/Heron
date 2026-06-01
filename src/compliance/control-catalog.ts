@@ -122,6 +122,16 @@ export interface ControlResult {
   stableKey: string;
   findingType: FindingType;
   frameworkId: FrameworkId;
+  /**
+   * AAP-111: owning framework id, denormalised join field for report.json
+   * consumers. Always equals `frameworkId`; carried as its own key so the
+   * serialised `controlResults[].framework` matches `frameworksActivated`
+   * entries and the dashboard's `FRAMEWORK_LABELS` map without the reader
+   * having to know the internal field is named `frameworkId`. Stamped from
+   * the catalog entry (single source of truth) in `runTypedDetectors`, so a
+   * detector that forgets to set it cannot leave the join field empty.
+   */
+  framework: FrameworkId;
   controlId: string;
   controlName?: string;
   path: ControlResultPath;

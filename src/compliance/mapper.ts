@@ -1297,7 +1297,12 @@ function runTypedDetectors(actual: ActualEvidence): ControlResult[] {
     });
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(result);
+    // AAP-111: stamp the owning framework id from the catalog entry (the
+    // single source of truth) onto the result's `framework` join field, so
+    // report.json `controlResults[].framework` always matches
+    // `frameworksActivated` and the dashboard's `FRAMEWORK_LABELS` map. The
+    // catalog wins even if a detector ever set `framework` inconsistently.
+    out.push({ ...result, framework: entry.frameworkId });
   }
   return out;
 }

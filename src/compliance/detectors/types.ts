@@ -108,6 +108,8 @@ export function typedControlResult(args: {
     stableKey: args.stableKey,
     findingType: args.findingType,
     frameworkId: args.frameworkId,
+    // AAP-111: denormalised owning-framework join field (== frameworkId).
+    framework: args.frameworkId,
     controlId: args.controlId,
     path: 'typed',
     surface: args.surface,

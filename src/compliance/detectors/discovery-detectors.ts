@@ -179,6 +179,8 @@ function makeSensitiveDataDetector(
       stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
       findingType,
       frameworkId,
+      // AAP-111: denormalised owning-framework join field (== frameworkId).
+      framework: frameworkId,
       controlId,
       controlName,
       path: 'typed',
@@ -213,6 +215,8 @@ function makeProcessorDetector(
       stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
       findingType,
       frameworkId,
+      // AAP-111: denormalised owning-framework join field (== frameworkId).
+      framework: frameworkId,
       controlId,
       controlName,
       path: 'typed',
@@ -273,6 +277,8 @@ function makeMcpInventoryDetector(
       stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
       findingType,
       frameworkId,
+      // AAP-111: denormalised owning-framework join field (== frameworkId).
+      framework: frameworkId,
       controlId,
       controlName,
       path: 'typed',
@@ -352,6 +358,8 @@ function makeEnvSecretDetector(
       stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
       findingType,
       frameworkId,
+      // AAP-111: denormalised owning-framework join field (== frameworkId).
+      framework: frameworkId,
       controlId,
       controlName,
       path: 'typed',
