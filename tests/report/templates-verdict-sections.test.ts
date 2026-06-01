@@ -161,7 +161,12 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     const md = renderMarkdownReport(baseReport(), { verdict, discoveryFindings: [] });
     expect(md).toContain('### Verified Findings');
     expect(md).toContain('### Self-Attested Findings');
-    expect(md).toContain('No Verified findings');
+    // AAP-108 — G9 empty-state: discovery ran (status 'partial') with no
+    // systems scored and zero discrepancies, so the line states there are no
+    // declared-vs-actual discrepancies rather than the pre-G9 "No Verified
+    // findings — either the discovery scan has not run yet …" leak.
+    expect(md).toContain('No declared-vs-actual discrepancies');
+    expect(md).not.toContain('discovery scan has not run yet');
   });
 
   it('header risk-level label shows "UNVERIFIED" when verdict is unverified', () => {

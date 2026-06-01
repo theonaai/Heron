@@ -68,7 +68,9 @@ describe('AAP-103 — Posture indicator', () => {
     };
     const md = renderMarkdownReport(baseReport(), { verdict });
     expect(md).toContain('## Posture');
-    expect(md).toContain('**Posture**: 9 (High)');
+    // AAP-108 — G9 risk-based phrasing mirrors the dashboard ("9 High risk"),
+    // replacing the pre-G9 "9 (High)" parenthetical.
+    expect(md).toContain('**Posture**: 9 High risk');
     expect(md).toContain('1 high');
   });
 
