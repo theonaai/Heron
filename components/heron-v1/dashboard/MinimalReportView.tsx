@@ -1489,12 +1489,10 @@ function SeverityBadge({
   ds: number;
   dm: number;
 }) {
-  const color =
-    band === 'critical' || band === 'high'
-      ? { bg: '#fef2f2', bd: '#fecaca', ink: '#991b1b' }
-      : band === 'medium'
-        ? { bg: '#fff4ed', bd: '#fed7aa', ink: '#c2410c' }
-        : { bg: '#f4f4f5', bd: '#e4e4e7', ink: '#3f3f46' };
+  // Solid band color (the same gradient stop the posture badge and the finding
+  // severity badge use) so the per-system risk reads as a highlighted chip, not
+  // a faint pill.
+  const sevColor = colorForSeverity(score);
   // Same BR × DS × DM decode the posture popover uses, scoped to this system,
   // so a reviewer can see WHY a row scored what it did (mirrors the finding
   // severity badge's `?` affordance). Number-first to match the posture card
@@ -1514,10 +1512,9 @@ function SeverityBadge({
           display: 'inline-flex',
           alignItems: 'center',
           gap: 5,
-          padding: '2px 8px',
-          background: color.bg,
-          border: `1px solid ${color.bd}`,
-          color: color.ink,
+          padding: '3px 9px',
+          background: sevColor,
+          color: '#ffffff',
           borderRadius: 4,
           fontSize: 11,
           fontWeight: 600,
@@ -1535,8 +1532,8 @@ function SeverityBadge({
             width: 12,
             height: 12,
             borderRadius: '50%',
-            border: `1px solid ${color.bd}`,
-            color: color.ink,
+            border: '1px solid rgba(255,255,255,0.7)',
+            color: '#ffffff',
             fontSize: 8.5,
             fontWeight: 700,
             lineHeight: 1,
