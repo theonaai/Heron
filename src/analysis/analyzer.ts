@@ -7,6 +7,7 @@ import * as logger from '../util/logger.js';
 import { scrubUnprovided, isNegativeScope } from '../util/provided.js';
 import { sanitizeAnalyzerOutput } from './sanitize.js';
 import { normalizeReversibilityInPayload } from './reversibility.js';
+import { partitionAuditDriverSystems } from '../verification/audit-driver.js';
 
 // Extended result that includes both new per-system data and legacy flat fields
 export interface FullAnalysisResult extends AnalysisResult {
@@ -314,6 +315,23 @@ async function tryParse(
       const neededSet = new Set(sys.scopesNeeded);
       sys.scopesDelta = sys.scopesDelta.filter((s) => !neededSet.has(s));
     }
+
+    // AAP-116 — drop the audit DRIVER's own runtime if it self-declared as a
+    // system of the audited deployment. The foundation-model question
+    // (`upstream_model_and_apis`) makes a runtime that is DRIVING the audit
+    // (Codex / Claude Code) answer with ITSELF — e.g. "Foundation model
+    // powering this Codex session: OpenAI GPT-5-class Codex model" → a
+    // `systemId: openai-codex` row (observed on sess-20260601-115351-95ccbc).
+    // That model runs the audit; it is not part of what the audited
+    // deployment accesses. Leaving it in pollutes the wedge claim ("what does
+    // THIS deployment access") and is scored into posture by systems-risk.ts.
+    // Detection is registry-backed (runtime `selfModel` ids) AND requires a
+    // self-reference to the current audit session, so a deployment that
+    // genuinely calls an OpenAI/Codex backend keeps that system. Filtering
+    // here — after Zod has slugged systemId — is the single upstream point
+    // that removes the row from BOTH report.systems (the renderer) and the
+    // verdict's per-system posture (which reads report.systems).
+    result.systems = partitionAuditDriverSystems(result.systems).kept;
 
     return { ok: true, result };
   } catch (e) {

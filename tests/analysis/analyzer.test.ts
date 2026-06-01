@@ -74,6 +74,103 @@ describe('analyzer', () => {
     expect(outcome.result.overallRiskLevel).toBe('high');
   });
 
+  // AAP-116 — when an AI runtime (Codex / Claude Code) DRIVES the audit, the
+  // foundation-model question makes the agent self-declare its OWN runtime as
+  // a system of the audited deployment ("Foundation model powering this Codex
+  // session"). The analyzer must drop that driver row so it never reaches
+  // report.systems → the rendered wedge claim or systems-risk posture.
+  it('drops the audit driver\'s own runtime self-declared as a system', async () => {
+    const driverLeakJSON = JSON.stringify({
+      summary: 'Education content agent audited via a Codex-driven session.',
+      agentPurpose: 'Generate and sync educational content',
+      agentTrigger: 'Manual',
+      systems: [
+        {
+          systemId: 'google-sheets',
+          systemDescription: 'Google Sheets API v4 the agent reads lesson rows from.',
+          scopesRequested: [],
+          scopesNeeded: [],
+          scopesDelta: [],
+          dataSensitivity: 'Lesson content rows.',
+          dataSensitivityTier: 'T1',
+          blastRadius: 'single-user',
+          writeOperations: [],
+        },
+        {
+          // The audit DRIVER leaking in via the foundation-model question.
+          systemId: 'openai-codex',
+          systemDescription:
+            'Foundation model powering this Codex session: OpenAI GPT-5-class Codex model. ' +
+            'Data sent includes user prompts, prior answers, and tool responses for the task.',
+          scopesRequested: [],
+          scopesNeeded: [],
+          scopesDelta: [],
+          dataSensitivity:
+            'Confidential project metadata may be included in prompts for this Codex session.',
+          dataSensitivityTier: 'T1',
+          blastRadius: 'single-user',
+          writeOperations: [],
+        },
+      ],
+      risks: [],
+      recommendations: [],
+      recommendation: 'APPROVE WITH CONDITIONS',
+      overallRiskLevel: 'low',
+    });
+
+    const mockLLM: LLMClient = {
+      chat: vi.fn().mockResolvedValue(driverLeakJSON),
+    };
+
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    const ids = outcome.result.systems.map((s) => s.systemId);
+    // The driver runtime is gone; the real audited system survives.
+    expect(ids).toContain('google-sheets');
+    expect(ids).not.toContain('openai-codex');
+    expect(outcome.result.systems).toHaveLength(1);
+  });
+
+  it('keeps an OpenAI/Codex backend the audited deployment actually calls', async () => {
+    // Same systemId, but the prose describes a real backend of the audited
+    // deployment (no "this Codex session" self-reference) — it must survive.
+    const realBackendJSON = JSON.stringify({
+      summary: 'Code-review agent that calls an OpenAI backend.',
+      agentPurpose: 'Generate PR review comments',
+      agentTrigger: 'New pull request',
+      systems: [
+        {
+          systemId: 'openai-codex',
+          systemDescription:
+            'OpenAI Codex API the production deployment calls to draft code-review ' +
+            'comments. Auth via the team OpenAI API key.',
+          scopesRequested: [],
+          scopesNeeded: [],
+          scopesDelta: [],
+          dataSensitivity: 'Source diffs and PR metadata are sent to the model.',
+          dataSensitivityTier: 'T2',
+          blastRadius: 'team-scope',
+          writeOperations: [],
+        },
+      ],
+      risks: [],
+      recommendations: [],
+      recommendation: 'APPROVE WITH CONDITIONS',
+      overallRiskLevel: 'low',
+    });
+
+    const mockLLM: LLMClient = {
+      chat: vi.fn().mockResolvedValue(realBackendJSON),
+    };
+
+    const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.result.systems.map((s) => s.systemId)).toContain('openai-codex');
+  });
+
   it('strips markdown fences from LLM response', async () => {
     const mockLLM: LLMClient = {
       chat: vi.fn().mockResolvedValue('```json\n' + validAnalysisJSON + '\n```'),
