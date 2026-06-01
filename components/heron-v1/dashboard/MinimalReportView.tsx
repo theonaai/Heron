@@ -215,6 +215,36 @@ function humanizeSystemId(systemId: string): string {
     .join(' ');
 }
 
+// ─── AAP-110: posture-popover driver helpers ──────────────────────────
+//
+// One per-system risk row off `verdict.systemsRisk.systems`. The canonical
+// score field is `severity` (BR × DS × DM, see SystemRiskResult in
+// `src/verification/systems-risk.ts` and `systemRiskSnapshotSchema` in
+// `src/report/types.ts`). We read `severity` and tolerate a legacy/alias
+// `posture` key so blobs persisted under either name still score.
+type SystemRiskRow = NonNullable<VerdictSnapshot['systemsRisk']>['systems'][number];
+
+/** Per-system risk score: `severity` (canonical), with a `posture` fallback. */
+function systemRiskScore(row: SystemRiskRow): number {
+  const withAlias = row as SystemRiskRow & { posture?: number };
+  return row.severity ?? withAlias.posture ?? 0;
+}
+
+/**
+ * Resolve the human DISPLAY NAME for a systems-risk row. The row carries only
+ * the kebab `systemId`, so match it against the named `systems` list (the same
+ * source `SystemsBlock` renders) and humanize via `humanizeSystemId` — exactly
+ * how `SystemRow` derives its label. When nothing matches (or no list was
+ * threaded), fall back to humanizing the raw id directly.
+ */
+function resolveSystemDisplayName(
+  systemId: string,
+  systems?: SystemAssessment[],
+): string {
+  const match = systems?.find((s) => s.systemId === systemId);
+  return humanizeSystemId(match?.systemId ?? systemId);
+}
+
 // ─── DS classifier — T1 / T2 / T3 ─────────────────────────────────────
 //
 // Strict keyword heuristic over the system's dataSensitivity prose. Mirrors
@@ -336,12 +366,213 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// ─── AAP-107: Findings empty-state copy (three distinct states) ────────
+//
+// The pre-G9 copy ("No verified discrepancies — either the discovery scan
+// has not run yet, or it ran clean.") collapsed two genuinely different
+// states into one misleading line. On the demo session
+// (`sess-20260530-092850-2ae330`) discovery RAN and the agent carries real
+// deployment risk (posture 6 Medium), yet there were zero VERIFIED
+// discrepancies — so the line both implied the scan might not have run AND
+// implied the agent was clean. Neither is true.
+//
+// We now pick the message off whether discovery actually ran:
+//   (a) discovery NOT run / unverified → honest "scan not run yet".
+//   (b) discovery ran, zero verified discrepancies → must NOT say "has not
+//       run yet" and must NOT imply clean; say there are no declared-vs-
+//       actual discrepancies AND that posture still reflects systems risk.
+//   (c) discovery ran WITH discrepancies → handled by the list path; this
+//       helper is only consulted when the verified list is empty, so it
+//       never needs to render a "(c)" string.
+//
+// Pure + exported so the three-state selection is unit-tested directly
+// (the JSX branch is exercised separately via renderToStaticMarkup).
+
+export type FindingsEmptyStateKind = 'not-run' | 'no-discrepancies';
+
+export interface FindingsEmptyStateInput {
+  /** Did a deterministic discovery / verification pass actually run? */
+  discoveryRan: boolean;
+  /** Count of VERIFIED (non-SLF) discrepancy findings. */
+  verifiedDiscrepancyCount: number;
+  /** Did the systems-risk pass score any systems (posture has a basis)? */
+  systemsRiskNonZero: boolean;
+}
+
+export interface FindingsEmptyStateResult {
+  kind: FindingsEmptyStateKind;
+  message: string;
+}
+
+/**
+ * Choose the Findings empty-state line. Only meaningful when there are no
+ * verified discrepancies to list (the caller guards on `verified.length`).
+ *
+ *   discoveryRan === false                 → (a) "not-run"
+ *   discoveryRan === true, count === 0     → (b) "no-discrepancies"
+ *
+ * `systemsRiskNonZero` tunes the (b) copy: when systems were scored we say
+ * posture reflects their deployment risk (the demo case); when no systems
+ * were scored (a genuinely clean, low-risk agent) we keep it to the plain
+ * "no discrepancies" statement so we don't gesture at risk that isn't there.
+ */
+export function findingsEmptyState(
+  input: FindingsEmptyStateInput,
+): FindingsEmptyStateResult {
+  if (!input.discoveryRan) {
+    return {
+      kind: 'not-run',
+      message:
+        'Discovery scan has not run yet. Run verification to compare declared access against deterministic evidence.',
+    };
+  }
+  // Discovery ran, zero verified discrepancies. Never claim the agent is
+  // clean: posture is risk-based (G9), so a Medium agent with no
+  // declared-vs-actual gaps still has real deployment risk.
+  if (input.systemsRiskNonZero) {
+    return {
+      kind: 'no-discrepancies',
+      message:
+        'No declared-vs-actual discrepancies. Posture reflects deployment risk from the systems above.',
+    };
+  }
+  return {
+    kind: 'no-discrepancies',
+    message:
+      'No declared-vs-actual discrepancies found in the deterministic evidence.',
+  };
+}
+
+/**
+ * AAP-107: did a deterministic discovery / verification pass actually run
+ * for this session? Mirrors the header's `scanned` derivation so the
+ * Findings empty-state and the posture indicator never disagree about
+ * whether evidence exists. True when ANY of:
+ *   - the systems-risk pass scored systems (`verdict.systemsRisk.scanned`);
+ *   - `verdict.status` is set and not the pure no-evidence baseline; or
+ *   - `localAgentDiscovery` carries filesystem scan output
+ *     (agents / findings / scannedPaths / workspaceEnv), the same proxy
+ *     the header uses for "Filesystem ran".
+ * The `verification.status` lifecycle field is also honoured: anything past
+ * 'interrogation-only' means a Surface 2 pass ran.
+ */
+export function discoveryRanFor(
+  verdict: VerdictSnapshot | undefined,
+  verification: MinimalReportJson['verification'] | undefined,
+  localAgentDiscovery: unknown,
+): boolean {
+  if (verdict?.systemsRisk?.scanned) return true;
+  if (verdict?.status !== undefined && verdict.status !== 'unverified') return true;
+  if (
+    verification?.status !== undefined &&
+    verification.status !== 'interrogation-only'
+  ) {
+    return true;
+  }
+  const disc =
+    localAgentDiscovery && typeof localAgentDiscovery === 'object'
+      ? (localAgentDiscovery as {
+          agents?: unknown[];
+          findings?: unknown[];
+          scannedPaths?: unknown[];
+          workspaceEnv?: unknown[];
+        })
+      : null;
+  return (
+    !!disc &&
+    ((disc.agents?.length ?? 0) > 0 ||
+      (disc.findings?.length ?? 0) > 0 ||
+      (disc.scannedPaths?.length ?? 0) > 0 ||
+      (disc.workspaceEnv?.length ?? 0) > 0)
+  );
+}
+
+// ─── Shared instant-hover popover (AAP-107 round 2, items 1 + 3) ──────
+//
+// The native `title` tooltip the posture (?) and the severity chip used to
+// carry has two problems the product owner flagged: it lags ~1s before the
+// browser shows it, and it drops BELOW the element where it can fall off the
+// page's right edge. This is a custom popover that appears INSTANTLY on hover
+// (React onMouseEnter/onMouseLeave, no browser delay) and is positioned away
+// from the right edge so it never overflows.
+//
+// One component, two callers: the posture (?) (placement 'left', opens to the
+// left of the affordance) and the severity chip (placement 'below-left', opens
+// below and anchored to the right so it grows leftward). The visible hover
+// affordance is passed as `children`; the popover body is `content`. Hover
+// interactions cannot be driven under renderToStaticMarkup, so the popover
+// markup is always rendered and hidden via `visibility: hidden` until hover.
+// Tests assert the breakdown/formula text is present in the static markup, and
+// the live show/hide is verified in a browser.
+function InfoPopover({
+  content,
+  ariaLabel,
+  placement = 'left',
+  width = 280,
+  children,
+}: {
+  content: React.ReactNode;
+  ariaLabel?: string;
+  placement?: 'left' | 'below-left';
+  width?: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  // 'left':        sit to the left of the affordance, vertically centered.
+  // 'below-left':  sit below the affordance, right edges aligned so the box
+  //                extends leftward (keeps a right-aligned chip on-page).
+  const popoverPosition: React.CSSProperties =
+    placement === 'below-left'
+      ? { top: 'calc(100% + 6px)', right: 0 }
+      : { right: 'calc(100% + 8px)', top: '50%', transform: 'translateY(-50%)' };
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      {children}
+      <span
+        role="tooltip"
+        aria-label={ariaLabel}
+        style={{
+          position: 'absolute',
+          ...popoverPosition,
+          width,
+          background: '#ffffff',
+          border: '1px solid #e2e8f0',
+          borderRadius: 6,
+          boxShadow: '0 4px 14px rgba(15,23,42,0.12)',
+          padding: 10,
+          fontSize: 12,
+          lineHeight: 1.5,
+          color: '#334155',
+          fontWeight: 400,
+          textTransform: 'none',
+          letterSpacing: 'normal',
+          textAlign: 'left',
+          whiteSpace: 'normal',
+          zIndex: 50,
+          // Instant show on hover; kept in the DOM (not unmounted) so the
+          // content is always present in static markup for contract tests.
+          visibility: open ? 'visible' : 'hidden',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+        }}
+      >
+        {content}
+      </span>
+    </span>
+  );
+}
+
 // ─── Block 1: Header ──────────────────────────────────────────────────
 
 function HeaderBlock({
   projectName,
   isFallback,
   verdict,
+  systems,
   metadata,
   localAgentDiscovery,
   oauthScopeVerification,
@@ -349,6 +580,11 @@ function HeaderBlock({
   projectName: string;
   isFallback: boolean;
   verdict?: VerdictSnapshot;
+  // AAP-110: the named systems list `SystemsBlock` renders. Threaded in so the
+  // posture popover can resolve the highest-risk system's DISPLAY NAME (e.g.
+  // "Google Sheets") — the per-system risk rows on `verdict.systemsRisk.systems`
+  // carry only the kebab `systemId`, not a human name.
+  systems?: SystemAssessment[];
   metadata?: MinimalReportJson['metadata'];
   localAgentDiscovery?: unknown;
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
@@ -420,11 +656,65 @@ function HeaderBlock({
   // to "Medium risk". When the risk is sourced from the systems surface
   // (posture > 0, no verified discrepancies), say so explicitly; otherwise
   // keep the bucket breakdown.
+  //
+  // AAP-107 item 3: the discrepancy half ("· 0 verified discrepancies") was
+  // already stated in the headline ("… · no discrepancies"), so saying it
+  // again here was duplicate. Keep just "Risk from N systems" and move the
+  // "how is this number computed" note into the (?) tooltip (postureExplain).
   const systemsScored = verdict?.systemsRisk?.systems?.length ?? 0;
   const countsLine =
     verifiedDiscrepancyCount === 0 && posture > 0 && systemsScored > 0
-      ? `Risk from ${systemsScored} system${systemsScored === 1 ? '' : 's'} · 0 verified discrepancies`
+      ? `Risk from ${systemsScored} system${systemsScored === 1 ? '' : 's'}`
       : renderBucketCountsLine(counts);
+
+  // AAP-110: the "Risk posture (?)" affordance opens an INSTANT popover (see
+  // InfoPopover) carrying a DRIVER-BASED explanation in plain English, not the
+  // raw "= the higher of" decomposition. Posture is still the higher of two
+  // high-water-marks — the systems deployment-risk score and any verified-
+  // discrepancy severity — but instead of listing both inputs we name the ONE
+  // that actually drives the headline number:
+  //   - if systems risk wins (and there is >=1 scored system), show the single
+  //     highest-risk system with its BR × DS × DM breakdown + a discrepancy
+  //     line.
+  //   - else a verified declared-vs-actual discrepancy is the driver.
+  //   - systemsRisk.posture is the deployment-risk HWM (0 when no systems).
+  //   - discrepancyPosture is the verified-discrepancy-only HWM (schema-
+  //     defaulted to 0; the field is `discrepancyPosture` on VerdictSnapshot).
+  const systemsDeploymentRisk = verdict?.systemsRisk?.posture ?? 0;
+  const discrepancyPosture = verdict?.discrepancyPosture ?? 0;
+  const postureBandWord = SEVERITY_BAND_LABEL[band];
+
+  // Pick the single highest-risk system row (tie -> first). The canonical
+  // per-system score field is `severity` (BR × DS × DM, see
+  // `src/verification/systems-risk.ts` SystemRiskResult / the
+  // `systemRiskSnapshotSchema` in src/report/types.ts). We read `severity` and
+  // fall back to any `posture`-named field for forward/back-compat with blobs
+  // that may carry the alias.
+  const systemRiskRows = verdict?.systemsRisk?.systems ?? [];
+  const topSystemRow =
+    systemRiskRows.length > 0
+      ? systemRiskRows.reduce((best, row) =>
+          systemRiskScore(row) > systemRiskScore(best) ? row : best,
+        )
+      : undefined;
+  // Resolve the DISPLAY NAME. The risk row carries only the kebab `systemId`,
+  // so match it against the named `systems` list (same source SystemsBlock
+  // renders) and humanize, exactly like SystemRow does. Fall back to the raw
+  // id when nothing matches.
+  const topSystemName = topSystemRow
+    ? resolveSystemDisplayName(topSystemRow.systemId, systems)
+    : '';
+
+  // Driver decision (mirrors the HWM that set `posture`): systems risk wins on
+  // a tie, and only counts when there is at least one scored system.
+  const systemsDriven =
+    systemsDeploymentRisk >= discrepancyPosture && !!topSystemRow;
+
+  // a11y fallback: the popover content is visual; keep a short label so the
+  // affordance still announces its purpose to a screen reader.
+  const postureAriaLabel =
+    'What drives the risk posture number: either the highest-risk system or ' +
+    'a verified declared-vs-actual discrepancy.';
 
   // AAP-105 A5: "Verified by X" must reflect which evidence sources
   // ACTUALLY ran, not the aggregate verification.status. The old code
@@ -534,6 +824,11 @@ function HeaderBlock({
           </div>
         </div>
         <div style={{ minWidth: 260, textAlign: 'right' }}>
+          {/* AAP-107 item 2: bare "POSTURE" was jargon. Label it "Risk
+              posture" and carry a (?) affordance. AAP-107 round 2 item 1:
+              the affordance now opens an INSTANT popover (InfoPopover) with
+              the computation breakdown, positioned to the LEFT so it never
+              overflows the page's right edge. */}
           <div
             style={{
               fontSize: 11,
@@ -541,27 +836,102 @@ function HeaderBlock({
               letterSpacing: '0.06em',
               color: '#71717a',
               marginBottom: 4,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
             }}
           >
-            Posture
+            <span>Risk posture</span>
+            <InfoPopover
+              placement="left"
+              width={280}
+              ariaLabel={postureAriaLabel}
+              content={
+                <>
+                  {/* AAP-110 driver-based content. Line 1: the overall number +
+                      band word (same SEVERITY_BAND_LABEL map the header uses).
+                      Line 2: the DRIVER, either the single highest-risk system
+                      with its BR x DS x DM breakdown, or a verified discrepancy.
+                      Line 3 (systems branch only): the discrepancy status. No
+                      em-dashes anywhere. */}
+                  <div style={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}>
+                    Overall risk: {posture} ({postureBandWord})
+                  </div>
+                  {systemsDriven ? (
+                    <>
+                      <div>
+                        Highest-risk system: {topSystemName} (Blast Radius{' '}
+                        {topSystemRow!.br} × Data Sensitivity {topSystemRow!.ds} ×
+                        Domain Multiplier {topSystemRow!.dm} ={' '}
+                        {systemRiskScore(topSystemRow!)})
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        {discrepancyPosture === 0
+                          ? 'No verified discrepancies.'
+                          : `Verified discrepancies: ${discrepancyPosture}.`}
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      Driven by a verified declared-vs-actual discrepancy
+                      (severity {discrepancyPosture}).
+                    </div>
+                  )}
+                </>
+              }
+            >
+              <span
+                aria-hidden
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 13,
+                  height: 13,
+                  borderRadius: '50%',
+                  border: '1px solid #cbd5e1',
+                  color: '#94a3b8',
+                  fontSize: 9,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  cursor: 'help',
+                  textTransform: 'none',
+                }}
+              >
+                ?
+              </span>
+            </InfoPopover>
           </div>
+          {/* AAP-107 item 4: the headline ("6 Medium risk · no
+              discrepancies") wrapped badly — the "· no" separator pushed
+              right and "discrepancies" dropped below the gradient bar. Lay
+              the two clauses out with flex-wrap and keep each clause on one
+              line (whiteSpace: nowrap) so the discrepancy clause wraps as a
+              UNIT to the next line, aligned right, instead of breaking mid-
+              phrase. */}
           <div
             style={{
               fontSize: 22,
               fontWeight: 600,
               color: '#18181b',
               fontVariantNumeric: 'tabular-nums',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'baseline',
+              justifyContent: 'flex-end',
+              columnGap: 8,
+              rowGap: 2,
             }}
           >
-            {postureText}
+            <span style={{ whiteSpace: 'nowrap' }}>{postureText}</span>
             {postureSubNote && (
               <span
                 style={{
                   fontSize: 12.5,
                   fontWeight: 500,
                   color: '#71717a',
-                  marginLeft: 8,
                   fontVariantNumeric: 'normal',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 · {postureSubNote}
@@ -695,7 +1065,9 @@ function PurposeBlock({ json }: { json: MinimalReportJson }) {
           {json.agentTrigger && (
             <>
               <dt style={{ color: '#71717a', fontWeight: 500 }}>Trigger</dt>
-              <dd style={{ margin: 0 }}>{json.agentTrigger}</dd>
+              <dd style={{ margin: 0 }}>
+                <TriggerValue value={json.agentTrigger} />
+              </dd>
             </>
           )}
           {json.agentOwner && (
@@ -774,6 +1146,19 @@ function firstSentences(text: string, maxSentences: number, charLimit: number): 
   const window = t.slice(0, charLimit);
   const ws = window.lastIndexOf(' ');
   return t.slice(0, ws > 0 ? ws : charLimit).trimEnd() + '…';
+}
+
+/**
+ * AAP-107 item 5: the Agent Profile "Trigger" row. The analyzer cap on
+ * `agentTrigger` was raised (200 -> 600) so the stored root-cause value is no
+ * longer clipped mid-thought. AAP-107 round 2 drops the Show more / Show less
+ * toggle: we render the full stored value plainly (with a `title` for the
+ * native hover-to-copy-the-whole-string affordance).
+ */
+function TriggerValue({ value }: { value: string }) {
+  const full = (value || '').trim();
+  if (!full) return null;
+  return <span title={full}>{full}</span>;
 }
 
 // ─── Block 3: Systems & access ────────────────────────────────────────
@@ -1714,10 +2099,16 @@ export function buildSlfMitigationState(
 
 function FindingsBlock({
   verdict,
+  verification,
   oauthScopeVerification,
   localAgentDiscovery,
 }: {
   verdict?: VerdictSnapshot;
+  // AAP-107 item 1: the empty-state copy must distinguish "discovery never
+  // ran" from "discovery ran, no discrepancies". That needs the same
+  // evidence the header reads, so the block now also receives the
+  // verification lifecycle and the discovery payload.
+  verification?: MinimalReportJson['verification'];
   // AAP-110: state-aware SLF mitigation text needs the live session state
   // (did OAuth introspection run + with what result; did discovery read the
   // workspace .env). Threaded down to each SLF card via `slfState`.
@@ -1821,7 +2212,15 @@ function FindingsBlock({
         </p>
         {verified.length === 0 ? (
           <p style={{ fontSize: 12.5, color: '#71717a', margin: 0, padding: '10px 12px', background: '#f8fafc', borderRadius: 6, border: '1px dashed #e5e7eb' }}>
-            No verified discrepancies — either the discovery scan has not run yet, or it ran clean.
+            {
+              findingsEmptyState({
+                discoveryRan: discoveryRanFor(verdict, verification, localAgentDiscovery),
+                verifiedDiscrepancyCount: verified.length,
+                systemsRiskNonZero:
+                  (verdict?.posture ?? 0) > 0 ||
+                  (verdict?.systemsRisk?.systems?.length ?? 0) > 0,
+              }).message
+            }
           </p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1869,10 +2268,7 @@ function FindingsBlock({
           {slfOpen && (
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <p style={{ margin: 0, fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
-                Derived from the agent&apos;s interview answers only. Working hypotheses — confirm
-                with deterministic evidence before relying on them. Severity here is the
-                agent&apos;s own estimate, scored per finding by the BR×DS×DM rubric, not a
-                verified measurement.
+                Self-reported by the agent, not verified. Treat as working hypotheses.
               </p>
               {selfAttested.map((f) => (
                 <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
@@ -1971,10 +2367,10 @@ export function MinimalFindingCard({
   const analyzerNotes = (finding as { analyzerNotes?: string }).analyzerNotes;
   const mitigation = analyzerNotes && analyzerNotes.length > 0 ? analyzerNotes : fallbackHint;
 
-  const [descExpanded, setDescExpanded] = useState(false);
-  const { head, rest } = useMemo(() => splitForCard(finding.description, 280), [finding.description]);
-  const hasMore = rest.length > 0;
-
+  // AAP-107 round 2 item 4: the description used to collapse behind a
+  // "Show more / Show less" toggle (splitForCard at 280 chars + descExpanded
+  // state). The toggle hid the part of the finding a reviewer most needs, so
+  // we always render the FULL description now (toggle + state removed).
   const mitigationItems = mitigation.includes('; ')
     ? mitigation
         .split(/;\s+/)
@@ -2015,50 +2411,64 @@ export function MinimalFindingCard({
             {finding.title}
           </div>
         </div>
-        <span
-          title={formula}
-          style={{
-            display: 'inline-block',
-            padding: '3px 9px',
-            borderRadius: 4,
-            background: sevColor,
-            color: '#ffffff',
-            fontSize: 11,
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: '0.04em',
-            whiteSpace: 'nowrap',
-            cursor: 'help',
-            flex: '0 0 auto',
-          }}
+        {/* AAP-107 round 2 item 3: the severity chip carries the BR/DS/DM
+            decode (the `formula` string). The native title= was slow and
+            could clip the page edge, so it now opens the same INSTANT
+            InfoPopover, positioned below-left so it never overflows the
+            right edge. A small visible "?" hint inside the chip signals it
+            is hoverable (styled to match the posture (?) affordance). */}
+        <InfoPopover
+          placement="below-left"
+          width={280}
+          ariaLabel={formula}
+          content={<span className="mono">{formula}</span>}
         >
-          {sevText} {bandLabel}
-        </span>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '3px 9px',
+              borderRadius: 4,
+              background: sevColor,
+              color: '#ffffff',
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              whiteSpace: 'nowrap',
+              cursor: 'help',
+              flex: '0 0 auto',
+            }}
+          >
+            {sevText} {bandLabel}
+            {/* Visible hoverable hint, matching the posture (?) circle but
+                inverted (white-on-chip) so it reads on the colored badge. */}
+            <span
+              aria-hidden
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                border: '1px solid rgba(255,255,255,0.7)',
+                color: '#ffffff',
+                fontSize: 8.5,
+                fontWeight: 700,
+                lineHeight: 1,
+                textTransform: 'none',
+              }}
+            >
+              ?
+            </span>
+          </span>
+        </InfoPopover>
       </header>
       {finding.description && (
-        <p style={{ margin: '4px 0 8px', fontSize: 12.5, lineHeight: 1.55, color: '#3f3f46' }}>
-          {descExpanded ? finding.description : head}
-          {hasMore && (
-            <>
-              {' '}
-              <button
-                type="button"
-                onClick={() => setDescExpanded((v) => !v)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  padding: 0,
-                  cursor: 'pointer',
-                  color: '#1d4ed8',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  textDecoration: 'underline',
-                }}
-              >
-                {descExpanded ? 'Show less' : 'Show more'}
-              </button>
-            </>
-          )}
+        <p style={{ margin: '4px 0 8px', fontSize: 14, lineHeight: 1.6, color: '#3f3f46' }}>
+          {finding.description}
         </p>
       )}
       <div
@@ -2094,19 +2504,6 @@ export function MinimalFindingCard({
       </div>
     </article>
   );
-}
-
-function splitForCard(text: string, limit: number): { head: string; rest: string } {
-  if (!text || text.length <= limit) return { head: text || '', rest: '' };
-  const window = text.slice(0, limit);
-  const sentenceEnd = Math.max(window.lastIndexOf('. '), window.lastIndexOf('? '), window.lastIndexOf('! '));
-  let cut = limit;
-  if (sentenceEnd > limit * 0.6) cut = sentenceEnd + 1;
-  else {
-    const ws = window.lastIndexOf(' ');
-    if (ws > limit * 0.6) cut = ws;
-  }
-  return { head: text.slice(0, cut).trimEnd() + '…', rest: text.slice(cut).trimStart() };
 }
 
 // ─── Block 5: Compliance lens ─────────────────────────────────────────
@@ -2614,6 +3011,7 @@ export default function MinimalReportView({
         projectName={projectName}
         isFallback={isFallback}
         verdict={reportJson.verdict}
+        systems={reportJson.systems}
         metadata={reportJson.metadata}
         localAgentDiscovery={reportJson.localAgentDiscovery}
         oauthScopeVerification={reportJson.oauthScopeVerification}
@@ -2624,6 +3022,7 @@ export default function MinimalReportView({
       <FindingsBlock
         verdict={reportJson.verdict}
         oauthScopeVerification={reportJson.oauthScopeVerification}
+        verification={reportJson.verification}
         localAgentDiscovery={reportJson.localAgentDiscovery}
       />
       <ComplianceBlock rc={reportJson.regulatoryCompliance} />

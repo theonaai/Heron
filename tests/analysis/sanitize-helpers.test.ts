@@ -332,18 +332,20 @@ describe('sanitizeRecommendations', () => {
 // ─── Helper 8 — sanitizeTopLevelText ─────────────────────────────────────
 
 describe('sanitizeTopLevelText', () => {
-  it('caps summary at 800, agentPurpose at 600, agentTrigger at 200, agentOwner at 200, decisionMakingDetails at 800', () => {
+  it('caps summary at 800, agentPurpose at 600, agentTrigger at 600, agentOwner at 200, decisionMakingDetails at 800', () => {
     const obj: Record<string, unknown> = {
       summary: 'a'.repeat(1000),
       agentPurpose: 'b'.repeat(800),
-      agentTrigger: 'c'.repeat(300),
+      // AAP-107 round 2: agentTrigger cap raised 200 -> 600. Use a 700-char
+      // input so the cap is still exercised at its new ceiling.
+      agentTrigger: 'c'.repeat(700),
       agentOwner: 'd'.repeat(300),
       decisionMakingDetails: 'e'.repeat(1000),
     };
     sanitizeTopLevelText(obj);
     expect((obj.summary as string).length).toBe(800);
     expect((obj.agentPurpose as string).length).toBe(600);
-    expect((obj.agentTrigger as string).length).toBe(200);
+    expect((obj.agentTrigger as string).length).toBe(600);
     expect((obj.agentOwner as string).length).toBe(200);
     expect((obj.decisionMakingDetails as string).length).toBe(800);
   });

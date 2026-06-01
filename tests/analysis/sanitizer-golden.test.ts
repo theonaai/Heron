@@ -79,7 +79,7 @@ function fixtureHeavyCapsAndFiltering(): Record<string, unknown> {
     summary:
       'Bursting at the seams: ' + 'x'.repeat(900), // > 800
     agentPurpose: 'y'.repeat(700), // > 600
-    agentTrigger: 'z'.repeat(250), // > 200
+    agentTrigger: 'z'.repeat(700), // > 600 (AAP-107 round 2 cap)
     agentOwner: 'q'.repeat(250), // > 200
     decisionMakingDetails: 'd'.repeat(900), // > 800
     systems: [
