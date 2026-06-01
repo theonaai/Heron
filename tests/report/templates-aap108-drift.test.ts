@@ -286,4 +286,237 @@ describe('AAP-108 — markdown drift vs dashboard (session 2ae330 fixture)', () 
     expect(md).toContain('beyond stated need on 1 system(s)');
     expect(md).not.toContain('beyond stated need on 7 system(s)');
   });
+
+  // ── Fix A — per-system header sources the persisted severity/band ────────
+  //
+  // Pre-fix the `### <systemId> — Risk: <LABEL>` header was driven by
+  // `computeSystemRisk(sys)` — a separate per-system heuristic that disagrees
+  // with the posture math and is NOT what the dashboard shows. The dashboard's
+  // Severity column reads `verdict.systemsRisk.systems[]` (band + numeric
+  // severity, e.g. "6 · Medium"). The markdown header must match.
+  it('Fix A: per-system header uses the persisted systemsRisk severity/band, not computeSystemRisk', () => {
+    const md = renderMarkdownReport(demoReport(), { verdict: g9Verdict() });
+
+    // google-drive scored {band:'medium', severity:6} in the snapshot →
+    // header reflects the dashboard wording.
+    expect(md).toContain('### google-drive — Risk: 6 (Medium)');
+
+    // The old computeSystemRisk label form ("Risk: HIGH" / "Risk: MEDIUM" /
+    // "Risk: LOW" — upper-case categorical with no number) must be gone.
+    expect(md).not.toMatch(/### google-drive — Risk: (HIGH|MEDIUM|LOW)\b/);
+    // computeSystemRisk would have scored google-drive HIGH (org-wide BR=3 +
+    // excessive scope +1 = 4 ≥ 3 MEDIUM; with sensitive-data it would tip
+    // higher). Either way it is the heuristic label, not "Medium (6)".
+    expect(md).not.toContain('### google-drive — Risk: HIGH');
+  });
+
+  it('Fix A: per-system header degrades gracefully when the system has no snapshot row', () => {
+    // google-sheets is NOT in the systemsRisk snapshot (only google-drive is),
+    // so its header must not invent a heuristic risk label.
+    const md = renderMarkdownReport(demoReport(), { verdict: g9Verdict() });
+    const sheetsHeaderMatch = md.match(/### google-sheets[^\n]*/);
+    expect(sheetsHeaderMatch).not.toBeNull();
+    const sheetsHeader = sheetsHeaderMatch![0];
+    // No computeSystemRisk-style categorical label leaks onto an unmatched
+    // system.
+    expect(sheetsHeader).not.toMatch(/Risk: (HIGH|MEDIUM|LOW)\b/);
+  });
+
+  // ── Fix B — Executive Summary self-reported count uses COMPUTED bands ─────
+  //
+  // The self-reported findings cell currently counts `report.risks[].severity`
+  // (the raw LLM severities, which over-state). The dashboard shows those same
+  // findings as their COMPUTED bands. Switch the count to read
+  // `verdict.findings[].band`.
+  function slfVerdict(): Verdict {
+    // One SLF finding the analyzer COMPUTED down to 'medium', even though the
+    // raw risk self-reported 'high'. Plus the systems-risk surface from g9.
+    return {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'slf-0-broad-google-oauth',
+          band: 'medium',
+          severityScore: 6,
+          severityComponents: { br: 2, ds: 3, dm: 1 },
+          evidenceSource: 'SLF',
+          title: 'Broad Google OAuth permissions',
+          description: 'Drive scope exceeds the single-folder need.',
+        },
+      ],
+    } as unknown as Verdict;
+  }
+
+  it('Fix B: exec-summary self-reported count renders the COMPUTED band (Medium), not the raw risk severity (High)', () => {
+    const report = demoReport({
+      risks: [
+        {
+          title: 'Broad Google OAuth permissions',
+          description: 'Drive scope exceeds the single-folder need.',
+          severity: 'high', // raw LLM severity OVER-states
+        },
+      ],
+    } as Partial<AuditReport>);
+
+    const md = renderMarkdownReport(report, { verdict: slfVerdict() });
+
+    // Pull the Executive Summary table region for a tight assertion.
+    const exec = md.slice(md.indexOf('## Executive Summary'));
+    const execTable = exec.slice(0, exec.indexOf('\n\n', exec.indexOf('|')));
+
+    // The Self-reported findings cell counts the COMPUTED band → "1 Medium".
+    expect(md).toContain('## Executive Summary');
+    // The computed-band count appears.
+    expect(execTable).toContain('1 Medium');
+    // The raw-severity-driven "1 High" must NOT be the self-reported count.
+    expect(execTable).not.toContain('1 High');
+  });
+
+  it('Fix B: falls back gracefully when verdict.findings is absent (counts raw risks)', () => {
+    const report = demoReport({
+      risks: [
+        {
+          title: 'Broad Google OAuth permissions',
+          description: 'Drive scope exceeds the single-folder need.',
+          severity: 'high',
+        },
+      ],
+    } as Partial<AuditReport>);
+
+    // Verdict with NO findings array (older / edge JSON).
+    const verdictNoFindings = { ...g9Verdict() } as Record<string, unknown>;
+    delete verdictNoFindings.findings;
+
+    const md = renderMarkdownReport(report, {
+      verdict: verdictNoFindings as unknown as Verdict,
+    });
+    // Prior behaviour preserved: the raw risk severity drives the count.
+    const exec = md.slice(md.indexOf('## Executive Summary'));
+    const execTable = exec.slice(0, exec.indexOf('\n\n', exec.indexOf('|')));
+    expect(execTable).toContain('1 High');
+  });
+
+  // ── SLF mitigation parity — the markdown SLF mitigation is STATE-AWARE,
+  //    identical to the dashboard, built through the shared
+  //    `buildSlfMitigationState` + `getSlfMitigationHint`. Pre-fix the
+  //    markdown used the generic `getMitigationHint({ evidenceSource: 'SLF' })`
+  //    line for every SLF card, so it drifted from the dashboard's state-aware
+  //    copy. ───────────────────────────────────────────────────────────────
+
+  /** A verdict whose ONLY finding is a self-attested OAuth-scope claim. */
+  function slfOAuthVerdict(): Verdict {
+    return {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'slf-0-broad-google-oauth',
+          band: 'medium',
+          severityScore: 6,
+          severityComponents: { br: 2, ds: 3, dm: 1 },
+          evidenceSource: 'SLF',
+          title: 'Broad Google OAuth permissions',
+          description:
+            'The deployment uses OAuth user credentials with spreadsheets and full Drive scope, self-reported.',
+        },
+      ],
+    } as unknown as Verdict;
+  }
+
+  /** A verdict whose ONLY finding is a self-attested credential-file claim. */
+  function slfCredentialsVerdict(): Verdict {
+    return {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'slf-0-credential-files',
+          band: 'medium',
+          severityScore: 5,
+          severityComponents: { br: 1, ds: 2, dm: 1 },
+          evidenceSource: 'SLF',
+          title: 'Secrets and credential files are local operational assets',
+          description:
+            'The deployment reads local API keys and bot tokens from a .env / credential file, self-reported.',
+        },
+      ],
+    } as unknown as Verdict;
+  }
+
+  it('SLF parity: OAuth introspection FAILED → md SLF mitigation carries the refresh-the-token variant, not "enable introspection"', () => {
+    // The demoReport fixture already carries an attempted-but-rejected
+    // (invalid_token) `oauthScopeVerification`, so the shared builder produces
+    // the "attempted + rejected" OAuth state.
+    const md = renderMarkdownReport(demoReport(), { verdict: slfOAuthVerdict() });
+
+    // State-aware OAuth variant (the exact dashboard copy from
+    // getSlfMitigationHint): provider rejected the token -> refresh + re-run.
+    expect(md).toMatch(/Refresh the token and re-run/i);
+    expect(md).toContain('the provider rejected the token');
+    // The stateless guidance ("re-run with OAuth introspection enabled") must
+    // be gone — that is the exact wrong advice when introspection already ran.
+    expect(md).not.toContain('re-run with OAuth introspection enabled');
+    // And it must NOT fall back to the generic evidence-source SLF copy.
+    expect(md).not.toContain('Heron has no deterministic evidence for this claim');
+  });
+
+  it('SLF parity: discovery READ the workspace .env → md SLF mitigation carries the rotate variant, not "re-run discovery"', () => {
+    // Discovery read the workspace .env this run -> the shared builder reports
+    // discoveryRan=true. No OAuth sources here so the OAuth branch is inert.
+    const report = demoReport({
+      oauthScopeVerification: { sources: [] },
+      // localAgentDiscovery is not on the AuditReport type (it lives only on
+      // the persisted report.json blob, same as oauthScopeVerification); the
+      // markdown SLF path reads it off the report via the shared builder.
+      localAgentDiscovery: {
+        agents: [],
+        findings: [],
+        scannedAt: '2026-05-30T09:28:50.000Z',
+        scannedPaths: ['/Users/ilaivanov/Codex/Codex3'],
+        workspaceEnv: [{ path: '.env', workspace: 'Codex3', keys: ['OPENAI_API_KEY', 'TELEGRAM_BOT_TOKEN'] }],
+      },
+    } as unknown as Partial<AuditReport>);
+
+    const md = renderMarkdownReport(report, { verdict: slfCredentialsVerdict() });
+
+    // State-aware credentials variant (the exact dashboard copy): .env already
+    // read -> rotate exposed secrets + move to a secret manager.
+    expect(md).toMatch(/rotate/i);
+    expect(md).toContain('secret manager');
+    expect(md).toContain('already read the workspace');
+    // The stateless "re-run discovery" guidance must be gone.
+    expect(md).not.toContain('Re-run discovery with workspace access');
+  });
+
+  it('SLF parity: non-SLF (verified) findings keep their existing evidence-source mitigation path', () => {
+    // A single VERIFIED OAuth-diff finding (evidenceSource 'OAU'). Its
+    // mitigation must come from getMitigationHint (evidence-source line), NOT
+    // the SLF subcategory copy.
+    const verifiedVerdict = {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'oau-0',
+          band: 'high',
+          severityScore: 9,
+          severityComponents: { br: 2, ds: 3, dm: 1.5 },
+          evidenceSource: 'OAU',
+          title: 'OAuth scope creep on google-drive',
+          description: 'Granted drive scope exceeds the requested drive.file scope.',
+        },
+      ],
+    } as unknown as Verdict;
+
+    const md = renderMarkdownReport(demoReport(), { verdict: verifiedVerdict });
+
+    // OAU evidence-source mitigation (from getMitigationHint).
+    expect(md).toContain('Either restrict the OAuth scope at the provider');
+    // Scope the SLF-leak check to the Findings section: the demoReport's failed
+    // `oauthScopeVerification` legitimately makes the Scope & Methodology
+    // limitations line mention "refresh the token", so asserting against the
+    // whole md would false-positive. The Findings section must carry the
+    // verified OAU hint and NOT the SLF state-aware OAuth variant.
+    const findings = md.slice(md.indexOf('## Findings'));
+    expect(findings).toContain('Either restrict the OAuth scope at the provider');
+    expect(findings).not.toContain('Refresh the token and re-run');
+    expect(findings).not.toContain('the provider rejected the token');
+  });
 });

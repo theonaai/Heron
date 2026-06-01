@@ -1,5 +1,5 @@
 /**
- * G9 (AAP-106) — per-system DEPLOYMENT RISK scoring.
+ * G9 (DS-tier rework) — per-system DEPLOYMENT RISK scoring.
  *
  * The core insight (Ilya, 2026-05-29): Heron's job is not just catching
  * declared-vs-actual DISCREPANCIES, it is surfacing RISK. Before G9,
@@ -38,11 +38,17 @@
  *     and destroy the per-system spread the demo needs (Gemini read-only vs
  *     Wellkid irreversible-write must diverge).
  *
- *   DS (Data Sensitivity) = T1/T2/T3 derived from the free-text
- *     `dataSensitivity` prose via {@link classifySystemDS}. The analyzer does
- *     NOT emit a structured tier per system (only prose), so we classify the
- *     prose with the same GDPR-Art.9 / PHI / financial / PII vocabulary the
- *     `severity-scoring.ts` DS axis uses. T1=1 / T2=2 / T3=3.
+ *   DS (Data Sensitivity) = T1/T2/T3 supplied DIRECTLY by the analyzer (LLM)
+ *     as `system.dataSensitivityTier`, grounded in the W3C DPV (Data Privacy
+ *     Vocabulary) taxonomy (see the per-system spec in src/llm/prompts.ts).
+ *     This module CONSUMES that tier — it no longer derives it. The old regex
+ *     classifier (`classifySystemDS`) was deleted: it was negation-blind
+ *     ("agent stated NO student names were found" matched `names` → T2) and
+ *     over-matched ("folder names" → T2). The LLM understands negation and
+ *     context, so the tier is sourced where that judgement lives. T1→1 / T2→2 /
+ *     T3→3. If the analyzer omits the tier, we default CONSERVATIVELY to T2 (a
+ *     security tool must not under-rate on uncertainty). The free-text
+ *     `dataSensitivity` prose is kept as the human-readable basis.
  *
  *   DM (Domain Multiplier) = 1.0 default. We deliberately do NOT infer 1.5
  *     from the prose here. DM=1.5 is an Annex III / Art. 35(3) regulatory
@@ -82,7 +88,14 @@ export interface SystemWriteOp {
  */
 export interface RiskScorableSystem {
   systemId: string;
+  /** Human-readable sensitivity prose (basis sentence for the tier). */
   dataSensitivity?: string;
+  /**
+   * DS-tier rework — analyzer-supplied DATA SENSITIVITY TIER (DPV-grounded). The DS
+   * axis keys off this. Optional: when absent, {@link scoreSystemRisk} defaults
+   * conservatively to T2.
+   */
+  dataSensitivityTier?: 'T1' | 'T2' | 'T3';
   blastRadius?: string;
   writeOperations?: SystemWriteOp[];
 }
@@ -95,86 +108,40 @@ export interface SystemRiskResult {
   br: AxisBand;
   ds: AxisBand;
   dm: DomainMultiplier;
-  /** T1 / T2 / T3 label + the short basis sentence lifted from the prose. */
+  /** T1 / T2 / T3 — the analyzer-supplied tier this row scored on (or the
+   *  conservative T2 default when the analyzer omitted it). */
   dsTier: 'T1' | 'T2' | 'T3';
-  /** Short "why this tier" basis (≤120 chars) derived from the sensitivity prose. */
+  /** Short "why this tier" basis (≤120 chars): the first clause of the
+   *  sensitivity prose when a tier was provided, else the default-T2 note. */
   dsBasis: string;
   /** True when this system declares at least one irreversible write op. */
   hasIrreversibleWrite: boolean;
 }
 
-// ─── DS classification (T1 / T2 / T3) from free-text sensitivity prose ────
+// ─── Data-sensitivity tier (T1 / T2 / T3) ─────────────────────────────────
+//
+// The tier is supplied by the analyzer (LLM) as `system.dataSensitivityTier`,
+// DPV-grounded — see the module JSDoc and src/llm/prompts.ts. This module no
+// longer derives it from prose (the old regex `classifySystemDS` was deleted:
+// negation-blind + over-matching). The only helper retained here is the basis
+// extractor: a short human-readable "why" sentence lifted from the prose for
+// the PII-basis-inline transparency surface.
 
-/**
- * T3 — GDPR Art. 9 special categories, PHI, financial credentials, gov IDs.
- * Anchored on the same vocabulary as `severity-scoring.ts` T3_PATTERNS.
- */
-const SYS_T3_RE =
-  /\b(health|medical|phi\b|patient|biometric|race|religion|sexual|political opinion|trade union|article\s*9|art\.?\s*9|hipaa|ssn|social security|passport|national id|tax id|credit card|cardholder|pci|cvv|bank account|iban|swift|payment card|financial credential)\b/i;
-
-/**
- * T2 — sensitive PII (names, contact, employment, education, communication
- * content, location, customer data). Anchored on the same categories as
- * `severity-scoring.ts` T2_PATTERNS but matched against prose.
- */
-const SYS_T2_RE =
-  /\b(pii|personal data|personal information|personal name|names?\b|e-?mail|phone|date of birth|\bdob\b|location|address|contact|employee|employment|education|student|lesson|course|message|messaging|credential|token|login|password)\b/i;
-
-/**
- * Classify the free-text `dataSensitivity` prose into a tier + a short basis.
- * Mirrors the renderer's `classifyDS` vocabulary (kept aligned on purpose so
- * the badge tier and the risk DS axis never disagree) but also returns a
- * compact "why" sentence for the G9 PII-basis-inline transparency fix.
- */
-export function classifySystemDS(prose: string): {
-  tier: 'T1' | 'T2' | 'T3';
-  ds: AxisBand;
-  basis: string;
-} {
-  const p = (prose || '').trim();
-  if (SYS_T3_RE.test(p)) {
-    return { tier: 'T3', ds: 3, basis: deriveBasis(p, SYS_T3_RE) };
-  }
-  if (SYS_T2_RE.test(p)) {
-    return { tier: 'T2', ds: 2, basis: deriveBasis(p, SYS_T2_RE) };
-  }
-  return { tier: 'T1', ds: 1, basis: p ? firstClause(p) : 'standard operational data' };
+/** Map a tier label to its DS axis band. T1→1 / T2→2 / T3→3. */
+function dsBandForTier(tier: 'T1' | 'T2' | 'T3'): AxisBand {
+  return tier === 'T3' ? 3 : tier === 'T2' ? 2 : 1;
 }
 
 /**
- * Pull a short human-readable basis from the sensitivity prose: the clause
- * that contains the tier-deciding keyword. So "T2 because ..." reads as the
- * actual phrase the analyzer wrote (e.g. "responsible fields may contain
- * names"), letting a reviewer judge whether the classification is sound
- * rather than over-conservative. Falls back to the first clause.
+ * Pull a short human-readable basis from the sensitivity prose: the first
+ * clause, truncated. Lets a reviewer see the phrase the analyzer wrote (e.g.
+ * "responsible fields may contain names") next to the tier it assigned.
  */
-function deriveBasis(prose: string, re: RegExp): string {
-  const m = re.exec(prose);
-  if (!m) return firstClause(prose);
-  // Find the clause (split on ; or . or ,) that contains the match index.
-  const idx = m.index;
-  const clauses = splitClauses(prose);
-  let cursor = 0;
-  for (const c of clauses) {
-    const start = prose.indexOf(c, cursor);
-    const end = start + c.length;
-    cursor = end;
-    if (idx >= start && idx < end) {
-      return truncate(c.trim(), 120);
-    }
-  }
-  return firstClause(prose);
-}
-
-function splitClauses(prose: string): string[] {
-  return prose
+function firstClause(prose: string): string {
+  const clauses = prose
     .split(/[;.]|,(?=\s)/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-}
-
-function firstClause(prose: string): string {
-  const clauses = splitClauses(prose);
   return truncate((clauses[0] ?? prose).trim(), 120);
 }
 
@@ -222,8 +189,21 @@ export function scoreSystemRisk(system: RiskScorableSystem): SystemRiskResult {
   const writeAxis = bandForWriteCount(writeOps.length);
   const br = Math.max(blastAxis, writeAxis) as AxisBand;
 
-  // DS from prose.
-  const dsClass = classifySystemDS(system.dataSensitivity ?? '');
+  // DS from the analyzer-supplied tier. When the analyzer provided a tier, the
+  // basis is the first clause of its prose (the human-readable "why"). When it
+  // omitted the tier, default CONSERVATIVELY to T2 — a security tool must not
+  // under-rate on uncertainty — and record that in the basis.
+  const prose = (system.dataSensitivity ?? '').trim();
+  let dsTier: 'T1' | 'T2' | 'T3';
+  let dsBasis: string;
+  if (system.dataSensitivityTier) {
+    dsTier = system.dataSensitivityTier;
+    dsBasis = prose ? firstClause(prose) : `analyzer-supplied tier ${dsTier}`;
+  } else {
+    dsTier = 'T2';
+    dsBasis = 'tier not provided by analyzer; defaulted conservatively to T2';
+  }
+  const ds = dsBandForTier(dsTier);
 
   // DM — 1.0 fixed for systems (see module JSDoc; domain amplifier reaches
   // posture via typed discovery/SLF findings, not prose inference here).
@@ -236,7 +216,7 @@ export function scoreSystemRisk(system: RiskScorableSystem): SystemRiskResult {
     brW: br,
     brR: 1,
     brA: 1,
-    ds: dsClass.ds,
+    ds,
     dm,
   });
 
@@ -245,10 +225,10 @@ export function scoreSystemRisk(system: RiskScorableSystem): SystemRiskResult {
     severity: result.severity,
     band: severityBand(result.severity),
     br,
-    ds: dsClass.ds,
+    ds,
     dm,
-    dsTier: dsClass.tier,
-    dsBasis: dsClass.basis,
+    dsTier,
+    dsBasis,
     hasIrreversibleWrite,
   };
 }

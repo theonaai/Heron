@@ -33,9 +33,11 @@ import type {
 } from '../verification/types.js';
 import { renderFrameworkMappingSection } from '../verification/frameworks/render.js';
 import type { Verdict, VerdictFinding } from '../verification/verdict.js';
+import type { SystemRiskResult } from '../verification/systems-risk.js';
 import type { DiscoveryFinding } from '../discovery/types.js';
 import {
   assignFindingCodes,
+  bucketForBand,
   countVerifiedByBucket,
   formatSeverityNumber,
   nearestStop,
@@ -45,7 +47,12 @@ import {
   SEVERITY_STOPS,
   type CodedVerdictFinding,
 } from './finding-display.js';
-import { getMitigationHint } from './mitigation-catalog.js';
+import {
+  buildSlfMitigationState,
+  getMitigationHint,
+  getSlfMitigationHint,
+  type SlfMitigationState,
+} from './mitigation-catalog.js';
 import { extractProjectName, type TranscriptEntryLike } from './agent-name.js';
 
 // ─── AAP-43 P1 #5 / AAP-84 Phase 4 — overall regulatory status ────────────
@@ -246,6 +253,23 @@ export function renderMarkdownReport(
   const verdict = context.verdict;
   const discoveryFindings = context.discoveryFindings ?? [];
 
+  // SLF parity: build the SLF mitigation state ONCE from the report's live
+  // session data and hand it to the Findings renderer, so every self-attested
+  // card's mitigation is state-aware and identical to the dashboard. Both
+  // `oauthScopeVerification` and `localAgentDiscovery` live only on the
+  // persisted report.json blob (not the `AuditReport` type), so they're read
+  // via a narrow cast — the same pattern `oauthIntrospectionState` uses for
+  // `oauthScopeVerification`. The shared builder is the single source of truth:
+  // the dashboard's `FindingsBlock` calls the very same function.
+  const reportBlob = report as {
+    oauthScopeVerification?: { sources?: Array<{ connector?: string; verdict?: string; errorMessage?: string }> };
+    localAgentDiscovery?: unknown;
+  };
+  const slfState = buildSlfMitigationState(
+    reportBlob.oauthScopeVerification,
+    reportBlob.localAgentDiscovery,
+  );
+
   const sections = [
     renderHeader(report, verdict),
     // AAP-79 — interrogation-only banner sits ABOVE the existing
@@ -285,13 +309,14 @@ export function renderMarkdownReport(
           report.compliance as StructuredCompliance | undefined,
           verdict,
           discoveryFindings,
+          slfState,
         )
       : renderFindingsSplit(
           report.risks,
           report.compliance as StructuredCompliance | undefined,
           discoveryFindings,
         ),
-    renderSystems(report.systems),
+    renderSystems(report.systems, verdict),
     renderPositiveFindings(report, discoveryFindings),
     renderVerdict(report, discoveryFindings, verdict),
     report.compliance ? renderRegulatoryCompliance(report.compliance as StructuredCompliance, report) : null,
@@ -721,6 +746,56 @@ function countDeterministicFindings(
   return out;
 }
 
+/**
+ * report parity (fix B) — count SELF-REPORTED findings by their COMPUTED
+ * severity band for the Executive Summary's "Self-reported findings" cell.
+ *
+ * The dashboard renders each self-attested finding card with its computed
+ * `verdict.findings[].band` (the analyzer's BR × DS × DM result), not the
+ * raw LLM `risk.severity`. The summary cell must agree with those cards.
+ *
+ * Self-attested == SLF-sourced verdict findings (same `evidenceSource ===
+ * 'SLF'` split the dashboard uses for its self-attested stream). We map each
+ * band onto the 4 customer-facing buckets via `bucketForBand` (informational
+ * folds into low) and tally.
+ *
+ * Fallback: when the verdict is absent or carries no `findings` array (older
+ * report.json on disk, or a pre-verdict render), count the RAW
+ * `report.risks[].severity` so legacy reports keep their prior behaviour.
+ */
+function countSelfReportedByBand(
+  risks: ReadonlyArray<Risk>,
+  verdict?: Verdict,
+): { critical: number; high: number; medium: number; low: number } {
+  const out = { critical: 0, high: 0, medium: 0, low: 0 };
+  const findings = verdict?.findings;
+  if (findings) {
+    for (const f of findings) {
+      if (f.evidenceSource !== 'SLF') continue;
+      out[bucketForBand(f.band)]++;
+    }
+    return out;
+  }
+  // Legacy fallback — raw self-reported severities.
+  for (const r of risks) {
+    switch (r.severity) {
+      case 'critical':
+        out.critical++;
+        break;
+      case 'high':
+        out.high++;
+        break;
+      case 'medium':
+        out.medium++;
+        break;
+      case 'low':
+        out.low++;
+        break;
+    }
+  }
+  return out;
+}
+
 function formatFindingsCount(counts: {
   critical: number;
   high: number;
@@ -749,12 +824,17 @@ function renderSummary(
   // Findings section below was actively rendering. The two streams
   // are different evidence sources; collapsing them undercounted in
   // the reviewer's eye.
-  const selfReportedCounts = {
-    critical: report.risks.filter((r) => r.severity === 'critical').length,
-    high: report.risks.filter((r) => r.severity === 'high').length,
-    medium: report.risks.filter((r) => r.severity === 'medium').length,
-    low: report.risks.filter((r) => r.severity === 'low').length,
-  };
+  // report parity (fix B) — the self-reported count must show the COMPUTED
+  // band of each self-attested finding, matching the dashboard's finding
+  // cards (which render `verdict.findings[].band`). `report.risks[].severity`
+  // is the RAW LLM self-report and over-states (e.g. 'high' where the
+  // computed band is 'medium'), so counting it drifted the summary above the
+  // cards. The self-attested stream is exactly the SLF-sourced verdict
+  // findings (same `evidenceSource === 'SLF'` split the dashboard uses), so
+  // we count those by `.band`. When the verdict carries no `findings` array
+  // (older / edge report.json), fall back to the raw `report.risks` severities
+  // so legacy reports keep their prior count.
+  const selfReportedCounts = countSelfReportedByBand(report.risks, verdict);
   const deterministicCounts = countDeterministicFindings(discoveryFindings);
   const selfReportedFindings = formatFindingsCount(selfReportedCounts);
   // Codex round 7 P2 — if the verdict's deterministicRiskLevel is
@@ -900,8 +980,23 @@ function groupSystemsByCategory(
   return out;
 }
 
-function renderSystems(systems: SystemAssessment[]): string {
+function renderSystems(
+  systems: SystemAssessment[],
+  verdict?: Verdict,
+): string {
   const grouped = groupSystemsByCategory(systems);
+
+  // report parity (fix A) — index the persisted per-system risk snapshot by
+  // `systemId` so each card header can show the SAME risk the dashboard's
+  // Severity column shows (`verdict.systemsRisk.systems[]`). This is the
+  // authoritative posture-aligned per-system risk; the prior
+  // `computeSystemRisk` heuristic disagreed with the posture math and was
+  // not what the dashboard rendered. Absent verdict / snapshot row -> the
+  // card degrades to no risk label (see renderSystemCard).
+  const riskBySystemId = new Map<string, SystemRiskResult>();
+  for (const row of verdict?.systemsRisk?.systems ?? []) {
+    riskBySystemId.set(row.systemId, row);
+  }
 
   // AAP-93 H4/H5 — render every non-empty category. The Systems section
   // is the audit's structural surface; hiding categories made the
@@ -912,7 +1007,9 @@ function renderSystems(systems: SystemAssessment[]): string {
     if (list.length === 0) continue;
     const label = systemCategoryLabel(cat);
     const rationale = systemCategoryRationale(cat);
-    const cards = list.map(renderSystemCard).join('\n\n');
+    const cards = list
+      .map((sys) => renderSystemCard(sys, riskBySystemId.get(sys.systemId)))
+      .join('\n\n');
     sections.push(`### ${label}\n\n_${rationale}_\n\n${cards}`);
   }
 
@@ -939,28 +1036,6 @@ ${explanation}
 ${sections.join('\n\n')}`;
 }
 
-// AAP-88: per-system risk scoring rubric. Point values (blast-radius
-// tiers, excessive-scopes / irreversible-writes / sensitive-data
-// contributions) and band thresholds (`templates_systemRisk_highBand`,
-// `templates_systemRisk_mediumBand`) documented in
-// src/verification/threshold-manifest.ts.
-function computeSystemRisk(sys: SystemAssessment): string {
-  let score = 0;
-  // Blast radius
-  const brScores: Record<string, number> = { 'single-record': 0, 'single-user': 1, 'team-scope': 2, 'org-wide': 3, 'cross-tenant': 4 };
-  score += brScores[sys.blastRadius] ?? 1;
-  // Excessive scopes
-  if (sys.scopesDelta.length > 0) score += 1;
-  // Irreversible writes
-  if (sys.writeOperations.some(w => !w.reversible)) score += 2;
-  // Data sensitivity
-  if (/pii|personal|health|financial|credit/i.test(sys.dataSensitivity)) score += 1;
-
-  if (score >= 5) return 'HIGH';
-  if (score >= 3) return 'MEDIUM';
-  return 'LOW';
-}
-
 /**
  * AAP-64 — per-system Property/Value table (Vijil-style). Replaces the
  * anonymous `| | |` 2-column shape with a named header so a markdown
@@ -973,9 +1048,11 @@ function computeSystemRisk(sys: SystemAssessment): string {
  * table, tagged "(legacy shape)" so a reviewer knows it isn't the
  * canonical structured form.
  */
-function renderSystemCard(sys: SystemAssessment): string {
+function renderSystemCard(
+  sys: SystemAssessment,
+  riskRow?: SystemRiskResult,
+): string {
   const rows: Array<[string, string]> = [];
-  const risk = computeSystemRisk(sys);
 
   // System short-id (mono, identifier) — separate from the long
   // systemDescription that lives in the main "System" row.
@@ -1089,7 +1166,17 @@ ${rows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
 ${freqRows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
   }
 
-  return `### ${sys.systemId} — Risk: ${risk}${descriptionLine}
+  // report parity (fix A) — header risk label is sourced from the persisted
+  // per-system snapshot (`verdict.systemsRisk.systems[]`), matching the
+  // dashboard's Risk column ("<severity> (<band>)", e.g. "6 (Medium)").
+  // When this system has no matching snapshot row (no verdict, or a system
+  // the risk pass did not score) we omit the risk label rather than fall
+  // back to a heuristic that disagrees with the posture math.
+  const riskLabel = riskRow
+    ? ` — Risk: ${formatSeverityNumber(riskRow.severity)} (${SEVERITY_BAND_LABEL[riskRow.band]})`
+    : '';
+
+  return `### ${sys.systemId}${riskLabel}${descriptionLine}
 
 ${mainTable}${freqTable}`;
 }
@@ -1436,6 +1523,12 @@ function renderFindingCard(
   finding: CodedVerdictFinding,
   compliance: StructuredCompliance | undefined,
   legacyRisk?: Risk,
+  // Live OAuth-introspection + discovery state for this session, built once by
+  // the caller via the shared `buildSlfMitigationState`. Consumed ONLY for SLF
+  // findings, so the markdown SLF mitigation is state-aware and identical to
+  // the dashboard (e.g. introspection attempted + rejected -> refresh the
+  // token; .env already read -> rotate). Ignored for non-SLF findings.
+  slfState?: SlfMitigationState,
 ): string {
   const sevText = formatSeverityNumber(finding.severityScore);
   const bandLabel = SEVERITY_BAND_LABEL[finding.band];
@@ -1475,10 +1568,25 @@ function renderFindingCard(
   // Mitigations callout — 1-line actionable hint. (Doc links were removed
   // in AAP-105 F3: `docs.heron` was a placeholder domain, not a real docs
   // site; they get added back when real docs exist.)
-  const mitigationHint = getMitigationHint({
-    ...(findingType ? { findingType } : {}),
-    evidenceSource: finding.evidenceSource,
-  });
+  //
+  // SLF parity: self-attested findings resolve their hint through
+  // `getSlfMitigationHint(finding, slfState)` — the SAME state-aware lookup the
+  // dashboard's `MinimalFindingCard` uses — so the markdown picks the
+  // subcategory variant (oauth / credentials / write / vendor / …) AND the
+  // state-aware copy (introspection attempted+rejected -> refresh the token;
+  // .env already read -> rotate) instead of the generic evidence-source SLF
+  // line that drifted from the dashboard. Non-SLF findings keep the existing
+  // findingType > evidenceSource lookup.
+  const mitigationHint =
+    finding.evidenceSource === 'SLF'
+      ? getSlfMitigationHint(
+          { title: finding.title, description: finding.description },
+          slfState,
+        )
+      : getMitigationHint({
+          ...(findingType ? { findingType } : {}),
+          evidenceSource: finding.evidenceSource,
+        });
 
   // Use a blockquote-style green callout in markdown (`>`). The HTML
   // renderer + dashboard map to a proper green-tinted box.
@@ -1610,6 +1718,11 @@ function renderFindingsCards(
   compliance: StructuredCompliance | undefined,
   verdict: Verdict,
   discoveryFindings: DiscoveryFinding[],
+  // Live session state (OAuth introspection + .env discovery) for the SLF
+  // mitigation hints, built once by `renderMarkdownReport` via the shared
+  // `buildSlfMitigationState`. Forwarded to each SLF card so the markdown SLF
+  // mitigation matches the dashboard's state-aware copy.
+  slfState?: SlfMitigationState,
 ): string {
   // Pair each VerdictFinding to a Risk for FindingType + mitigation
   // prose lookup. The match is positional: interview risks are
@@ -1690,7 +1803,7 @@ function renderFindingsCards(
   } else {
     for (const f of selfAttested) {
       const legacy = slfRiskByIndex.get(f.id);
-      lines.push(renderFindingCard(f, compliance, legacy));
+      lines.push(renderFindingCard(f, compliance, legacy, slfState));
       lines.push('');
     }
   }

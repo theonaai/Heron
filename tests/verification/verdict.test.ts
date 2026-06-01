@@ -747,14 +747,16 @@ describe('computeVerdict — G8b per-runtime scope gate (AAP-105)', () => {
 describe('computeVerdict — G9 risk posture from systems', () => {
   // Mirrors the demo: 0 discrepancies (all 6 EXTRA reclassify as codex
   // host-capabilities), but 7 systems carry real risk.
+  // AAP-106 — DS tier is now analyzer-supplied (no longer derived from prose),
+  // so each system carries an explicit dataSensitivityTier.
   const RISKY_SYSTEMS = [
-    { systemId: 'google-sheets', dataSensitivity: 'PII; responsible fields may contain names', blastRadius: 'single-user', writeOperations: [
+    { systemId: 'google-sheets', dataSensitivity: 'PII; responsible fields may contain names', dataSensitivityTier: 'T2' as const, blastRadius: 'single-user', writeOperations: [
       { operation: 'a', target: 'x', reversible: true }, { operation: 'b', target: 'x', reversible: true },
     ] },
-    { systemId: 'gamma', dataSensitivity: 'slide prompt text and lesson title', blastRadius: 'single-user', writeOperations: [
+    { systemId: 'gamma', dataSensitivity: 'slide prompt text and lesson title', dataSensitivityTier: 'T1' as const, blastRadius: 'single-user', writeOperations: [
       { operation: 'create', target: 'gamma', reversible: false },
     ] },
-    { systemId: 'telegram-bot', dataSensitivity: 'message previews and topic names', blastRadius: 'team-scope', writeOperations: [
+    { systemId: 'telegram-bot', dataSensitivity: 'message previews and topic names', dataSensitivityTier: 'T2' as const, blastRadius: 'team-scope', writeOperations: [
       { operation: 'send', target: 'chat', reversible: false },
     ] },
   ];
@@ -800,7 +802,7 @@ describe('computeVerdict — G9 risk posture from systems', () => {
     // Low-risk systems (read-only single-user T1 = severity 1) but a strong
     // Verified discrepancy. Posture must follow the discrepancy.
     const lowSystems = [
-      { systemId: 'metrics', dataSensitivity: 'aggregate counts', blastRadius: 'single-user', writeOperations: [] },
+      { systemId: 'metrics', dataSensitivity: 'aggregate counts', dataSensitivityTier: 'T1' as const, blastRadius: 'single-user', writeOperations: [] },
     ];
     const discoveryFindings: DiscoveryFinding[] = [
       { kind: 'EXTRA', severity: 'HIGH', serverName: 'postgres', runtime: 'claude-code', description: 'project-scoped' },
@@ -841,7 +843,7 @@ describe('computeVerdict — G9 risk posture from systems', () => {
     // renderer shows a green "Low risk · no discrepancies", not gray.
     const verdict = computeVerdict({
       systemAssessments: [
-        { systemId: 'metrics', dataSensitivity: 'aggregate counts', blastRadius: 'single-user', writeOperations: [] },
+        { systemId: 'metrics', dataSensitivity: 'aggregate counts', dataSensitivityTier: 'T1' as const, blastRadius: 'single-user', writeOperations: [] },
       ],
       discoveryFindings: [],
     });

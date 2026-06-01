@@ -38,6 +38,13 @@ export interface ReportJsonSystem {
   scopesNeeded: string[];
   scopesDelta: string[];
   dataSensitivity: string;
+  /**
+   * DS-tier rework — analyzer-supplied DPV-grounded data-sensitivity tier. Optional:
+   * persisted reports written before this field exists won't carry it, and the
+   * verdict's systems-risk consumer (src/verification/systems-risk.ts) defaults
+   * conservatively to T2 when it is absent.
+   */
+  dataSensitivityTier?: 'T1' | 'T2' | 'T3';
   blastRadius: string;
   frequencyAndVolume: string;
   writeOperations: ReportJsonWriteOperation[];

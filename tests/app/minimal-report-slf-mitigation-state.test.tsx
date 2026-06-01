@@ -25,10 +25,11 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import {
-  MinimalFindingCard,
-  buildSlfMitigationState,
-} from '@/components/heron-v1/dashboard/MinimalReportView';
+import { MinimalFindingCard } from '@/components/heron-v1/dashboard/MinimalReportView';
+// AAP-110 -> shared builder: `buildSlfMitigationState` moved out of the
+// `'use client'` dashboard component into the backend catalog so the dashboard
+// and the markdown report share one implementation. Import it from its new home.
+import { buildSlfMitigationState } from '@/src/report/mitigation-catalog';
 
 // A SLF finding whose title hits the OAuth subcategory pattern.
 const oauthFinding = {

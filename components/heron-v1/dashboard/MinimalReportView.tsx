@@ -30,7 +30,12 @@ import {
   type CodedVerdictFinding,
 } from '@/src/report/finding-display';
 import { extractProjectName } from '@/src/report/agent-name';
-import { getMitigationHint, getSlfMitigationHint, type SlfMitigationState } from '@/src/report/mitigation-catalog';
+import {
+  buildSlfMitigationState,
+  getMitigationHint,
+  getSlfMitigationHint,
+  type SlfMitigationState,
+} from '@/src/report/mitigation-catalog';
 import type {
   EvidenceSource,
   ReportSeverityBand,
@@ -235,6 +240,26 @@ function systemRiskScore(row: SystemRiskRow): number {
 }
 
 /**
+ * Per-system severity readout sourced from the persisted snapshot
+ * (`verdict.systemsRisk.systems[].severity` + `.band`). The headline posture
+ * is the FIPS high-water-mark of these per-system severities, so surfacing
+ * them per row lets a reviewer see which system drives the verdict. Looks up
+ * the row by `systemId` (same as the DS-tier/basis lookups). Returns `null`
+ * when the snapshot has no matching row (edge / pre-snapshot report) so the
+ * caller can degrade gracefully.
+ */
+function systemSeverity(
+  system: SystemAssessment,
+  verdict?: VerdictSnapshot,
+): { score: number; band: ReportSeverityBand; br: number; ds: number; dm: number } | null {
+  const row = verdict?.systemsRisk?.systems?.find(
+    (r) => r.systemId === system.systemId,
+  );
+  if (!row) return null;
+  return { score: systemRiskScore(row), band: row.band, br: row.br, ds: row.ds, dm: row.dm };
+}
+
+/**
  * Resolve the human DISPLAY NAME for a systems-risk row. The row carries only
  * the kebab `systemId`, so match it against the named `systems` list (the same
  * source `SystemsBlock` renders) and humanize via `humanizeSystemId` — exactly
@@ -249,31 +274,31 @@ function resolveSystemDisplayName(
   return humanizeSystemId(match?.systemId ?? systemId);
 }
 
-// ─── DS classifier — T1 / T2 / T3 ─────────────────────────────────────
+// ─── DS tier (T1 / T2 / T3) — persisted, never re-classified ───────────
 //
-// Strict keyword heuristic over the system's dataSensitivity prose. Mirrors
-// the BR×DS×DM logic in `src/verification/severity-scoring.ts` but operates
-// on the system-level prose since per-system structured DS isn't persisted.
+// The authoritative per-system data-sensitivity tier is computed by the
+// backend (`src/verification/severity-scoring.ts`) and persisted on the
+// verdict snapshot at `verdict.systemsRisk.systems[].dsTier`. The dashboard
+// READS that value — it must never re-derive the tier from the free-text
+// prose (an earlier local regex drifted from the backend and could
+// contradict the posture math). Mirrors `systemDsBasis` below: persisted
+// snapshot is the single source of truth.
 
-function classifyDS(prose: string): { tier: 'T1' | 'T2' | 'T3'; label: string } {
-  const p = (prose || '').toLowerCase();
-  // T3: Article 9 / PHI / financial / gov ID
-  if (
-    /\b(health|medical|phi|biometric|race|religion|sexual|political|trade union|article 9|art\.?\s*9|hipaa|gov\s*id|ssn|social security|passport|tax\s*id|payment card|pci|credit card|cvv|bank account|iban|swift)\b/.test(
-      p,
-    )
-  ) {
-    return { tier: 'T3', label: 'T3 (Critical)' };
-  }
-  // T2: standard PII
-  if (
-    /\b(pii|personal data|personal information|email|phone|dob|date of birth|location|name and|address|contact|employee|employment record|messag(e|ing))\b/.test(
-      p,
-    )
-  ) {
-    return { tier: 'T2', label: 'T2 (Sensitive PII)' };
-  }
-  return { tier: 'T1', label: 'T1 (Standard)' };
+const DS_TIER_LABEL: Readonly<Record<'T1' | 'T2' | 'T3', string>> = {
+  T1: 'T1 (Standard)',
+  T2: 'T2 (Sensitive PII)',
+  T3: 'T3 (Critical)',
+};
+
+function systemDsTier(
+  system: SystemAssessment,
+  verdict?: VerdictSnapshot,
+): { tier: 'T1' | 'T2' | 'T3'; label: string } | null {
+  const tier = verdict?.systemsRisk?.systems?.find(
+    (r) => r.systemId === system.systemId,
+  )?.dsTier;
+  if (!tier) return null;
+  return { tier, label: DS_TIER_LABEL[tier] };
 }
 
 // ─── G9 (AAP-106): PII / sensitivity basis inline ─────────────────────
@@ -1208,8 +1233,8 @@ function SystemsBlock({
           <tr style={{ textAlign: 'left', color: '#71717a', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
             <th style={{ padding: '8px 8px 8px 0', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>System</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Access</th>
-            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>
-            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
+            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
+            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Risk</th>
             <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>Verified?</th>
           </tr>
         </thead>
@@ -1240,15 +1265,23 @@ function SystemRow({
   })();
   const [open, setOpen] = useState(preOpen);
   const access = classifyAccess(system);
-  const ds = classifyDS(system.dataSensitivity || '');
+  // DS tier is READ from the persisted snapshot (single source of truth,
+  // aligned with the risk DS axis) — never re-classified from the prose.
+  // `null` when this system has no matching persisted row (edge /
+  // pre-snapshot report); we then hide the badge rather than guess.
+  const ds = systemDsTier(system, verdict);
   // G9 (AAP-106) — PII-basis inline. Surface WHY this system got its DS tier
   // so a reviewer can judge over-classification (e.g. Google Sheets is T2
   // because "responsible fields may contain names" — operators/staff, a
   // possibility, not data-subject PII). Prefer the backend-computed basis
   // (single source of truth, aligned with the risk DS axis); fall back to a
-  // short clause from the prose. We do NOT change how T2 is assigned here —
-  // basis-inline only (the detection re-tune is a later pass).
+  // short clause from the prose.
   const dsBasis = systemDsBasis(system, verdict);
+  // Per-system deployment-risk severity + band, read from the persisted
+  // snapshot. The headline posture is the max of these; surfacing each row's
+  // value shows the reviewer which system drives the verdict. `null` when no
+  // matching persisted row.
+  const severity = systemSeverity(system, verdict);
   const irreversible = hasIrreversibleWrites(system);
   const findingsCount = findingsTouchingSystem(system.systemId, verdict);
   const verifiedGlyph = findingsCount > 0 ? '⚠' : '✓';
@@ -1294,23 +1327,28 @@ function SystemRow({
           <AccessBadge tier={access} />
         </td>
         <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', maxWidth: 240 }}>
-          <SensitivityBadge label={ds.label} tier={ds.tier} basis={dsBasis} />
-          {dsBasis && (
-            <div
-              style={{
-                fontSize: 10.5,
-                color: '#a1a1aa',
-                lineHeight: 1.35,
-                marginTop: 3,
-                fontStyle: 'italic',
-              }}
-              title={dsBasis}
-            >
-              {ds.tier} — {dsBasis}
-            </div>
+          {ds ? (
+            <>
+              <SensitivityBadge label={ds.label} tier={ds.tier} basis={dsBasis} />
+              {dsBasis && (
+                <div
+                  style={{
+                    fontSize: 10.5,
+                    color: '#a1a1aa',
+                    lineHeight: 1.35,
+                    marginTop: 3,
+                    fontStyle: 'italic',
+                  }}
+                  title={dsBasis}
+                >
+                  {ds.tier} — {dsBasis}
+                </div>
+              )}
+            </>
+          ) : (
+            <span style={{ color: '#a1a1aa' }}>—</span>
           )}
-        </td>
-        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
+        </td>        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
           {system.writeOperations.length === 0 ? (
             <span style={{ color: '#a1a1aa' }}>—</span>
           ) : (
@@ -1339,6 +1377,13 @@ function SystemRow({
             </>
           )}
         </td>
+        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9' }}>
+          {severity ? (
+            <SeverityBadge score={severity.score} band={severity.band} br={severity.br} ds={severity.ds} dm={severity.dm} />
+          ) : (
+            <span style={{ color: '#a1a1aa' }}>—</span>
+          )}
+        </td>
         <td style={{ padding: '10px 0 10px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'center' }}>
           <span
             title={verifiedTitle}
@@ -1354,7 +1399,7 @@ function SystemRow({
       </tr>
       {open && (
         <tr>
-          <td colSpan={5} style={{ padding: '0 8px 14px 24px', background: '#f8fafc', borderBottom: '1px solid #f1f5f9' }}>
+          <td colSpan={6} style={{ padding: '0 8px 14px 24px', background: '#f8fafc', borderBottom: '1px solid #f1f5f9' }}>
             <SystemDetail system={system} />
           </td>
         </tr>
@@ -1421,6 +1466,83 @@ function SensitivityBadge({
     >
       {label}
     </span>
+  );
+}
+
+/**
+ * Per-system deployment-risk severity badge: "<score> · <Band>" (e.g.
+ * "6 · Medium"). Score + band are READ from the persisted snapshot
+ * (`verdict.systemsRisk.systems[].severity` / `.band`); the headline posture
+ * is the high-water-mark of these. Palette follows the band the same way the
+ * other table badges do (critical/high red, medium amber, low/info neutral).
+ */
+function SeverityBadge({
+  score,
+  band,
+  br,
+  ds,
+  dm,
+}: {
+  score: number;
+  band: ReportSeverityBand;
+  br: number;
+  ds: number;
+  dm: number;
+}) {
+  // Solid band color (the same gradient stop the posture badge and the finding
+  // severity badge use) so the per-system risk reads as a highlighted chip, not
+  // a faint pill.
+  const sevColor = colorForSeverity(score);
+  // Same BR × DS × DM decode the posture popover uses, scoped to this system,
+  // so a reviewer can see WHY a row scored what it did (mirrors the finding
+  // severity badge's `?` affordance). Number-first to match the posture card
+  // ("2 (Low)"), not band-first.
+  const formula = `Blast Radius ${br} × Data Sensitivity ${ds} × Domain ${dm} = ${formatSeverityNumber(
+    score,
+  )} (${SEVERITY_BAND_LABEL[band]})`;
+  return (
+    <InfoPopover
+      placement="below-left"
+      width={280}
+      ariaLabel={formula}
+      content={<span className="mono">{formula}</span>}
+    >
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '3px 9px',
+          background: sevColor,
+          color: '#ffffff',
+          borderRadius: 4,
+          fontSize: 11,
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+          cursor: 'help',
+        }}
+      >
+        {formatSeverityNumber(score)} ({SEVERITY_BAND_LABEL[band]})
+        <span
+          aria-hidden
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 12,
+            height: 12,
+            borderRadius: '50%',
+            border: '1px solid rgba(255,255,255,0.7)',
+            color: '#ffffff',
+            fontSize: 8.5,
+            fontWeight: 700,
+            lineHeight: 1,
+          }}
+        >
+          ?
+        </span>
+      </span>
+    </InfoPopover>
   );
 }
 
@@ -2063,43 +2185,12 @@ function EnvKeyChip({ name }: { name: string }) {
 
 // ─── Block 4: Findings ────────────────────────────────────────────────
 
-/**
- * AAP-110: collapse the report's live session data into the `SlfMitigationState`
- * that `getSlfMitigationHint` consumes, so a SLF mitigation never tells the
- * reviewer to re-run a check that already ran this session.
- *
- *   - `oauth.attempted` is true once at least one introspection source exists
- *     (the agent forwarded its tokeninfo via `report_oauth_scopes` this run);
- *     the first source carrying an `errorMessage` supplies the verdict + the
- *     message so an expired / invalid token is detected.
- *   - `discoveryRan` is true only when discovery actually read a workspace
- *     `.env` / credential file (`workspaceEnv` non-empty), which is the
- *     precondition the credentials mitigation checks before saying "re-run
- *     discovery".
- */
-export function buildSlfMitigationState(
-  oauthScopeVerification: MinimalReportJson['oauthScopeVerification'],
-  localAgentDiscovery: unknown,
-): SlfMitigationState {
-  const sources = oauthScopeVerification?.sources ?? [];
-  const erroredSource = sources.find((s) => s.errorMessage);
-  const oauth: SlfMitigationState['oauth'] =
-    sources.length > 0
-      ? {
-          attempted: true,
-          verdict: erroredSource?.verdict ?? sources[0]?.verdict,
-          errorMessage: erroredSource?.errorMessage,
-        }
-      : { attempted: false };
-
-  const disc =
-    localAgentDiscovery && typeof localAgentDiscovery === 'object'
-      ? (localAgentDiscovery as { workspaceEnv?: unknown[] })
-      : null;
-  const discoveryRan = (disc?.workspaceEnv?.length ?? 0) > 0;
-
-  return { oauth, discoveryRan };
-}
+// `buildSlfMitigationState` (collapse the report's OAuth-introspection +
+// discovery state into the `SlfMitigationState` each SLF card consumes) now
+// lives in the shared backend catalog `src/report/mitigation-catalog.ts`
+// alongside `getSlfMitigationHint`, so the dashboard and the markdown report
+// build the SLF mitigation state through ONE function and can never drift.
+// Imported at the top of this file.
 
 function FindingsBlock({
   verdict,

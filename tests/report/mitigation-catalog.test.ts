@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  buildSlfMitigationState,
   getMitigationHint,
   getSlfMitigationHint,
   MITIGATION_CATALOG,
@@ -325,5 +326,85 @@ describe('getSlfMitigationHint - AAP-110 state-aware credentials', () => {
   it('discovery did not run: keeps the re-run guidance', () => {
     const got = getSlfMitigationHint(credFinding, { discoveryRan: false });
     expect(got).toMatch(/discovery/i);
+  });
+});
+
+// The shared builder moved out of the dashboard `'use client'` component into
+// this backend catalog so the dashboard AND the markdown report build the SLF
+// mitigation state through one function (no surface can drift). It collapses
+// the report's `oauthScopeVerification` + `localAgentDiscovery` blobs into the
+// `SlfMitigationState` that `getSlfMitigationHint` consumes.
+describe('buildSlfMitigationState (shared dashboard/markdown builder)', () => {
+  it('(a) failed OAuth introspection: attempted=true + carries the rejection message', () => {
+    const state = buildSlfMitigationState(
+      {
+        sources: [
+          {
+            connector: 'google-workspace',
+            verdict: 'unverified',
+            errorMessage:
+              'introspection-error: provider rejected the token (invalid_token: Invalid Value)',
+          },
+        ],
+      },
+      undefined,
+    );
+    expect(state.oauth?.attempted).toBe(true);
+    expect(state.oauth?.verdict).toBe('unverified');
+    expect(state.oauth?.errorMessage).toMatch(/invalid_token/);
+    expect(state.discoveryRan).toBe(false);
+
+    // End-to-end: this state drives the state-aware OAuth hint (refresh, not
+    // "enable introspection").
+    const hint = getSlfMitigationHint(
+      { title: 'Broad Google OAuth scope', description: 'spreadsheets, drive scope' },
+      state,
+    );
+    expect(hint).toMatch(/refresh the token/i);
+    expect(hint).not.toContain('re-run with OAuth introspection enabled');
+  });
+
+  it('(b) discovery ran with workspaceEnv: discoveryRan=true', () => {
+    const state = buildSlfMitigationState(
+      { sources: [] },
+      { workspaceEnv: [{ path: '.env', keys: ['OPENAI_API_KEY'] }] },
+    );
+    expect(state.discoveryRan).toBe(true);
+    expect(state.oauth?.attempted).toBe(false);
+
+    // End-to-end: this state drives the state-aware credentials hint (rotate,
+    // not "re-run discovery").
+    const hint = getSlfMitigationHint(
+      { title: 'Service-account credential file', description: 'a .env file with API keys is mounted' },
+      state,
+    );
+    expect(hint).toMatch(/rotate/i);
+    expect(hint).toContain('secret manager');
+    expect(hint).not.toContain('Re-run discovery with workspace access');
+  });
+
+  it('(c) neither OAuth nor discovery ran: attempted=false, discoveryRan=false', () => {
+    const state = buildSlfMitigationState(undefined, undefined);
+    expect(state.oauth?.attempted).toBe(false);
+    expect(state.discoveryRan).toBe(false);
+
+    // And again with explicitly-empty payloads.
+    const emptyState = buildSlfMitigationState({ sources: [] }, { workspaceEnv: [] });
+    expect(emptyState.oauth?.attempted).toBe(false);
+    expect(emptyState.discoveryRan).toBe(false);
+  });
+
+  it('surfaces the FIRST source carrying an introspection error (verified rows skipped)', () => {
+    const state = buildSlfMitigationState(
+      {
+        sources: [
+          { connector: 'a', verdict: 'verified' },
+          { connector: 'b', verdict: 'unverified', errorMessage: 'introspection-error: token expired' },
+        ],
+      },
+      undefined,
+    );
+    expect(state.oauth?.attempted).toBe(true);
+    expect(state.oauth?.errorMessage).toMatch(/expired/);
   });
 });
