@@ -225,3 +225,105 @@ describe('getSlfMitigationHint — AAP-105 B6 per-subcategory variants', () => {
     }
   });
 });
+
+
+describe('getSlfMitigationHint - AAP-110 readability', () => {
+  // The dashboard renderer splits a hint on "; " into separate bullets
+  // (MinimalReportView `mitigationItems`). A hint that relied on "; " as
+  // its only sentence separator therefore rendered as two glued fragments
+  // ("...directly the agent forwards..."). Mitigation copy must read as
+  // clean prose: no semicolon-space separators, no double spaces, and
+  // both clauses present as a single readable string.
+  const stateless = [
+    getSlfMitigationHint({
+      title: 'Broad Google OAuth scope',
+      description: 'agent holds spreadsheets, drive scope',
+    }),
+    getSlfMitigationHint({
+      title: 'Service-account credential file',
+      description: 'a .env file with API keys is mounted',
+    }),
+  ];
+
+  it('does not use a semicolon-space separator (which the dashboard splits on)', () => {
+    for (const hint of stateless) {
+      expect(hint).not.toContain('; ');
+    }
+  });
+
+  it('has no missing separator / double spaces and is non-empty prose', () => {
+    for (const hint of stateless) {
+      expect(hint).not.toMatch(/ {2,}/); // no double spaces
+      expect(hint.trim().length).toBeGreaterThan(0);
+      // both clauses present: the OAuth/credentials hints describe what
+      // Heron does AND what to do next, so they contain at least 2 sentences.
+      expect(hint.split('. ').filter((s) => s.trim().length > 0).length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('OAuth hint reads glued-free: no "directly the agent forwards" run-on', () => {
+    const oauth = getSlfMitigationHint({
+      title: 'Broad Google OAuth scope',
+      description: 'agent holds spreadsheets, drive scope',
+    });
+    // Regression for the exact bug: "...token directly[NO SEPARATOR]the agent..."
+    expect(oauth).not.toMatch(/directly the agent forwards/);
+    expect(oauth).not.toMatch(/directly;the/);
+  });
+});
+
+describe('getSlfMitigationHint - AAP-110 state-aware OAuth', () => {
+  const oauthFinding = {
+    title: 'Broad Google OAuth scope',
+    description: 'agent holds spreadsheets, drive scope',
+  };
+
+  it('expired/invalid token: says introspection was attempted + recommends refresh, NOT "enable introspection"', () => {
+    const got = getSlfMitigationHint(oauthFinding, {
+      oauth: {
+        attempted: true,
+        verdict: 'unverified',
+        errorMessage:
+          'introspection-error: provider rejected the token (invalid_token: Invalid Value)',
+      },
+    });
+    // Must NOT tell the reviewer to enable/re-run introspection that already ran.
+    expect(got).not.toMatch(/re-run with OAuth introspection enabled/i);
+    expect(got).not.toMatch(/introspection enabled/i);
+    // Must reflect the real state: attempted, token rejected, refresh + re-run.
+    expect(got).toMatch(/refresh/i);
+    expect(got).toMatch(/token/i);
+    expect(got).toMatch(/attempt|rejected|expired|invalid/i);
+  });
+
+  it('introspection genuinely never ran: keeps the "enable introspection" guidance', () => {
+    const got = getSlfMitigationHint(oauthFinding, { oauth: { attempted: false } });
+    expect(got).toMatch(/introspection/i);
+    expect(got).not.toMatch(/refresh the token/i);
+  });
+
+  it('no state passed: behaves like before (back-compat)', () => {
+    const got = getSlfMitigationHint(oauthFinding);
+    expect(got).toMatch(/oauth/i);
+    expect(got).toMatch(/introspect/i);
+  });
+});
+
+describe('getSlfMitigationHint - AAP-110 state-aware credentials', () => {
+  const credFinding = {
+    title: 'Service-account credential file',
+    description: 'a .env file with API keys is mounted',
+  };
+
+  it('discovery already read .env: reflects that + recommends rotation, NOT "re-run discovery"', () => {
+    const got = getSlfMitigationHint(credFinding, { discoveryRan: true });
+    expect(got).not.toMatch(/re-run discovery/i);
+    expect(got).toMatch(/rotat/i); // rotate / rotation
+    expect(got).toMatch(/\.env|read/i);
+  });
+
+  it('discovery did not run: keeps the re-run guidance', () => {
+    const got = getSlfMitigationHint(credFinding, { discoveryRan: false });
+    expect(got).toMatch(/discovery/i);
+  });
+});

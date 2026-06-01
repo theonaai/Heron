@@ -99,6 +99,12 @@ const MITIGATION_FALLBACK =
  * stays as the final fallback when none of these match.
  */
 const SLF_SUBCATEGORY_HINTS: Array<{
+  /**
+   * Stable identifier for the subcategory. `getSlfMitigationHint` uses it
+   * to pick a state-aware variant (AAP-110) for the classes whose live
+   * audit state is available — currently `oauth` and `credentials`.
+   */
+  key?: 'oauth' | 'credentials';
   pattern: RegExp;
   hint: string;
 }> = [
@@ -113,7 +119,14 @@ const SLF_SUBCATEGORY_HINTS: Array<{
     // introspecting the token directly: the agent forwards its granted
     // scopes via the OAuth introspection flow (G10). To upgrade, re-run
     // with OAuth introspection enabled so Heron diffs granted vs declared.
-    hint: 'Self-attested OAuth scope — not verified from a document. Heron checks OAuth by introspecting the token directly; the agent forwards its granted scopes via the introspection flow. To verify, re-run with OAuth introspection enabled so granted scopes are diffed against declared usage.',
+    //
+    // AAP-110: written as plain sentences (period separators, no "; ")
+    // because the dashboard renderer splits a hint on "; " into separate
+    // bullets, so a semicolon clause rendered as two glued fragments. This
+    // is the stateless variant (introspection state unknown); the
+    // state-aware variants live in `getSlfMitigationHint`.
+    key: 'oauth',
+    hint: 'Self-attested OAuth scope, not verified from a document. Heron verifies OAuth by introspecting the token directly: the agent forwards its granted scopes through the introspection flow. To verify, re-run with OAuth introspection enabled so granted scopes are diffed against declared usage.',
   },
   {
     // Secrets / credentials / .env / API keys. After OAuth — we want the
@@ -122,7 +135,12 @@ const SLF_SUBCATEGORY_HINTS: Array<{
     // #28 — the deterministic source is the workspace .env / credential
     // files, which Heron's discovery scan reads directly. Re-run discovery
     // rather than "supplying" anything.
-    hint: 'Self-attested credential use — re-run discovery with workspace access so Heron reads the .env / credential files directly and confirms which keys are deployed. Rotate any secret found in plaintext.',
+    //
+    // AAP-110: stateless variant (discovery state unknown). When discovery
+    // already read the .env this turn, `getSlfMitigationHint` returns the
+    // state-aware variant instead of telling the reviewer to re-run it.
+    key: 'credentials',
+    hint: 'Self-attested credential use, not verified from a document. Re-run discovery with workspace access so Heron reads the .env / credential files directly and confirms which keys are deployed. Rotate any secret found in plaintext.',
   },
   {
     // Bulk write / production audit log of write actions.
@@ -178,13 +196,79 @@ const SLF_SUBCATEGORY_HINTS: Array<{
  *
  * Total — always returns a non-empty string.
  */
-export function getSlfMitigationHint(finding: {
-  title?: string;
-  description?: string;
-}): string {
+export interface SlfMitigationState {
+  oauth?: {
+    /** Whether an OAuth introspection was attempted this session. */
+    attempted?: boolean;
+    /** Per-source verdict, e.g. "verified" | "unverified". */
+    verdict?: string;
+    /** Provider error when introspection failed, e.g. an invalid_token reject. */
+    errorMessage?: string;
+  };
+  /** Whether discovery read the workspace (.env / credential files) this turn. */
+  discoveryRan?: boolean;
+}
+
+/**
+ * True when an OAuth introspection was attempted but the provider rejected
+ * the token because it was expired / invalid (vs. a transient/other error).
+ * Matches the deterministic `introspection-error: ... invalid_token` signal
+ * Heron records (see `oauthScopeVerification.sources[].errorMessage`).
+ */
+function isExpiredOrInvalidToken(oauth: SlfMitigationState['oauth']): boolean {
+  if (!oauth?.attempted) return false;
+  const msg = (oauth.errorMessage || '').toLowerCase();
+  return (
+    /invalid[_\s-]?token/.test(msg) ||
+    /\bexpired\b/.test(msg) ||
+    /\binvalid value\b/.test(msg) ||
+    // An attempted introspection that did not come back "verified" and
+    // carries an introspection error is, for remediation purposes, a
+    // rejected/stale token: refresh + re-run is the correct next step.
+    (oauth.verdict !== undefined && oauth.verdict !== 'verified' && /introspection-error/.test(msg))
+  );
+}
+
+/**
+ * Resolve a 1-line mitigation hint for a Self-Attested (SLF) finding.
+ *
+ * Walks `SLF_SUBCATEGORY_HINTS` against `title + description` and returns the
+ * first matching subcategory's hint. When optional `state` is supplied and
+ * the matched subcategory has live state available (AAP-110: `oauth`,
+ * `credentials`), returns a state-aware variant that reflects what already
+ * ran this session instead of recommending an already-completed step.
+ *
+ * Falls back to the generic SLF copy in `EVIDENCE_SOURCE_HINTS.SLF` if
+ * nothing matches.
+ *
+ * Total — always returns a non-empty string.
+ */
+export function getSlfMitigationHint(
+  finding: {
+    title?: string;
+    description?: string;
+  },
+  state?: SlfMitigationState,
+): string {
   const text = `${finding.title || ''} ${finding.description || ''}`;
   for (const entry of SLF_SUBCATEGORY_HINTS) {
-    if (entry.pattern.test(text)) return entry.hint;
+    if (!entry.pattern.test(text)) continue;
+
+    // AAP-110 — state-aware OAuth variant.
+    if (entry.key === 'oauth' && state?.oauth) {
+      if (isExpiredOrInvalidToken(state.oauth)) {
+        return 'Self-attested OAuth scope. Heron attempted OAuth introspection this run, but the provider rejected the token (expired or invalid), so granted scopes could not be diffed against declared usage. Refresh the token and re-run so Heron can introspect the live scopes.';
+      }
+      // Introspection genuinely did not run -> keep the stateless guidance.
+      return entry.hint;
+    }
+
+    // AAP-110 — state-aware credentials variant.
+    if (entry.key === 'credentials' && state?.discoveryRan) {
+      return 'Self-attested credential use. Discovery already read the workspace .env / credential files this run, so the deployed keys are visible to Heron. Rotate any secret found in plaintext and move it to a secret manager (Vault, AWS Secrets Manager, OS keychain).';
+    }
+
+    return entry.hint;
   }
   return EVIDENCE_SOURCE_HINTS.SLF;
 }

@@ -30,7 +30,7 @@ import {
   type CodedVerdictFinding,
 } from '@/src/report/finding-display';
 import { extractProjectName } from '@/src/report/agent-name';
-import { getMitigationHint, getSlfMitigationHint } from '@/src/report/mitigation-catalog';
+import { getMitigationHint, getSlfMitigationHint, type SlfMitigationState } from '@/src/report/mitigation-catalog';
 import type {
   EvidenceSource,
   ReportSeverityBand,
@@ -120,7 +120,11 @@ interface MinimalReportJson {
   // in lib/report-json.ts.
   oauthScopeVerification?: {
     capturedAt?: string;
-    sources?: Array<{ connector?: string; verdict?: string }>;
+    // `errorMessage` carries the provider's introspection rejection (e.g.
+    // `introspection-error: ... invalid_token ...`). AAP-110 reads it so the
+    // SLF OAuth mitigation is state-aware (attempted + rejected -> refresh the
+    // token, not "enable introspection").
+    sources?: Array<{ connector?: string; verdict?: string; errorMessage?: string }>;
   };
 }
 
@@ -1670,7 +1674,56 @@ function EnvKeyChip({ name }: { name: string }) {
 
 // ─── Block 4: Findings ────────────────────────────────────────────────
 
-function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
+/**
+ * AAP-110: collapse the report's live session data into the `SlfMitigationState`
+ * that `getSlfMitigationHint` consumes, so a SLF mitigation never tells the
+ * reviewer to re-run a check that already ran this session.
+ *
+ *   - `oauth.attempted` is true once at least one introspection source exists
+ *     (the agent forwarded its tokeninfo via `report_oauth_scopes` this run);
+ *     the first source carrying an `errorMessage` supplies the verdict + the
+ *     message so an expired / invalid token is detected.
+ *   - `discoveryRan` is true only when discovery actually read a workspace
+ *     `.env` / credential file (`workspaceEnv` non-empty), which is the
+ *     precondition the credentials mitigation checks before saying "re-run
+ *     discovery".
+ */
+export function buildSlfMitigationState(
+  oauthScopeVerification: MinimalReportJson['oauthScopeVerification'],
+  localAgentDiscovery: unknown,
+): SlfMitigationState {
+  const sources = oauthScopeVerification?.sources ?? [];
+  const erroredSource = sources.find((s) => s.errorMessage);
+  const oauth: SlfMitigationState['oauth'] =
+    sources.length > 0
+      ? {
+          attempted: true,
+          verdict: erroredSource?.verdict ?? sources[0]?.verdict,
+          errorMessage: erroredSource?.errorMessage,
+        }
+      : { attempted: false };
+
+  const disc =
+    localAgentDiscovery && typeof localAgentDiscovery === 'object'
+      ? (localAgentDiscovery as { workspaceEnv?: unknown[] })
+      : null;
+  const discoveryRan = (disc?.workspaceEnv?.length ?? 0) > 0;
+
+  return { oauth, discoveryRan };
+}
+
+function FindingsBlock({
+  verdict,
+  oauthScopeVerification,
+  localAgentDiscovery,
+}: {
+  verdict?: VerdictSnapshot;
+  // AAP-110: state-aware SLF mitigation text needs the live session state
+  // (did OAuth introspection run + with what result; did discovery read the
+  // workspace .env). Threaded down to each SLF card via `slfState`.
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  localAgentDiscovery?: unknown;
+}) {
   const initialOpen = useExpandFlag('slf');
   const [slfOpen, setSlfOpen] = useState(false);
   useEffect(() => {
@@ -1726,6 +1779,9 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
   // AAP-105 (G8b) — global-scope MCP servers reclassified out of the
   // Verified list. Rendered as a muted note, NOT as finding cards.
   const hostCapabilities = earlyHostCapabilities;
+  // AAP-110: derived once, handed to every SLF card so its mitigation hint
+  // reflects what already ran this session (OAuth introspection / .env read).
+  const slfState = buildSlfMitigationState(oauthScopeVerification, localAgentDiscovery);
 
   return (
     <section
@@ -1770,7 +1826,7 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {verified.map((f) => (
-              <MinimalFindingCard key={f.code} finding={f} />
+              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
             ))}
           </div>
         )}
@@ -1819,7 +1875,7 @@ function FindingsBlock({ verdict }: { verdict?: VerdictSnapshot }) {
                 verified measurement.
               </p>
               {selfAttested.map((f) => (
-                <MinimalFindingCard key={f.code} finding={f} />
+                <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
               ))}
             </div>
           )}
@@ -1878,7 +1934,16 @@ function HostCapabilityNote({
 
 // ─── Inline finding card — minimal version (one component, used for both buckets) ───
 
-function MinimalFindingCard({ finding }: { finding: CodedVerdictFinding }) {
+export function MinimalFindingCard({
+  finding,
+  slfState,
+}: {
+  finding: CodedVerdictFinding;
+  // AAP-110: when present, the SLF mitigation hint is resolved state-aware
+  // (e.g. introspection attempted + rejected -> refresh the token). Ignored
+  // for non-SLF findings (which use the evidence-source fallback).
+  slfState?: SlfMitigationState;
+}) {
   const sevColor = colorForSeverity(finding.severityScore);
   const sevText = formatSeverityNumber(finding.severityScore);
   const bandLabel = SEVERITY_BAND_LABEL[finding.band as ReportSeverityBand];
@@ -1901,7 +1966,7 @@ function MinimalFindingCard({ finding }: { finding: CodedVerdictFinding }) {
   // Non-SLF findings keep the evidence-source fallback.
   const fallbackHint =
     finding.evidenceSource === 'SLF'
-      ? getSlfMitigationHint({ title: finding.title, description: finding.description })
+      ? getSlfMitigationHint({ title: finding.title, description: finding.description }, slfState)
       : getMitigationHint({ evidenceSource: finding.evidenceSource });
   const analyzerNotes = (finding as { analyzerNotes?: string }).analyzerNotes;
   const mitigation = analyzerNotes && analyzerNotes.length > 0 ? analyzerNotes : fallbackHint;
@@ -2556,7 +2621,11 @@ export default function MinimalReportView({
       <PurposeBlock json={reportJson} />
       <SystemsBlock systems={reportJson.systems || []} verdict={reportJson.verdict} />
       <CredentialsBlock discovery={reportJson.localAgentDiscovery} />
-      <FindingsBlock verdict={reportJson.verdict} />
+      <FindingsBlock
+        verdict={reportJson.verdict}
+        oauthScopeVerification={reportJson.oauthScopeVerification}
+        localAgentDiscovery={reportJson.localAgentDiscovery}
+      />
       <ComplianceBlock rc={reportJson.regulatoryCompliance} />
       <FooterToggle onSwitch={onSwitchToFullLayout} />
     </div>
