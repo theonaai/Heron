@@ -472,7 +472,7 @@ const RECOMMENDATION_ENTRY_MAX_LEN = 400;
 const TOP_LEVEL_PROSE_CAPS: ReadonlyArray<readonly [string, number]> = [
   ['summary', 800],
   ['agentPurpose', 600],
-  ['agentTrigger', 200],
+  ['agentTrigger', 600],
   ['agentOwner', 200],
   ['decisionMakingDetails', 800],
 ];
@@ -715,7 +715,7 @@ export function sanitizeRecommendations(obj: Record<string, unknown>): void {
  *
  * Top-level: cap each prose field at its per-field schema limit.
  * Currently covers `summary` (800), `agentPurpose` (600), `agentTrigger`
- * (200), `agentOwner` (200), `decisionMakingDetails` (800).
+ * (600), `agentOwner` (200), `decisionMakingDetails` (800).
  *
  * Bucket: schema enforcement.
  */

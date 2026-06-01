@@ -147,3 +147,50 @@ describe('MinimalFindingCard SLF mitigation is state-aware (AAP-110 wiring)', ()
     expect(html).not.toMatch(/refresh the token/i);
   });
 });
+
+// ── AAP-107 round 2 items 3 + 4: severity popover + full description ─────
+//
+// item 3: the severity chip's slow native title= was replaced by the INSTANT
+// InfoPopover carrying the BR/DS/DM decode (the `formula`). The popover markup
+// is always rendered (hidden via style until hover) plus a visible "?" hint
+// signals it is hoverable. item 4: the description "Show more / Show less"
+// toggle was removed; the FULL description always renders.
+const longDescFinding = {
+  id: 'slf-long',
+  code: 'SLF-9',
+  title: 'Broad scope with a long root-cause description',
+  // > 280 chars so the OLD splitForCard(…, 280) would have collapsed it
+  // behind a Show more button. The full text must now render in one go.
+  description:
+    'The agent was granted a broad Google Workspace OAuth scope that, beyond the ' +
+    'read access its task requires, also permits bulk mutation of spreadsheet and ' +
+    'drive content across the entire shared domain, which means a single prompt ' +
+    'injection or logic error could rewrite or delete production course data with ' +
+    'no human approval step in the loop and no deterministic audit trail to detect it.',
+  evidenceSource: 'SLF' as const,
+  band: 'high' as const,
+  severityScore: 9,
+  severityComponents: { br: 2, ds: 3, dm: 1.5 },
+};
+
+describe('MinimalFindingCard severity popover + full description (AAP-107 round 2)', () => {
+  it('renders the BR/DS/DM formula breakdown in the card markup (item 3)', () => {
+    const html = renderCard(oauthFinding, liveState);
+    // The decoded BR × DS × DM = severity string is present (popover content).
+    expect(html).toContain('BR 2');
+    expect(html).toContain('DS 3');
+    expect(html).toContain('DM 1.5');
+    expect(html).toContain('= 9');
+  });
+
+  it('renders the FULL description with no Show more / Show less toggle (item 4)', () => {
+    const html = renderCard(longDescFinding);
+    // Full text present (the tail that the old 280-char split would have hidden).
+    expect(html).toContain('no deterministic audit trail to detect it.');
+    // Toggle gone.
+    expect(html).not.toContain('Show more');
+    expect(html).not.toContain('Show less');
+    // No ellipsis-truncated description.
+    expect(html).not.toContain('…');
+  });
+});

@@ -269,7 +269,7 @@ export const analysisResultSchema = z.object({
   // AAP-65: cap top-level prose fields at short structured limits.
   summary: z.string().max(800),
   agentPurpose: z.string().max(600),
-  agentTrigger: z.string().max(200).optional(),
+  agentTrigger: z.string().max(600).optional(),
   agentOwner: z.string().max(200).optional(),
   systems: z.array(systemAssessmentSchema),
   risks: z.array(riskSchema),
@@ -497,7 +497,7 @@ export const auditReportSchema = z.object({
   // tightened schema before it ever hits this validator.
   summary: z.string().max(800),
   agentPurpose: z.string().max(600),
-  agentTrigger: z.string().max(200).optional(),
+  agentTrigger: z.string().max(600).optional(),
   agentOwner: z.string().max(200).optional(),
   systems: z.array(systemAssessmentSchema),
   // Legacy flat fields for backward compat
