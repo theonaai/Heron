@@ -60,6 +60,36 @@ import { codexAuthReader } from './readers/codex-auth.js';
 export type RuntimeScopeRule = 'project-local' | 'global';
 
 /**
+ * AAP-116 — how a runtime self-identifies its OWN foundation-model runtime.
+ *
+ * When an AI runtime (Codex / Claude Code) DRIVES a Heron audit, the
+ * foundation-model interview question (`upstream_model_and_apis`) makes the
+ * audited agent name the model powering its reasoning. A runtime running the
+ * audit answers with ITSELF — "Foundation model powering this Codex session:
+ * OpenAI GPT-5-class Codex model" — and the analyzer mints that as a system
+ * of the AUDITED deployment (systemId `openai-codex`). That row is the audit
+ * DRIVER, not part of what the audited deployment accesses.
+ *
+ * This field lets `src/verification/audit-driver.ts` recognise such a row
+ * from the registry (the single source of truth for the runtimes Heron
+ * drives) instead of a scattered hardcoded string. Adding a runtime → adding
+ * its self-identity here, in ONE place, exactly like the rest of the entry.
+ *
+ *   - `systemIds`: the canonical kebab-case system ids the analyzer
+ *     slugifies this runtime's self-described model into (e.g. Codex →
+ *     `openai-codex`). Matched case-insensitively.
+ *   - `label`: the runtime's human label as it appears in self-referential
+ *     prose ("this Codex session", "this Claude Code session"). Used as the
+ *     SECOND, required signal so a deployment that genuinely calls this model
+ *     as a backend (no self-reference to the current audit session) is not
+ *     mistaken for the driver.
+ */
+export interface RuntimeSelfModel {
+  readonly systemIds: readonly string[];
+  readonly label: string;
+}
+
+/**
  * One supported runtime. `reader` (MCP servers + plugins/skills) and
  * `auth` (credential key names) are the same function objects the
  * aggregator used before G8a — wiring them through the registry changes
@@ -81,6 +111,13 @@ export interface RuntimeRegistryEntry {
   };
   /** AAP-105 — the G8b scoping hook. Added now, unused now. */
   readonly scopeRule: RuntimeScopeRule;
+  /**
+   * AAP-116 — this runtime's OWN foundation-model identity, for detecting
+   * when the audit DRIVER self-declares itself as a system of the audited
+   * deployment. Optional: undefined for runtimes whose self-model never
+   * leaks into the systems list. See {@link RuntimeSelfModel}.
+   */
+  readonly selfModel?: RuntimeSelfModel;
   /** L1 MCP-server + L2 plugin/skill reader. */
   readonly reader: AgentReader;
   /** L2 auth-credential-name reader (sibling `*-auth` reader). */
@@ -101,6 +138,13 @@ export const RUNTIME_REGISTRY = [
     // Claude Code declares MCP servers per-workspace under
     // `projects.<workspace>.mcpServers` → project-local scope.
     scopeRule: 'project-local',
+    // AAP-116 — when Claude Code drives an audit it self-describes as
+    // "Anthropic Claude" / "Claude Code". The analyzer slugs that into
+    // `claude-code` / `anthropic-claude`.
+    selfModel: {
+      systemIds: ['claude-code', 'anthropic-claude'],
+      label: 'Claude Code',
+    },
     reader: claudeCodeReader,
     auth: claudeCodeAuthReader,
   },
@@ -113,6 +157,13 @@ export const RUNTIME_REGISTRY = [
     // Codex declares MCP servers once host-wide in a single
     // `~/.codex/config.toml` → global scope.
     scopeRule: 'global',
+    // AAP-116 — when Codex drives an audit it self-describes its model as
+    // "OpenAI ... Codex model"; the analyzer slugs that into `openai-codex`
+    // (observed verbatim on sess-20260601-115351-95ccbc).
+    selfModel: {
+      systemIds: ['openai-codex'],
+      label: 'Codex',
+    },
     reader: codexReader,
     auth: codexAuthReader,
   },
@@ -138,4 +189,22 @@ export const RUNTIME_IDS = RUNTIME_REGISTRY.map((r) => r.id) as readonly Discove
 /** Look up a registry entry by id. Returns undefined for unknown ids. */
 export function runtimeEntry(id: DiscoveredRuntime): RuntimeRegistryEntry | undefined {
   return RUNTIME_REGISTRY.find((r) => r.id === id);
+}
+
+/**
+ * AAP-116 — find the runtime whose OWN foundation-model self-identity matches
+ * `systemId` (case-insensitive). Returns the matching `RuntimeSelfModel`
+ * (carrying the runtime `label` for the self-reference check) or undefined
+ * when no driving runtime claims this system id. Pure registry lookup — no
+ * hardcoded strings outside `RUNTIME_REGISTRY`.
+ */
+export function runtimeSelfModelForSystemId(systemId: string): RuntimeSelfModel | undefined {
+  const id = systemId.trim().toLowerCase();
+  if (!id) return undefined;
+  for (const entry of RUNTIME_REGISTRY) {
+    if (entry.selfModel?.systemIds.some((s) => s.toLowerCase() === id)) {
+      return entry.selfModel;
+    }
+  }
+  return undefined;
 }
