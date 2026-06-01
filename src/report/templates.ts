@@ -46,6 +46,7 @@ import {
   type CodedVerdictFinding,
 } from './finding-display.js';
 import { getMitigationHint } from './mitigation-catalog.js';
+import { extractProjectName, type TranscriptEntryLike } from './agent-name.js';
 
 // ─── AAP-43 P1 #5 / AAP-84 Phase 4 — overall regulatory status ────────────
 
@@ -141,6 +142,47 @@ function summarizeOverallStatusFromLegacy(c: StructuredCompliance): string {
 }
 
 // isBusinessSystem lives in src/util/systems.ts (shared with analyzer + mapper).
+
+/**
+ * AAP-108 — resolve the agent DISPLAY NAME shown in the header and the
+ * Agent Profile row.
+ *
+ * `report.metadata.target` is the raw RUNTIME label (e.g. "Codex desktop
+ * agent in /Users/.../Codex3"), which is uninformative and drifts from
+ * what the dashboard shows. The dashboard's `MinimalReportView` derives
+ * the name via `extractProjectName(transcript, runtimeName, agentPurpose)`
+ * — the Q1-extracted product name (e.g. "MVP Edu Content Agent") — and the
+ * Node storage layer stamps that same value onto `meta.extractedAgentName`
+ * (and onto report.json, via `deriveExtractedAgentName`). This helper
+ * reads from the SAME source so the markdown header / Agent Profile match
+ * the dashboard:
+ *
+ *   1. A pre-stamped `extractedAgentName` on the report blob (the field
+ *      the storage layer / report.json already carries), when present.
+ *   2. Otherwise derive it on the fly via the shared `extractProjectName`,
+ *      passing `metadata.target` as the runtime fallback — identical to the
+ *      dashboard call. `.name` is the extracted product name; it equals the
+ *      runtime fallback only when extraction genuinely failed.
+ *
+ * `metadata.target` remains the last-resort fallback (when there is no
+ * transcript / agentPurpose to extract from), so legacy reports still
+ * render a name.
+ */
+function resolveAgentDisplayName(report: AuditReport): string {
+  const stamped = (report as { extractedAgentName?: unknown }).extractedAgentName;
+  if (typeof stamped === 'string' && stamped.trim().length > 0) {
+    return stamped.trim();
+  }
+  const transcript = Array.isArray(report.transcript)
+    ? (report.transcript as TranscriptEntryLike[])
+    : undefined;
+  const { name } = extractProjectName(
+    transcript,
+    report.metadata?.target,
+    report.agentPurpose,
+  );
+  return name || report.metadata?.target || 'unknown-agent';
+}
 
 /**
  * AAP-63 — optional Surface 2 context for `renderMarkdownReport`.
@@ -299,9 +341,14 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
     regLine = `\n**Regulatory Status**: ${summarizeOverallStatus(report.compliance as StructuredCompliance)}`;
   }
 
+  // AAP-108 — `**Agent**:` shows the Q1-extracted PRODUCT name (mirrors the
+  // dashboard header + the markdown's own Executive Summary prose), not the
+  // raw runtime label from `metadata.target`.
+  const agentDisplayName = resolveAgentDisplayName(report);
+
   return `# Agent Access Audit Report
 
-**Generated**: ${report.metadata.date} | **Agent**: ${report.metadata.target} | ${verificationLine}${dqPart}${regLine}`;
+**Generated**: ${report.metadata.date} | **Agent**: ${escapeText(agentDisplayName)} | ${verificationLine}${dqPart}${regLine}`;
 }
 
 // ─── Posture indicator (AAP-103) ───────────────────────────────────────────
@@ -320,10 +367,16 @@ function renderHeader(report: AuditReport, verdict?: Verdict): string {
  * the markdown body is rendered in a plaintext viewer (one common
  * compliance-officer workflow).
  *
- * Counts line shows Verified findings only (see countVerifiedByBucket).
- * Posture is set to 0 when no Verified findings exist, in which case
- * the indicator renders with the marker at the very low end and an
- * explicit "no Verified findings" annotation.
+ * AAP-108 (mirrors AAP-106 G9 / AAP-107 on the dashboard): posture is
+ * RISK-BASED. It is the FIPS-199 high-water-mark of the per-system
+ * deployment risk and any verified-discrepancy severity. So an honest
+ * agent (declared == actual, 0 verified discrepancies) with a real risk
+ * surface still reads as a genuine band rather than "No Verified
+ * findings". The counts half states the discrepancy status separately
+ * ("no discrepancies" / "N discrepancies") and, when risk is sourced from
+ * the systems surface, says "Risk from N systems" instead of the raw
+ * "No verified findings" bucket line. Only a genuine no-scan, no-risk
+ * verdict (posture 0, nothing scored) reads "No Verified findings".
  */
 function renderPostureSection(verdict: Verdict | undefined): string {
   if (!verdict) return '';
@@ -340,18 +393,50 @@ function renderPostureSection(verdict: Verdict | undefined): string {
     return s === markerStop ? `⟨${label}⟩` : label;
   }).join(' · ');
 
+  // G9 — count VERIFIED DISCREPANCY findings (evidenceSource !== 'SLF'),
+  // and whether the systems-risk pass scored any systems. Same signals the
+  // dashboard's HeaderBlock reads.
+  const verifiedDiscrepancyCount = (verdict.findings ?? []).filter(
+    (f) => f.evidenceSource !== 'SLF',
+  ).length;
+  const systemsScored = verdict.systemsRisk?.systems?.length ?? 0;
+  const scanned =
+    (verdict.systemsRisk?.scanned ?? false) ||
+    (verdict.status !== undefined && verdict.status !== 'unverified');
+
+  const discrepancySubNote =
+    verifiedDiscrepancyCount === 0
+      ? 'no discrepancies'
+      : `${verifiedDiscrepancyCount} discrepanc${verifiedDiscrepancyCount === 1 ? 'y' : 'ies'}`;
+
+  // Counts half. When risk is sourced from the systems surface (posture
+  // > 0 with zero verified discrepancies), name the systems instead of
+  // the empty "No verified findings" bucket line — the latter reads as a
+  // contradiction next to a Medium headline.
   const counts = countVerifiedByBucket(verdict.findings ?? []);
-  const countsLine = renderBucketCountsLine(counts);
+  const countsLine =
+    verifiedDiscrepancyCount === 0 && posture > 0 && systemsScored > 0
+      ? `Risk from ${systemsScored} system${systemsScored === 1 ? '' : 's'}  ·  ${discrepancySubNote}`
+      : renderBucketCountsLine(counts);
 
-  const postureText =
-    posture === 0
-      ? 'No Verified findings'
-      : `${formatSeverityNumber(posture)} (${bandLabel})`;
+  let postureText: string;
+  if (posture > 0) {
+    postureText = `${formatSeverityNumber(posture)} ${bandLabel} risk`;
+  } else if (scanned) {
+    // Scan ran, low/no blast radius, no discrepancies — honest clean state,
+    // NOT "no findings" (which read as "discovery never ran").
+    postureText = 'Low risk';
+  } else {
+    // Genuine no-evidence baseline: nothing scanned, nothing scored.
+    postureText = 'No Verified findings';
+  }
 
-  // Posture is grounded — surface the FIPS 199 anchor in copy so the
-  // compliance reader knows the aggregation rule without opening docs.
+  // G9 anchor copy: posture reflects deployment risk (per-system blast
+  // radius x sensitivity) aggregated with any verified discrepancy via the
+  // FIPS 199 high-water-mark rule. Do NOT imply the agent is clean or that
+  // discovery has not run. NO em-dashes.
   const anchorNote =
-    'Posture aggregates Verified findings via the FIPS 199 high-water-mark rule (max severity, not average). Self-attested findings render below but do not move the gradient.';
+    'Posture reflects deployment risk across the declared systems (blast radius and data sensitivity), aggregated with any verified declared-vs-actual discrepancy via the FIPS 199 high-water-mark rule (max severity, not average). Self-attested findings render below but do not move the gradient.';
 
   const lines = [
     '## Posture',
@@ -442,6 +527,59 @@ function renderInterrogationOnlyBanner(report: AuditReport): string {
  * inspects the per-source status when partially-verified so the
  * methodology actually agrees with the Verification Status table.
  */
+/**
+ * AAP-108 — OAuth introspection state, derived off the SAME canonical
+ * field the dashboard reads (`report.oauthScopeVerification.sources`) and
+ * the markdown's own Verification Status table reads. Mirrors the
+ * dashboard's `buildSlfMitigationState` OAuth derivation:
+ *
+ *   - `attempted` once at least one introspection source exists (the agent
+ *     forwarded its tokeninfo via `report_oauth_scopes` this run).
+ *   - `failed` when an attempted source did NOT come back `verified` —
+ *     either it carries an `errorMessage` (e.g. an `introspection-error:
+ *     ... invalid_token ...` provider rejection) or its `verdict` is
+ *     anything other than 'verified'.
+ *
+ * The explicit per-provider `context.oauthIntrospectionStatus` rows are
+ * also honoured (a `ran` row means attempted), so callers that thread
+ * concrete statuses still drive the line. When neither signal is present
+ * the source genuinely did not run -> `attempted` stays false and the
+ * caller keeps the "skipped" copy.
+ */
+interface OAuthIntrospectionState {
+  attempted: boolean;
+  failed: boolean;
+}
+
+function oauthIntrospectionState(
+  report: AuditReport,
+  context: RenderMarkdownReportContext,
+): OAuthIntrospectionState {
+  const sources =
+    (report as {
+      oauthScopeVerification?: {
+        sources?: Array<{ verdict?: string; errorMessage?: string }>;
+      };
+    }).oauthScopeVerification?.sources ?? [];
+  const sourcesAttempted = sources.length > 0;
+  const sourcesFailed = sources.some(
+    (s) => !!s.errorMessage || (s.verdict !== undefined && s.verdict !== 'verified'),
+  );
+
+  const oauthRows = context.oauthIntrospectionStatus ?? [];
+  const rowsAttempted = oauthRows.some(
+    (r) => normalizeStatus(r.status, r.reason).status === 'ran',
+  );
+  const rowsFailed = oauthRows.some(
+    (r) => normalizeStatus(r.status, r.reason).status === 'failed',
+  );
+
+  return {
+    attempted: sourcesAttempted || rowsAttempted,
+    failed: sourcesFailed || rowsFailed,
+  };
+}
+
 function limitationsTextForVerification(
   report: AuditReport,
   context: RenderMarkdownReportContext = {},
@@ -452,17 +590,27 @@ function limitationsTextForVerification(
       return "Combines self-reported interview answers with filesystem discovery and OAuth scope introspection. Runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.";
     case 'partially-verified': {
       // Inspect per-source state. `discoveryStatus` defaults to 'ran'
-      // (legacy behaviour); `oauthIntrospectionStatus` defaults to
-      // an empty rows array which the renderer treats as the
-      // structural skip.
+      // (legacy behaviour). OAuth state is driven off the canonical
+      // `oauthScopeVerification` field (plus any explicit per-provider
+      // rows) so the line agrees with the Verification Status table and
+      // the dashboard — it only says "skipped" when introspection truly
+      // did not run.
       const fsStatus = normalizeStatus(context.discoveryStatus ?? 'ran').status;
-      const oauthRows = context.oauthIntrospectionStatus ?? [];
-      const oauthRan = oauthRows.some(
-        (r) => normalizeStatus(r.status, r.reason).status === 'ran',
-      );
+      const oauth = oauthIntrospectionState(report, context);
+      const oauthRan = oauth.attempted;
       const fsRan = fsStatus === 'ran';
+      // AAP-108 — attempted-but-failed clause (e.g. the provider rejected
+      // an expired/invalid token). NO em-dashes.
+      const oauthFailedClause =
+        'OAuth introspection attempted, failed (see Verification Status section). Refresh the token and re-run so granted scopes can be diffed against declared usage.';
+      if (fsRan && oauthRan && oauth.failed) {
+        return `Combines self-reported interview answers with filesystem discovery. ${oauthFailedClause} Runtime behaviour, code review, and network traffic remain out of scope.`;
+      }
       if (fsRan && oauthRan) {
         return 'Combines self-reported interview answers with filesystem discovery and OAuth scope introspection (partial coverage — see Verification Status section). Runtime behaviour, code review, and network traffic remain out of scope.';
+      }
+      if (oauthRan && !fsRan && oauth.failed) {
+        return `Combines self-reported interview answers with filesystem discovery skipped. ${oauthFailedClause} Runtime behaviour, code review, and network traffic remain out of scope.`;
       }
       if (oauthRan && !fsRan) {
         return 'Combines self-reported interview answers with OAuth scope introspection. Filesystem discovery skipped — runtime behaviour, code review, and network traffic remain out of scope. Findings should be verified against actual system configurations.';
@@ -696,12 +844,12 @@ ${report.summary}`;
  * reports finds the same fields in the same place.
  */
 function renderAgentProfile(report: AuditReport): string {
-  // Agent name — best-effort: metadata.target is the canonical handle the
-  // CLI / dashboard surface. Fall back to first systemId, then to a stub.
-  const agentName =
-    report.metadata?.target ||
-    report.systems[0]?.systemId ||
-    'unknown-agent';
+  // AAP-108 — Agent name shows the Q1-extracted PRODUCT name (same source
+  // the dashboard's HeaderBlock and the markdown header use), NOT the raw
+  // runtime label in `metadata.target`. `resolveAgentDisplayName` already
+  // falls back through report.json's stamped name → on-the-fly extraction →
+  // the runtime label, so a legacy report still renders a value.
+  const agentName = resolveAgentDisplayName(report);
 
   // First business system summary string — short identifier + truncated
   // description if present (description is also rendered on the per-system
@@ -1399,6 +1547,52 @@ function renderImplications(
 }
 
 /**
+ * AAP-108 — did a deterministic discovery / verification pass actually run
+ * for this session? Pure mirror of `discoveryRanFor` in the dashboard's
+ * `MinimalReportView.tsx` (kept inline so this Node renderer doesn't import
+ * a `'use client'` React module). True when the systems-risk pass scored
+ * systems, the verdict status is past the no-evidence baseline, or
+ * discovery findings exist.
+ */
+function discoveryRanForVerdict(
+  verdict: Verdict,
+  discoveryFindings: ReadonlyArray<DiscoveryFinding>,
+): boolean {
+  if (verdict.systemsRisk?.scanned) return true;
+  if (verdict.status !== undefined && verdict.status !== 'unverified') return true;
+  return discoveryFindings.length > 0;
+}
+
+/**
+ * AAP-108 — Findings empty-state copy when the Verified stream is empty.
+ * Pure mirror of `findingsEmptyState` in the dashboard (AAP-107):
+ *
+ *   - discovery NOT run                     -> honest "scan has not run yet"
+ *   - discovery ran, systems scored         -> "No declared-vs-actual
+ *       discrepancies. Posture reflects deployment risk from the systems
+ *       above." (the demo case: never claim the agent is clean)
+ *   - discovery ran, no systems scored      -> plain "no discrepancies"
+ *
+ * This replaces the pre-G9 line that collapsed "scan never ran" and "scan
+ * ran clean" into one misleading sentence. NO em-dashes.
+ */
+function findingsEmptyStateLine(
+  verdict: Verdict,
+  discoveryFindings: ReadonlyArray<DiscoveryFinding>,
+): string {
+  const discoveryRan = discoveryRanForVerdict(verdict, discoveryFindings);
+  if (!discoveryRan) {
+    return 'Discovery scan has not run yet. Run verification to compare declared access against deterministic evidence.';
+  }
+  const systemsRiskNonZero =
+    (verdict.posture ?? 0) > 0 || (verdict.systemsRisk?.systems?.length ?? 0) > 0;
+  if (systemsRiskNonZero) {
+    return 'No declared-vs-actual discrepancies. Posture reflects deployment risk from the systems above.';
+  }
+  return 'No declared-vs-actual discrepancies found in the deterministic evidence.';
+}
+
+/**
  * Render the Findings section as Vijil-style Failure Pattern cards.
  *
  * Two streams remain (Verified vs Self-attested per AAP-93 H3) so the
@@ -1456,7 +1650,11 @@ function renderFindingsCards(
   );
   lines.push('');
   if (verified.length === 0) {
-    lines.push('_No Verified findings — either the discovery scan has not run yet, or it ran and found no inconsistencies. Re-run discovery if the agent configuration has changed._');
+    // AAP-108 — G9 state-aware empty-state (mirrors the dashboard). When
+    // discovery ran with zero verified discrepancies we must NOT say the
+    // scan "has not run yet" and must NOT imply the agent is clean: posture
+    // still reflects the systems' deployment risk.
+    lines.push(`_${findingsEmptyStateLine(verdict, discoveryFindings)}_`);
     lines.push('');
   } else {
     for (const f of verified) {
@@ -2028,6 +2226,14 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
   const systems = report?.systems?.filter(isBusinessSystem) ?? [];
   const systemNames = systems.map(s => s.systemId).join(', ');
   const excessiveScopes = systems.flatMap(s => s.scopesDelta?.map(d => `${s.systemId}: ${d}`) ?? []);
+  // AAP-108 (defect 5) — the "on N system(s)" count must reflect only the
+  // systems that ACTUALLY carry an excessive scope (a non-empty
+  // `scopesDelta`), not the total business-system count. Pre-fix this used
+  // `systems.length` (7 in the demo), implying every connected system was
+  // over-permissioned when only one (google-drive) had a real scope delta.
+  const systemsWithExcessive = systems.filter(
+    s => (s.scopesDelta ?? []).some(isProvided),
+  ).length;
   const writes = systems.flatMap(s => s.writeOperations?.map(w => `${w.operation} → ${w.target}`) ?? []);
   const hasIrreversible = systems.some(s => s.writeOperations?.some(w => !w.reversible));
   const dataSensitivities = [...new Set(systems.map(s => s.dataSensitivity).filter(Boolean))];
@@ -2036,7 +2242,7 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
   switch (findingType) {
     case 'excessive-access':
       if (excessiveScopes.length > 0) {
-        return `Agent holds permissions beyond stated need on ${systems.length} system(s). Excessive scopes detected: ${excessiveScopes.join('; ')}. Narrow each to the minimum required scope.`;
+        return `Agent holds permissions beyond stated need on ${systemsWithExcessive} system(s). Excessive scopes detected: ${excessiveScopes.join('; ')}. Narrow each to the minimum required scope.`;
       }
       return `Agent holds permissions beyond stated need on ${systemNames || 'connected systems'}. Review and narrow scopes to the minimum required (least-privilege).`;
 
@@ -2119,6 +2325,13 @@ function renderFindingFirstDetailMerged(
   report?: AuditReport,
 ): string {
   const typedSection = controlResults_renderSections(results, report);
+  // AAP-108 (defect 4) — finding-types the typed section actually
+  // rendered a BODY for. A finding-type that also appears in the legacy
+  // prose flags must NOT re-emit its `#### label` + description block (that
+  // is the duplicate-body drift: "two control-mapping rows share one
+  // finding body"). The legacy renderer instead folds its residual control
+  // citations into an Affects continuation under the already-rendered body.
+  const typedRenderedFindingTypes = renderedFindingTypesFromControlResults(results);
   // Codex post-review fix #2 (2026-05-25): dedup at PER-CONTROL grain
   // (`findingType:frameworkId:controlId`), NOT at finding-type grain.
   //
@@ -2155,7 +2368,11 @@ function renderFindingFirstDetailMerged(
         : { ...f, controlIds: remaining };
     })
     .filter((f): f is TypedRegulatoryFlag => f !== null);
-  const legacySection = legacyOnly_renderSections(legacyFiltered, report);
+  const legacySection = legacyOnly_renderSections(
+    legacyFiltered,
+    report,
+    typedRenderedFindingTypes,
+  );
 
   const sections = [typedSection, legacySection].filter((s) => s.length > 0);
   if (sections.length === 0) {
@@ -2164,6 +2381,32 @@ function renderFindingFirstDetailMerged(
 
   let out = `### Compliance Detail\n\n`;
   for (const block of sections) out += block;
+  return out;
+}
+
+/**
+ * AAP-108 (defect 4) — finding-types that `controlResults_renderSections`
+ * renders a BODY for. Mirrors that function's own filtering (drop
+ * `GAP_EXCLUDED`; keep only finding-types with at least one gap-class
+ * control) so the merged renderer knows which bodies the typed section
+ * already owns and the legacy path must not duplicate.
+ */
+function renderedFindingTypesFromControlResults(
+  results: ControlResult[],
+): Set<string> {
+  const deduped = dedupeControlResults(results).filter(
+    (r) => !GAP_EXCLUDED.has(r.findingType),
+  );
+  const byFinding = new Map<string, ControlResult[]>();
+  for (const r of deduped) {
+    const arr = byFinding.get(r.findingType) ?? [];
+    arr.push(r);
+    byFinding.set(r.findingType, arr);
+  }
+  const out = new Set<string>();
+  for (const [findingType, all] of byFinding) {
+    if (all.some((r) => isGapResult(r))) out.add(findingType);
+  }
   return out;
 }
 
@@ -2264,6 +2507,7 @@ function controlResults_renderSections(
 function legacyOnly_renderSections(
   allFlags: TypedRegulatoryFlag[],
   report?: AuditReport,
+  alreadyRenderedTypes: ReadonlySet<string> = new Set(),
 ): string {
   // Group flags by finding type (triggeredBy)
   const byFinding = new Map<string, TypedRegulatoryFlag[]>();
@@ -2304,6 +2548,18 @@ function legacyOnly_renderSections(
     const affectsParts = [...byFramework.entries()].map(([fw, ctrls]) =>
       ctrls.length === 0 ? fw : `${fw} (${ctrls.join(', ')})`,
     );
+
+    // AAP-108 (defect 4) — the typed section already rendered this
+    // finding-type's BODY (`#### label` + description). Do NOT repeat it;
+    // that is the duplicate-body drift. Emit only the residual legacy
+    // control citations as an Affects continuation so the auditor still
+    // sees those framework references attached to the single body above.
+    if (alreadyRenderedTypes.has(findingType)) {
+      if (affectsParts.length > 0) {
+        out += `**Affects (self-reported):** ${affectsParts.join(' · ')}\n\n`;
+      }
+      continue;
+    }
 
     out += `#### ${label}\n\n`;
     out += `${description}\n\n`;
