@@ -93,6 +93,10 @@ interface MinimalReportJson {
     frameworksActivated?: string[];
     controlResults?: Array<{
       frameworkId: string;
+      // AAP-111: denormalised owning-framework join field, persisted in
+      // report.json. Equals `frameworkId`; carried so the per-control
+      // framework matches `frameworksActivated` + `FRAMEWORK_LABELS`.
+      framework?: string;
       verdict: 'verified' | 'partial' | 'unverified' | 'fail' | 'not-applicable';
       severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
       controlId: string;
