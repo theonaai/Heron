@@ -1168,12 +1168,12 @@ ${freqRows.map(([k, v]) => `| ${k} | ${escapeCell(v)} |`).join('\n')}`;
 
   // report parity (fix A) — header risk label is sourced from the persisted
   // per-system snapshot (`verdict.systemsRisk.systems[]`), matching the
-  // dashboard's Severity column ("<band> (<severity>)", e.g. "Medium (6)").
+  // dashboard's Risk column ("<severity> (<band>)", e.g. "6 (Medium)").
   // When this system has no matching snapshot row (no verdict, or a system
   // the risk pass did not score) we omit the risk label rather than fall
   // back to a heuristic that disagrees with the posture math.
   const riskLabel = riskRow
-    ? ` — Risk: ${SEVERITY_BAND_LABEL[riskRow.band]} (${formatSeverityNumber(riskRow.severity)})`
+    ? ` — Risk: ${formatSeverityNumber(riskRow.severity)} (${SEVERITY_BAND_LABEL[riskRow.band]})`
     : '';
 
   return `### ${sys.systemId}${riskLabel}${descriptionLine}

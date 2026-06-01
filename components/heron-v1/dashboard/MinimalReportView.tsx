@@ -251,12 +251,12 @@ function systemRiskScore(row: SystemRiskRow): number {
 function systemSeverity(
   system: SystemAssessment,
   verdict?: VerdictSnapshot,
-): { score: number; band: ReportSeverityBand } | null {
+): { score: number; band: ReportSeverityBand; br: number; ds: number; dm: number } | null {
   const row = verdict?.systemsRisk?.systems?.find(
     (r) => r.systemId === system.systemId,
   );
   if (!row) return null;
-  return { score: systemRiskScore(row), band: row.band };
+  return { score: systemRiskScore(row), band: row.band, br: row.br, ds: row.ds, dm: row.dm };
 }
 
 /**
@@ -1379,7 +1379,7 @@ function SystemRow({
         </td>
         <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9' }}>
           {severity ? (
-            <SeverityBadge score={severity.score} band={severity.band} />
+            <SeverityBadge score={severity.score} band={severity.band} br={severity.br} ds={severity.ds} dm={severity.dm} />
           ) : (
             <span style={{ color: '#a1a1aa' }}>—</span>
           )}
@@ -1479,9 +1479,15 @@ function SensitivityBadge({
 function SeverityBadge({
   score,
   band,
+  br,
+  ds,
+  dm,
 }: {
   score: number;
   band: ReportSeverityBand;
+  br: number;
+  ds: number;
+  dm: number;
 }) {
   const color =
     band === 'critical' || band === 'high'
@@ -1489,23 +1495,57 @@ function SeverityBadge({
       : band === 'medium'
         ? { bg: '#fff4ed', bd: '#fed7aa', ink: '#c2410c' }
         : { bg: '#f4f4f5', bd: '#e4e4e7', ink: '#3f3f46' };
+  // Same BR × DS × DM decode the posture popover uses, scoped to this system,
+  // so a reviewer can see WHY a row scored what it did (mirrors the finding
+  // severity badge's `?` affordance). Number-first to match the posture card
+  // ("2 (Low)"), not band-first.
+  const formula = `Blast Radius ${br} × Data Sensitivity ${ds} × Domain ${dm} = ${formatSeverityNumber(
+    score,
+  )} (${SEVERITY_BAND_LABEL[band]})`;
   return (
-    <span
-      title={`Deployment-risk severity ${formatSeverityNumber(score)} (${SEVERITY_BAND_LABEL[band]})`}
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        background: color.bg,
-        border: `1px solid ${color.bd}`,
-        color: color.ink,
-        borderRadius: 4,
-        fontSize: 11,
-        fontWeight: 600,
-        whiteSpace: 'nowrap',
-      }}
+    <InfoPopover
+      placement="below-left"
+      width={280}
+      ariaLabel={formula}
+      content={<span className="mono">{formula}</span>}
     >
-      {SEVERITY_BAND_LABEL[band]} ({formatSeverityNumber(score)})
-    </span>
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '2px 8px',
+          background: color.bg,
+          border: `1px solid ${color.bd}`,
+          color: color.ink,
+          borderRadius: 4,
+          fontSize: 11,
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+          cursor: 'help',
+        }}
+      >
+        {formatSeverityNumber(score)} ({SEVERITY_BAND_LABEL[band]})
+        <span
+          aria-hidden
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 12,
+            height: 12,
+            borderRadius: '50%',
+            border: `1px solid ${color.bd}`,
+            color: color.ink,
+            fontSize: 8.5,
+            fontWeight: 700,
+            lineHeight: 1,
+          }}
+        >
+          ?
+        </span>
+      </span>
+    </InfoPopover>
   );
 }
 

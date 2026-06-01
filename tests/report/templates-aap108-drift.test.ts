@@ -299,7 +299,7 @@ describe('AAP-108 — markdown drift vs dashboard (session 2ae330 fixture)', () 
 
     // google-drive scored {band:'medium', severity:6} in the snapshot →
     // header reflects the dashboard wording.
-    expect(md).toContain('### google-drive — Risk: Medium (6)');
+    expect(md).toContain('### google-drive — Risk: 6 (Medium)');
 
     // The old computeSystemRisk label form ("Risk: HIGH" / "Risk: MEDIUM" /
     // "Risk: LOW" — upper-case categorical with no number) must be gone.
