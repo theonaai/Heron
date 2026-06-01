@@ -286,4 +286,113 @@ describe('AAP-108 — markdown drift vs dashboard (session 2ae330 fixture)', () 
     expect(md).toContain('beyond stated need on 1 system(s)');
     expect(md).not.toContain('beyond stated need on 7 system(s)');
   });
+
+  // ── Fix A — per-system header sources the persisted severity/band ────────
+  //
+  // Pre-fix the `### <systemId> — Risk: <LABEL>` header was driven by
+  // `computeSystemRisk(sys)` — a separate per-system heuristic that disagrees
+  // with the posture math and is NOT what the dashboard shows. The dashboard's
+  // Severity column reads `verdict.systemsRisk.systems[]` (band + numeric
+  // severity, e.g. "6 · Medium"). The markdown header must match.
+  it('Fix A: per-system header uses the persisted systemsRisk severity/band, not computeSystemRisk', () => {
+    const md = renderMarkdownReport(demoReport(), { verdict: g9Verdict() });
+
+    // google-drive scored {band:'medium', severity:6} in the snapshot →
+    // header reflects the dashboard wording.
+    expect(md).toContain('### google-drive — Risk: Medium (6)');
+
+    // The old computeSystemRisk label form ("Risk: HIGH" / "Risk: MEDIUM" /
+    // "Risk: LOW" — upper-case categorical with no number) must be gone.
+    expect(md).not.toMatch(/### google-drive — Risk: (HIGH|MEDIUM|LOW)\b/);
+    // computeSystemRisk would have scored google-drive HIGH (org-wide BR=3 +
+    // excessive scope +1 = 4 ≥ 3 MEDIUM; with sensitive-data it would tip
+    // higher). Either way it is the heuristic label, not "Medium (6)".
+    expect(md).not.toContain('### google-drive — Risk: HIGH');
+  });
+
+  it('Fix A: per-system header degrades gracefully when the system has no snapshot row', () => {
+    // google-sheets is NOT in the systemsRisk snapshot (only google-drive is),
+    // so its header must not invent a heuristic risk label.
+    const md = renderMarkdownReport(demoReport(), { verdict: g9Verdict() });
+    const sheetsHeaderMatch = md.match(/### google-sheets[^\n]*/);
+    expect(sheetsHeaderMatch).not.toBeNull();
+    const sheetsHeader = sheetsHeaderMatch![0];
+    // No computeSystemRisk-style categorical label leaks onto an unmatched
+    // system.
+    expect(sheetsHeader).not.toMatch(/Risk: (HIGH|MEDIUM|LOW)\b/);
+  });
+
+  // ── Fix B — Executive Summary self-reported count uses COMPUTED bands ─────
+  //
+  // The self-reported findings cell currently counts `report.risks[].severity`
+  // (the raw LLM severities, which over-state). The dashboard shows those same
+  // findings as their COMPUTED bands. Switch the count to read
+  // `verdict.findings[].band`.
+  function slfVerdict(): Verdict {
+    // One SLF finding the analyzer COMPUTED down to 'medium', even though the
+    // raw risk self-reported 'high'. Plus the systems-risk surface from g9.
+    return {
+      ...g9Verdict(),
+      findings: [
+        {
+          id: 'slf-0-broad-google-oauth',
+          band: 'medium',
+          severityScore: 6,
+          severityComponents: { br: 2, ds: 3, dm: 1 },
+          evidenceSource: 'SLF',
+          title: 'Broad Google OAuth permissions',
+          description: 'Drive scope exceeds the single-folder need.',
+        },
+      ],
+    } as unknown as Verdict;
+  }
+
+  it('Fix B: exec-summary self-reported count renders the COMPUTED band (Medium), not the raw risk severity (High)', () => {
+    const report = demoReport({
+      risks: [
+        {
+          title: 'Broad Google OAuth permissions',
+          description: 'Drive scope exceeds the single-folder need.',
+          severity: 'high', // raw LLM severity OVER-states
+        },
+      ],
+    } as Partial<AuditReport>);
+
+    const md = renderMarkdownReport(report, { verdict: slfVerdict() });
+
+    // Pull the Executive Summary table region for a tight assertion.
+    const exec = md.slice(md.indexOf('## Executive Summary'));
+    const execTable = exec.slice(0, exec.indexOf('\n\n', exec.indexOf('|')));
+
+    // The Self-reported findings cell counts the COMPUTED band → "1 Medium".
+    expect(md).toContain('## Executive Summary');
+    // The computed-band count appears.
+    expect(execTable).toContain('1 Medium');
+    // The raw-severity-driven "1 High" must NOT be the self-reported count.
+    expect(execTable).not.toContain('1 High');
+  });
+
+  it('Fix B: falls back gracefully when verdict.findings is absent (counts raw risks)', () => {
+    const report = demoReport({
+      risks: [
+        {
+          title: 'Broad Google OAuth permissions',
+          description: 'Drive scope exceeds the single-folder need.',
+          severity: 'high',
+        },
+      ],
+    } as Partial<AuditReport>);
+
+    // Verdict with NO findings array (older / edge JSON).
+    const verdictNoFindings = { ...g9Verdict() } as Record<string, unknown>;
+    delete verdictNoFindings.findings;
+
+    const md = renderMarkdownReport(report, {
+      verdict: verdictNoFindings as unknown as Verdict,
+    });
+    // Prior behaviour preserved: the raw risk severity drives the count.
+    const exec = md.slice(md.indexOf('## Executive Summary'));
+    const execTable = exec.slice(0, exec.indexOf('\n\n', exec.indexOf('|')));
+    expect(execTable).toContain('1 High');
+  });
 });
