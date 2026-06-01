@@ -1,11 +1,13 @@
 /**
- * G9 (AAP-106) — per-system deployment-risk scoring tests.
+ * G9 (DS-tier rework) — per-system deployment-risk scoring tests.
  *
  * Pins the Systems-data → BR × DS × DM mapping (systems-risk.ts):
  *   - blast radius enum → BR band (single → 1, team → 2, org/cross → 3)
  *   - irreversible writes lift BR one band (capped at 3)
  *   - write-operation count contributes BR via bandForWriteCount
- *   - free-text dataSensitivity → T1/T2/T3 DS axis + a short basis sentence
+ *   - analyzer-supplied dataSensitivityTier → T1/T2/T3 DS axis (the prose no
+ *     longer drives the tier; the old regex classifier was deleted)
+ *   - missing tier defaults conservatively to T2
  *   - severity = BR × DS × DM on the same 9-value 1..13.5 scale as findings
  *   - HWM aggregation across systems
  */
@@ -13,7 +15,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   blastRadiusAxis,
-  classifySystemDS,
   computeSystemsRisk,
   scoreSystemRisk,
   type RiskScorableSystem,
@@ -38,34 +39,97 @@ describe('blastRadiusAxis', () => {
   });
 });
 
-describe('classifySystemDS', () => {
-  it('classifies GDPR Art. 9 / PHI / financial / gov-ID prose as T3', () => {
-    expect(classifySystemDS('Patient health records and PHI').tier).toBe('T3');
-    expect(classifySystemDS('SSN and passport numbers').tier).toBe('T3');
-    expect(classifySystemDS('credit card and cardholder data').tier).toBe('T3');
-    expect(classifySystemDS('Patient health records').ds).toBe(3);
+describe('scoreSystemRisk — DS tier comes from the analyzer, not the prose', () => {
+  it('T1 tier → ds 1 even when the prose contains tier-suggestive words', () => {
+    // Prose has "lesson" and "names" — the OLD regex classifier would have
+    // returned T2. With the analyzer tier driving DS, the explicit T1 wins.
+    const sys: RiskScorableSystem = {
+      systemId: 'curriculum',
+      dataSensitivity: 'lesson numbers and folder names, no personal data',
+      dataSensitivityTier: 'T1',
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys);
+    expect(r.dsTier).toBe('T1');
+    expect(r.ds).toBe(1);
+    expect(r.severity).toBe(1); // BR1 × DS1 × 1.0
+    expect(r.band).toBe('informational');
   });
-  it('classifies sensitive PII prose as T2', () => {
-    const r = classifySystemDS('responsible fields may contain names');
-    expect(r.tier).toBe('T2');
+
+  it('T2 tier → ds 2', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'drive',
+      dataSensitivity: 'file contents and shared documents',
+      dataSensitivityTier: 'T2',
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys);
+    expect(r.dsTier).toBe('T2');
     expect(r.ds).toBe(2);
+    expect(r.severity).toBe(2); // BR1 × DS2 × 1.0
   });
-  it('classifies non-personal operational data as T1', () => {
-    const r = classifySystemDS('build artifacts and CI logs, no personal data fields');
-    // "no personal data" contains the T2 keyword "personal data" — but the
-    // classifier is keyword-presence, so this intentionally lands T2. Use a
-    // prose with zero PII tokens for the true T1 assertion.
-    expect(['T1', 'T2']).toContain(r.tier);
-    expect(classifySystemDS('aggregate counts and timestamps').tier).toBe('T1');
-    expect(classifySystemDS('aggregate counts and timestamps').ds).toBe(1);
+
+  it('T3 tier → ds 3', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'payroll',
+      dataSensitivity: 'employee bank account and tax IDs',
+      dataSensitivityTier: 'T3',
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys);
+    expect(r.dsTier).toBe('T3');
+    expect(r.ds).toBe(3);
+    expect(r.severity).toBe(3); // BR1 × DS3 × 1.0
   });
-  it('returns a short basis clause lifted from the deciding keyword', () => {
-    const r = classifySystemDS(
-      'PII and confidential educational operations data: lesson numbers, statuses; responsible fields may contain names.',
-    );
-    expect(r.tier).toBe('T2');
-    expect(r.basis.length).toBeGreaterThan(0);
-    expect(r.basis.length).toBeLessThanOrEqual(121);
+
+  it('MISSING tier defaults conservatively to T2 (ds 2) with a default-note basis', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'mystery',
+      dataSensitivity: 'aggregate counts and timestamps', // looks T1, but no tier given
+      // dataSensitivityTier omitted on purpose
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys);
+    expect(r.dsTier).toBe('T2');
+    expect(r.ds).toBe(2);
+    expect(r.severity).toBe(2); // BR1 × DS2 × 1.0 — does NOT under-rate to 1
+    expect(r.dsBasis).toBe('tier not provided by analyzer; defaulted conservatively to T2');
+  });
+
+  it('NEGATION case: prose says "no student names or credentials" but tier is T1 → ds 1', () => {
+    // The exact regression the regex classifier got wrong: it matched
+    // "names"/"credentials" and returned T2 despite the explicit negation.
+    // The analyzer (which understands negation) emits T1; we honour it.
+    const sys: RiskScorableSystem = {
+      systemId: 'curriculum-tracker',
+      dataSensitivity:
+        'confidential curriculum tracker rows including lesson numbers; agent stated no student names or credentials were found',
+      dataSensitivityTier: 'T1',
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys);
+    expect(r.dsTier).toBe('T1');
+    expect(r.ds).toBe(1); // old regex would have given 2 here
+    expect(r.severity).toBe(1);
+  });
+
+  it('when a tier IS provided, the basis is the first clause of the prose', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'sheets',
+      dataSensitivity:
+        'PII and confidential educational operations data; responsible fields may contain names',
+      dataSensitivityTier: 'T2',
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys);
+    expect(r.dsBasis).toBe('PII and confidential educational operations data');
+    expect(r.dsBasis.length).toBeLessThanOrEqual(121);
   });
 });
 
@@ -74,6 +138,7 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
     const sys: RiskScorableSystem = {
       systemId: 'metrics-api',
       dataSensitivity: 'aggregate counts and timestamps',
+      dataSensitivityTier: 'T1',
       blastRadius: 'single-user',
       writeOperations: [],
     };
@@ -89,6 +154,7 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
     const sys: RiskScorableSystem = {
       systemId: 'drive',
       dataSensitivity: 'PII and confidential content; file names may include personal names',
+      dataSensitivityTier: 'T2',
       blastRadius: 'team-scope',
       writeOperations: [
         { operation: 'create', target: 'drive', reversible: true },
@@ -106,6 +172,7 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
     const sys: RiskScorableSystem = {
       systemId: 'telegram',
       dataSensitivity: 'message previews, topic names, error messages',
+      dataSensitivityTier: 'T2',
       blastRadius: 'team-scope',
       writeOperations: [
         { operation: 'send message', target: 'chat', reversible: false },
@@ -123,6 +190,7 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
     const sys: RiskScorableSystem = {
       systemId: 'gamma',
       dataSensitivity: 'slide-outline prompt text and lesson title',
+      dataSensitivityTier: 'T1',
       blastRadius: 'single-user',
       writeOperations: [
         { operation: 'create generation', target: 'gamma', reversible: false },
@@ -142,7 +210,8 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
     }));
     const sys: RiskScorableSystem = {
       systemId: 'many-writes',
-      dataSensitivity: 'aggregate counts', // T1
+      dataSensitivity: 'aggregate counts',
+      dataSensitivityTier: 'T1',
       blastRadius: 'single-user', // blast axis 1
       writeOperations,
     };
@@ -153,10 +222,11 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
     expect(r.severity).toBe(3);
   });
 
-  it('DM is fixed at 1.0 for systems (no prose-based domain inflation)', () => {
+  it('DM is fixed at 1.0 for systems (no domain inflation)', () => {
     const sys: RiskScorableSystem = {
       systemId: 'edu',
       dataSensitivity: 'student education records and employment data',
+      dataSensitivityTier: 'T2',
       blastRadius: 'team-scope',
       writeOperations: [{ operation: 'x', target: 'y', reversible: true }],
     };
@@ -167,9 +237,9 @@ describe('scoreSystemRisk — BR × DS × DM mapping', () => {
   it('severity always lands on the canonical 9-value scale', () => {
     const allowed = new Set([1, 1.5, 2, 3, 4, 4.5, 6, 9, 13.5]);
     const samples: RiskScorableSystem[] = [
-      { systemId: 'a', dataSensitivity: 'aggregate counts', blastRadius: 'single-user', writeOperations: [] },
-      { systemId: 'b', dataSensitivity: 'personal data', blastRadius: 'team-scope', writeOperations: [{ operation: 'x', target: 'y', reversible: false }] },
-      { systemId: 'c', dataSensitivity: 'patient health records', blastRadius: 'org-wide', writeOperations: [{ operation: 'x', target: 'y', reversible: false }] },
+      { systemId: 'a', dataSensitivity: 'aggregate counts', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] },
+      { systemId: 'b', dataSensitivity: 'personal data', dataSensitivityTier: 'T2', blastRadius: 'team-scope', writeOperations: [{ operation: 'x', target: 'y', reversible: false }] },
+      { systemId: 'c', dataSensitivity: 'patient health records', dataSensitivityTier: 'T3', blastRadius: 'org-wide', writeOperations: [{ operation: 'x', target: 'y', reversible: false }] },
     ];
     for (const s of samples) {
       expect(allowed.has(scoreSystemRisk(s).severity)).toBe(true);
@@ -185,9 +255,9 @@ describe('computeSystemsRisk — HWM aggregation', () => {
 
   it('posture is the max severity across systems (FIPS high-water-mark)', () => {
     const systems: RiskScorableSystem[] = [
-      { systemId: 'low', dataSensitivity: 'aggregate counts', blastRadius: 'single-user', writeOperations: [] }, // sev 1
-      { systemId: 'mid', dataSensitivity: 'personal data', blastRadius: 'team-scope', writeOperations: [{ operation: 'x', target: 'y', reversible: true }] }, // sev 4
-      { systemId: 'high', dataSensitivity: 'message content', blastRadius: 'team-scope', writeOperations: [{ operation: 'x', target: 'y', reversible: false }] }, // BR3 DS2 = 6
+      { systemId: 'low', dataSensitivity: 'aggregate counts', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] }, // sev 1
+      { systemId: 'mid', dataSensitivity: 'personal data', dataSensitivityTier: 'T2', blastRadius: 'team-scope', writeOperations: [{ operation: 'x', target: 'y', reversible: true }] }, // sev 4
+      { systemId: 'high', dataSensitivity: 'message content', dataSensitivityTier: 'T2', blastRadius: 'team-scope', writeOperations: [{ operation: 'x', target: 'y', reversible: false }] }, // BR3 DS2 = 6
     ];
     const summary = computeSystemsRisk(systems);
     expect(summary.scanned).toBe(true);

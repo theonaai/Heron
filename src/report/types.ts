@@ -104,8 +104,17 @@ export const systemAssessmentSchema = z.object({
   scopesRequested: z.array(z.string().max(80)).default([]),
   scopesNeeded: z.array(z.string().max(80)).default([]),
   scopesDelta: z.array(z.string().max(80)).default([]),
-  // AAP-43 P0 #2: empty-string defaults (see volumePerDay note above)
+  // AAP-43 P0 #2: empty-string defaults (see volumePerDay note above).
+  // `dataSensitivity` is the human-readable prose basis (kept as-is).
   dataSensitivity: z.string().default(''),
+  // DS-tier rework (fix/report-render-parity): structured DATA SENSITIVITY TIER the
+  // LLM analyzer emits directly, grounded in the W3C DPV taxonomy. Replaces
+  // the brittle regex classifier (`classifySystemDS`) that was negation-blind
+  // ("no student names found" matched `names` → T2) and over-matched ("folder
+  // names" → T2). The analyzer understands negation/context; this is the value
+  // the per-system DS axis keys off (systems-risk.ts). Optional because the LLM
+  // may occasionally omit it — the consumer defaults conservatively to T2.
+  dataSensitivityTier: z.enum(['T1', 'T2', 'T3']).optional(),
   blastRadius: z.string().transform(normalizeBlastRadius).pipe(blastRadiusSchema).or(blastRadiusSchema).default('single-user'),
   // AAP-65: structured frequency object (preferred). `frequencyAndVolume`
   // kept for back-compat with pre-AAP-65 sessions on disk.
