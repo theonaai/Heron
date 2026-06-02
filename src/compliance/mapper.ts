@@ -966,6 +966,24 @@ export interface TypedRegulatoryFlag extends RegulatoryFlag {
    * Undefined for non-EU-AI-Act flags.
    */
   euAiActClassification?: EUAIActClassification;
+  /**
+   * AAP-120 (S2 of AAP-117) — provenance label. Always `true` for flags the
+   * prose engine (`detectSignals` → `isFindingActive` → CONTROL_MAPPINGS)
+   * emits: that engine reads the interview transcript / system metadata,
+   * i.e. the audited agent's SELF-REPORT. The deterministic engine
+   * (`runTypedDetectors`) never produces a `TypedRegulatoryFlag`; it emits
+   * `controlResults` with `path: 'typed'`. So every flag in `all` /
+   * mandatory / voluntary is self-attested by construction, and this field
+   * makes that explicit on the wire for the honest-lens renderer (S5).
+   *
+   * Per the deterministic-first precedence (`applyDeterministicPrecedence`),
+   * a self-attested flag is a FALLBACK: it only carries controls that NO
+   * deterministic detector covered for the same (findingType, frameworkId,
+   * controlId). When a detector produced a verdict, that control is removed
+   * from the flag (and the flag is dropped entirely if every control was
+   * covered).
+   */
+  selfAttested?: boolean;
 }
 
 export interface CategorizedBucket {
@@ -1231,8 +1249,104 @@ export function mapFindings(input: MapFindingsInput): CategorizedCompliance {
   const out = mapFindingsCore(input.declared, discoveryFindings);
   if (input.actual) {
     out.controlResults = runTypedDetectors(input.actual);
+    // AAP-120 (S2): deterministic-first precedence. Where a typed detector
+    // produced a verdict for a control, that verdict OWNS the control — the
+    // self-attested prose flag for the same control is demoted (removed from
+    // the flag, and the flag dropped if every control was covered). Runs only
+    // when `actual` evidence exists; the prose-only path (no `actual`) is
+    // untouched, preserving the legacy `mapFindingsToRiskCategories` output.
+    applyDeterministicPrecedence(out);
   }
   return out;
+}
+
+/**
+ * AAP-120 (S2 of AAP-117) — deterministic-first control activation.
+ *
+ * The prose engine (`mapFindingsCore`) emits a self-attested
+ * `TypedRegulatoryFlag` for every active control. The deterministic engine
+ * (`runTypedDetectors`) emits a `ControlResult` for every control that has a
+ * detector AND fired on the supplied evidence. Pre-S2 the two sat EQUAL: the
+ * same control (e.g. GDPR Art. 6) appeared both as a prose flag and as a
+ * deterministic verdict, with nothing tying the prose flag's fate to the
+ * deterministic one.
+ *
+ * This pass makes the deterministic verdict WIN. For every control a typed
+ * `ControlResult` covers — matched at PER-CONTROL grain
+ * (`findingType:frameworkId:controlId`, the same key the renderer's S5 merge
+ * uses) — the control is removed from the self-attested prose flag. A flag
+ * whose controls are ALL covered is dropped entirely. The prose flag survives
+ * ONLY as a labelled self-attested fallback carrying the controls no detector
+ * reached.
+ *
+ * Why per-control and per-finding-type (not per-framework): a control can have
+ * a deterministic detector under one finding type and none under another
+ * (e.g. gdpr Art. 22 has `detectGDPR_Article22` under decisions-about-people
+ * but no discovery detector). Keying the join on the full stable triple keeps
+ * the prose fallback for the finding types the deterministic path did not
+ * reach — mirroring `dedupeControlResults` + `typedCoveredKeys` in
+ * `src/report/templates.ts` so the data shape now matches what that renderer
+ * computed lazily.
+ *
+ * Mutates `out` in place: rewrites `out.all` and rebuilds the categorized
+ * `mandatory` / `voluntary` buckets (whose flags share object identity with
+ * `out.all`) from the same filtered list so a trimmed/dropped flag is
+ * consistent across every projection. `frameworksActivated` is left as the
+ * prose engine computed it — activation is additive (a deterministic verdict
+ * keeps the framework active even when it demotes the prose flag), and the
+ * renderer already unions `frameworksActivated` with
+ * `activatedFrameworksFromControlResults`.
+ */
+function applyDeterministicPrecedence(out: CategorizedCompliance): void {
+  if (out.controlResults.length === 0) return;
+
+  // Per-control coverage set, deduped, at the same grain the S5 renderer uses.
+  const covered = new Set<string>();
+  for (const r of out.controlResults) {
+    covered.add(`${r.findingType}:${r.frameworkId}:${r.controlId}`);
+  }
+
+  const demoteFlag = (flag: TypedRegulatoryFlag): TypedRegulatoryFlag | null => {
+    const remaining = flag.controlIds.filter(
+      (cid) => !covered.has(`${flag.triggeredBy}:${flag.frameworkId}:${cid}`),
+    );
+    // Every control on this flag now has a deterministic verdict — the typed
+    // path owns the row, drop the self-attested duplicate.
+    if (flag.controlIds.length > 0 && remaining.length === 0) return null;
+    // Untouched — no control was covered.
+    if (remaining.length === flag.controlIds.length) return flag;
+    // Partially covered — keep the flag as a fallback for the residual
+    // controls. Rebuild the `framework` label (which embeds the control list)
+    // so the trimmed citation stays consistent with `controlIds`.
+    const controlsLabel = remaining.join(', ');
+    const frameworkName = flag.framework.includes(' — ')
+      ? flag.framework.slice(0, flag.framework.indexOf(' — '))
+      : flag.framework;
+    return {
+      ...flag,
+      controlIds: remaining,
+      framework: `${frameworkName} — ${controlsLabel}`,
+    };
+  };
+
+  const filteredAll: TypedRegulatoryFlag[] = [];
+  for (const flag of out.all) {
+    const demoted = demoteFlag(flag);
+    if (demoted) filteredAll.push(demoted);
+  }
+  out.all = filteredAll;
+
+  // Rebuild the categorized buckets from the filtered list so the
+  // mandatory/voluntary projections match `out.all` exactly (the pre-filter
+  // bucket arrays hold the ORIGINAL flag objects by reference).
+  const mandatory = emptyBucket();
+  const voluntary = emptyBucket();
+  for (const flag of filteredAll) {
+    const bucket = flag.tier === 'mandatory' ? mandatory : voluntary;
+    bucket[flag.category].push(flag);
+  }
+  out.mandatory = mandatory;
+  out.voluntary = voluntary;
 }
 
 /**
@@ -1421,6 +1535,11 @@ function mapFindingsCore(
         triggeredBy: mapping.findingType,
         euAiActClassification:
           framework.id === 'eu-ai-act' ? euAiActClassification.classification : undefined,
+        // AAP-120 (S2): the prose engine is a self-report by construction —
+        // tag every flag it emits. The deterministic-first precedence step
+        // (in `mapFindings`) later demotes these to a fallback wherever a
+        // typed detector produced a verdict for the same control.
+        selfAttested: true,
       };
 
       all.push(flag);
