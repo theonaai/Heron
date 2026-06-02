@@ -1254,7 +1254,8 @@ function SystemsBlock({
           <tr style={{ textAlign: 'left', color: '#71717a', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
             <th style={{ padding: '8px 8px 8px 0', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>System</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Access</th>
-            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
+            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>
+            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Risk</th>
             <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>Verified?</th>
           </tr>
@@ -1369,7 +1370,8 @@ function SystemRow({
           ) : (
             <span style={{ color: '#a1a1aa' }}>—</span>
           )}
-        </td>        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
+        </td>
+        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
           {system.writeOperations.length === 0 ? (
             <span style={{ color: '#a1a1aa' }}>—</span>
           ) : (
