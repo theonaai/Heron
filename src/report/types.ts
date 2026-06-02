@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import type { CategorizedCompliance } from '../compliance/mapper.js';
+// AAP-122 — the closed finding-type vocabulary the analyzer classifies each
+// risk into. Imported as the runtime const (not the derived type) so the Zod
+// enum below stays in lockstep with `CONTROL_MAPPINGS`. `compliance/types.ts`
+// imports nothing from `report/`, so this direction introduces no cycle (the
+// compliance lens already imports the same const for the inverse reason).
+import { FINDING_TYPES } from '../compliance/types.js';
 
 // ─── Severity & Blast Radius enums ──────────────────────────────────────────
 
@@ -237,6 +243,16 @@ export const riskSchema = z.object({
    * session-wide fallback. See `severityInputsSchema` doc above.
    */
   severityInputs: severityInputsSchema.optional(),
+  /**
+   * AAP-122 — bounded classification of the risk into ONE of the closed
+   * `FINDING_TYPES`. The analyzer assigns it from the transcript (or omits it
+   * when none fits); it carries no framework identity itself. The framework
+   * card(s) the resulting SLF finding renders under are then derived
+   * DETERMINISTICALLY from `CONTROL_MAPPINGS` keyed by this finding type
+   * (`frameworkIdsForFindingType`). Optional so legacy report.json / fixtures
+   * without it still parse, and so a risk that fits no type stays global-only.
+   */
+  findingType: z.enum(FINDING_TYPES).optional(),
 });
 export type Risk = z.infer<typeof riskSchema>;
 
@@ -412,6 +428,14 @@ export const verdictFindingSnapshotSchema = z.object({
    *  suggestions). Optional; the SLF mitigation renderer prefers this
    *  over the generic evidence-source fallback when present. */
   analyzerNotes: z.string().optional(),
+  /**
+   * AAP-122 — the SLF finding's bounded finding-type classification, carried
+   * from the originating `Risk` so the dashboard can attribute the finding to
+   * the framework card(s) its type maps to (deterministically, via
+   * `CONTROL_MAPPINGS`). Optional; absent on Verified findings and on legacy
+   * report.json blobs persisted before AAP-122.
+   */
+  findingType: z.enum(FINDING_TYPES).optional(),
   kind: z.string().optional(),
 });
 export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;

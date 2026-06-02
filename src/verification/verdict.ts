@@ -40,6 +40,7 @@
 import type { DiscoveredAgent, DiscoveryFinding } from '../discovery/types.js';
 import { runtimeEntry, type DiscoveredRuntime } from '../discovery/registry.js';
 import type { EvidenceSource, Risk } from '../report/types.js';
+import type { FindingType } from '../compliance/types.js';
 import {
   computeSeverity,
   severityBand,
@@ -137,6 +138,15 @@ export interface VerdictFinding {
    * SLF findings when present.
    */
   analyzerNotes?: string;
+  /**
+   * AAP-122 — the bounded finding-type classification carried from the
+   * originating interview `Risk` (SLF findings only). The analyzer assigns it;
+   * the renderers fan it out to framework card(s) DETERMINISTICALLY via
+   * `CONTROL_MAPPINGS` (`frameworkIdsForFindingType`). Undefined on Verified
+   * findings and on SLF findings the analyzer could not classify — those stay
+   * global-only with no framework card. Never moves posture.
+   */
+  findingType?: FindingType;
   /** Optional kind tag for legacy renderers (discovery / oauth / risk). */
   kind?: string;
 }
@@ -468,6 +478,13 @@ function interviewRiskToVerdictFinding(
     title: titleStr,
     description: typeof risk.description === 'string' ? risk.description : '',
     ...(analyzerNotes !== undefined && { analyzerNotes }),
+    // AAP-122 — carry the analyzer's bounded finding-type classification onto
+    // the SLF finding so the renderers can attribute it to framework card(s)
+    // via `CONTROL_MAPPINGS`. The riskSchema already constrains the value to
+    // the closed `FINDING_TYPES` enum; absent on risks the analyzer could not
+    // classify (those stay global-only). Spread so the field is omitted, not
+    // set to undefined, when absent — matches the `analyzerNotes` pattern.
+    ...(risk.findingType !== undefined && { findingType: risk.findingType }),
     kind: 'risk',
   };
 }

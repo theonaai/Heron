@@ -44,6 +44,28 @@ describe('computeVerdict', () => {
     expect(verdict.discrepancies).toEqual([]);
   });
 
+  it('AAP-122: carries the risk findingType onto the SLF VerdictFinding', () => {
+    const interviewFindings: Risk[] = [
+      {
+        severity: 'high',
+        title: 'Automated hiring decision',
+        description: 'Agent rejects candidates with no human review.',
+        findingType: 'decisions-about-people',
+      },
+      // A risk with no findingType stays unattributed (global-only).
+      { severity: 'medium', title: 'Unclassified concern', description: 'misc' },
+    ];
+    const verdict = computeVerdict({ interviewFindings });
+    const slf = (verdict.findings ?? []).filter((f) => f.evidenceSource === 'SLF');
+    const classified = slf.find((f) => f.title === 'Automated hiring decision');
+    const unclassified = slf.find((f) => f.title === 'Unclassified concern');
+    expect(classified?.findingType).toBe('decisions-about-people');
+    // Absent (not set to undefined as an own property) when the risk omits it.
+    expect(unclassified?.findingType).toBeUndefined();
+    // findingType never moves posture — these are SLF findings.
+    expect(verdict.posture).toBe(0);
+  });
+
   it('returns unverified with no risk when inputs are empty', () => {
     const verdict = computeVerdict({});
     expect(verdict.status).toBe('unverified');

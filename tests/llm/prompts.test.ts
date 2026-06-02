@@ -52,4 +52,32 @@ describe('ANALYSIS_SYSTEM_PROMPT — AAP-65 constraints block', () => {
     // accept it on-disk via back-compat but the LLM should not emit it).
     expect(prompt).not.toMatch(/"frequencyAndVolume":\s*"Concrete numbers/);
   });
+
+  // ─── AAP-122 — bounded finding-type classification ─────────────────────────
+
+  it('buildAnalysisPrompt instructs bounded findingType classification with the closed enum', () => {
+    const prompt = buildAnalysisPrompt([
+      { question: 'Q', answer: 'A', category: 'purpose' },
+    ]);
+    // The dedicated section exists and frames it as a bounded, omittable choice.
+    expect(prompt).toContain('Finding Type Classification');
+    expect(prompt).toMatch(/EXACTLY ONE/);
+    expect(prompt).toMatch(/OMIT/);
+    // All seven closed finding-type values are named.
+    for (const ft of [
+      'excessive-access',
+      'write-risk',
+      'sensitive-data',
+      'scope-creep',
+      'regulatory-flags',
+      'risk-score',
+      'decisions-about-people',
+    ]) {
+      expect(prompt).toContain(ft);
+    }
+    // The model must NOT name a framework itself — the instruction says so.
+    expect(prompt).toMatch(/do NOT name a regulation or framework/i);
+    // The risk JSON template carries the findingType field.
+    expect(prompt).toMatch(/"findingType"/);
+  });
 });

@@ -45,7 +45,9 @@ import {
   allLensFrameworks,
   frameworkLens,
   lensFrameworks,
+  slfFindingsForFramework,
   type FrameworkLens,
+  type SlfLensFinding,
 } from '@/src/report/compliance-lens';
 import type { ControlResult as LensSourceControlResult } from '@/src/compliance/control-catalog';
 import type { TypedRegulatoryFlag } from '@/src/compliance/mapper';
@@ -2632,8 +2634,14 @@ const FRAMEWORK_LABELS: Record<string, string> = {
 
 function ComplianceBlock({
   rc,
+  verdict,
 }: {
   rc: MinimalReportJson['regulatoryCompliance'] | undefined;
+  // AAP-122 — the verdict snapshot's findings feed the per-framework
+  // attribution of self-attested findings under each lens card. Optional so
+  // pre-verdict / legacy report.json (no verdict block) renders controls with
+  // no SLF sub-list.
+  verdict?: VerdictSnapshot;
 }) {
   const initialOpen = useExpandFlag('compliance');
   const [open, setOpen] = useState(false);
@@ -2665,6 +2673,13 @@ function ComplianceBlock({
   // controlIds (S2) — so a cast is honest here.
   const controlResults = (rc.controlResults || []) as unknown as LensSourceControlResult[];
   const flags = (rc.all || []) as unknown as TypedRegulatoryFlag[];
+  // AAP-122 — the verdict's self-attested findings, fed to each framework card
+  // for per-framework attribution. `VerdictFindingSnapshot` structurally
+  // satisfies `SlfLensFinding` (id / title / evidenceSource / findingType).
+  // The SAME findings stay in the global "Self-attested findings" stream above
+  // (FindingsBlock) — this is an additional, framework-scoped view, never a
+  // relocation.
+  const slfFindings = (verdict?.findings ?? []) as unknown as SlfLensFinding[];
   // AAP-121 (S5) FIX 1: card for EVERY framework, mandatory-first. A framework
   // with zero active controls (verifiable or self-attested) still gets its
   // card with the honest "0 of ~N, the rest out of scope" summary — it no
@@ -2762,6 +2777,7 @@ function ComplianceBlock({
                 <FrameworkCard
                   key={lens.frameworkId}
                   lens={lens}
+                  slfFindings={slfFindingsForFramework(lens.frameworkId, slfFindings)}
                   expanded={expandedFws.has(lens.frameworkId)}
                   onToggle={() => toggleFramework(lens.frameworkId)}
                 />
@@ -2802,12 +2818,17 @@ export type ControlResult = NonNullable<
  * is a COUNT in the header, never a list (per Ilya 2026-06-02) — there is no
  * toggle and no "prose only" branch anymore.
  */
-function FrameworkCard({
+export function FrameworkCard({
   lens,
+  slfFindings = [],
   expanded,
   onToggle,
 }: {
   lens: FrameworkLens;
+  // AAP-122 — self-attested findings whose finding-type maps to THIS framework
+  // (deterministically, via CONTROL_MAPPINGS). Rendered after the control rows.
+  // The same findings remain in the global stream; this is an additional view.
+  slfFindings?: readonly SlfLensFinding[];
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -2869,6 +2890,30 @@ function FrameworkCard({
                 <ControlRow key={c.controlId + '-' + i} control={c} />
               ))}
             </ul>
+          )}
+          {/* AAP-122 — self-attested findings attributed to this framework,
+              after the control rows. The SAME findings are listed in the
+              global "Self-attested findings" stream (FindingsBlock); this is an
+              additional, framework-scoped view, not a relocation. Rendered with
+              the 🗣️ self-report marker + slate/violet ink so a reader does not
+              mistake an agent claim for a deterministic control verdict. */}
+          {slfFindings.length > 0 && (
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #e5e7eb' }}>
+              <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 600, marginBottom: 4 }}>
+                Self-attested findings
+              </div>
+              <p style={{ margin: '0 0 6px', fontSize: 11, color: '#a1a1aa', lineHeight: 1.5 }}>
+                Agent self-report, not a deterministic verdict — does not move posture.
+              </p>
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {slfFindings.map((f) => (
+                  <li key={f.id} style={{ fontSize: 12, color: '#52525b', lineHeight: 1.45 }}>
+                    <span style={{ marginRight: 6 }} aria-hidden>🗣️</span>
+                    {f.title}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           <p style={{ marginTop: 8, fontSize: 11, color: '#a1a1aa', margin: '8px 0 0' }}>
             {counts.outOfScope} more out of scope — needs a corporate artifact or an external
@@ -3168,7 +3213,7 @@ export default function MinimalReportView({
         verification={reportJson.verification}
         localAgentDiscovery={reportJson.localAgentDiscovery}
       />
-      <ComplianceBlock rc={reportJson.regulatoryCompliance} />
+      <ComplianceBlock rc={reportJson.regulatoryCompliance} verdict={reportJson.verdict} />
       <FooterToggle onSwitch={onSwitchToFullLayout} />
     </div>
   );

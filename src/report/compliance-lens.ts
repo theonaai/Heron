@@ -42,8 +42,9 @@
 
 import { FRAMEWORKS } from '../compliance/frameworks.js';
 import { findCatalogEntry, type ControlResult } from '../compliance/control-catalog.js';
+import { CONTROL_MAPPINGS } from '../compliance/control-mappings.js';
 import { FINDING_TYPES } from '../compliance/types.js';
-import type { ComplianceBucket, FrameworkId } from '../compliance/types.js';
+import type { ComplianceBucket, FindingType, FrameworkId } from '../compliance/types.js';
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import { dedupeControlResults } from './control-results-projection.js';
 
@@ -191,6 +192,85 @@ export function selfAttestedControlsForFramework(
         severity: 'info',
       });
     }
+  }
+  return out;
+}
+
+// ─── Lane B — self-attested FINDINGS attributed to frameworks (AAP-122) ───────
+
+/**
+ * AAP-122 — the load-bearing fields of a self-attested (`evidenceSource: 'SLF'`)
+ * finding the lens needs to attribute it to a framework card. Structural so
+ * BOTH the verdict's live `VerdictFinding` (verdict.ts) and the persisted
+ * `VerdictFindingSnapshot` (report/types.ts) — and the dashboard's wire shape —
+ * satisfy it without a coupling import. The renderers pass their own finding
+ * objects straight through.
+ *
+ * NOTE the two lanes are distinct. Lane A (`selfAttestedControlsForFramework`,
+ * above) renders self-attested CONTROLS from prose `TypedRegulatoryFlag`s and
+ * is UNTOUCHED. Lane B (here) renders the global "Self-Attested Findings"
+ * stream's `VerdictFinding`s additionally under each framework card, AFTER the
+ * control rows, without removing them from the global list.
+ */
+export interface SlfLensFinding {
+  /** Stable finding id (for React keys / de-dup). */
+  id: string;
+  /** Human-readable finding title. */
+  title: string;
+  /** Provenance — only `'SLF'` findings are attributed; others are ignored. */
+  evidenceSource: string;
+  /**
+   * The bounded finding-type classification, when the analyzer assigned one.
+   * Absent → the finding gets no card and stays global-only.
+   */
+  findingType?: FindingType;
+}
+
+/**
+ * AAP-122 — the DISTINCT frameworks a finding type maps to, derived
+ * DETERMINISTICALLY from the `CONTROL_MAPPINGS` table (one finding type can
+ * activate controls across several frameworks). The framework identity comes
+ * entirely from the table; the LLM never names a framework. Returns frameworks
+ * in `CONTROL_MAPPINGS` order, deduped. An unknown / unmapped finding type
+ * yields an empty array.
+ */
+export function frameworkIdsForFindingType(findingType: FindingType): FrameworkId[] {
+  const mapping = CONTROL_MAPPINGS[findingType];
+  if (!mapping) return [];
+  const out: FrameworkId[] = [];
+  const seen = new Set<FrameworkId>();
+  for (const control of mapping.controls) {
+    if (seen.has(control.frameworkId)) continue;
+    seen.add(control.frameworkId);
+    out.push(control.frameworkId);
+  }
+  return out;
+}
+
+/**
+ * AAP-122 — the self-attested findings that belong under one framework's card.
+ *
+ * A finding is attributed to `frameworkId` when it is an SLF finding, carries a
+ * `findingType`, and that finding type maps (via `CONTROL_MAPPINGS`) to at
+ * least one control in `frameworkId`. The SAME finding fans out to every
+ * framework its type maps to — so a `decisions-about-people` finding appears
+ * under EU AI Act, GDPR, ISO 42001, AIUC-1, and NIST AI RMF. A finding with no
+ * `findingType`, or whose type maps to no controls, is attributed to NO card
+ * (it stays in the global stream only).
+ *
+ * Pure and additive: it neither mutates nor consumes the global list — the
+ * caller still renders that list in full. Order is preserved from the input.
+ */
+export function slfFindingsForFramework(
+  frameworkId: FrameworkId,
+  findings: readonly SlfLensFinding[],
+): SlfLensFinding[] {
+  const out: SlfLensFinding[] = [];
+  for (const f of findings) {
+    if (f.evidenceSource !== 'SLF') continue;
+    if (f.findingType === undefined) continue;
+    if (!frameworkIdsForFindingType(f.findingType).includes(frameworkId)) continue;
+    out.push(f);
   }
   return out;
 }

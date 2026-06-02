@@ -156,6 +156,7 @@ ${formatted}
       "title": "Short risk title",
       "description": "Risk description based on ACTUAL data from transcript",
       "mitigation": "Specific recommended fix",
+      "findingType": "excessive-access | write-risk | sensitive-data | scope-creep | regulatory-flags | risk-score | decisions-about-people (OR omit — see Finding Type Classification)",
       "severityInputs": {
         "brW": 1,
         "brR": 2,
@@ -199,6 +200,20 @@ REVERSIBILITY CLASSIFICATION (per write operation):
 - False-positive matching in a tool that still routes to a human for action → **MEDIUM** (product-quality risk, not compliance)
 
 Overall risk = highest individual risk across all systems + escalation if multiple HIGH risks compound.
+
+## Finding Type Classification (findingType)
+
+For EACH risk you emit, classify it into EXACTLY ONE of the seven finding types below, or OMIT the "findingType" field entirely when none is a clear fit. This is a bounded classification only — pick the single best-fitting category from this closed list. Do NOT invent new values, do NOT name a regulation or framework, and do NOT guess: if a risk does not clearly belong to one of these, leave "findingType" out and the risk still appears in the report (it just won't be cross-referenced to a framework control).
+
+- "excessive-access": the agent has been granted scopes or resource access beyond what its stated purpose requires (a least-privilege violation — e.g. full Drive write when one folder is used).
+- "write-risk": the agent performs write/mutate operations — especially irreversible or unapproved ones — that can affect users or downstream systems (e.g. outbound messages with no approval gate, bulk writes with no rollback).
+- "sensitive-data": the agent processes personal, health, financial, or otherwise sensitive data (PII, PHI, GDPR Art. 9 special categories, payment/financial credentials, government IDs).
+- "scope-creep": the agent's requested permissions exceed what is needed for the stated purpose — a precursor to unintended use (purpose-limitation concern, distinct from a concrete already-excessive grant).
+- "regulatory-flags": the agent operates in a regulated domain (employment, credit, insurance, health, housing, education, legal) that triggers domain-specific obligations.
+- "risk-score": the finding is about the overall composite risk-score methodology itself, not a single concrete access pattern. Use sparingly.
+- "decisions-about-people": the agent makes or materially influences automated decisions affecting individuals (hiring, credit, grading, moderation, access).
+
+Pick the type that describes the risk's PRIMARY nature. If two seem to fit, choose the more specific one (e.g. prefer "decisions-about-people" over "regulatory-flags" for an automated hiring decision; prefer "excessive-access" over "scope-creep" when the over-grant is concrete rather than anticipated).
 
 ## Per-Finding Severity Axes (severityInputs)
 

@@ -16,8 +16,10 @@ import {
   allLensFrameworks,
   frameworkLens,
   lensFrameworks,
+  slfFindingsForFramework,
   type FrameworkLens,
   type LensControl,
+  type SlfLensFinding,
 } from './compliance-lens.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import {
@@ -326,7 +328,19 @@ export function renderMarkdownReport(
     renderSystems(report.systems, verdict),
     renderPositiveFindings(report, discoveryFindings),
     renderVerdict(report, discoveryFindings, verdict),
-    report.compliance ? renderRegulatoryCompliance(report.compliance as StructuredCompliance, report) : null,
+    report.compliance
+      ? renderRegulatoryCompliance(
+          report.compliance as StructuredCompliance,
+          report,
+          // AAP-122 — the verdict's self-attested findings feed the per-
+          // framework attribution under each lens card. `VerdictFinding`
+          // structurally satisfies `SlfLensFinding` (id / title /
+          // evidenceSource / findingType). Empty when no verdict is attached
+          // (the pre-verdict initial markdown write), so the lens just renders
+          // controls with no SLF sub-list — no regression.
+          verdict?.findings ?? [],
+        )
+      : null,
     report.dataQuality ? renderDataQuality(report.dataQuality) : null,
     renderTranscript(report.transcript),
     renderDisclaimer(),
@@ -2279,8 +2293,17 @@ function renderLensVerdictBadge(verdict: LensControl['verdict']): string {
  * out-of-scope count against the published universe, and the ordered list of
  * ACTIVE controls only (verified -> partial -> self-attested). Out-of-scope
  * controls are a count, never a list (per Ilya 2026-06-02).
+ *
+ * AAP-122 — when `slfFindings` are supplied (the self-attested findings whose
+ * finding-type maps to THIS framework via `CONTROL_MAPPINGS`), they render in
+ * a small sub-list AFTER the control rows. These are the SAME findings the
+ * global "Self-Attested Findings" stream lists — shown here additionally for
+ * framework attribution, never relocated.
  */
-function renderFrameworkLensBlock(lens: FrameworkLens): string {
+function renderFrameworkLensBlock(
+  lens: FrameworkLens,
+  slfFindings: readonly SlfLensFinding[] = [],
+): string {
   const name = LENS_FRAMEWORK_NAMES[lens.frameworkId] ?? lens.frameworkId;
   const { counts } = lens;
 
@@ -2301,15 +2324,28 @@ function renderFrameworkLensBlock(lens: FrameworkLens): string {
 
   if (lens.controls.length === 0) {
     out += `_No active controls for this framework._\n\n`;
-    return out;
+  } else {
+    // Active controls, already ordered by the shared projection.
+    for (const ctrl of lens.controls) {
+      const nameSuffix = ctrl.controlName ? ` — ${escapeText(ctrl.controlName)}` : '';
+      out += `- \`${ctrl.controlId}\` ${renderLensVerdictBadge(ctrl.verdict)}${nameSuffix}\n`;
+    }
+    out += `\n`;
   }
 
-  // Active controls, already ordered by the shared projection.
-  for (const ctrl of lens.controls) {
-    const nameSuffix = ctrl.controlName ? ` — ${escapeText(ctrl.controlName)}` : '';
-    out += `- \`${ctrl.controlId}\` ${renderLensVerdictBadge(ctrl.verdict)}${nameSuffix}\n`;
+  // AAP-122 — self-attested findings attributed to this framework (after the
+  // control rows). The same findings remain in the global "Self-Attested
+  // Findings" stream; this is an additional, framework-scoped view. Rendered
+  // as a labelled sub-list so a reader does not mistake an agent self-report
+  // for a deterministic control verdict.
+  if (slfFindings.length > 0) {
+    out += `_Self-attested findings (agent self-report, do not move posture):_\n`;
+    for (const f of slfFindings) {
+      out += `- 🗣️ ${escapeText(f.title)}\n`;
+    }
+    out += `\n`;
   }
-  out += `\n`;
+
   return out;
 }
 
@@ -2325,7 +2361,10 @@ function renderFrameworkLensBlock(lens: FrameworkLens): string {
  * Shares its counting / grouping / ordering math with the dashboard via
  * `src/report/compliance-lens.ts` so the two surfaces cannot drift (AAP-108).
  */
-function renderComplianceLens(c: StructuredCompliance): string {
+function renderComplianceLens(
+  c: StructuredCompliance,
+  slfFindings: readonly SlfLensFinding[] = [],
+): string {
   const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
 
@@ -2346,7 +2385,13 @@ function renderComplianceLens(c: StructuredCompliance): string {
     `corporate artifact or an external probe Heron can't reach in an interview._\n\n`;
 
   for (const frameworkId of allLensFrameworks()) {
-    out += renderFrameworkLensBlock(frameworkLens(frameworkId, controlResults, allFlags));
+    // AAP-122 — the SLF findings whose finding-type maps to this framework
+    // (deterministically, via CONTROL_MAPPINGS). Empty for findings with no
+    // findingType, so those stay global-only.
+    out += renderFrameworkLensBlock(
+      frameworkLens(frameworkId, controlResults, allFlags),
+      slfFindingsForFramework(frameworkId, slfFindings),
+    );
   }
   return out;
 }
@@ -2916,7 +2961,11 @@ The following cannot be assessed from this interview alone — the deployer must
 ${tableRows}`;
 }
 
-export function renderStructuredCompliance(c: StructuredCompliance, report?: AuditReport): string {
+export function renderStructuredCompliance(
+  c: StructuredCompliance,
+  report?: AuditReport,
+  slfFindings: readonly SlfLensFinding[] = [],
+): string {
   return [
     `## Regulatory Compliance`,
     ``,
@@ -2924,7 +2973,7 @@ export function renderStructuredCompliance(c: StructuredCompliance, report?: Aud
     ``,
     `Findings are anchored to EU AI Act 2024/1689, GDPR 2016/679, ISO/IEC 42001 (AI management system), AIUC-1 (agent-native standard, pinned to Q2-2026 release 2026-04-15), and NIST AI RMF 1.0 (US-origin voluntary risk-management framework; GOVERN/MAP/MEASURE/MANAGE). Mapping version: \`${c.mappingVersion}\`. EU AI Act is a single framework entry; Annex III high-risk obligations are surfaced as a classification scope label on that entry (replacing the prior two-entry split). Control mappings are indicative — they show which framework clauses a finding typically activates and do not constitute legal advice.`,
     ``,
-    renderComplianceLens(c),
+    renderComplianceLens(c, slfFindings),
     ``,
     renderApplicabilitySummary(c),
     ``,
@@ -2933,8 +2982,12 @@ export function renderStructuredCompliance(c: StructuredCompliance, report?: Aud
   ].join('\n');
 }
 
-function renderRegulatoryCompliance(compliance: StructuredCompliance, report?: AuditReport): string {
-  return renderStructuredCompliance(compliance, report);
+function renderRegulatoryCompliance(
+  compliance: StructuredCompliance,
+  report?: AuditReport,
+  slfFindings: readonly SlfLensFinding[] = [],
+): string {
+  return renderStructuredCompliance(compliance, report, slfFindings);
 }
 
 // ─── Disclaimer ─────────────────────────────────────────────────────────────
