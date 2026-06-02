@@ -12,6 +12,13 @@ import {
   statusLabelFromControlResults,
   worstSeverity,
 } from './control-results-projection.js';
+import {
+  allLensFrameworks,
+  frameworkLens,
+  lensFrameworks,
+  type FrameworkLens,
+  type LensControl,
+} from './compliance-lens.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import {
   isBusinessSystem,
@@ -2246,6 +2253,104 @@ function formatGaps(gaps: string[]): { status: string; details: string } {
   };
 }
 
+// ─── Compliance lens (AAP-121 / S5 of AAP-117) ────────────────────────────
+
+/** Short framework display names for the lens header rows. */
+const LENS_FRAMEWORK_NAMES: Record<string, string> = {
+  'eu-ai-act': 'EU AI Act',
+  'gdpr': 'GDPR',
+  'iso-42001': 'ISO/IEC 42001',
+  'aiuc-1': 'AIUC-1',
+  'nist-ai-rmf': 'NIST AI RMF',
+};
+
+/**
+ * Per-control verdict badge for the lens active-control list. Extends the
+ * `renderVerdictBadge` vocabulary with the `self-attested` sentinel state the
+ * lens uses for agent self-reports (which are not deterministic verdicts).
+ */
+function renderLensVerdictBadge(verdict: LensControl['verdict']): string {
+  if (verdict === 'self-attested') return '🗣️ self-attested';
+  return renderVerdictBadge(verdict);
+}
+
+/**
+ * Render one framework's lens block: a state-based header count line, an
+ * out-of-scope count against the published universe, and the ordered list of
+ * ACTIVE controls only (verified -> partial -> self-attested). Out-of-scope
+ * controls are a count, never a list (per Ilya 2026-06-02).
+ */
+function renderFrameworkLensBlock(lens: FrameworkLens): string {
+  const name = LENS_FRAMEWORK_NAMES[lens.frameworkId] ?? lens.frameworkId;
+  const { counts } = lens;
+
+  // State-based header: verified / fail / partial / self-attested. `unverified`
+  // verifiable controls (evidence absent) fold in with partial in the header
+  // copy so the reader sees one "needs evidence" figure, but they still list
+  // individually below with their own badge.
+  const headerParts: string[] = [];
+  headerParts.push(`${counts.verified} verified`);
+  headerParts.push(`${counts.fail} fail`);
+  const partialish = counts.partial + counts.unverified;
+  headerParts.push(`${partialish} partial`);
+  headerParts.push(`${counts.selfAttested} self-attested`);
+
+  let out = `#### ${name}\n\n`;
+  out += `**${counts.activeShown} of ~${counts.publishedControlCount} addressed** `;
+  out += `(${headerParts.join(' · ')}) · ${counts.outOfScope} out of scope\n\n`;
+
+  if (lens.controls.length === 0) {
+    out += `_No active controls for this framework._\n\n`;
+    return out;
+  }
+
+  // Active controls, already ordered by the shared projection.
+  for (const ctrl of lens.controls) {
+    const nameSuffix = ctrl.controlName ? ` — ${escapeText(ctrl.controlName)}` : '';
+    out += `- \`${ctrl.controlId}\` ${renderLensVerdictBadge(ctrl.verdict)}${nameSuffix}\n`;
+  }
+  out += `\n`;
+  return out;
+}
+
+/**
+ * AAP-121 — the honest compliance lens. One block per framework, ALL five,
+ * mandatory-first (FIX 1 of S5: 0-active frameworks no longer vanish — a
+ * framework with no active control still gets its card with the honest
+ * "0 of ~N, the rest out of scope" summary). State-based header counts, only
+ * active controls listed, out-of-scope as a count against the published
+ * universe. Replaces the flat partial-wall + EU-AI-Act "prose only" special
+ * case with one typed path for all five frameworks.
+ *
+ * Shares its counting / grouping / ordering math with the dashboard via
+ * `src/report/compliance-lens.ts` so the two surfaces cannot drift (AAP-108).
+ */
+function renderComplianceLens(c: StructuredCompliance): string {
+  const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
+  const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
+
+  // If NO framework surfaced any active control, the lens is honestly empty —
+  // five all-zero cards would be pure noise. Otherwise render all five.
+  if (lensFrameworks(controlResults, allFlags).length === 0) {
+    return `### Compliance Lens\n\n_No active controls from current signals._\n`;
+  }
+
+  let out = `### Compliance Lens\n\n`;
+  // One-line legend (scope point 4): some controls can earn a clean verified,
+  // others only ever warn (the deterministic-flag set), and self-attested ones
+  // are the agent's own answers.
+  out +=
+    `_Some controls can earn a clean **verified**; others only ever **warn** ` +
+    `(the deterministic-flag set), and **self-attested** controls are the agent's ` +
+    `own answers, not deterministic verdicts. Out-of-scope controls need a ` +
+    `corporate artifact or an external probe Heron can't reach in an interview._\n\n`;
+
+  for (const frameworkId of allLensFrameworks()) {
+    out += renderFrameworkLensBlock(frameworkLens(frameworkId, controlResults, allFlags));
+  }
+  return out;
+}
+
 function renderApplicabilitySummary(c: StructuredCompliance): string {
   const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
@@ -2445,44 +2550,18 @@ function renderFindingFirstDetailMerged(
   // finding body"). The legacy renderer instead folds its residual control
   // citations into an Affects continuation under the already-rendered body.
   const typedRenderedFindingTypes = renderedFindingTypesFromControlResults(results);
-  // Codex post-review fix #2 (2026-05-25): dedup at PER-CONTROL grain
-  // (`findingType:frameworkId:controlId`), NOT at finding-type grain.
-  //
-  // Old shape suppressed legacy `sensitive-data` for ISO 42001 / NIST /
-  // AIUC-1 just because a typed `sensitive-data` result existed for
-  // GDPR Art. 6 (different framework, different control, same finding-
-  // type). The typed projection is partial per-control, not per-
-  // finding-type, so the dedup key must match.
-  const typedCoveredKeys = new Set(
-    dedupeControlResults(results).map(
-      (r) => `${r.findingType}:${r.frameworkId}:${r.controlId}`,
-    ),
-  );
-  // Filter legacy flags at the controlId level: drop only the control
-  // IDs already covered by a typed result. If the residual list is
-  // empty the entry is dropped entirely; otherwise the entry survives
-  // with its remaining (uncovered) controlIds so the auditor still
-  // sees those framework citations on the Affects line.
-  const legacyFiltered = allFlags
-    .map((f) => {
-      const remaining = (f.controlIds ?? []).filter(
-        (cid) => !typedCoveredKeys.has(`${f.triggeredBy}:${f.frameworkId}:${cid}`),
-      );
-      if ((f.controlIds ?? []).length > 0 && remaining.length === 0) {
-        // Every controlId on this legacy entry already has a typed
-        // verdict, the typed block owns this row, drop the legacy
-        // duplicate.
-        return null;
-      }
-      // Preserve the entry; rewrite controlIds to the residual set so
-      // covered IDs don't double-render in the Affects line.
-      return remaining.length === (f.controlIds ?? []).length
-        ? f
-        : { ...f, controlIds: remaining };
-    })
-    .filter((f): f is TypedRegulatoryFlag => f !== null);
+  // AAP-121 (S5) — the per-control dedup that used to live here (filtering
+  // legacy flags whose `findingType:frameworkId:controlId` a typed result
+  // already covered) is GONE. The mapper now owns that precedence: S2's
+  // `applyDeterministicPrecedence` (src/compliance/mapper.ts) strips every
+  // detector-covered control out of the prose flags — at the SAME per-control
+  // grain — before `compliance.all` ever reaches this renderer. Re-running the
+  // identical filter here was idempotent dead code (a no-op on real pipeline
+  // data), so the flags pass straight through to the legacy renderer. The
+  // `alreadyRenderedTypes` guard below still prevents a finding-type BODY from
+  // double-rendering across the typed + prose sections (AAP-108 defect 4).
   const legacySection = legacyOnly_renderSections(
-    legacyFiltered,
+    allFlags,
     report,
     typedRenderedFindingTypes,
   );
@@ -2844,6 +2923,8 @@ export function renderStructuredCompliance(c: StructuredCompliance, report?: Aud
     `### Methodology`,
     ``,
     `Findings are anchored to EU AI Act 2024/1689, GDPR 2016/679, ISO/IEC 42001 (AI management system), AIUC-1 (agent-native standard, pinned to Q2-2026 release 2026-04-15), and NIST AI RMF 1.0 (US-origin voluntary risk-management framework; GOVERN/MAP/MEASURE/MANAGE). Mapping version: \`${c.mappingVersion}\`. EU AI Act is a single framework entry; Annex III high-risk obligations are surfaced as a classification scope label on that entry (replacing the prior two-entry split). Control mappings are indicative — they show which framework clauses a finding typically activates and do not constitute legal advice.`,
+    ``,
+    renderComplianceLens(c),
     ``,
     renderApplicabilitySummary(c),
     ``,

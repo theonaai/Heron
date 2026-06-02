@@ -90,6 +90,22 @@ describe('MinimalReportView compliance ControlRow rationale (AAP-105 A7)', () =>
     expect(html).not.toContain('mcp:github');
   });
 
+  it('AAP-121: renders the self-attested verdict state (agent self-report, not a verdict)', () => {
+    // The lens passes self-attested controls through ControlRow with the
+    // `self-attested` sentinel verdict. The row must render that state rather
+    // than falling through to a misleading default.
+    const selfAttested = {
+      frameworkId: 'gdpr',
+      controlId: 'Art. 5(1)(b)',
+      controlName: 'Purpose limitation.',
+      verdict: 'self-attested' as const,
+      severity: 'info' as const,
+    };
+    const html = renderToStaticMarkup(<ControlRow control={selfAttested} />);
+    expect(html).toContain('Art. 5(1)(b)');
+    expect(html).toContain('self-attested');
+  });
+
   it('renders no rationale/evidence elements when both are absent', () => {
     const bare: ControlResult = {
       frameworkId: 'iso-42001',
@@ -189,8 +205,8 @@ describe('ControlRow evidence dedup + path stripping (AAP-105 F4)', () => {
   });
 });
 
-describe('MinimalReportView compliance footer wording (AAP-105 A7)', () => {
-  // The footer is static JSX behind the lens "Detail" toggle (collapsed by
+describe('MinimalReportView compliance lens legend (AAP-105 A7 + AAP-121 S5)', () => {
+  // The lens legend is static JSX behind the lens "Detail" toggle (collapsed by
   // default), so it is not reachable via renderToStaticMarkup. Guard the
   // wording against the component source instead.
   const source = readFileSync(
@@ -203,8 +219,19 @@ describe('MinimalReportView compliance footer wording (AAP-105 A7)', () => {
     expect(source).not.toContain('signal present but no typed detector');
   });
 
-  it('describes partial as a typed-detector signal that cannot yet be proven', () => {
-    expect(source).toContain('typed detector found a relevant signal or applicable obligation');
-    expect(source).toContain('Heron cannot');
+  it('AAP-121: the legend is the one-liner — verified / warn / self-attested', () => {
+    // Scope point 4: some controls can earn a clean verified, others only ever
+    // warn (the deterministic-flag set); self-attested controls are agent
+    // answers, not verdicts.
+    expect(source).toContain('can earn a clean');
+    expect(source).toContain('the deterministic-flag set');
+    expect(source).toContain('own answers, not');
+  });
+
+  it('AAP-121: drops the per-card out-of-scope toggle copy (oos is a count only)', () => {
+    // The old "toggle in each card to include them" hid out-of-scope behind a
+    // per-card toggle. S5 makes out-of-scope a count, never a list.
+    expect(source).not.toContain('toggle in each card to include them');
+    expect(source).not.toContain('Show ${fwOos} out-of-scope');
   });
 });
