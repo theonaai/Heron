@@ -13,6 +13,7 @@ import {
   worstSeverity,
 } from './control-results-projection.js';
 import {
+  allLensFrameworks,
   frameworkLens,
   lensFrameworks,
   type FrameworkLens,
@@ -2313,8 +2314,10 @@ function renderFrameworkLensBlock(lens: FrameworkLens): string {
 }
 
 /**
- * AAP-121 — the honest compliance lens. One block per framework that has at
- * least one ACTIVE control, mandatory-first. State-based header counts, only
+ * AAP-121 — the honest compliance lens. One block per framework, ALL five,
+ * mandatory-first (FIX 1 of S5: 0-active frameworks no longer vanish — a
+ * framework with no active control still gets its card with the honest
+ * "0 of ~N, the rest out of scope" summary). State-based header counts, only
  * active controls listed, out-of-scope as a count against the published
  * universe. Replaces the flat partial-wall + EU-AI-Act "prose only" special
  * case with one typed path for all five frameworks.
@@ -2326,8 +2329,9 @@ function renderComplianceLens(c: StructuredCompliance): string {
   const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
 
-  const frameworkIds = lensFrameworks(controlResults, allFlags);
-  if (frameworkIds.length === 0) {
+  // If NO framework surfaced any active control, the lens is honestly empty —
+  // five all-zero cards would be pure noise. Otherwise render all five.
+  if (lensFrameworks(controlResults, allFlags).length === 0) {
     return `### Compliance Lens\n\n_No active controls from current signals._\n`;
   }
 
@@ -2341,7 +2345,7 @@ function renderComplianceLens(c: StructuredCompliance): string {
     `own answers, not deterministic verdicts. Out-of-scope controls need a ` +
     `corporate artifact or an external probe Heron can't reach in an interview._\n\n`;
 
-  for (const frameworkId of frameworkIds) {
+  for (const frameworkId of allLensFrameworks()) {
     out += renderFrameworkLensBlock(frameworkLens(frameworkId, controlResults, allFlags));
   }
   return out;

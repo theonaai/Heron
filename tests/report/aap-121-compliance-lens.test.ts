@@ -17,6 +17,9 @@
  *      detector), de-duped against the verifiable lane.
  *   6. EU AI Act uses the same typed path as every other framework (no
  *      "prose only" special case).
+ *   7. FIX 1 (S5): every framework is carded — a 0-active framework still
+ *      renders its honest "0 of ~N, the rest out of scope" summary instead of
+ *      vanishing (`allLensFrameworks`).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,6 +28,7 @@ import {
   ACTIVE_BUCKETS,
   OUT_OF_SCOPE_BUCKETS,
   activeControlResultsForFramework,
+  allLensFrameworks,
   frameworkLens,
   lensFrameworks,
   selfAttestedControlsForFramework,
@@ -322,6 +326,34 @@ describe('AAP-121 lens — EU AI Act parity', () => {
   });
 });
 
+// ─── 7. FIX 1 — every framework is carded, even with 0 active controls ───────
+
+describe('AAP-121 lens — FIX 1: all five frameworks render', () => {
+  it('allLensFrameworks returns all five in registry order (mandatory-first)', () => {
+    expect(allLensFrameworks()).toEqual([
+      'eu-ai-act',
+      'gdpr',
+      'iso-42001',
+      'aiuc-1',
+      'nist-ai-rmf',
+    ]);
+  });
+
+  it('is independent of signals — returns all five even with no inputs', () => {
+    expect(allLensFrameworks()).toHaveLength(5);
+  });
+
+  it('a 0-active framework still projects an honest "0 of ~N" lens', () => {
+    // NIST AI RMF has 0 self-attested controls by design; with no verifiable
+    // verdict it has 0 active — but its card must still summarise honestly.
+    const lens = frameworkLens('nist-ai-rmf', [], []);
+    expect(lens.counts.activeShown).toBe(0);
+    expect(lens.counts.publishedControlCount).toBe(72);
+    expect(lens.counts.outOfScope).toBe(72);
+    expect(lens.controls).toEqual([]);
+  });
+});
+
 // ─── Markdown render of the lens (parity with the dashboard projection) ──────
 
 /** A realistic multi-framework compliance blob for the markdown lens. */
@@ -438,5 +470,39 @@ describe('AAP-121 lens — markdown render', () => {
     const md = renderStructuredCompliance(empty);
     expect(md).toContain('### Compliance Lens');
     expect(md).toContain('No active controls from current signals');
+  });
+
+  // ─── FIX 1: all five framework cards render, even 0-active ones ────────────
+
+  it('renders a card for ALL FIVE frameworks, including 0-active ones', () => {
+    // The fixture only has active controls for EU AI Act + GDPR. ISO 42001,
+    // AIUC-1, and NIST AI RMF have 0 active controls — they used to vanish, but
+    // FIX 1 keeps their cards.
+    const md = renderStructuredCompliance(lensCompliance());
+    expect(md).toContain('#### EU AI Act');
+    expect(md).toContain('#### GDPR');
+    expect(md).toContain('#### ISO/IEC 42001');
+    expect(md).toContain('#### AIUC-1');
+    expect(md).toContain('#### NIST AI RMF');
+  });
+
+  it('a 0-active framework card shows the honest "0 of ~N" summary, no rows', () => {
+    const md = renderStructuredCompliance(lensCompliance());
+    const lensSection = md.slice(
+      md.indexOf('### Compliance Lens'),
+      md.indexOf('### Applicability Summary'),
+    );
+    // NIST AI RMF: 0 active of ~72, all 72 out of scope, no control rows.
+    const nistBlock = lensSection.slice(lensSection.indexOf('#### NIST AI RMF'));
+    expect(nistBlock).toContain('**0 of ~72 addressed**');
+    expect(nistBlock).toContain('72 out of scope');
+    expect(nistBlock).toContain('No active controls for this framework');
+    // ISO/IEC 42001: 0 active of ~38.
+    const isoBlock = lensSection.slice(
+      lensSection.indexOf('#### ISO/IEC 42001'),
+      lensSection.indexOf('#### AIUC-1'),
+    );
+    expect(isoBlock).toContain('**0 of ~38 addressed**');
+    expect(isoBlock).toContain('38 out of scope');
   });
 });

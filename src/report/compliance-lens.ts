@@ -303,14 +303,17 @@ export function frameworkLens(
 }
 
 /**
- * Which frameworks the lens should render a card for. A framework is shown when
- * it has at least one active control in EITHER lane (a verifiable verdict or a
- * self-attested prose flag). We do NOT render a card for a framework with zero
- * active controls — an all-out-of-scope framework with nothing surfaced would
- * be a card that only says "0 of ~N", which is noise.
+ * Frameworks that have at least one active control in EITHER lane (a verifiable
+ * verdict or a self-attested prose flag), in registry order (mandatory first:
+ * EU AI Act, GDPR; then voluntary) so the lens reads law-first.
  *
- * Order follows the registry (mandatory first: EU AI Act, GDPR; then voluntary)
- * so the lens reads law-first.
+ * This is the honest "how many frameworks did we actually say something about"
+ * count — it backs the collapsed-header "N frameworks addressed" figure. It is
+ * NOT the render enumeration: every framework gets a card regardless (see
+ * `allLensFrameworks` / FIX 1 of AAP-121 S5), because a 0-active framework still
+ * carries an honest "0 of ~N, the rest out of scope" summary that a reader needs
+ * to see (e.g. ISO 42001 / NIST AI RMF have 0 self-attested by design, so they
+ * would vanish from a real audit otherwise).
  */
 export function lensFrameworks(
   controlResults: readonly ControlResult[],
@@ -322,6 +325,18 @@ export function lensFrameworks(
     if (lens.counts.activeShown > 0) out.push(frameworkId);
   }
   return out;
+}
+
+/**
+ * Every framework the lens renders a card for — ALL of them, in registry order
+ * (mandatory first: EU AI Act, GDPR; then voluntary). FIX 1 of AAP-121 S5: we
+ * no longer hide 0-active frameworks. A framework with zero active controls
+ * still renders its card with the same summary structure as the active ones
+ * (active count = 0 plus the out-of-scope / published-count line), just with no
+ * active-control rows. The "addressed" count stays honest via `lensFrameworks`.
+ */
+export function allLensFrameworks(): FrameworkId[] {
+  return Object.keys(FRAMEWORKS) as FrameworkId[];
 }
 
 // ─── Finding-type-agnostic catalog lookup ─────────────────────────────────────

@@ -42,6 +42,7 @@ import type {
   VerdictSnapshot,
 } from '@/src/report/types';
 import {
+  allLensFrameworks,
   frameworkLens,
   lensFrameworks,
   type FrameworkLens,
@@ -2636,11 +2637,22 @@ function ComplianceBlock({
 }) {
   const initialOpen = useExpandFlag('compliance');
   const [open, setOpen] = useState(false);
-  const [expandedFw, setExpandedFw] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null;
+  // AAP-121 (S5) FIX 2: framework cards expand independently — multiple can be
+  // open at once. Per-card open-state is a Set of frameworkIds, not a single
+  // active id, so opening one card no longer collapses the others.
+  const [expandedFws, setExpandedFws] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
     const p = new URLSearchParams(window.location.search);
-    return p.get('expandFramework') || null;
+    const initial = p.get('expandFramework');
+    return initial ? new Set([initial]) : new Set();
   });
+  const toggleFramework = (frameworkId: string) =>
+    setExpandedFws((prev) => {
+      const next = new Set(prev);
+      if (next.has(frameworkId)) next.delete(frameworkId);
+      else next.add(frameworkId);
+      return next;
+    });
   useEffect(() => {
     if (initialOpen) setOpen(true);
   }, [initialOpen]);
@@ -2653,14 +2665,18 @@ function ComplianceBlock({
   // controlIds (S2) — so a cast is honest here.
   const controlResults = (rc.controlResults || []) as unknown as LensSourceControlResult[];
   const flags = (rc.all || []) as unknown as TypedRegulatoryFlag[];
-  // Frameworks that have at least one ACTIVE control (verifiable or
-  // self-attested), mandatory-first. A framework with only out-of-scope
-  // controls is not carded.
-  const frameworkIds = lensFrameworks(controlResults, flags);
-  const lenses = frameworkIds.map((fwId) => frameworkLens(fwId, controlResults, flags));
-  // State-based roll-up for the collapsed header — summed across active
-  // frameworks. No "prose only" special case: every framework is one typed
-  // path now.
+  // AAP-121 (S5) FIX 1: card for EVERY framework, mandatory-first. A framework
+  // with zero active controls (verifiable or self-attested) still gets its
+  // card with the honest "0 of ~N, the rest out of scope" summary — it no
+  // longer vanishes (e.g. ISO 42001 / NIST AI RMF have 0 self-attested by
+  // design, so they would disappear from a real audit otherwise).
+  const lenses = allLensFrameworks().map((fwId) => frameworkLens(fwId, controlResults, flags));
+  // The honest "how many frameworks did we actually say something about" count
+  // backs the collapsed-header "N frameworks addressed" figure — it stays tied
+  // to frameworks with at least one active control, NOT the rendered card count.
+  const addressedCount = lensFrameworks(controlResults, flags).length;
+  // State-based roll-up for the collapsed header — summed across all framework
+  // cards. No "prose only" special case: every framework is one typed path now.
   const rollup = lenses.reduce(
     (acc, l) => ({
       verified: acc.verified + l.counts.verified,
@@ -2671,7 +2687,9 @@ function ComplianceBlock({
     }),
     { verified: 0, fail: 0, partial: 0, selfAttested: 0, outOfScope: 0 },
   );
-  const hasAny = lenses.length > 0;
+  // Whether any framework surfaced an active control — gates the honest-empty
+  // copy. (`lenses` is now always all five, so it can't be the empty signal.)
+  const hasAny = addressedCount > 0;
 
   return (
     <section
@@ -2713,7 +2731,7 @@ function ComplianceBlock({
             Compliance lens
           </span>
           <span style={{ fontSize: 13, color: '#18181b' }}>
-            {lenses.length} framework{lenses.length === 1 ? '' : 's'} addressed
+            {addressedCount} framework{addressedCount === 1 ? '' : 's'} addressed
             {hasAny && (
               <>
                 {' · '}
@@ -2736,17 +2754,16 @@ function ComplianceBlock({
               state (verified / fail / partial / self-attested) + an out-of-
               scope COUNT; on expand, ONLY active controls are listed (verified
               -> partial -> self-attested). Out-of-scope is a count, never a
-              list. One card expanded at a time. */}
+              list. FIX 1: all five frameworks render (0-active included). FIX 2:
+              cards expand independently — multiple can be open at once. */}
           {hasAny ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {lenses.map((lens) => (
                 <FrameworkCard
                   key={lens.frameworkId}
                   lens={lens}
-                  expanded={expandedFw === lens.frameworkId}
-                  onToggle={() =>
-                    setExpandedFw(expandedFw === lens.frameworkId ? null : lens.frameworkId)
-                  }
+                  expanded={expandedFws.has(lens.frameworkId)}
+                  onToggle={() => toggleFramework(lens.frameworkId)}
                 />
               ))}
             </div>
