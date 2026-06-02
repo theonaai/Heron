@@ -2643,8 +2643,8 @@ function ComplianceBlock({
   // no SLF sub-list.
   verdict?: VerdictSnapshot;
 }) {
-  const initialOpen = useExpandFlag('compliance');
-  const [open, setOpen] = useState(false);
+  // The compliance lens is ALWAYS expanded (per Ilya 2026-06-02): the 5 framework
+  // cards are always shown; only each card's internals collapse, multiple at once.
   // AAP-121 (S5) FIX 2: framework cards expand independently — multiple can be
   // open at once. Per-card open-state is a Set of frameworkIds, not a single
   // active id, so opening one card no longer collapses the others.
@@ -2661,9 +2661,6 @@ function ComplianceBlock({
       else next.add(frameworkId);
       return next;
     });
-  useEffect(() => {
-    if (initialOpen) setOpen(true);
-  }, [initialOpen]);
   if (!rc) return null;
   // AAP-121 (S5): the lens is driven by the SHARED projection
   // (src/report/compliance-lens.ts) so the dashboard and the markdown report
@@ -2717,19 +2714,12 @@ function ComplianceBlock({
       }}
       aria-label="Compliance lens"
     >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
+      <div
         style={{
           display: 'flex',
           width: '100%',
           alignItems: 'center',
           justifyContent: 'space-between',
-          background: 'transparent',
-          border: 'none',
-          padding: 0,
-          cursor: 'pointer',
-          textAlign: 'left',
         }}
       >
         <span>
@@ -2759,12 +2749,8 @@ function ComplianceBlock({
             )}
           </span>
         </span>
-        <span style={{ fontSize: 12, color: '#1d4ed8', fontWeight: 600 }}>
-          {open ? 'Hide ▾' : 'Detail ▸'}
-        </span>
-      </button>
-      {open && (
-        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
+      </div>
+      <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
           {/* AAP-121 (S5): per-framework lens cards. Header counts by ACTUAL
               state (verified / fail / partial / self-attested) + an out-of-
               scope COUNT; on expand, ONLY active controls are listed (verified
@@ -2796,7 +2782,6 @@ function ComplianceBlock({
             external probe Heron can&apos;t reach in an interview, so they are a count only.
           </p>
         </div>
-      )}
     </section>
   );
 }
