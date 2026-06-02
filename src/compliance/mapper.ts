@@ -1302,7 +1302,13 @@ function runTypedDetectors(actual: ActualEvidence): ControlResult[] {
     // report.json `controlResults[].framework` always matches
     // `frameworksActivated` and the dashboard's `FRAMEWORK_LABELS` map. The
     // catalog wins even if a detector ever set `framework` inconsistently.
-    out.push({ ...result, framework: entry.frameworkId });
+    //
+    // AAP-118 (S3 of AAP-117): likewise stamp the honest bucket from the
+    // catalog so every emitted state carries its control's classification.
+    // The verdict (result.verdict) is the runtime STATE; bucket is the
+    // control METADATA. Detectors never set bucket — the catalog is the
+    // single source of truth, identical to the framework stamping above.
+    out.push({ ...result, framework: entry.frameworkId, bucket: entry.bucket });
   }
   return out;
 }

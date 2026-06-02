@@ -102,6 +102,51 @@ export const EU_AI_ACT_CLASSIFICATIONS = [
 ] as const;
 export type EUAIActClassification = (typeof EU_AI_ACT_CLASSIFICATIONS)[number];
 
+// ─── Compliance bucket (AAP-118 / S3 of AAP-117) ────────────────────────────
+
+/**
+ * The honest 4-bucket classification of what Heron's OSS-v1 interrogation can
+ * establish about a control. Per-control METADATA (distinct from the runtime
+ * STATE / verdict the verdict engine emits). Source of truth:
+ * `framework-buckets-honest-2026-06-02.md`.
+ *
+ * The buckets answer "what can the audited agent's self-report + Heron's
+ * deterministic checks honestly say about this control?":
+ *
+ *   - `verifiable` — a deterministic check (OAuth scope diff / MCP
+ *     `tools/list` / discovery credential-name / `.env` secret-pattern /
+ *     approval-chain) produces a declared-vs-actual verdict. Reaches
+ *     `verified` once the declared baseline is wired (AAP-115); some
+ *     credential/`.env` detectors top out at fail/partial today.
+ *
+ *   - `self-attested` — the agent genuinely answers from ITS OWN operation,
+ *     backed by one of the 17 interview questions. Counts only when a real
+ *     question elicits the fact (e.g. cross-customer isolation Q12,
+ *     MCP/A2A auth Q14, AI disclosure Q10).
+ *
+ *   - `oos-operator-artifact` — the agent cannot self-attest (the control
+ *     needs a corporate document/process the agent can't see: policy, DPA,
+ *     ROPA, QMS, DPIA/FRIA, technical documentation, conformity assessment),
+ *     BUT a human operator could later supply the artifact. Future-unlockable.
+ *     This is where the honest reclassification moves company-artifact
+ *     controls OUT of self-attested.
+ *
+ *   - `oos-not-verifiable` — needs an adversarial PROBE, production-telemetry
+ *     RUNTIME signal, deployment-env CODE inspection, or an authority-side
+ *     process. Never reachable in OSS-v1 interrogation.
+ *
+ * Rule of thumb: corporate-doc/process the agent can't see →
+ * `oos-operator-artifact`; adversarial probe / production telemetry /
+ * infra / authority-side → `oos-not-verifiable`.
+ */
+export const COMPLIANCE_BUCKETS = [
+  'verifiable',
+  'self-attested',
+  'oos-operator-artifact',
+  'oos-not-verifiable',
+] as const;
+export type ComplianceBucket = (typeof COMPLIANCE_BUCKETS)[number];
+
 // ─── Finding types ──────────────────────────────────────────────────────────
 
 export const FINDING_TYPES = [
