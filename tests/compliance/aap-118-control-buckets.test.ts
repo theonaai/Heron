@@ -221,9 +221,14 @@ describe('AAP-118: per-framework bucket counts', () => {
       'oos-not-verifiable': 2,
     },
     'nist-ai-rmf': {
-      verifiable: 5,
+      // AAP-119 (S4) re-validated S3's quick NIST calls and downgraded
+      // MEASURE 1.1 from verifiable → oos-operator-artifact (detectNIST_Measure
+      // reaches `verified` only because sources ran, with no declared-vs-actual
+      // verdict — see tests/compliance/aap-119-iso-nist-tiering.test.ts). So
+      // verifiable 5→4 and oos-operator-artifact 12→13.
+      verifiable: 4,
       'self-attested': 0,
-      'oos-operator-artifact': 12,
+      'oos-operator-artifact': 13,
       'oos-not-verifiable': 2,
     },
   };
@@ -247,9 +252,12 @@ describe('AAP-118: per-framework bucket counts', () => {
       for (const b of COMPLIANCE_BUCKETS) tot[b] += counts[fw][b];
     }
     expect(tot).toEqual({
-      verifiable: 25,
+      // AAP-119 (S4): MEASURE 1.1 moved verifiable → oos-operator-artifact, so
+      // the wired totals shift verifiable 25→24 and oos-operator-artifact
+      // 41→42. The distinct-control total (79) is unchanged.
+      verifiable: 24,
       'self-attested': 8,
-      'oos-operator-artifact': 41,
+      'oos-operator-artifact': 42,
       'oos-not-verifiable': 5,
     });
     const sum = COMPLIANCE_BUCKETS.reduce((acc, b) => acc + tot[b], 0);

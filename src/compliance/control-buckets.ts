@@ -129,6 +129,26 @@ export const BUCKET_BY_CONTROL: Record<
   // is a documented management-system process/record → operator-artifact.
   // SELF-ATTESTED = 0 (the agent cannot self-attest a management-system
   // process). NOT-VERIFIABLE = 0.
+  //
+  // AAP-119 (S4) — verifiability TIERS (AAP-42 vocabulary), documented in
+  // comments to keep parity with how EU/GDPR/AIUC-1 are grounded (no `tier`
+  // field is stored anywhere in the model; bucket + this prose is the
+  // grounding). ISO 42001 Annex A is a management-system standard, so EVERY
+  // wired control's tier is ARTIFACT — its requirement is a documented
+  // process/record an operator could supply. Two of those artifacts also have
+  // a live deterministic detector that fires PARTIAL from the discovery
+  // surface today, which is what lifts them into the `verifiable` bucket; the
+  // rest stay operator-artifact:
+  //   A.4.4   ARTIFACT → verifiable  (MCP-inventory detector → PARTIAL, capped per AAP-105 A3)
+  //   A.10.3  ARTIFACT → verifiable  (processor detector → PARTIAL)
+  //   A.5.2 / A.5.3 / A.5.4          ARTIFACT → operator-artifact (impact-assessment process + records)
+  //   A.6.2.4 / .5 / .6 / .8         ARTIFACT → operator-artifact (operational change / access / V&V / event-log records)
+  //   A.7.4 / A.7.5                  ARTIFACT → operator-artifact (data-quality / provenance docs)
+  //   A.9.2 / A.9.3                  ARTIFACT → operator-artifact (internal-audit / management-review records)
+  //   Clause 6.1                     ARTIFACT → operator-artifact (risk-treatment plan)
+  // No ISO row is INTERROGATION (a management-system process is never
+  // agent-self-attestable — contrast AIUC-1 A005, which asks the agent about
+  // its OWN architecture), and none is PROBE/RUNTIME/CODE.
   'iso-42001': {
     'A.4.4': 'verifiable', // AI tooling inventory — MCP-inventory detector (PARTIAL)
     'A.10.3': 'verifiable', // suppliers / third-party components — processor detector (PARTIAL)
@@ -147,20 +167,49 @@ export const BUCKET_BY_CONTROL: Record<
   },
 
   // ── NIST AI RMF ────────────────────────────────────────────────────────────
-  // spec §NIST AI RMF: VERIFIABLE (2 catalog-table rows) = MEASURE 1.1
-  // (detectNIST_Measure → verified) and MANAGE 1.2 (approval chain). The spec
-  // (line 206) notes the live mapper ALSO fires MAP 2.1 / GOVERN 6.2 /
-  // MANAGE 3.1 via the MCP-inventory + processor detectors — those are wired
-  // (have a detector), so they are verifiable here even though they are not
-  // rows in the spec's 16-row NIST table. OPERATOR-ARTIFACT (12) = the
-  // GOVERN/MAP/MEASURE governance+process rows. NOT-VERIFIABLE (2) =
-  // MEASURE 2.4 (RUNTIME) + MEASURE 2.7 (PROBE/RUNTIME).
+  // spec §NIST AI RMF (pre-S4): VERIFIABLE (2 catalog-table rows) = MEASURE 1.1
+  // + MANAGE 1.2; the live mapper ALSO fires MAP 2.1 / GOVERN 6.2 / MANAGE 3.1
+  // via the MCP-inventory + processor detectors.
+  //
+  // AAP-119 (S4) — verifiability TIERS (AAP-42 vocabulary) + a skeptical
+  // re-validation of S3's VERIFIABLE calls. NIST AI RMF is a governance
+  // framework, so every wired control's tier is ARTIFACT (a documented
+  // policy/process/record an operator could supply) EXCEPT the two
+  // monitoring/eval rows, which are RUNTIME/PROBE:
+  //   MAP 2.1     ARTIFACT → verifiable  (MCP-inventory detector → PARTIAL)
+  //   GOVERN 6.2  ARTIFACT → verifiable  (processor detector → PARTIAL)
+  //   MANAGE 3.1  ARTIFACT → verifiable  (processor detector → PARTIAL)
+  //   MANAGE 1.2  ARTIFACT → verifiable  (approval-chain detector → verified/partial)
+  //   MEASURE 1.1 ARTIFACT → operator-artifact  ◀── S4 DOWNGRADE (see below)
+  //   GOVERN 1.1 / 1.7 / 3.2 / 6.1, MAP 1.6 / 3.2 / 3.5 / 4.1 / 5.1,
+  //   MEASURE 2.10 / 3.1, MANAGE 2.4   ARTIFACT → operator-artifact
+  //   MEASURE 2.4  RUNTIME → not-verifiable  (functionality/behaviour monitoring)
+  //   MEASURE 2.7  PROBE   → not-verifiable  (security & resilience evaluation)
+  //
+  // S4 BUG-HUNT (the named MEASURE 1.1 resolution): S3 bucketed MEASURE 1.1
+  // `verifiable` because `detectNIST_Measure` reaches `verified`. But that
+  // verdict fires merely because ≥1 verification source RAN and produced any
+  // inventory/diff (see src/verification/frameworks/detectors.ts: it checks
+  // `actualInventories.length > 0 || diffs.length > 0`, with NO declared
+  // baseline and NO substantive risk-metric-SELECTION check). The `verifiable`
+  // bucket contract (types.ts) requires a deterministic DECLARED-VS-ACTUAL
+  // verdict; "Heron ran sources" is not one. MEASURE 1.1's real requirement —
+  // risk-measurement methods/metrics are identified, applied, and documented —
+  // is a management-system ARTIFACT the agent cannot self-attest. So the honest
+  // bucket is `oos-operator-artifact` (future-unlockable when an operator
+  // supplies the risk-measurement methodology), consistent with the sibling
+  // MEASURE rows (2.10 / 3.1). The detector is left untouched (S2's lane); only
+  // this control's METADATA bucket is corrected. The other four detector-backed
+  // NIST controls (MAP 2.1 / GOVERN 6.2 / MANAGE 3.1 / MANAGE 1.2) survive the
+  // re-validation: each produces a genuine deterministic verdict from the
+  // discovery/processor/approval-chain surface, the same mechanism that grounds
+  // the (verified-correct) GDPR Art. 28 / AIUC-1 A001 / E004 / E015.2 set.
   'nist-ai-rmf': {
-    'MEASURE 1.1': 'verifiable', // risk-metrics selection — detectNIST_Measure (verified)
-    'MANAGE 1.2': 'verifiable', // risk-treatment prioritisation — approval chain
-    'MAP 2.1': 'verifiable', // bundle-attached MCP-inventory detector fires
-    'GOVERN 6.2': 'verifiable', // bundle-attached processor detector fires
-    'MANAGE 3.1': 'verifiable', // bundle-attached detector fires
+    'MEASURE 1.1': 'oos-operator-artifact', // S4 DOWNGRADE: detectNIST_Measure overclaims `verified` on "sources ran"; no declared-vs-actual verdict, so not honestly verifiable
+    'MANAGE 1.2': 'verifiable', // risk-treatment prioritisation — approval chain (deterministic)
+    'MAP 2.1': 'verifiable', // bundle-attached MCP-inventory detector fires (PARTIAL)
+    'GOVERN 6.2': 'verifiable', // bundle-attached processor detector fires (PARTIAL)
+    'MANAGE 3.1': 'verifiable', // bundle-attached processor detector fires (PARTIAL)
     'GOVERN 1.1': 'oos-operator-artifact', // legal-requirements register
     'GOVERN 1.7': 'oos-operator-artifact', // decommissioning policy
     'GOVERN 3.2': 'oos-operator-artifact', // human-AI-roles policy
