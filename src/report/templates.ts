@@ -19,7 +19,6 @@ import {
   slfFindingsForFramework,
   type FrameworkLens,
   type LensControl,
-  type SlfLensFinding,
 } from './compliance-lens.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import {
@@ -279,6 +278,16 @@ export function renderMarkdownReport(
     reportBlob.localAgentDiscovery,
   );
 
+  // AAP-123 (S7) — coded findings + the SLF-finding → legacy-Risk map, built
+  // ONCE here so the compliance lens's per-framework SLF sub-lists render real
+  // finding cards (code / severity / mitigation), identical to the global
+  // Self-Attested stream. `assignFindingCodes` is the SAME pass the global
+  // stream runs over the SAME `verdict.findings`, so an SLF-NNN code matches in
+  // both places. Empty when no verdict is attached (pre-analyzer markdown
+  // write) — the lens then renders controls with no SLF sub-list (no regression).
+  const codedVerdictFindings = verdict ? assignFindingCodes(verdict.findings ?? []) : [];
+  const slfRiskById = slfRiskByFindingId(verdict?.findings ?? [], report.risks);
+
   const sections = [
     renderHeader(report, verdict),
     // AAP-79 — interrogation-only banner sits ABOVE the existing
@@ -333,12 +342,14 @@ export function renderMarkdownReport(
           report.compliance as StructuredCompliance,
           report,
           // AAP-122 — the verdict's self-attested findings feed the per-
-          // framework attribution under each lens card. `VerdictFinding`
-          // structurally satisfies `SlfLensFinding` (id / title /
-          // evidenceSource / findingType). Empty when no verdict is attached
-          // (the pre-verdict initial markdown write), so the lens just renders
+          // framework attribution under each lens card.
+          // AAP-123 (S7) — pass the FULL coded findings (+ the legacy-Risk map +
+          // session state) so each attributed finding renders as a real finding
+          // card. Empty when no verdict is attached, so the lens just renders
           // controls with no SLF sub-list — no regression.
-          verdict?.findings ?? [],
+          codedVerdictFindings,
+          slfRiskById,
+          slfState,
         )
       : null,
     report.dataQuality ? renderDataQuality(report.dataQuality) : null,
@@ -1722,6 +1733,34 @@ function findingsEmptyStateLine(
 }
 
 /**
+ * Pair each SLF VerdictFinding to its originating interview `Risk`, keyed by
+ * finding id. The match is positional: interview risks are appended to
+ * `verdict.findings` in source order by `computeVerdict`, so the Nth SLF finding
+ * pairs with `risks[N]`. The Risk carries the `mitigation` prose + the basis for
+ * the `findingType` anchor that `renderFindingCard` surfaces.
+ *
+ * AAP-123 (S7) — extracted so the global Self-Attested stream
+ * (`renderFindingsCards`) AND the per-framework lens sub-list
+ * (`renderFrameworkLensBlock`) resolve a finding's legacy Risk through the SAME
+ * mapping, so a finding's card reads identically in both places.
+ *
+ * Defensive: pre-AAP-102 fixtures may pass a Verdict without `findings`; the
+ * caller passes `[]` then and this returns an empty map.
+ */
+function slfRiskByFindingId(
+  verdictFindings: readonly VerdictFinding[],
+  risks: readonly Risk[],
+): Map<string, Risk> {
+  const out = new Map<string, Risk>();
+  const slfFindingsInVerdict = verdictFindings.filter((f) => f.evidenceSource === 'SLF');
+  slfFindingsInVerdict.forEach((vf, idx) => {
+    const r = risks[idx];
+    if (r) out.set(vf.id, r);
+  });
+  return out;
+}
+
+/**
  * Render the Findings section as Vijil-style Failure Pattern cards.
  *
  * Two streams remain (Verified vs Self-attested per AAP-93 H3) so the
@@ -1745,21 +1784,12 @@ function renderFindingsCards(
   // mitigation matches the dashboard's state-aware copy.
   slfState?: SlfMitigationState,
 ): string {
-  // Pair each VerdictFinding to a Risk for FindingType + mitigation
-  // prose lookup. The match is positional: interview risks are
-  // appended to `verdict.findings` in source order by computeVerdict.
-  // We map by `evidenceSource === 'SLF'` rank.
-  //
-  // Defensive: pre-AAP-102 test fixtures may pass a Verdict literal
-  // without the `findings` array. Treat absent as empty so we fall
-  // through to the empty-state copy rather than crash.
+  // Pair each VerdictFinding to a Risk for FindingType + mitigation prose
+  // lookup (see `slfRiskByFindingId`). Defensive: pre-AAP-102 test fixtures may
+  // pass a Verdict literal without the `findings` array — treat absent as empty
+  // so we fall through to the empty-state copy rather than crash.
   const verdictFindings = verdict.findings ?? [];
-  const slfFindingsInVerdict = verdictFindings.filter((f) => f.evidenceSource === 'SLF');
-  const slfRiskByIndex = new Map<string, Risk>();
-  slfFindingsInVerdict.forEach((vf, idx) => {
-    const r = risks[idx];
-    if (r) slfRiskByIndex.set(vf.id, r);
-  });
+  const slfRiskByIndex = slfRiskByFindingId(verdictFindings, risks);
 
   // Assign Vijil-style codes (MCP-001 / OAU-001 / ...).
   const coded = assignFindingCodes(verdictFindings);
@@ -2302,7 +2332,15 @@ function renderLensVerdictBadge(verdict: LensControl['verdict']): string {
  */
 function renderFrameworkLensBlock(
   lens: FrameworkLens,
-  slfFindings: readonly SlfLensFinding[] = [],
+  // AAP-123 (S7) — the FULL coded findings attributed to this framework (not a
+  // stripped title projection), so each renders as a real finding card.
+  slfFindings: readonly CodedVerdictFinding[] = [],
+  // Compliance + per-finding legacy Risk + live session state, forwarded to
+  // `renderFindingCard` so the framework-card finding reads identically to the
+  // global Self-Attested stream's card (anchor line + state-aware mitigation).
+  compliance?: StructuredCompliance,
+  slfRiskById?: Map<string, Risk>,
+  slfState?: SlfMitigationState,
 ): string {
   const name = LENS_FRAMEWORK_NAMES[lens.frameworkId] ?? lens.frameworkId;
   const { counts } = lens;
@@ -2317,6 +2355,16 @@ function renderFrameworkLensBlock(
   const partialish = counts.partial + counts.unverified;
   headerParts.push(`${partialish} partial`);
   headerParts.push(`${counts.selfAttested} self-attested`);
+  // AAP-123 (S7) — `counts.selfAttested` is self-attested CONTROLS (Lane A,
+  // prose flags); it does NOT count the self-attested FINDINGS (Lane B) listed
+  // below. Add a distinct findings figure so the header is consistent with what
+  // the card actually shows. The two lanes stay separate by design (a control
+  // and a finding are different objects in this model). Shown only when present.
+  if (slfFindings.length > 0) {
+    headerParts.push(
+      `${slfFindings.length} self-attested finding${slfFindings.length === 1 ? '' : 's'}`,
+    );
+  }
 
   let out = `#### ${name}\n\n`;
   out += `**${counts.activeShown} of ~${counts.publishedControlCount} addressed** `;
@@ -2335,15 +2383,19 @@ function renderFrameworkLensBlock(
 
   // AAP-122 — self-attested findings attributed to this framework (after the
   // control rows). The same findings remain in the global "Self-Attested
-  // Findings" stream; this is an additional, framework-scoped view. Rendered
-  // as a labelled sub-list so a reader does not mistake an agent self-report
-  // for a deterministic control verdict.
+  // Findings" stream; this is an additional, framework-scoped view.
+  // AAP-123 (S7) — render each as a full finding card via `renderFindingCard`
+  // (the SAME card the global Self-Attested stream and the Verified stream use:
+  // code / severity / formula / description / mitigation), so the agent's
+  // self-report reads as a real finding. The italic label keeps it clearly
+  // marked self-report ("does not move posture").
   if (slfFindings.length > 0) {
-    out += `_Self-attested findings (agent self-report, do not move posture):_\n`;
+    out += `_Self-attested findings (agent self-report, does not move posture):_\n\n`;
     for (const f of slfFindings) {
-      out += `- 🗣️ ${escapeText(f.title)}\n`;
+      const legacy = slfRiskById?.get(f.id);
+      out += renderFindingCard(f, compliance, legacy, slfState);
+      out += `\n\n`;
     }
-    out += `\n`;
   }
 
   return out;
@@ -2363,7 +2415,12 @@ function renderFrameworkLensBlock(
  */
 function renderComplianceLens(
   c: StructuredCompliance,
-  slfFindings: readonly SlfLensFinding[] = [],
+  // AAP-123 (S7) — the FULL coded findings (was a stripped `SlfLensFinding[]`)
+  // so each per-framework sub-list can render a real finding card. The risk map
+  // + slfState enrich those cards (anchor line + state-aware mitigation).
+  slfFindings: readonly CodedVerdictFinding[] = [],
+  slfRiskById?: Map<string, Risk>,
+  slfState?: SlfMitigationState,
 ): string {
   const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
@@ -2387,10 +2444,15 @@ function renderComplianceLens(
   for (const frameworkId of allLensFrameworks()) {
     // AAP-122 — the SLF findings whose finding-type maps to this framework
     // (deterministically, via CONTROL_MAPPINGS). Empty for findings with no
-    // findingType, so those stay global-only.
+    // findingType, so those stay global-only. AAP-123 (S7) — `slfFindingsFor-
+    // Framework` is generic, so it returns the FULL coded findings here, fed
+    // straight to the card renderer.
     out += renderFrameworkLensBlock(
       frameworkLens(frameworkId, controlResults, allFlags),
       slfFindingsForFramework(frameworkId, slfFindings),
+      c,
+      slfRiskById,
+      slfState,
     );
   }
   return out;
@@ -2964,7 +3026,14 @@ ${tableRows}`;
 export function renderStructuredCompliance(
   c: StructuredCompliance,
   report?: AuditReport,
-  slfFindings: readonly SlfLensFinding[] = [],
+  // AAP-123 (S7) — full coded findings (+ legacy-risk map + session state) so
+  // the per-framework SLF sub-lists render real finding cards. All optional:
+  // existing callers (and the AAP-122 unit test) that pass only stripped
+  // findings still type-check (the card renderer is defensive about absent
+  // severity / risk / state).
+  slfFindings: readonly CodedVerdictFinding[] = [],
+  slfRiskById?: Map<string, Risk>,
+  slfState?: SlfMitigationState,
 ): string {
   return [
     `## Regulatory Compliance`,
@@ -2973,7 +3042,7 @@ export function renderStructuredCompliance(
     ``,
     `Findings are anchored to EU AI Act 2024/1689, GDPR 2016/679, ISO/IEC 42001 (AI management system), AIUC-1 (agent-native standard, pinned to Q2-2026 release 2026-04-15), and NIST AI RMF 1.0 (US-origin voluntary risk-management framework; GOVERN/MAP/MEASURE/MANAGE). Mapping version: \`${c.mappingVersion}\`. EU AI Act is a single framework entry; Annex III high-risk obligations are surfaced as a classification scope label on that entry (replacing the prior two-entry split). Control mappings are indicative — they show which framework clauses a finding typically activates and do not constitute legal advice.`,
     ``,
-    renderComplianceLens(c, slfFindings),
+    renderComplianceLens(c, slfFindings, slfRiskById, slfState),
     ``,
     renderApplicabilitySummary(c),
     ``,
@@ -2985,9 +3054,11 @@ export function renderStructuredCompliance(
 function renderRegulatoryCompliance(
   compliance: StructuredCompliance,
   report?: AuditReport,
-  slfFindings: readonly SlfLensFinding[] = [],
+  slfFindings: readonly CodedVerdictFinding[] = [],
+  slfRiskById?: Map<string, Risk>,
+  slfState?: SlfMitigationState,
 ): string {
-  return renderStructuredCompliance(compliance, report, slfFindings);
+  return renderStructuredCompliance(compliance, report, slfFindings, slfRiskById, slfState);
 }
 
 // ─── Disclaimer ─────────────────────────────────────────────────────────────

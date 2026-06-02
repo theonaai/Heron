@@ -39,6 +39,7 @@ import {
   type FrameworkLens,
 } from '../../src/report/compliance-lens.js';
 import { renderStructuredCompliance, renderMarkdownReport } from '../../src/report/templates.js';
+import type { CodedVerdictFinding } from '../../src/report/finding-display.js';
 import { CONTROL_MAPPINGS } from '../../src/compliance/control-mappings.js';
 import { FrameworkCard } from '@/components/heron-v1/dashboard/MinimalReportView';
 import type { FindingType, FrameworkId } from '../../src/compliance/types.js';
@@ -47,13 +48,46 @@ import type { Verdict, VerdictFinding } from '../../src/verification/verdict.js'
 
 // ─── Fixture builders ────────────────────────────────────────────────────────
 
-/** An SLF finding shaped like the lens consumes it. */
+/**
+ * A bare SLF finding shaped like the ATTRIBUTION helper consumes it — id /
+ * title / evidenceSource / findingType only. Used for the pure
+ * `slfFindingsForFramework` / `frameworkIdsForFindingType` tests (which read
+ * just those fields). For the RENDER tests use `codedSlf` (a full finding the
+ * card needs: severity / components / description / code).
+ */
 function slf(args: { id: string; title: string; findingType?: FindingType }): SlfLensFinding {
   return {
     id: args.id,
     title: args.title,
     evidenceSource: 'SLF',
     ...(args.findingType !== undefined ? { findingType: args.findingType } : {}),
+  };
+}
+
+/**
+ * AAP-123 (S7) — a FULL coded SLF finding, as the framework-card sub-list now
+ * consumes it (it renders a real finding card, not a stripped title). Carries
+ * severity / components / description / a Vijil-style `code` so the card
+ * renderer has everything it needs.
+ */
+function codedSlf(args: {
+  id: string;
+  title: string;
+  findingType?: FindingType;
+  code?: string;
+  description?: string;
+}): CodedVerdictFinding {
+  return {
+    id: args.id,
+    band: 'medium',
+    severityScore: 4,
+    severityComponents: { br: 2, ds: 2, dm: 1 },
+    evidenceSource: 'SLF',
+    title: args.title,
+    description: args.description ?? `${args.title} — self-reported in the interview.`,
+    code: args.code ?? `SLF-${args.id}`,
+    ...(args.findingType !== undefined ? { findingType: args.findingType } : {}),
+    kind: 'risk',
   };
 }
 
@@ -194,54 +228,72 @@ function baseCompliance(): StructuredCompliance {
 describe('AAP-122 — markdown lens render (renderStructuredCompliance)', () => {
   const SLF_TITLE = 'Agent autonomously rejects loan applicants';
 
-  it('renders the SLF finding title under EACH framework its findingType maps to, after the control rows', () => {
-    const findings = [slf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
+  // The five framework headers (in render order). AAP-123 (S7): the SLF finding
+  // is now rendered as a full finding CARD whose header is itself an h4
+  // (`#### SLF-… — …`), so a framework block can NO LONGER be sliced "to the next
+  // `####`" — that would cut the block off at its own finding card. Slice each
+  // framework block to the start of the next FRAMEWORK header (or the next h3
+  // section), so the block fully contains its finding cards.
+  const FRAMEWORK_HEADERS = [
+    '#### EU AI Act',
+    '#### GDPR',
+    '#### ISO/IEC 42001',
+    '#### AIUC-1',
+    '#### NIST AI RMF',
+  ];
+  function frameworkBlock(md: string, header: string): string {
+    const start = md.indexOf(header);
+    if (start < 0) return '';
+    const after = start + header.length;
+    // Next boundary = the nearest following framework header OR the next h3.
+    let end = md.length;
+    for (const h of FRAMEWORK_HEADERS) {
+      const idx = md.indexOf(h, after);
+      if (idx >= 0 && idx < end) end = idx;
+    }
+    const sectionIdx = md.indexOf('\n### ', after);
+    if (sectionIdx >= 0 && sectionIdx < end) end = sectionIdx;
+    return md.slice(start, end);
+  }
+
+  it('renders the SLF finding under EACH framework its findingType maps to as a finding card, after the control rows', () => {
+    const findings = [codedSlf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
 
-    const lensSection = md.slice(
-      md.indexOf('### Compliance Lens'),
-      md.indexOf('### Applicability Summary'),
-    );
-
     // decisions-about-people maps to all five — the finding shows under each card.
-    for (const header of ['#### EU AI Act', '#### GDPR', '#### ISO/IEC 42001', '#### AIUC-1', '#### NIST AI RMF']) {
-      const start = lensSection.indexOf(header);
-      expect(start).toBeGreaterThanOrEqual(0);
-      // Block runs to the next "#### " header or end of the lens section.
-      const restIdx = lensSection.indexOf('####', start + header.length);
-      const block = restIdx === -1 ? lensSection.slice(start) : lensSection.slice(start, restIdx);
+    for (const header of FRAMEWORK_HEADERS) {
+      const block = frameworkBlock(md, header);
       expect(block).toContain(SLF_TITLE);
       expect(block).toContain('Self-attested findings (agent self-report');
+      // It is a full finding card now (Vijil-style code header + Severity line),
+      // not a stripped 🗣️ title bullet.
+      expect(block).toMatch(/####\s+SLF-\w+\s+—\s/);
+      expect(block).toContain('**Severity**');
+      expect(block).not.toContain('🗣️');
     }
   });
 
   it('shows the SLF finding AFTER the control rows within a card', () => {
-    const findings = [slf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
+    const findings = [codedSlf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
-    const euStart = md.indexOf('#### EU AI Act');
-    const euBlock = md.slice(euStart, md.indexOf('####', euStart + 6));
-    // The control row (Art. 14) precedes the self-attested sub-list.
+    const euBlock = frameworkBlock(md, '#### EU AI Act');
+    // The control row (Art. 14) precedes the self-attested finding card.
     expect(euBlock.indexOf('`Art. 14`')).toBeLessThan(euBlock.indexOf(SLF_TITLE));
   });
 
   it('a finding whose findingType maps to a SUBSET of frameworks shows only under those', () => {
     // risk-score → iso-42001 / eu-ai-act / nist-ai-rmf, NOT gdpr / aiuc-1.
     const title = 'Composite risk score derived without documented methodology';
-    const findings = [slf({ id: 'rs', title, findingType: 'risk-score' })];
+    const findings = [codedSlf({ id: 'rs', title, findingType: 'risk-score' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
 
-    const gdprStart = md.indexOf('#### GDPR');
-    const gdprBlock = md.slice(gdprStart, md.indexOf('####', gdprStart + 6));
-    expect(gdprBlock).not.toContain(title);
-
-    const euStart = md.indexOf('#### EU AI Act');
-    const euBlock = md.slice(euStart, md.indexOf('####', euStart + 6));
-    expect(euBlock).toContain(title);
+    expect(frameworkBlock(md, '#### GDPR')).not.toContain(title);
+    expect(frameworkBlock(md, '#### EU AI Act')).toContain(title);
   });
 
   it('a finding with NO findingType produces no card sub-list anywhere', () => {
     const title = 'Some unclassified self-reported concern';
-    const findings = [slf({ id: 'nf', title })];
+    const findings = [codedSlf({ id: 'nf', title })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
     const lensSection = md.slice(
       md.indexOf('### Compliance Lens'),
@@ -333,12 +385,18 @@ describe('AAP-122 — end-to-end markdown: finding in BOTH places (global stream
     expect(globalSection).not.toContain('No self-attested findings.');
 
     // (b) The Compliance Lens additionally attributes it under a framework card.
+    //     AAP-123 (S7): slice the EU AI Act block to the NEXT framework header
+    //     (`#### GDPR`), not "the next `####`" — the SLF finding card is itself
+    //     an h4 (`#### SLF-… — …`) so a bare-`####` slice would cut it off.
     const lensIdx = md.indexOf('### Compliance Lens');
     expect(lensIdx).toBeGreaterThanOrEqual(0);
     const euStart = md.indexOf('#### EU AI Act', lensIdx);
-    const euBlock = md.slice(euStart, md.indexOf('####', euStart + 6));
+    const euBlock = md.slice(euStart, md.indexOf('#### GDPR', euStart));
     expect(euBlock).toContain(TITLE);
     expect(euBlock).toContain('Self-attested findings (agent self-report');
+    // It renders as a full finding card here too (code header + Severity line).
+    expect(euBlock).toMatch(/####\s+SLF-\d+\s+—\s/);
+    expect(euBlock).toContain('**Severity**');
 
     // (c) Same title present at least twice (global + at least one card).
     const occurrences = md.split(TITLE).length - 1;
@@ -389,11 +447,19 @@ function expandedLensFor(frameworkId: FrameworkId): FrameworkLens {
 }
 
 describe('AAP-122 — dashboard FrameworkCard renders the SLF sub-list', () => {
-  it('renders the self-attested findings sub-list when findings are attributed', () => {
+  it('renders each self-attested finding as a full finding card when findings are attributed', () => {
     const html = renderToStaticMarkup(
       FrameworkCard({
         lens: expandedLensFor('gdpr'),
-        slfFindings: [slf({ id: 'sd', title: 'Processes candidate PII with no retention policy', findingType: 'sensitive-data' })],
+        slfFindings: [
+          codedSlf({
+            id: 'sd',
+            code: 'SLF-001',
+            title: 'Processes candidate PII with no retention policy',
+            description: 'The agent stores applicant PII indefinitely with no documented retention window.',
+            findingType: 'sensitive-data',
+          }),
+        ],
         expanded: true,
         onToggle: () => {},
       }),
@@ -401,6 +467,12 @@ describe('AAP-122 — dashboard FrameworkCard renders the SLF sub-list', () => {
     expect(html).toContain('Self-attested findings');
     expect(html).toContain('Processes candidate PII with no retention policy');
     expect(html).toContain('does not move posture');
+    // AAP-123 (S7): a full finding card now — code badge, severity band, the
+    // description, and a Mitigation block — not a stripped 🗣️ title bullet.
+    expect(html).toContain('SLF-001');
+    expect(html).toContain('The agent stores applicant PII indefinitely');
+    expect(html).toContain('Mitigation');
+    expect(html).not.toContain('🗣️');
   });
 
   it('renders NO self-attested sub-list when no findings are attributed', () => {
@@ -414,5 +486,20 @@ describe('AAP-122 — dashboard FrameworkCard renders the SLF sub-list', () => {
     );
     // The control row renders, but the SLF sub-list header does not.
     expect(html).not.toContain('Self-attested findings');
+  });
+
+  it('header counts self-attested FINDINGS separately from self-attested CONTROLS', () => {
+    // expandedLensFor('gdpr') has 0 self-attested controls; supply 1 finding.
+    const html = renderToStaticMarkup(
+      FrameworkCard({
+        lens: expandedLensFor('gdpr'),
+        slfFindings: [codedSlf({ id: 'sd', title: 'PII retention gap', findingType: 'sensitive-data' })],
+        expanded: true,
+        onToggle: () => {},
+      }),
+    );
+    // Controls count stays 0; the new findings figure reflects the sub-list.
+    expect(html).toContain('0 self-attested');
+    expect(html).toContain('1 self-attested finding');
   });
 });

@@ -260,12 +260,19 @@ export function frameworkIdsForFindingType(findingType: FindingType): FrameworkI
  *
  * Pure and additive: it neither mutates nor consumes the global list — the
  * caller still renders that list in full. Order is preserved from the input.
+ *
+ * AAP-123 (S7) — generic over the concrete finding shape. The body reads ONLY
+ * `evidenceSource` + `findingType` (both on the `SlfLensFinding` base), so the
+ * caller can feed its own richer finding objects — e.g. a `CodedVerdictFinding`
+ * carrying severity / description / code — and get the SAME concrete type back.
+ * That is what lets each framework card render the finding as a full finding
+ * card (not a stripped title bullet) without a second lookup or a cast.
  */
-export function slfFindingsForFramework(
+export function slfFindingsForFramework<T extends SlfLensFinding>(
   frameworkId: FrameworkId,
-  findings: readonly SlfLensFinding[],
-): SlfLensFinding[] {
-  const out: SlfLensFinding[] = [];
+  findings: readonly T[],
+): T[] {
+  const out: T[] = [];
   for (const f of findings) {
     if (f.evidenceSource !== 'SLF') continue;
     if (f.findingType === undefined) continue;

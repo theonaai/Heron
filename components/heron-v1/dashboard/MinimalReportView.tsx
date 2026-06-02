@@ -47,7 +47,6 @@ import {
   lensFrameworks,
   slfFindingsForFramework,
   type FrameworkLens,
-  type SlfLensFinding,
 } from '@/src/report/compliance-lens';
 import type { ControlResult as LensSourceControlResult } from '@/src/compliance/control-catalog';
 import type { TypedRegulatoryFlag } from '@/src/compliance/mapper';
@@ -2637,6 +2636,8 @@ const FRAMEWORK_LABELS: Record<string, string> = {
 function ComplianceBlock({
   rc,
   verdict,
+  oauthScopeVerification,
+  localAgentDiscovery,
 }: {
   rc: MinimalReportJson['regulatoryCompliance'] | undefined;
   // AAP-122 — the verdict snapshot's findings feed the per-framework
@@ -2644,6 +2645,11 @@ function ComplianceBlock({
   // pre-verdict / legacy report.json (no verdict block) renders controls with
   // no SLF sub-list.
   verdict?: VerdictSnapshot;
+  // AAP-123 (S7) — live session state for the state-aware SLF mitigation hint,
+  // so the finding cards now rendered under each framework match the global
+  // Self-attested stream's mitigation copy. Same inputs FindingsBlock receives.
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  localAgentDiscovery?: unknown;
 }) {
   // The compliance lens is ALWAYS expanded (per Ilya 2026-06-02): the 5 framework
   // cards are always shown; only each card's internals collapse, multiple at once.
@@ -2673,12 +2679,22 @@ function ComplianceBlock({
   const controlResults = (rc.controlResults || []) as unknown as LensSourceControlResult[];
   const flags = (rc.all || []) as unknown as TypedRegulatoryFlag[];
   // AAP-122 — the verdict's self-attested findings, fed to each framework card
-  // for per-framework attribution. `VerdictFindingSnapshot` structurally
-  // satisfies `SlfLensFinding` (id / title / evidenceSource / findingType).
-  // The SAME findings stay in the global "Self-attested findings" stream above
-  // (FindingsBlock) — this is an additional, framework-scoped view, never a
-  // relocation.
-  const slfFindings = (verdict?.findings ?? []) as unknown as SlfLensFinding[];
+  // for per-framework attribution. The SAME findings stay in the global
+  // "Self-attested findings" stream above (FindingsBlock) — this is an
+  // additional, framework-scoped view, never a relocation.
+  //
+  // AAP-123 (S7) — assign Vijil-style codes here (the SAME pass FindingsBlock
+  // runs over the SAME `verdict.findings`, so a framework card's SLF-NNN code
+  // matches the global stream) and feed the FULL coded findings to the per-
+  // framework attribution. `slfFindingsForFramework` is generic over the
+  // finding shape, so each card receives a real `CodedVerdictFinding` and can
+  // render the full finding card rather than a stripped title bullet.
+  const codedFindings = assignFindingCodes(
+    (verdict?.findings ?? []) as unknown as CodedVerdictFinding[],
+  );
+  // AAP-123 (S7) — built once and handed to every framework card so the SLF
+  // finding cards there show the same state-aware mitigation as the global one.
+  const slfState = buildSlfMitigationState(oauthScopeVerification, localAgentDiscovery);
   // AAP-121 (S5) FIX 1: card for EVERY framework, mandatory-first. A framework
   // with zero active controls (verifiable or self-attested) still gets its
   // card with the honest "0 of ~N, the rest out of scope" summary — it no
@@ -2765,7 +2781,8 @@ function ComplianceBlock({
                 <FrameworkCard
                   key={lens.frameworkId}
                   lens={lens}
-                  slfFindings={slfFindingsForFramework(lens.frameworkId, slfFindings)}
+                  slfFindings={slfFindingsForFramework(lens.frameworkId, codedFindings)}
+                  slfState={slfState}
                   expanded={expandedFws.has(lens.frameworkId)}
                   onToggle={() => toggleFramework(lens.frameworkId)}
                 />
@@ -2808,6 +2825,7 @@ export type ControlResult = NonNullable<
 export function FrameworkCard({
   lens,
   slfFindings = [],
+  slfState,
   expanded,
   onToggle,
 }: {
@@ -2815,7 +2833,15 @@ export function FrameworkCard({
   // AAP-122 — self-attested findings whose finding-type maps to THIS framework
   // (deterministically, via CONTROL_MAPPINGS). Rendered after the control rows.
   // The same findings remain in the global stream; this is an additional view.
-  slfFindings?: readonly SlfLensFinding[];
+  //
+  // AAP-123 (S7) — these are now the FULL coded findings (severity / components
+  // / description / code), so each renders as a real `MinimalFindingCard` (the
+  // same card the global Self-attested stream and the Verified discrepancies
+  // use), clearly labelled self-report — not a stripped 🗣️ title bullet.
+  slfFindings?: readonly CodedVerdictFinding[];
+  // AAP-123 (S7) — state-aware SLF mitigation, threaded straight to each card so
+  // the framework-card finding shows the same mitigation copy as the global one.
+  slfState?: SlfMitigationState;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -2860,6 +2886,19 @@ export function FrameworkCard({
         <span style={{ fontSize: 11.5, color: '#52525b' }}>
           {counts.verified} verified · {counts.fail} fail · {partialish} partial ·{' '}
           {counts.selfAttested} self-attested
+          {/* AAP-123 (S7) — the header used to show ONLY `counts.selfAttested`,
+              which is self-attested CONTROLS (Lane A, prose flags). It ignored
+              the self-attested FINDINGS (Lane B) now shown in the sub-list, so
+              the header undercounted what the card actually rendered. Keep the
+              two lanes DISTINCT (a control and a finding are different objects in
+              this codebase) and add an explicit findings figure so the header is
+              consistent with the body. Shown only when the framework has any. */}
+          {slfFindings.length > 0 && (
+            <>
+              {' · '}
+              {slfFindings.length} self-attested finding{slfFindings.length === 1 ? '' : 's'}
+            </>
+          )}
           <span style={{ marginLeft: 6, color: '#a1a1aa' }}>
             · {counts.outOfScope} out of scope
           </span>
@@ -2881,25 +2920,27 @@ export function FrameworkCard({
           {/* AAP-122 — self-attested findings attributed to this framework,
               after the control rows. The SAME findings are listed in the
               global "Self-attested findings" stream (FindingsBlock); this is an
-              additional, framework-scoped view, not a relocation. Rendered with
-              the 🗣️ self-report marker + slate/violet ink so a reader does not
-              mistake an agent claim for a deterministic control verdict. */}
+              additional, framework-scoped view, not a relocation.
+              AAP-123 (S7) — render each as a full `MinimalFindingCard` (the same
+              card the Verified discrepancies and the global Self-attested stream
+              use: code / title / description / severity badge / mitigation), so
+              the agent's self-report reads as a real finding. The violet section
+              heading + caption + dashed top-rule keep it unmistakably labelled
+              self-report ("does not move posture"), so a reader never confuses an
+              agent claim for a deterministic control verdict. */}
           {slfFindings.length > 0 && (
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #e5e7eb' }}>
               <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 600, marginBottom: 4 }}>
                 Self-attested findings
               </div>
-              <p style={{ margin: '0 0 6px', fontSize: 11, color: '#a1a1aa', lineHeight: 1.5 }}>
-                Agent self-report, not a deterministic verdict — does not move posture.
+              <p style={{ margin: '0 0 8px', fontSize: 11, color: '#a1a1aa', lineHeight: 1.5 }}>
+                Agent self-report, does not move posture.
               </p>
-              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {slfFindings.map((f) => (
-                  <li key={f.id} style={{ fontSize: 12, color: '#52525b', lineHeight: 1.45 }}>
-                    <span style={{ marginRight: 6 }} aria-hidden>🗣️</span>
-                    {f.title}
-                  </li>
+                  <MinimalFindingCard key={f.id} finding={f} slfState={slfState} />
                 ))}
-              </ul>
+              </div>
             </div>
           )}
           <p style={{ marginTop: 8, fontSize: 11, color: '#a1a1aa', margin: '8px 0 0' }}>
@@ -3200,7 +3241,12 @@ export default function MinimalReportView({
         verification={reportJson.verification}
         localAgentDiscovery={reportJson.localAgentDiscovery}
       />
-      <ComplianceBlock rc={reportJson.regulatoryCompliance} verdict={reportJson.verdict} />
+      <ComplianceBlock
+        rc={reportJson.regulatoryCompliance}
+        verdict={reportJson.verdict}
+        oauthScopeVerification={reportJson.oauthScopeVerification}
+        localAgentDiscovery={reportJson.localAgentDiscovery}
+      />
       <FooterToggle onSwitch={onSwitchToFullLayout} />
     </div>
   );
