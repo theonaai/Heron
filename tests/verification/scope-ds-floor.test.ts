@@ -37,6 +37,13 @@ describe('scopeResourceTokens', () => {
     expect(scopeResourceTokens('profile')).toEqual(['userinfo']);
     expect(scopeResourceTokens('openid')).toEqual([]);
   });
+  it('reduces a FULL Google scope URI via the shared canonicalizer (AAP-124)', () => {
+    // The floor now routes through the same `canonicalizeScopeToken` helper the
+    // differ uses, so a full URL that escaped upstream canonicalization still
+    // reduces to its resource head.
+    expect(scopeResourceTokens('https://www.googleapis.com/auth/gmail.readonly')).toContain('gmail');
+    expect(scopeResourceTokens('https://www.googleapis.com/auth/drive.file')).toContain('drive');
+  });
 });
 
 describe('scopeDsFloor — personal-data scopes floor to T2', () => {

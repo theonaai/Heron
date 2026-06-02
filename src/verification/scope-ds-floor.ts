@@ -52,6 +52,8 @@
  * Tracking: https://linear.app/theona/issue/AAP-115
  */
 
+import { canonicalizeScopeToken } from './scope-canonical.js';
+
 /** DS tier labels — same vocabulary as `system.dataSensitivityTier`. */
 export type DsTier = 'T1' | 'T2' | 'T3';
 
@@ -113,16 +115,21 @@ export function maxTier(a: DsTier, b: DsTier): DsTier {
  *                         to the resource head.
  *   - OIDC bare scopes:   `openid` / `email` / `profile` → handled below.
  *   - Google full URI is already canonicalised to short form upstream, but we
- *     defensively strip a trailing `.../auth/` prefix if one slips through.
+ *     defensively strip the prefix here too if one slips through.
  *
  * Returns a (possibly empty) list of lowercased candidate resource tokens; the
  * caller looks each up in `RESOURCE_TIER`.
  */
 export function scopeResourceTokens(scope: string): string[] {
-  let s = scope.trim();
-  if (s.length === 0) return [];
+  if (scope.trim().length === 0) return [];
 
-  // Defensive: a full Google scope URI that escaped canonicalisation upstream.
+  // AAP-124: reduce a full Google scope URI to its short form via the SAME
+  // shared helper the differ and the declared baseline use, so this floor keys
+  // off the identical canonical token the rest of the pipeline compares on.
+  let s = canonicalizeScopeToken(scope);
+  // Extra defensiveness: a non-Google `.../auth/<token>` URI shape that the
+  // shared helper (which only strips the exact Google prefix) would leave
+  // intact still reduces to its trailing token for tier classification.
   const authIdx = s.indexOf('/auth/');
   if (authIdx >= 0) s = s.slice(authIdx + '/auth/'.length);
 

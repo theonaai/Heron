@@ -53,6 +53,7 @@
 
 import type { DeclaredInventory, DeclaredScope } from './types.js';
 import type { OAuthScopeConnector } from '../../lib/report-json.js';
+import { canonicalizeScopeToken } from './scope-canonical.js';
 
 /**
  * Minimal shape of a `report.json` system row this builder reads. Structurally
@@ -193,7 +194,19 @@ export function buildDeclaredBaselineForConnectors(args: {
     const connector = connectorForSystemId(systemId);
     if (connector === undefined || !inScope.has(connector)) continue;
 
-    for (const token of scopeTokensOf(system)) {
+    for (const rawToken of scopeTokensOf(system)) {
+      // AAP-124: agents self-report Google scopes as FULL URLs
+      // (`https://www.googleapis.com/auth/spreadsheets`), while the actual side
+      // emits the SHORT tokeninfo name (`spreadsheets`). Canonicalize to the
+      // short form HERE — at emission — using the SAME shared helper the differ
+      // applies, so the declared baseline this builder produces is already in
+      // the comparison form: the de-dup key, the stored `DeclaredScope.scope`,
+      // and any rendered "missing" diff all show the short token, and a
+      // full-URL declaration matches its short grant. Only the URL prefix is
+      // stripped — `drive` vs `drive.file` stay distinct, so a real
+      // `drive`-requested-but-`drive.file`-needed scope-creep delta is NOT
+      // erased.
+      const token = canonicalizeScopeToken(rawToken);
       const key = `${connector}\x00${token}`;
       if (seen.has(key)) continue;
       seen.add(key);

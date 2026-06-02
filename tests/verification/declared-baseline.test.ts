@@ -188,4 +188,129 @@ describe('declared baseline → differ (the real declared-vs-actual unlock)', ()
     expect(extras[0].dimension).toBe('scope');
     expect((extras[0] as { actual: { scope: string } }).actual.scope).toBe('drive');
   });
+
+  // ── AAP-124: canonicalize scope FORM (full-URL declared vs short actual) ──
+  //
+  // Regression for the live audit (sess-20260602-094153-62e963): agents
+  // self-report Google scopes as FULL URLs while the connector emits the SHORT
+  // tokeninfo name. Before the fix each such scope surfaced as BOTH an extra
+  // (short actual) AND a missing (full-URL declared) — 6 spurious findings that
+  // held the wedge at `partial`.
+
+  it('(a) full-URL declared MATCHES short-form granted → VERIFIED, no extra/missing', () => {
+    // Exactly the live-audit shape: agent declared the three full Google URLs,
+    // tokeninfo granted the three short names.
+    const inv = buildDeclaredBaselineForConnectors({
+      systems: [
+        {
+          systemId: 'google-sheets',
+          scopesRequested: [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/documents',
+            'https://www.googleapis.com/auth/drive',
+          ],
+        },
+      ],
+      connectors: ['google-workspace'],
+      now: () => FIXED,
+    });
+    expect(inv).toBeDefined();
+    // The builder canonicalizes at emission: the stored declared scopes are
+    // already the short tokeninfo form (so a rendered "missing" would too).
+    expect(inv?.scopes).toEqual([
+      { service: 'google-workspace', scope: 'spreadsheets' },
+      { service: 'google-workspace', scope: 'documents' },
+      { service: 'google-workspace', scope: 'drive' },
+    ]);
+    const diffs = diff([inv!], actualGoogle(['spreadsheets', 'documents', 'drive']));
+    // The wedge unlock: zero diffs → the source can reach `verified`.
+    expect(diffs).toEqual([]);
+  });
+
+  it('(a2) canonicalization is symmetric — short declared MATCHES full-URL granted', () => {
+    // The differ's match key canonicalizes BOTH sides, so the fix holds even if
+    // the forms are swapped (short declared, full-URL actual).
+    const inv = buildDeclaredBaselineForConnectors({
+      systems: [{ systemId: 'google-sheets', scopesRequested: ['spreadsheets'] }],
+      connectors: ['google-workspace'],
+      now: () => FIXED,
+    });
+    const diffs = diff(
+      [inv!],
+      actualGoogle(['https://www.googleapis.com/auth/spreadsheets']),
+    );
+    expect(diffs).toEqual([]);
+  });
+
+  it('(b) a genuinely UNDECLARED granted scope still surfaces as extra (form aside)', () => {
+    // Declared one full URL; granted that same scope (matches) PLUS an
+    // undeclared one. Only the undeclared grant is an extra; no spurious
+    // missing for the matched full-URL declaration.
+    const inv = buildDeclaredBaselineForConnectors({
+      systems: [
+        {
+          systemId: 'google-sheets',
+          scopesRequested: ['https://www.googleapis.com/auth/spreadsheets'],
+        },
+      ],
+      connectors: ['google-workspace'],
+      now: () => FIXED,
+    });
+    const diffs = diff([inv!], actualGoogle(['spreadsheets', 'gmail.readonly']));
+    const extras = diffs.filter((d) => d.kind === 'extra');
+    const missing = diffs.filter((d) => d.kind === 'missing');
+    expect(extras).toHaveLength(1);
+    expect((extras[0] as { actual: { scope: string } }).actual.scope).toBe('gmail.readonly');
+    expect(missing).toHaveLength(0);
+  });
+
+  it('(b2) a genuinely declared-but-not-granted scope still surfaces as missing', () => {
+    // Declared a full URL that the token does NOT grant → real "missing".
+    const inv = buildDeclaredBaselineForConnectors({
+      systems: [
+        {
+          systemId: 'google-sheets',
+          scopesRequested: ['https://www.googleapis.com/auth/spreadsheets'],
+        },
+      ],
+      connectors: ['google-workspace'],
+      now: () => FIXED,
+    });
+    const diffs = diff([inv!], actualGoogle(['documents']));
+    const missing = diffs.filter((d) => d.kind === 'missing');
+    const extras = diffs.filter((d) => d.kind === 'extra');
+    // declared spreadsheets not granted → missing (short form); documents
+    // granted but not declared → extra.
+    expect(missing).toHaveLength(1);
+    expect((missing[0] as { declared: { scope: string } }).declared.scope).toBe('spreadsheets');
+    expect(extras).toHaveLength(1);
+    expect((extras[0] as { actual: { scope: string } }).actual.scope).toBe('documents');
+  });
+
+  it('(c) drive vs drive.file stay DISTINCT — subscope creep is NOT erased', () => {
+    // The real scope-creep delta from the live session: the agent declared the
+    // narrow per-file scope, the token granted broad full Drive. These are
+    // DIFFERENT scopes and the diff MUST show both (extra `drive`, missing
+    // `drive.file`) — canonicalization only strips the URL prefix, it does NOT
+    // collapse `drive.file` to `drive`.
+    const inv = buildDeclaredBaselineForConnectors({
+      systems: [
+        {
+          systemId: 'google-drive',
+          scopesRequested: ['https://www.googleapis.com/auth/drive.file'],
+        },
+      ],
+      connectors: ['google-workspace'],
+      now: () => FIXED,
+    });
+    // declared is the short subscope, preserved (prefix stripped, path intact).
+    expect(inv?.scopes).toEqual([{ service: 'google-workspace', scope: 'drive.file' }]);
+    const diffs = diff([inv!], actualGoogle(['drive']));
+    const extras = diffs.filter((d) => d.kind === 'extra');
+    const missing = diffs.filter((d) => d.kind === 'missing');
+    expect(extras).toHaveLength(1);
+    expect((extras[0] as { actual: { scope: string } }).actual.scope).toBe('drive');
+    expect(missing).toHaveLength(1);
+    expect((missing[0] as { declared: { scope: string } }).declared.scope).toBe('drive.file');
+  });
 });
