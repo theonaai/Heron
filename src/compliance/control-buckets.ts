@@ -1,0 +1,191 @@
+/**
+ * AAP-118 (S3 of AAP-117) — per-control bucket assignments.
+ *
+ * The honest 4-bucket classification for every control Heron actually WIRES
+ * (the entries that flow through `CONTROL_MAPPINGS` + the router/discovery
+ * detector adapters into `CONTROL_CATALOG`). Source of truth:
+ * `framework-buckets-honest-2026-06-02.md` (independently verified
+ * 2026-06-02), reconciled against `framework-controls-catalog.md`.
+ *
+ * Scope note — wired set vs full universe:
+ *   The spec's summary table buckets the FULL published control universe
+ *   (EU AI Act 133 + GDPR 101 + AIUC-1 65 + ISO 42001 19 + NIST 16 = 334
+ *   rows → verifiable ~24 / self-attested ~35 / oos-operator-artifact ~226 /
+ *   oos-not-verifiable ~49). Heron only WIRES ~79 distinct (framework,
+ *   control) pairs today; the other ~255 rows have no `CONTROL_MAPPINGS`
+ *   entry and no detector, so they never reach a report. This map therefore
+ *   covers the wired set, and the per-framework counts here are the wired
+ *   slice of the spec's lists (every wired control keeps the exact bucket the
+ *   spec assigns it). The full-universe totals are reproduced in the doc, not
+ *   the running product — encoding 255 phantom rows would contradict the
+ *   ticket's "tag every WIRED control" scope and the honest-lens principle of
+ *   only surfacing controls that can actually fire.
+ *
+ * The honest reclassification this encodes (per the ticket's acceptance):
+ *   1. Company-artifact controls move OUT of self-attested INTO
+ *      `oos-operator-artifact` — the audited agent cannot attest a corporate
+ *      document it can't see (AIUC-1 A002 output-data policy; the EU AI Act
+ *      Art 9/10/11/13/14/15/27/43/49/72 documentation spine; every ISO
+ *      management-system row; the NIST governance/process rows).
+ *   2. The 4 phantom AIUC-1 sub-IDs (`A003.1`, `D003.1`, `D003.3`, `D003.4`)
+ *      are NOT in `CONTROL_MAPPINGS` and have no detector, so they are not
+ *      wired and cannot be `verifiable`. The wired AIUC-1 verifiable set is
+ *      A001, A003.3, A003.4, A006, B006, D003, E004, E015.2 (A003 bare is not
+ *      wired; only the A003.3/.4 least-privilege pair is).
+ *
+ * Bucket is a property of the CONTROL, not of a (findingType, control)
+ * pairing — the same control id under two finding types carries the same
+ * bucket. The map is therefore keyed by `frameworkId` → `controlId`.
+ */
+
+import type { ComplianceBucket, FrameworkId } from './types.js';
+
+/**
+ * `frameworkId` → (`controlId` → bucket). Every wired control id must appear
+ * exactly once per framework. `control-catalog.ts` asserts completeness at
+ * build time (throws if a wired control has no entry here).
+ */
+export const BUCKET_BY_CONTROL: Record<
+  FrameworkId,
+  Record<string, ComplianceBucket>
+> = {
+  // ── EU AI Act ────────────────────────────────────────────────────────────
+  // spec §EU AI Act: VERIFIABLE = Art 6(2)+Annex III, Art 14(4)(d), Art 12
+  // (the 3 deterministic detectors); SELF-ATTESTED = Art 5(1)(a-h) family +
+  // Art 50(1); everything in the Art 9 RMS / Art 10 data-governance / Art 11
+  // TD / Art 13 IFU / Art 14 oversight bundle / Art 15 accuracy / Art 27 FRIA
+  // / Art 43 conformity / Art 49 registration / Art 72 PMM spines →
+  // operator-artifact; Art 15(4-5) resilience/cybersecurity → PROBE.
+  'eu-ai-act': {
+    'Art. 5': 'self-attested', // Art 5(1)(a-h) prohibited-practice self-report (Q10/Q4)
+    'Art. 6(2) + Annex III': 'verifiable', // detectEUAIAct_AnnexIII4 (transitive scope/credential diff)
+    'Art. 9': 'oos-operator-artifact', // RMS spine
+    'Art. 9(1)': 'oos-operator-artifact', // RMS established
+    'Art. 9(2)(a)': 'oos-operator-artifact', // risk identification (RMS)
+    'Art. 9(2)(b)': 'oos-operator-artifact', // risk estimation (RMS)
+    'Art. 9(6)-(7)': 'oos-operator-artifact', // lifecycle testing (RMS)
+    'Art. 9(8)': 'oos-operator-artifact', // RMS documented
+    'Art. 10': 'oos-operator-artifact', // data-governance spine
+    'Art. 10(1-5)': 'oos-operator-artifact', // data governance (train/validate/test)
+    'Art. 11': 'oos-operator-artifact', // technical documentation (Annex IV)
+    'Art. 12': 'verifiable', // detectEUAIAct_Article12 (approval chain ≥2 entries)
+    'Art. 13': 'oos-operator-artifact', // instructions-for-use artifact
+    'Art. 14': 'oos-operator-artifact', // full high-risk oversight bundle (training/docs)
+    'Art. 14(4)(d)': 'verifiable', // detectEUAIAct_Article14 (approval chain). Also agent-observable; counted verifiable per spec.
+    'Art. 15': 'oos-operator-artifact', // accuracy/robustness IFU declaration
+    'Art. 15(4-5)': 'oos-not-verifiable', // resilience (PROBE) + cybersecurity (PROBE)
+    'Art. 27': 'oos-operator-artifact', // FRIA document
+    'Art. 43': 'oos-operator-artifact', // conformity assessment artifact
+    'Art. 49': 'oos-operator-artifact', // EU database registration artifact
+    'Art. 50(1)': 'self-attested', // disclose interaction with AI (Q10/Q4)
+    'Art. 72': 'oos-operator-artifact', // post-market-monitoring plan/system
+  },
+
+  // ── GDPR ─────────────────────────────────────────────────────────────────
+  // spec §GDPR: VERIFIABLE (8) = Art 25, Art 5(1)(c), Art 22, Art 6, Art 35,
+  // Art 33, Art 32, Art 28. Of those, all wired ones (25/22/6/35/33/32/28 —
+  // 5(1)(c) is not wired) are verifiable. Art 5(1)(b) purpose limitation is a
+  // genuine agent self-report (SELF-ATTESTED 7).
+  'gdpr': {
+    'Art. 5(1)(b)': 'self-attested', // purpose limitation self-report (Q1/Q4)
+    'Art. 6': 'verifiable', // lawful basis — sensitive-PII credential detector (FAIL)
+    'Art. 22': 'verifiable', // automated decision-making — decision-class scopes + approval chain
+    'Art. 25': 'verifiable', // data-protection-by-design — A003 scope diff
+    'Art. 28': 'verifiable', // processor/DPA — third-party-SaaS credential detector (PARTIAL)
+    'Art. 32': 'verifiable', // security — .env secret-pattern detector (PARTIAL)
+    'Art. 33': 'verifiable', // breach notification — sensitive-PII detector (FAIL)
+    'Art. 35': 'verifiable', // DPIA — sensitive-PII detector (FAIL)
+  },
+
+  // ── AIUC-1 ────────────────────────────────────────────────────────────────
+  // spec §AIUC-1: VERIFIABLE (9 real ids) = A003, A003.3, A003.4, B006, D003,
+  // A006, A001, E004, E015.2 (A003 bare not wired). SELF-ATTESTED
+  // (agent-observable) = A005 (Q12), B008.2 (Q14), C007 (Q10), C009 (Q10),
+  // E016 (Q10). OPERATOR-ARTIFACT = A002 (output-data policy). NOT-VERIFIABLE
+  // = B007 (CODE), F001 (PROBE). The 4 phantom sub-IDs (A003.1, D003.1/.3/.4)
+  // are absent from the wired set entirely → cannot be verifiable.
+  'aiuc-1': {
+    'A001': 'verifiable', // input data policy — processor detector (PARTIAL)
+    'A002': 'oos-operator-artifact', // output data policy (corporate doc the agent can't see)
+    'A003.3': 'verifiable', // agent identity — scope diff (A003 family)
+    'A003.4': 'verifiable', // scoped permissions — scope diff (A003 family)
+    'A005': 'self-attested', // cross-customer isolation — Q12 self-report (proof is PROBE)
+    'A006': 'verifiable', // PII leakage — sensitive-PII credential detector (FAIL)
+    'B006': 'verifiable', // prevent unauthorised actions — action-class scope diff
+    'B007': 'oos-not-verifiable', // user access privileges — CODE (infra)
+    'B008.2': 'self-attested', // MCP/A2A auth — Q14 self-report (auth-config proof is CODE)
+    'C007': 'self-attested', // flag high-risk outputs for human review — Q10 (workflow proof is RUNTIME)
+    'C009': 'self-attested', // real-time feedback + intervention — Q10
+    'D003': 'verifiable', // restrict unsafe tool calls — MCP tools/list inventory
+    'E004': 'verifiable', // assigned accountability — approval chain (named approver)
+    'E015.2': 'verifiable', // log AI activity — approval chain (intact)
+    'E016': 'self-attested', // AI disclosure — Q10 self-report
+    'F001': 'oos-not-verifiable', // cyber misuse — PROBE (adversarial)
+  },
+
+  // ── ISO 42001 ──────────────────────────────────────────────────────────────
+  // spec §ISO 42001: VERIFIABLE (2) = A.4.4 (MCP-inventory detector, PARTIAL)
+  // and A.10.3 (processor detector, PARTIAL). Every other Annex A / clause row
+  // is a documented management-system process/record → operator-artifact.
+  // SELF-ATTESTED = 0 (the agent cannot self-attest a management-system
+  // process). NOT-VERIFIABLE = 0.
+  'iso-42001': {
+    'A.4.4': 'verifiable', // AI tooling inventory — MCP-inventory detector (PARTIAL)
+    'A.10.3': 'verifiable', // suppliers / third-party components — processor detector (PARTIAL)
+    'A.5.2': 'oos-operator-artifact', // impact-assessment process
+    'A.5.3': 'oos-operator-artifact', // documented impact assessments
+    'A.5.4': 'oos-operator-artifact', // impact on individuals/groups
+    'A.6.2.4': 'oos-operator-artifact', // V&V records
+    'A.6.2.5': 'oos-operator-artifact', // deployment sign-offs
+    'A.6.2.6': 'oos-operator-artifact', // operational monitoring
+    'A.6.2.8': 'oos-operator-artifact', // event-log system
+    'A.7.4': 'oos-operator-artifact', // data-quality documentation
+    'A.7.5': 'oos-operator-artifact', // data-provenance records
+    'A.9.2': 'oos-operator-artifact', // responsible-use processes
+    'A.9.3': 'oos-operator-artifact', // responsible-use objectives / management review
+    'Clause 6.1': 'oos-operator-artifact', // risk-treatment plan
+  },
+
+  // ── NIST AI RMF ────────────────────────────────────────────────────────────
+  // spec §NIST AI RMF: VERIFIABLE (2 catalog-table rows) = MEASURE 1.1
+  // (detectNIST_Measure → verified) and MANAGE 1.2 (approval chain). The spec
+  // (line 206) notes the live mapper ALSO fires MAP 2.1 / GOVERN 6.2 /
+  // MANAGE 3.1 via the MCP-inventory + processor detectors — those are wired
+  // (have a detector), so they are verifiable here even though they are not
+  // rows in the spec's 16-row NIST table. OPERATOR-ARTIFACT (12) = the
+  // GOVERN/MAP/MEASURE governance+process rows. NOT-VERIFIABLE (2) =
+  // MEASURE 2.4 (RUNTIME) + MEASURE 2.7 (PROBE/RUNTIME).
+  'nist-ai-rmf': {
+    'MEASURE 1.1': 'verifiable', // risk-metrics selection — detectNIST_Measure (verified)
+    'MANAGE 1.2': 'verifiable', // risk-treatment prioritisation — approval chain
+    'MAP 2.1': 'verifiable', // bundle-attached MCP-inventory detector fires
+    'GOVERN 6.2': 'verifiable', // bundle-attached processor detector fires
+    'MANAGE 3.1': 'verifiable', // bundle-attached detector fires
+    'GOVERN 1.1': 'oos-operator-artifact', // legal-requirements register
+    'GOVERN 1.7': 'oos-operator-artifact', // decommissioning policy
+    'GOVERN 3.2': 'oos-operator-artifact', // human-AI-roles policy
+    'GOVERN 6.1': 'oos-operator-artifact', // third-party-risk policy
+    'MAP 1.6': 'oos-operator-artifact', // requirements-elicitation record
+    'MAP 3.2': 'oos-operator-artifact', // error-cost analysis
+    'MAP 3.5': 'oos-operator-artifact', // oversight-process documentation
+    'MAP 4.1': 'oos-operator-artifact', // legal-risk mapping
+    'MAP 5.1': 'oos-operator-artifact', // impact likelihood/magnitude doc
+    'MEASURE 2.10': 'oos-operator-artifact', // privacy-risk examination doc
+    'MEASURE 3.1': 'oos-operator-artifact', // emergent-risk identification process
+    'MANAGE 2.4': 'oos-operator-artifact', // deactivation-mechanism documentation
+    'MEASURE 2.4': 'oos-not-verifiable', // functionality/behaviour monitoring — RUNTIME
+    'MEASURE 2.7': 'oos-not-verifiable', // security & resilience evaluation — PROBE/RUNTIME
+  },
+};
+
+/**
+ * Look up the bucket for a wired control. Returns `undefined` for a control
+ * id the bucket map does not cover (an unwired control, or a typo). The
+ * catalog builder treats `undefined` for a wired control as a hard error.
+ */
+export function bucketForControl(
+  frameworkId: FrameworkId,
+  controlId: string,
+): ComplianceBucket | undefined {
+  return BUCKET_BY_CONTROL[frameworkId]?.[controlId];
+}

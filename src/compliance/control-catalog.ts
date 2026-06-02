@@ -56,12 +56,23 @@ import { CONTROL_MAPPINGS } from './control-mappings.js';
 import { DISCOVERY_DETECTOR_ADAPTERS } from './detectors/discovery-detectors.js';
 import { ROUTER_DETECTOR_ADAPTERS } from './detectors/router-adapter.js';
 import type {
+  ComplianceBucket,
   ControlMapping,
   FindingType,
   FrameworkControl,
   FrameworkId,
   RiskCategory,
 } from './types.js';
+import { BUCKET_BY_CONTROL } from './control-buckets.js';
+
+/**
+ * Sentinel bucket stamped at entry-construction time and overwritten for every
+ * wired control by `assignBuckets`. It exists only to satisfy the required
+ * `bucket` field during the two-step build (construct → assign); `assignBuckets`
+ * throws if any wired control still lacks a real bucket, so this value can
+ * never reach a real report.
+ */
+const PROVISIONAL_BUCKET: ComplianceBucket = 'oos-not-verifiable';
 
 // ─── Detector function signature ───────────────────────────────────────────
 
@@ -140,6 +151,17 @@ export interface ControlResult {
   severity: ControlResultSeverity;
   rationale: string;
   evidenceRefs: ControlResultEvidenceRef[];
+  /**
+   * AAP-118 (S3 of AAP-117): the honest 4-bucket classification of this
+   * control, denormalised from the catalog entry. The `verdict` above is the
+   * runtime STATE; `bucket` is the control METADATA that says what Heron can
+   * honestly establish at all. Optional on the wire so the ~25 other
+   * `ControlResult` construction sites (verdict engine, hr-pack, report
+   * translators) stay untouched — only the compliance mapper stamps it, from
+   * the catalog (single source of truth), mirroring how `framework` is stamped
+   * in `runTypedDetectors`. Absent ⇒ producer predates the bucket model.
+   */
+  bucket?: ComplianceBucket;
 }
 
 // ─── Catalog entry shape ───────────────────────────────────────────────────
@@ -157,6 +179,16 @@ export interface ControlCatalogEntry {
   note?: string;
   annexIII?: boolean;
   gatedBy?: string[];
+  /**
+   * AAP-118 (S3 of AAP-117): the honest 4-bucket classification of this
+   * control. Required control metadata — populated for every catalog entry at
+   * build time from `BUCKET_BY_CONTROL` (keyed by `frameworkId` + `controlId`,
+   * derived from `framework-buckets-honest-2026-06-02.md`). Distinct from the
+   * runtime verdict: the bucket says what Heron CAN establish, the verdict
+   * says what it DID establish for a given audit. The build throws if any
+   * wired control is missing a bucket, so this can never be silently absent.
+   */
+  bucket: ComplianceBucket;
   /**
    * Optional deterministic detector. When present AND typed evidence is
    * available, the mapper runs the detector and prefers its verdict over
@@ -208,6 +240,9 @@ function buildCatalogFromMappings(): ControlCatalogEntry[] {
         controlId: ctrl.controlId,
         category: mapping.category,
         prosePathEnabled: true,
+        // Provisional — overwritten (and completeness-checked) by
+        // `assignBuckets` after the catalog is fully assembled.
+        bucket: PROVISIONAL_BUCKET,
       };
       if (ctrl.note !== undefined) entry.note = ctrl.note;
       if (ctrl.annexIII !== undefined) entry.annexIII = ctrl.annexIII;
@@ -270,11 +305,53 @@ function attachDetectors(
         category: fallback?.category ?? 'consumer-protection',
         deterministicDetector: row.detector as unknown as DetectorFn,
         prosePathEnabled: false,
+        // Provisional — overwritten (and completeness-checked) by
+        // `assignBuckets` after the catalog is fully assembled.
+        bucket: PROVISIONAL_BUCKET,
       });
     }
   }
 
   return [...byKey.values()];
+}
+
+/**
+ * AAP-118 (S3 of AAP-117) — stamp the honest 4-bucket classification onto
+ * every catalog entry from `BUCKET_BY_CONTROL` (the spec-derived source of
+ * truth, keyed by frameworkId + controlId).
+ *
+ * Run as a single pass AFTER `attachDetectors`, so both prose-derived and
+ * adapter-only entries are bucketed by the same lookup — neither construction
+ * site needs to know about buckets. The bucket is a property of the control,
+ * so all entries that share a (frameworkId, controlId) get the same bucket
+ * regardless of which finding type they hang under.
+ *
+ * Hard fail on a wired control with no bucket: a control reaching a report
+ * with an unknown honest-classification is exactly the silent gap this
+ * subtask exists to close. The error names the offender so adding a new
+ * wired control forces a deliberate bucket decision in `control-buckets.ts`.
+ */
+function assignBuckets(
+  entries: ControlCatalogEntry[],
+): ControlCatalogEntry[] {
+  const missing: string[] = [];
+  for (const entry of entries) {
+    const bucket = BUCKET_BY_CONTROL[entry.frameworkId]?.[entry.controlId];
+    if (bucket === undefined) {
+      missing.push(`${entry.frameworkId} :: ${entry.controlId}`);
+      continue;
+    }
+    entry.bucket = bucket;
+  }
+  if (missing.length > 0) {
+    const unique = [...new Set(missing)].sort();
+    throw new Error(
+      `control-catalog: ${unique.length} wired control(s) have no bucket in ` +
+        `BUCKET_BY_CONTROL (src/compliance/control-buckets.ts). Add a bucket ` +
+        `per framework-buckets-honest-2026-06-02.md: ${unique.join(', ')}`,
+    );
+  }
+  return entries;
 }
 
 /**
@@ -285,7 +362,7 @@ function attachDetectors(
  * underlying detector implementations without touching this builder.
  */
 export const CONTROL_CATALOG: readonly ControlCatalogEntry[] = Object.freeze(
-  attachDetectors(buildCatalogFromMappings()),
+  assignBuckets(attachDetectors(buildCatalogFromMappings())),
 );
 
 // ─── Lookup helpers ────────────────────────────────────────────────────────
