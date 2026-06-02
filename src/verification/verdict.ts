@@ -386,6 +386,35 @@ function oauthDiffToVerdictFinding(
   };
 }
 
+/**
+ * AAP-115 — build an informational VerdictFinding that SURFACES a failed OAuth
+ * introspection (verdict `unverified`: auth / transport / parse error). The
+ * canonical case is an expired/revoked Google token: the introspection call
+ * returns nothing usable, so without this finding the failure would be buried
+ * in a status-table row and `actualScopes` would read as a silent empty list.
+ *
+ * severityScore is 0 (`informational`) so the finding NEVER moves posture —
+ * a failed read is honest "we could not verify", not a risk signal. The error
+ * message (already scrubbed of any token value at the source boundary) is
+ * carried into the description so a reviewer sees WHY it failed.
+ */
+function oauthIntrospectionFailureFinding(
+  v: SourceVerification,
+  idx: number,
+): VerdictFinding {
+  const reason = v.error?.message ?? 'introspection failed (no usable response)';
+  return {
+    id: `oau-${idx}-introspection-failed-${v.sourceId}`,
+    band: 'informational',
+    severityScore: 0,
+    severityComponents: { br: 1, ds: 1, dm: 1 },
+    evidenceSource: 'OAU',
+    title: `OAuth introspection failed — ${v.sourceId}`,
+    description: `Could not verify granted scopes for ${v.sourceId}: ${reason}. No declared-vs-actual comparison was possible for this source.`,
+    kind: 'oauth',
+  };
+}
+
 // ── Interview Risk → VerdictFinding (SLF) ──────────────────────────────
 
 /**
@@ -721,7 +750,18 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
     );
   });
 
-  oauthVerifications.forEach((v) => {
+  oauthVerifications.forEach((v, vIdx) => {
+    // AAP-115 — SURFACE introspection failures. An `unverified` OAuth source
+    // (auth/transport/parse error — e.g. an expired Google token) carries an
+    // empty diff array, so the diff loop below would emit NOTHING and the
+    // failure would only ever show up as a status-table row. Emit an explicit
+    // informational finding so the failed introspection is VISIBLE in the
+    // findings list, never silently empty. severityScore 0 → it cannot move
+    // posture (the read failed; we make no risk claim either way).
+    if (v.verdict === 'unverified') {
+      findings.push(oauthIntrospectionFailureFinding(v, vIdx));
+      return;
+    }
     v.diffs.forEach((d, idx) => {
       findings.push(
         oauthDiffToVerdictFinding(d, v.sourceId, idx, discoveredAgents, oauthVerifications),
@@ -743,7 +783,11 @@ export function computeVerdict(inputs: VerdictInputs): Verdict {
   // agent with irreversible writes to sensitive data still surfaces a real
   // risk band instead of "No findings". Final posture is the FIPS HWM of both.
   const discrepancyPosture = computePosture(findings);
-  const systemsRisk = computeSystemsRisk(inputs.systemAssessments);
+  // AAP-115 — pass the verified OAuth scope inventory so per-system DS tiers
+  // can be floored deterministically from what the granted scope actually
+  // grants (catching a system that under-reports its sensitivity). The floor
+  // only raises a tier; broad blast-radius scopes never floor DS.
+  const systemsRisk = computeSystemsRisk(inputs.systemAssessments, oauthVerifications);
   const posture = Math.max(discrepancyPosture, systemsRisk.posture);
   const postureBand = severityBand(posture);
 

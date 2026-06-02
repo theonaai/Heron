@@ -73,6 +73,10 @@ import {
   type DomainMultiplier,
   type SeverityBand,
 } from './severity-scoring.js';
+import { connectorForSystemId } from './declared-baseline.js';
+import { maxTier, scopeDsFloorForScopes, type DsTier } from './scope-ds-floor.js';
+import type { ActualScope, SourceVerification } from './types.js';
+import type { OAuthScopeConnector } from '../../lib/report-json.js';
 
 /** Minimal write-operation shape (mirror of `WriteOperation` / `ReportJsonWriteOperation`). */
 export interface SystemWriteOp {
@@ -108,11 +112,23 @@ export interface SystemRiskResult {
   br: AxisBand;
   ds: AxisBand;
   dm: DomainMultiplier;
-  /** T1 / T2 / T3 — the analyzer-supplied tier this row scored on (or the
-   *  conservative T2 default when the analyzer omitted it). */
+  /** T1 / T2 / T3 — the EFFECTIVE tier this row scored on: the
+   *  high-water-mark of the analyzer-supplied (LLM) tier and any
+   *  deterministic floor derived from VERIFIED OAuth scopes (AAP-115).
+   *  Equal to `llmTier` when no scope floor applied. */
   dsTier: 'T1' | 'T2' | 'T3';
+  /** AAP-115 — the analyzer-supplied (LLM) tier BEFORE the scope floor was
+   *  applied (or the conservative T2 default when the analyzer omitted it).
+   *  Kept distinct from `dsTier` so the renderer can show "LLM said T1,
+   *  floored to T2 by a verified gmail scope". */
+  llmTier: 'T1' | 'T2' | 'T3';
+  /** AAP-115 — the deterministic DS-tier floor derived from this system's
+   *  VERIFIED OAuth scopes, or undefined when no verified scope implied a
+   *  floor (or none were available). The floor may only RAISE `dsTier`. */
+  scopeFloorTier?: 'T1' | 'T2' | 'T3';
   /** Short "why this tier" basis (≤120 chars): the first clause of the
-   *  sensitivity prose when a tier was provided, else the default-T2 note. */
+   *  sensitivity prose when a tier was provided, else the default-T2 note.
+   *  When a scope floor raised the tier, the basis names the floor instead. */
   dsBasis: string;
   /** True when this system declares at least one irreversible write op. */
   hasIrreversibleWrite: boolean;
@@ -129,6 +145,11 @@ export interface SystemRiskResult {
 
 /** Map a tier label to its DS axis band. T1→1 / T2→2 / T3→3. */
 function dsBandForTier(tier: 'T1' | 'T2' | 'T3'): AxisBand {
+  return tier === 'T3' ? 3 : tier === 'T2' ? 2 : 1;
+}
+
+/** Numeric rank for tier comparison (local mirror of scope-ds-floor's). */
+function tierRankLocal(tier: 'T1' | 'T2' | 'T3'): number {
   return tier === 'T3' ? 3 : tier === 'T2' ? 2 : 1;
 }
 
@@ -176,8 +197,17 @@ export function blastRadiusAxis(blastRadius: string | undefined): AxisBand {
 /**
  * Score ONE system on the BR × DS × DM scale. See module JSDoc for the full
  * mapping rationale.
+ *
+ * AAP-115 — `scopeFloorTier` (optional) is the deterministic DS-tier floor
+ * derived from this system's VERIFIED OAuth scopes (see `scope-ds-floor.ts`).
+ * When supplied it can only RAISE the LLM tier: `dsTier = max(llmTier,
+ * scopeFloorTier)`. The floor never lowers a tier. Callers that have no
+ * verified scopes for the system pass `undefined` and behaviour is unchanged.
  */
-export function scoreSystemRisk(system: RiskScorableSystem): SystemRiskResult {
+export function scoreSystemRisk(
+  system: RiskScorableSystem,
+  scopeFloorTier?: DsTier,
+): SystemRiskResult {
   const writeOps = system.writeOperations ?? [];
   const hasIrreversibleWrite = writeOps.some((w) => w.reversible === false);
 
@@ -189,19 +219,32 @@ export function scoreSystemRisk(system: RiskScorableSystem): SystemRiskResult {
   const writeAxis = bandForWriteCount(writeOps.length);
   const br = Math.max(blastAxis, writeAxis) as AxisBand;
 
-  // DS from the analyzer-supplied tier. When the analyzer provided a tier, the
-  // basis is the first clause of its prose (the human-readable "why"). When it
-  // omitted the tier, default CONSERVATIVELY to T2 — a security tool must not
-  // under-rate on uncertainty — and record that in the basis.
+  // DS from the analyzer-supplied (LLM) tier. When the analyzer provided a
+  // tier, the basis is the first clause of its prose (the human-readable
+  // "why"). When it omitted the tier, default CONSERVATIVELY to T2 — a
+  // security tool must not under-rate on uncertainty — and record that.
   const prose = (system.dataSensitivity ?? '').trim();
-  let dsTier: 'T1' | 'T2' | 'T3';
+  let llmTier: 'T1' | 'T2' | 'T3';
   let dsBasis: string;
   if (system.dataSensitivityTier) {
-    dsTier = system.dataSensitivityTier;
-    dsBasis = prose ? firstClause(prose) : `analyzer-supplied tier ${dsTier}`;
+    llmTier = system.dataSensitivityTier;
+    dsBasis = prose ? firstClause(prose) : `analyzer-supplied tier ${llmTier}`;
   } else {
-    dsTier = 'T2';
+    llmTier = 'T2';
     dsBasis = 'tier not provided by analyzer; defaulted conservatively to T2';
+  }
+
+  // AAP-115 — apply the deterministic scope floor. `finalTier = max(llmTier,
+  // scopeFloor)` per system; the floor may only RAISE the tier. When the floor
+  // actually moved the tier, rewrite the basis to name the deterministic
+  // reason so a reviewer sees WHY the tier is higher than the LLM said.
+  let dsTier: 'T1' | 'T2' | 'T3' = llmTier;
+  if (scopeFloorTier !== undefined) {
+    const floored = maxTier(llmTier, scopeFloorTier);
+    if (tierRankLocal(floored) > tierRankLocal(llmTier)) {
+      dsTier = floored;
+      dsBasis = `floored to ${dsTier} by a verified OAuth scope granting personal data (LLM tier was ${llmTier})`;
+    }
   }
   const ds = dsBandForTier(dsTier);
 
@@ -228,6 +271,8 @@ export function scoreSystemRisk(system: RiskScorableSystem): SystemRiskResult {
     ds,
     dm,
     dsTier,
+    llmTier,
+    ...(scopeFloorTier !== undefined ? { scopeFloorTier } : {}),
     dsBasis,
     hasIrreversibleWrite,
   };
@@ -244,14 +289,74 @@ export interface SystemsRiskSummary {
 }
 
 /**
+ * AAP-115 — group VERIFIED OAuth scopes by connector kind (the `service`
+ * field every connector stamps on its actual scopes: `google-workspace`,
+ * `greenhouse`, `bamboohr`). Only `verified` / `discrepancy` source reads
+ * contribute scopes — an `unverified` (errored) read has no trustworthy
+ * inventory, so it must NOT floor anything. Returns a map of connector kind →
+ * the verified scopes whose `service` equals that kind.
+ */
+function verifiedScopesByConnector(
+  oauthVerifications: ReadonlyArray<SourceVerification>,
+): Map<OAuthScopeConnector, ActualScope[]> {
+  const byService = new Map<OAuthScopeConnector, ActualScope[]>();
+  for (const v of oauthVerifications) {
+    // An errored read (`unverified`) carries no inventory — skip it so a
+    // failed introspection can never silently floor (or appear to clear) DS.
+    if (v.verdict === 'unverified') continue;
+    for (const s of v.inventory?.scopes ?? []) {
+      // The connector stamps `service` with its kind; narrow defensively.
+      if (
+        s.service === 'google-workspace' ||
+        s.service === 'greenhouse' ||
+        s.service === 'bamboohr'
+      ) {
+        const arr = byService.get(s.service) ?? [];
+        arr.push(s);
+        byService.set(s.service, arr);
+      }
+    }
+  }
+  return byService;
+}
+
+/**
  * Score every system and return the high-water-mark posture + the per-system
  * breakdown. `posture` is 0 when there are no systems (the caller treats that
  * as "no scan" and renders the gray Not-yet-verified state).
+ *
+ * AAP-115 — `oauthVerifications` (optional) carries the VERIFIED OAuth scope
+ * introspection results. For each system that maps to an introspected
+ * connector (via `connectorForSystemId`), we compute a deterministic DS-tier
+ * floor from that connector's verified scopes (`scope-ds-floor.ts`) and pass
+ * it to `scoreSystemRisk`, which applies `max(llmTier, scopeFloor)`. Systems
+ * with no verified scopes (or callers that pass nothing) score exactly as
+ * before. Broad blast-radius scopes (drive/sheets/...) never floor DS — they
+ * are absent from the floor table by design, keeping BR and DS orthogonal.
  */
 export function computeSystemsRisk(
   systems: ReadonlyArray<RiskScorableSystem> | undefined,
+  oauthVerifications?: ReadonlyArray<SourceVerification>,
 ): SystemsRiskSummary {
-  const rows = (systems ?? []).map(scoreSystemRisk);
+  const scopesByConnector =
+    oauthVerifications && oauthVerifications.length > 0
+      ? verifiedScopesByConnector(oauthVerifications)
+      : undefined;
+
+  const rows = (systems ?? []).map((system) => {
+    let scopeFloor: DsTier | undefined;
+    if (scopesByConnector) {
+      const connector = connectorForSystemId(system.systemId);
+      if (connector !== undefined) {
+        const scopes = scopesByConnector.get(connector);
+        if (scopes && scopes.length > 0) {
+          scopeFloor = scopeDsFloorForScopes(scopes);
+        }
+      }
+    }
+    return scoreSystemRisk(system, scopeFloor);
+  });
+
   let max = 0;
   for (const r of rows) {
     if (r.severity > max) max = r.severity;

@@ -469,7 +469,15 @@ export const systemRiskSnapshotSchema = z.object({
   br: z.number(),
   ds: z.number(),
   dm: z.number(),
+  // EFFECTIVE tier: max(LLM tier, deterministic scope floor). See systems-risk.ts.
   dsTier: z.enum(['T1', 'T2', 'T3']),
+  // AAP-115 — the LLM-assigned tier before any verified-scope floor. Optional
+  // for back-compat with snapshots written before the floor existed; consumers
+  // fall back to `dsTier` when absent.
+  llmTier: z.enum(['T1', 'T2', 'T3']).optional(),
+  // AAP-115 — the deterministic DS-tier floor a verified OAuth scope implied
+  // (absent when no verified scope floored this system).
+  scopeFloorTier: z.enum(['T1', 'T2', 'T3']).optional(),
   dsBasis: z.string(),
   hasIrreversibleWrite: z.boolean(),
 });

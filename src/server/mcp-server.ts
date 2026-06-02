@@ -107,6 +107,11 @@ import {
   type ForwardedOAuthProvider,
   type ForwardedOAuthRecord,
 } from '../verification/forwarded-oauth-introspection.js';
+// AAP-115 (S1) — declared baseline from the interview-captured Q2/Q3
+// answers (analyzer `report.json.systems[]`) so the forwarded-OAuth
+// scope diff reaches VERIFIED instead of flagging every grant as extra.
+import { buildDeclaredBaselineForConnectors } from '../verification/declared-baseline.js';
+import type { DeclaredInventory } from '../verification/types.js';
 import { secretlintScrub } from '../discovery/secretlint-scrub.js';
 import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
 import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
@@ -1858,12 +1863,35 @@ export class HeronMCPServer {
     // from the MCP path, not just the dashboard. Empty when the agent
     // forwarded nothing (the OAuth section stays absent / "N/A").
     const forwardedOAuthRecords = await listReportedOAuthScopes(sessionId);
+    // AAP-115 (S1) — build the declared baseline from the agent's
+    // interview-captured Q2 `systems_enum` / Q3 `scopes_current` answers
+    // (already parsed by the analyzer into `report.json.systems[]`),
+    // re-keyed onto the providers the agent forwarded introspection for.
+    // Without this the forwarded path passed `declared: []` and every
+    // granted scope read as an `extra` diff → always FAIL. With it, a
+    // clean agent reaches VERIFIED on the wedge controls.
+    const forwardedReportJson = (session.reportJson as AuditReport | undefined) ?? null;
+    const forwardedDeclaredSystems = forwardedReportJson?.systems;
+    const forwardedDeclaredBaseline = forwardedOAuthRecords.length > 0
+      ? buildDeclaredBaselineForConnectors({
+          systems: Array.isArray(forwardedDeclaredSystems)
+            ? forwardedDeclaredSystems
+            : undefined,
+          connectors: forwardedOAuthRecords.map(
+            (r) => r.provider as ForwardedOAuthProvider,
+          ),
+        })
+      : undefined;
+    const forwardedDeclared: DeclaredInventory[] = forwardedDeclaredBaseline
+      ? [forwardedDeclaredBaseline]
+      : [];
     const oauthForward = forwardedOAuthRecords.length > 0
       ? await runForwardedOAuthScopeVerification({
           records: forwardedOAuthRecords.map((r): ForwardedOAuthRecord => ({
             provider: r.provider as ForwardedOAuthProvider,
             introspection: r.introspection,
           })),
+          declared: forwardedDeclared,
           agentLabel: sessionId,
         })
       : { verifications: [], section: null };

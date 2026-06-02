@@ -134,6 +134,30 @@ describe('computeVerdict', () => {
     expect(verdict.findings[0].title).toContain('drive.write');
   });
 
+  it('AAP-115 — SURFACES a failed introspection as an informational finding (not silently empty)', () => {
+    // An expired/revoked token: the source read errors → verdict `unverified`,
+    // empty diffs. Pre-AAP-115 this produced NO finding (the failure was only a
+    // status-table row). Now it surfaces as a visible informational finding.
+    const oauthVerifications: SourceVerification[] = [
+      {
+        sourceId: 'oauth-scopes',
+        verdict: 'unverified',
+        diffs: [],
+        error: { kind: 'unauthorized', message: 'Google Workspace access_token rejected by tokeninfo (invalid or expired).' },
+      },
+    ];
+    const verdict = computeVerdict({ oauthVerifications });
+    expect(verdict.findings).toHaveLength(1);
+    const f = verdict.findings[0];
+    expect(f.evidenceSource).toBe('OAU');
+    expect(f.band).toBe('informational');
+    expect(f.severityScore).toBe(0); // never moves posture
+    expect(f.title).toContain('introspection failed');
+    expect(f.description).toContain('invalid or expired');
+    // A failed read is honest "could not verify" — posture stays 0.
+    expect(verdict.posture).toBe(0);
+  });
+
   it('stamps interview-derived risks with evidenceSource = SLF', () => {
     const interviewFindings: Risk[] = [
       { severity: 'high', title: 'Unbounded shell', description: 'agent has unrestricted shell' },

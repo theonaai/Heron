@@ -318,7 +318,11 @@ describe('forwarded OAuth → verdict posture (OAU finding drives the gradient)'
     });
   });
 
-  it('an introspection-error alone yields NO OAU finding and zero posture', () => {
+  it('an introspection-error surfaces one informational OAU finding and zero posture (AAP-115)', () => {
+    // AAP-115 — a failed introspection (expired/revoked token) must be VISIBLE,
+    // not silently empty. It now surfaces as ONE informational OAU finding
+    // (severityScore 0) so the failure shows up in the findings list, while
+    // posture stays 0 (a failed read makes no risk claim either way).
     const records: ForwardedOAuthRecord[] = [
       {
         provider: 'google-workspace',
@@ -333,7 +337,11 @@ describe('forwarded OAuth → verdict posture (OAU finding drives the gradient)'
       const verdict = computeVerdict({
         oauthVerifications: forwarded.verifications,
       });
-      expect(verdict.findings.filter((f) => f.evidenceSource === 'OAU')).toHaveLength(0);
+      const oau = verdict.findings.filter((f) => f.evidenceSource === 'OAU');
+      expect(oau).toHaveLength(1);
+      expect(oau[0].band).toBe('informational');
+      expect(oau[0].severityScore).toBe(0);
+      expect(oau[0].title).toContain('introspection failed');
       expect(verdict.posture).toBe(0);
     });
   });

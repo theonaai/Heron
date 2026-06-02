@@ -228,11 +228,13 @@ describe('G10 — start_verification with agent-forwarded OAuth scopes', () => {
       expect(oauthSource?.verdict).toBe('unverified');
       expect(oauthSource?.errorMessage).toMatch(/token|expired|invalid|rejected/i);
 
-      // No OAU finding (introspection failed ⇒ nothing to verify).
+      // AAP-115 — the failed introspection surfaces as ONE informational OAU
+      // finding (visible, not silently empty). It carries no severity, so it
+      // does not move posture, but it IS present in the findings list.
       const oauFindings = (reportJson.verdict?.findings ?? []).filter(
         (f) => f.evidenceSource === 'OAU',
       );
-      expect(oauFindings).toHaveLength(0);
+      expect(oauFindings).toHaveLength(1);
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
