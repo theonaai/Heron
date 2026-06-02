@@ -213,32 +213,20 @@ describe('diffAgainstTranscript — AAP-93', () => {
         answer: 'We use Teams, not Slack.',
       },
     ];
-    // Note: the answer DOES contain "slack" as part of "not Slack",
-    // which the answer-only body will catch. So we test with a
-    // question that mentions Drive while answer says we use Teams.
-    const t2 = [
-      {
-        category: 'access',
-        question: 'Do you use Drive?',
-        answer: 'We use OneDrive, not Drive.',
-      },
-    ];
     const findings1 = diffAgainstTranscript([codexAgent], transcript);
-    const findings2 = diffAgainstTranscript([codexAgent], t2);
-    // For transcript 1: answer contains "slack" so MISSING fires
-    // (correctly — agent did claim Slack via the negation). That's
-    // a limitation of the substring matcher; out of scope here.
-    // The key invariant: behavior does not depend on "we use" being
-    // treated as affirmative.
+    // AAP-125 (S9) update: "not Slack" is a NEGATED mention, so Slack is
+    // NOT credited as a declared service and MISSING does NOT fire. Pre-
+    // AAP-125 the flat substring scan saw "slack" inside "not Slack" and
+    // wrongly raised MISSING; the round-5 test explicitly documented that
+    // as a known "limitation of the substring matcher" — the negation
+    // heuristic now fixes it. The round-5 invariant this test guards is
+    // unchanged: behaviour must not depend on "we use" being spliced as an
+    // affirmative (it isn't — the only reason Slack appears at all is the
+    // answer text, and that mention is negated).
     const missingSlack = findings1.find(
       (f) => f.kind === 'MISSING' && f.serverName === 'slack',
     );
-    expect(missingSlack).toBeDefined();
-    // For transcript 2: answer doesn't contain "drive" (only "OneDrive"
-    // — substring includes "drive"). So this stays as MISSING regardless.
-    // The point of this regression: we verify that the SHORT pure
-    // affirmative path is what was tightened.
-    void findings2;
+    expect(missingSlack).toBeUndefined();
   });
 
   it('Codex round 4 P2: short affirmative does NOT cause MISSING false positives for unrelated services in the same prompt', () => {

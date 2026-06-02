@@ -272,3 +272,126 @@ describe('diffAgainstTranscript — MISSING gated on REST/env evidence (G8c)', (
     expect(findings.filter((f) => f.kind === 'MISSING' && f.serverName === 'slack')).toEqual([]);
   });
 });
+
+/**
+ * AAP-125 (S9) — negation-aware MISSING extraction. A service NAMED inside
+ * a negative / absence statement (named as something the agent does NOT
+ * use) must not raise a false "MISSING". A genuine positive mention of an
+ * absent service still flags. Live failure that motivated this: an agent's
+ * Q30 answer "I found NO integration with an incident tool, ticketing
+ * system, PagerDuty/Opsgenie, Linear/Jira, ..." produced a spurious
+ * "MISSING jira" because the flat substring scan saw "jira" with no regard
+ * for the leading negation governing the whole list.
+ */
+describe('diffAgainstTranscript — negation-aware MISSING (AAP-125 S9)', () => {
+  // No MCP servers, no plugins, no env evidence anywhere. So if a keyword
+  // is treated as a positive mention, it WILL flag MISSING; the only thing
+  // that can suppress it is the negation heuristic.
+  const bareAgent: DiscoveredAgent = {
+    runtime: 'codex',
+    configPath: '/home/me/.codex/config.toml',
+    mcpServers: [],
+  };
+
+  const missingNames = (transcript: { category: string; question: string; answer: string }[]) =>
+    diffAgainstTranscript([bareAgent], transcript)
+      .filter((f) => f.kind === 'MISSING')
+      .map((f) => f.serverName);
+
+  it('the exact live Q30 negated-list wording produces NO MISSING for jira (or linear)', () => {
+    const transcript = [
+      {
+        category: 'systems',
+        question:
+          'Q30. Do you integrate with any incident or ticketing tools (PagerDuty, Opsgenie, Linear, Jira)?',
+        answer:
+          'I found NO integration with an incident tool, ticketing system, PagerDuty/Opsgenie, Linear/Jira, or any on-call escalation service.',
+      },
+    ];
+    const names = missingNames(transcript);
+    expect(names).not.toContain('jira');
+    // every item of the negated list is negated — linear is also a
+    // canonical keyword sitting in the same list and must stay silent.
+    expect(names).not.toContain('linear');
+  });
+
+  it('does not flag any item of a negation-introduced list of tools', () => {
+    const transcript = [
+      {
+        category: 'tools',
+        question: 'Which messaging / CRM tools?',
+        answer:
+          'There is no integration with slack, notion, hubspot, or salesforce in this agent.',
+      },
+    ];
+    const names = missingNames(transcript);
+    for (const kw of ['slack', 'notion', 'hubspot', 'salesforce']) {
+      expect(names).not.toContain(kw);
+    }
+  });
+
+  it('suppresses "I do not use X" / "don\'t use X" / "not using X" shapes', () => {
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'I do not use jira.' },
+    ])).not.toContain('jira');
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: "We don't use slack here." },
+    ])).not.toContain('slack');
+    // Smart (curly) apostrophe — transcripts routinely carry these.
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'We don’t use slack here.' },
+    ])).not.toContain('slack');
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'We are not using salesforce at all.' },
+    ])).not.toContain('salesforce');
+  });
+
+  it('suppresses postfix "X is not configured / not present / not wired / absent" shapes', () => {
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'jira is not configured.' },
+    ])).not.toContain('jira');
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'the notion integration is not set up.' },
+    ])).not.toContain('notion');
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'sentry is absent from this workspace.' },
+    ])).not.toContain('sentry');
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'the hubspot connector is not wired.' },
+    ])).not.toContain('hubspot');
+  });
+
+  it('STILL flags a genuine positive mention of an absent service ("we use X")', () => {
+    expect(missingNames([
+      { category: 'tools', question: 'Tools?', answer: 'We use jira for ticketing.' },
+    ])).toContain('jira');
+    expect(missingNames([
+      { category: 'systems', question: 'Systems?', answer: 'we push leads into salesforce.' },
+    ])).toContain('salesforce');
+  });
+
+  it('does not over-suppress: a positive mention in one clause survives a negation in another', () => {
+    // "we don't use slack but we do use jira" — slack negated, jira positive.
+    const names = missingNames([
+      {
+        category: 'tools',
+        question: 'Messaging + ticketing?',
+        answer: "We don't use slack but we do use jira for everything.",
+      },
+    ]);
+    expect(names).not.toContain('slack');
+    expect(names).toContain('jira');
+  });
+
+  it('a positive mention in a separate sentence still flags despite an earlier negation', () => {
+    const names = missingNames([
+      {
+        category: 'tools',
+        question: 'Tools?',
+        answer: 'We have no slack integration. But notion is where all our docs live and we write to it daily.',
+      },
+    ]);
+    expect(names).not.toContain('slack');
+    expect(names).toContain('notion');
+  });
+});
