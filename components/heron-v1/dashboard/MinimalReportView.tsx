@@ -41,6 +41,13 @@ import type {
   ReportSeverityBand,
   VerdictSnapshot,
 } from '@/src/report/types';
+import {
+  frameworkLens,
+  lensFrameworks,
+  type FrameworkLens,
+} from '@/src/report/compliance-lens';
+import type { ControlResult as LensSourceControlResult } from '@/src/compliance/control-catalog';
+import type { TypedRegulatoryFlag } from '@/src/compliance/mapper';
 
 // ─── Minimal types we read from reportJson ──────────────────────────────
 
@@ -111,6 +118,11 @@ interface MinimalReportJson {
       // accordion so a reviewer can read the reasoning, not just the verdict.
       rationale?: string;
       evidenceRefs?: Array<{ kind?: string; ref?: string }>;
+      // AAP-118 (S3): the honest 4-bucket classification, denormalised onto
+      // each result by the mapper. Drives the AAP-121 (S5) lens: only
+      // `verifiable` + `self-attested` controls are "active" (shown); the two
+      // `oos-*` buckets are an out-of-scope COUNT only.
+      bucket?: 'verifiable' | 'self-attested' | 'oos-operator-artifact' | 'oos-not-verifiable';
     }>;
     mandatory?: unknown;
     voluntary?: unknown;
@@ -118,6 +130,12 @@ interface MinimalReportJson {
       framework: string;
       severity?: string;
       frameworkId?: string;
+      // AAP-31: control IDs this self-report flag activated.
+      controlIds?: string[];
+      // AAP-120 (S2): every prose flag is self-attested by construction. The
+      // lens reads this to count self-attested controls per framework.
+      selfAttested?: boolean;
+      triggeredBy?: string;
     }>;
   };
   localAgentDiscovery?: unknown;
@@ -2627,14 +2645,33 @@ function ComplianceBlock({
     if (initialOpen) setOpen(true);
   }, [initialOpen]);
   if (!rc) return null;
-  const frameworks = (rc.frameworksActivated || []) as string[];
-  const controlResults = rc.controlResults || [];
-  const partials = controlResults.filter((c) => c.verdict === 'partial').length;
-  const fails = controlResults.filter(
-    (c) => c.verdict === 'fail' && (c.severity === 'critical' || c.severity === 'high'),
-  ).length;
-  // The "all" array of flags is the prose engine's signal count.
-  const flagsCount = (rc.all || []).length;
+  // AAP-121 (S5): the lens is driven by the SHARED projection
+  // (src/report/compliance-lens.ts) so the dashboard and the markdown report
+  // cannot drift (AAP-108). The wire types are structurally compatible with the
+  // projection's `ControlResult` / `TypedRegulatoryFlag` inputs — it reads
+  // frameworkId / controlId / verdict / bucket (S3) and selfAttested /
+  // controlIds (S2) — so a cast is honest here.
+  const controlResults = (rc.controlResults || []) as unknown as LensSourceControlResult[];
+  const flags = (rc.all || []) as unknown as TypedRegulatoryFlag[];
+  // Frameworks that have at least one ACTIVE control (verifiable or
+  // self-attested), mandatory-first. A framework with only out-of-scope
+  // controls is not carded.
+  const frameworkIds = lensFrameworks(controlResults, flags);
+  const lenses = frameworkIds.map((fwId) => frameworkLens(fwId, controlResults, flags));
+  // State-based roll-up for the collapsed header — summed across active
+  // frameworks. No "prose only" special case: every framework is one typed
+  // path now.
+  const rollup = lenses.reduce(
+    (acc, l) => ({
+      verified: acc.verified + l.counts.verified,
+      fail: acc.fail + l.counts.fail,
+      partial: acc.partial + l.counts.partial + l.counts.unverified,
+      selfAttested: acc.selfAttested + l.counts.selfAttested,
+      outOfScope: acc.outOfScope + l.counts.outOfScope,
+    }),
+    { verified: 0, fail: 0, partial: 0, selfAttested: 0, outOfScope: 0 },
+  );
+  const hasAny = lenses.length > 0;
 
   return (
     <section
@@ -2676,19 +2713,15 @@ function ComplianceBlock({
             Compliance lens
           </span>
           <span style={{ fontSize: 13, color: '#18181b' }}>
-            {frameworks.length} frameworks activated
-            {controlResults.length > 0 && (
+            {lenses.length} framework{lenses.length === 1 ? '' : 's'} addressed
+            {hasAny && (
               <>
                 {' · '}
-                {partials} controls partial
+                {rollup.verified} verified
                 {' · '}
-                {fails} critical fails
-              </>
-            )}
-            {flagsCount > 0 && controlResults.length === 0 && (
-              <>
+                {rollup.selfAttested} self-attested
                 {' · '}
-                {flagsCount} signals from prose engine
+                {rollup.outOfScope} out of scope
               </>
             )}
           </span>
@@ -2699,27 +2732,35 @@ function ComplianceBlock({
       </button>
       {open && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
-          {/* Fix 4: per-framework accordion. Click a card → show its
-              control results (filtered to ones that fired — skip
-              not-applicable). One card expanded at a time. */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {frameworks.map((fwId) => (
-              <FrameworkCard
-                key={fwId}
-                fwId={fwId}
-                controlResults={controlResults}
-                signals={rc.all || []}
-                expanded={expandedFw === fwId}
-                onToggle={() => setExpandedFw(expandedFw === fwId ? null : fwId)}
-              />
-            ))}
-          </div>
+          {/* AAP-121 (S5): per-framework lens cards. Header counts by ACTUAL
+              state (verified / fail / partial / self-attested) + an out-of-
+              scope COUNT; on expand, ONLY active controls are listed (verified
+              -> partial -> self-attested). Out-of-scope is a count, never a
+              list. One card expanded at a time. */}
+          {hasAny ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {lenses.map((lens) => (
+                <FrameworkCard
+                  key={lens.frameworkId}
+                  lens={lens}
+                  expanded={expandedFw === lens.frameworkId}
+                  onToggle={() =>
+                    setExpandedFw(expandedFw === lens.frameworkId ? null : lens.frameworkId)
+                  }
+                />
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: 12.5, color: '#71717a', margin: 0 }}>
+              No active controls from current signals.
+            </p>
+          )}
           <p style={{ marginTop: 14, fontSize: 11.5, color: '#71717a', lineHeight: 1.6 }}>
-            Verified = deterministic evidence matches the agent&apos;s declaration. Partial = a
-            typed detector found a relevant signal or applicable obligation, but Heron cannot
-            prove the control is fully satisfied (e.g. documentation or an attestation is still
-            required). Out-of-scope controls are hidden by default — toggle in each card to
-            include them.
+            Some controls can earn a clean <strong>verified</strong>; others only ever{' '}
+            <strong>warn</strong> (the deterministic-flag set), and{' '}
+            <strong>self-attested</strong> controls are the agent&apos;s own answers, not
+            deterministic verdicts. Out-of-scope controls need a corporate artifact or an
+            external probe Heron can&apos;t reach in an interview, so they are a count only.
           </p>
         </div>
       )}
@@ -2735,31 +2776,29 @@ export type ControlResult = NonNullable<
   NonNullable<MinimalReportJson['regulatoryCompliance']>['controlResults']
 >[number];
 
+/**
+ * AAP-121 (S5) — per-framework lens card. Driven entirely by the shared
+ * `FrameworkLens` projection (no inline counting), so it stays in lockstep with
+ * the markdown report. Header counts by ACTUAL state (verified / fail /
+ * partial / self-attested); the expanded body lists ONLY active controls, in
+ * the projection's order (verified -> partial -> self-attested). Out-of-scope
+ * is a COUNT in the header, never a list (per Ilya 2026-06-02) — there is no
+ * toggle and no "prose only" branch anymore.
+ */
 function FrameworkCard({
-  fwId,
-  controlResults,
-  signals,
+  lens,
   expanded,
   onToggle,
 }: {
-  fwId: string;
-  controlResults: ControlResult[];
-  signals: NonNullable<NonNullable<MinimalReportJson['regulatoryCompliance']>['all']>;
+  lens: FrameworkLens;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const [showOutOfScope, setShowOutOfScope] = useState(false);
-  const fwResults = controlResults.filter((c) => c.frameworkId === fwId);
-  const fwPartial = fwResults.filter((r) => r.verdict === 'partial').length;
-  const fwVerified = fwResults.filter((r) => r.verdict === 'verified').length;
-  const fwFail = fwResults.filter((r) => r.verdict === 'fail').length;
-  const fwOos = fwResults.filter((r) => r.verdict === 'not-applicable').length;
-  const fwSignals = signals.filter((f) => f.frameworkId === fwId).length;
-  const hasControlData = fwResults.length > 0;
-  const visibleControls = fwResults
-    .filter((r) => (showOutOfScope ? true : r.verdict !== 'not-applicable'))
-    .slice()
-    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+  const { counts, controls } = lens;
+  // `partial` in the header folds in `unverified` verifiable controls (evidence
+  // absent) so the reader sees one "needs evidence" figure; both still list
+  // individually below with their own verdict badge.
+  const partialish = counts.partial + counts.unverified;
 
   return (
     <div
@@ -2772,7 +2811,6 @@ function FrameworkCard({
       <button
         type="button"
         onClick={onToggle}
-        disabled={!hasControlData}
         style={{
           display: 'flex',
           width: '100%',
@@ -2782,70 +2820,47 @@ function FrameworkCard({
           border: 'none',
           padding: '10px 14px',
           textAlign: 'left',
-          cursor: hasControlData ? 'pointer' : 'default',
+          cursor: 'pointer',
         }}
       >
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {hasControlData && (
-            <span style={{ color: '#a1a1aa', fontSize: 11 }}>{expanded ? '▼' : '▸'}</span>
-          )}
+          <span style={{ color: '#a1a1aa', fontSize: 11 }}>{expanded ? '▼' : '▸'}</span>
           <span style={{ fontSize: 13, fontWeight: 600, color: '#18181b' }}>
-            {FRAMEWORK_LABELS[fwId] || fwId}
+            {FRAMEWORK_LABELS[lens.frameworkId] || lens.frameworkId}
+          </span>
+          <span style={{ fontSize: 11, color: '#a1a1aa' }}>
+            {counts.activeShown} of ~{counts.publishedControlCount}
           </span>
         </span>
         <span style={{ fontSize: 11.5, color: '#52525b' }}>
-          {hasControlData ? (
-            <>
-              {fwVerified} verified · {fwPartial} partial · {fwFail} fail
-              {fwOos > 0 && (
-                <span style={{ marginLeft: 6, color: '#a1a1aa' }}>· {fwOos} N/A</span>
-              )}
-            </>
-          ) : (
-            <>{fwSignals} signals (prose only)</>
-          )}
+          {counts.verified} verified · {counts.fail} fail · {partialish} partial ·{' '}
+          {counts.selfAttested} self-attested
+          <span style={{ marginLeft: 6, color: '#a1a1aa' }}>
+            · {counts.outOfScope} out of scope
+          </span>
         </span>
       </button>
-      {expanded && hasControlData && (
-        <div style={{ padding: '0 14px 12px', borderTop: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '6px 0' }}>
-            {fwOos > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowOutOfScope((v) => !v)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  padding: 0,
-                  fontSize: 11,
-                  color: '#1d4ed8',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                {showOutOfScope ? `Hide ${fwOos} out-of-scope` : `Show ${fwOos} out-of-scope`}
-              </button>
-            )}
-          </div>
-          {visibleControls.length === 0 ? (
+      {expanded && (
+        <div style={{ padding: '6px 14px 12px', borderTop: '1px solid #e5e7eb' }}>
+          {controls.length === 0 ? (
             <p style={{ fontSize: 12, color: '#71717a', margin: '4px 0 0' }}>
-              No applicable controls fired for this framework.
+              No active controls for this framework.
             </p>
           ) : (
             <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {visibleControls.map((c, i) => (
+              {controls.map((c, i) => (
                 <ControlRow key={c.controlId + '-' + i} control={c} />
               ))}
             </ul>
           )}
+          <p style={{ marginTop: 8, fontSize: 11, color: '#a1a1aa', margin: '8px 0 0' }}>
+            {counts.outOfScope} more out of scope — needs a corporate artifact or an external
+            probe Heron can&apos;t reach in an interview.
+          </p>
         </div>
       )}
     </div>
   );
-}
-
-function severityRank(s: ControlResult['severity']): number {
-  return s === 'critical' ? 4 : s === 'high' ? 3 : s === 'medium' ? 2 : s === 'low' ? 1 : 0;
 }
 
 // AAP-105 F4 — collapse a raw evidenceRef string to a short, readable
@@ -2877,7 +2892,18 @@ export function shortEvidenceLabel(ref: string): string {
   return key;
 }
 
-export function ControlRow({ control }: { control: ControlResult }) {
+/**
+ * Row prop: accepts both the raw JSON `ControlResult` (verdict ∈ the 5 wire
+ * states) and the AAP-121 `LensControl` (which adds the `self-attested`
+ * sentinel verdict for agent self-reports). Widening here lets the lens card
+ * pass `LensControl`s straight through while the existing direct-mount tests
+ * keep passing `ControlResult`.
+ */
+type ControlRowControl = Omit<ControlResult, 'verdict'> & {
+  verdict: ControlResult['verdict'] | 'self-attested';
+};
+
+export function ControlRow({ control }: { control: ControlRowControl }) {
   const verdictPalette =
     control.verdict === 'verified'
       ? { bg: '#f0fdf4', ink: '#15803d' }
@@ -2887,7 +2913,12 @@ export function ControlRow({ control }: { control: ControlResult }) {
           ? { bg: '#fef9c3', ink: '#92400e' }
           : control.verdict === 'not-applicable'
             ? { bg: '#f4f4f5', ink: '#71717a' }
-            : { bg: '#eff6ff', ink: '#1d4ed8' };
+            : control.verdict === 'self-attested'
+              ? // Agent self-report — a claim, not a deterministic verdict.
+                // Slate/violet to read distinctly from the verified-green and
+                // partial-amber deterministic states.
+                { bg: '#f5f3ff', ink: '#6d28d9' }
+              : { bg: '#eff6ff', ink: '#1d4ed8' };
   const sevPalette =
     control.severity === 'critical'
       ? { bg: '#7f1d1d', ink: '#ffffff' }

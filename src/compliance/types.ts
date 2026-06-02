@@ -81,6 +81,23 @@ export interface Framework {
   summary?: string;
   /** Primary source URL: statutory text, regulatory page, or official standard. Required for audit trail. */
   primarySource: string;
+  /**
+   * AAP-121 (S5 of AAP-117) — the approximate PUBLISHED control count for the
+   * framework: the size of its full authoritative control universe, NOT the
+   * subset Heron wires today. Drives the honest compliance-lens out-of-scope
+   * figure: `publishedControlCount - (active controls Heron surfaces)`, so the
+   * header reads "Heron addresses N of ~104, the rest out of scope" rather than
+   * only counting the handful of wired oos controls.
+   *
+   * These are deliberately round "~" figures (the published catalogs are not
+   * all crisply enumerable — the EU AI Act is articles + Annex provisions, GDPR
+   * is articles, AIUC-1/ISO/NIST are control/clause lists). The lens renders
+   * them with a "~" prefix to signal that.
+   *
+   * Sourced 2026-06-02 from the published frameworks; reconciled against
+   * `framework-buckets-honest-2026-06-02.md`.
+   */
+  publishedControlCount: number;
 }
 
 // ─── EU AI Act classification ───────────────────────────────────────────────
