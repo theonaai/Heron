@@ -50,6 +50,15 @@ import {
 } from '@/src/report/compliance-lens';
 import type { ControlResult as LensSourceControlResult } from '@/src/compliance/control-catalog';
 import type { TypedRegulatoryFlag } from '@/src/compliance/mapper';
+// AAP-126 (S10): the systems-table "Verified?" glyph is driven from REAL
+// per-system OAuth introspection. We map a system to its connector exactly
+// the way the declared-baseline builder does (`connectorForSystemId`) and
+// compare the system's OWN declared scopes against that connector's
+// introspection result using the SAME shared scope-token canonicalizer the
+// differ / declared baseline / DS floor use, so the dashboard glyph cannot
+// drift from the backend comparison.
+import { connectorForSystemId } from '@/src/verification/declared-baseline';
+import { canonicalizeScopeToken } from '@/src/verification/scope-canonical';
 
 // ─── Minimal types we read from reportJson ──────────────────────────────
 
@@ -153,7 +162,21 @@ interface MinimalReportJson {
     // `introspection-error: ... invalid_token ...`). AAP-110 reads it so the
     // SLF OAuth mitigation is state-aware (attempted + rejected -> refresh the
     // token, not "enable introspection").
-    sources?: Array<{ connector?: string; verdict?: string; errorMessage?: string }>;
+    //
+    // AAP-126 (S10): `actualScopes` + `diffs` are read by the systems table's
+    // "Verified?" column to drive the per-system glyph from REAL introspection
+    // evidence (✓ only when the system's own declared scope is confirmed; ⚠
+    // when it shows up in a diff; — when the connector was not introspected or
+    // the system declared no OAuth scope). Mirrors
+    // `OAuthScopeVerificationSourceResult` in lib/report-json.ts; both fields
+    // optional so legacy/partial blobs degrade to "—" rather than throw.
+    sources?: Array<{
+      connector?: string;
+      verdict?: string;
+      errorMessage?: string;
+      actualScopes?: Array<{ service?: string; scope?: string }>;
+      diffs?: Array<{ kind?: string; service?: string; scope?: string }>;
+    }>;
   };
 }
 
@@ -376,43 +399,119 @@ function hasIrreversibleWrites(system: SystemAssessment): boolean {
   return (system.writeOperations || []).some((w) => !w.reversible);
 }
 
-// ─── Per-system finding lookup ────────────────────────────────────────
+// ─── AAP-126 (S10): per-system "Verified?" status ─────────────────────
 //
-// Maps a system row to the count of verified findings that touch it. The
-// finding shape doesn't carry an explicit systemId, so we match on title /
-// description containing the systemId stem. Conservative — used only to
-// render a ✓ / ⚠ glyph in the Verified? column.
+// THE BUG THIS REPLACES. The old `findingsTouchingSystem` rendered ✓ for ANY
+// system that had no VERIFIED finding whose title/description text happened to
+// mention the system-id stem. Two ways that was dishonest in a column titled
+// "Verified?":
+//   (1) ✓ showed for systems that were NEVER introspected at all (gamma /
+//       telegram / wellkid had no OAuth verification, yet read as "verified").
+//   (2) the short "google" stem matched the text of findings for EVERY
+//       google-* system, including `google-gemini` (which has no OAuth scopes),
+//       so an unrelated finding could flip an unverified system to ⚠.
+//
+// THE FIX. Drive the glyph from REAL per-system verification evidence:
+//   1. Map the system to its OAuth connector the SAME way the declared-baseline
+//      builder does (`connectorForSystemId`). No connector -> not verifiable.
+//   2. Find that connector's introspection result in `oauthScopeVerification`.
+//      Not introspected (no matching source) -> "—" Not verified.
+//   3. Canonicalize the system's OWN declared scopes (`scopesRequested`) via the
+//      shared `canonicalizeScopeToken` (so a full Google scope URL matches the
+//      short tokeninfo form the connector emits — same helper as the differ).
+//        - No declared OAuth scope            -> "—" Not verified.
+//        - A declared scope appears in `diffs` -> ⚠ Discrepancy (its own access
+//          is implicated: a `missing` it declared-but-lacks, or an `extra`
+//          granted-but-undeclared scope it nonetheless lists).
+//        - >=1 declared scope AND every declared scope is in `actualScopes`
+//          with no diff hit -> ✓ Verified.
+//        - otherwise (declared scope neither confirmed nor flagged) -> "—".
+//
+// Conservative by construction: ✓ ONLY when the system's own declared access
+// was deterministically confirmed against introspection. When in doubt we show
+// the neutral "—", never a misleading ✓.
 
-function findingsTouchingSystem(
-  systemId: string,
-  verdict?: VerdictSnapshot,
-): number {
-  if (!verdict?.findings) return 0;
-  // Build a small set of tokens to match against: the full systemId,
-  // the head (e.g. "google") and the tail (e.g. "drive", "sheets").
-  // Conservative — these are short tokens but findings titles are
-  // short too so the false-positive risk is low.
-  const id = systemId.toLowerCase();
-  const parts = id.split(/[-_]/);
-  const tokens = new Set<string>([id]);
-  parts.forEach((p) => {
-    if (p.length >= 4) tokens.add(p);
-  });
-  return verdict.findings.filter((f) => {
-    if (f.evidenceSource === 'SLF') return false; // verified only
-    const blob = `${f.title} ${f.description}`.toLowerCase();
-    for (const t of tokens) {
-      // Match on word-ish boundary so "drive" doesn't also match
-      // "google-drive" via the stem.
-      const re = new RegExp(`\\b${escapeRegex(t)}\\b`);
-      if (re.test(blob)) return true;
-    }
-    return false;
-  }).length;
+export type SystemVerificationState = 'verified' | 'discrepancy' | 'unverified';
+
+export interface SystemVerificationStatus {
+  state: SystemVerificationState;
+  glyph: '✓' | '⚠' | '—';
+  /** Hex color for the glyph (green / orange / neutral grey). */
+  color: string;
+  /** Per-cell tooltip explaining what the glyph means. */
+  title: string;
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NOT_VERIFIED_STATUS: SystemVerificationStatus = {
+  state: 'unverified',
+  glyph: '—',
+  color: '#a1a1aa',
+  title: 'No deterministic verification (system declares no OAuth scope, or its connector was not introspected)',
+};
+
+/** Minimal shape this helper reads off `oauthScopeVerification`. */
+type OAuthSourceLike = NonNullable<
+  NonNullable<MinimalReportJson['oauthScopeVerification']>['sources']
+>[number];
+
+/**
+ * Resolve the "Verified?" status for one system row from real OAuth-scope
+ * introspection evidence. Pure + exported so the matching logic is unit-tested
+ * directly (the project's vitest setup has no DOM).
+ */
+export function systemVerificationStatus(
+  system: Pick<SystemAssessment, 'systemId' | 'scopesRequested'>,
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'],
+): SystemVerificationStatus {
+  const connector = connectorForSystemId(system.systemId || '');
+  if (!connector) return NOT_VERIFIED_STATUS;
+
+  const sources: OAuthSourceLike[] = oauthScopeVerification?.sources ?? [];
+  const source = sources.find((s) => s.connector === connector);
+  if (!source) return NOT_VERIFIED_STATUS;
+
+  // The system's OWN declared scopes, canonicalized to the short comparison
+  // form (full Google URL -> short tokeninfo name) the connector emits.
+  const declared = (Array.isArray(system.scopesRequested) ? system.scopesRequested : [])
+    .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    .map((s) => canonicalizeScopeToken(s));
+  if (declared.length === 0) return NOT_VERIFIED_STATUS;
+
+  // Canonicalize both sides of the comparison the same way.
+  const actualSet = new Set(
+    (source.actualScopes ?? [])
+      .map((a) => (typeof a?.scope === 'string' ? canonicalizeScopeToken(a.scope) : ''))
+      .filter((s) => s.length > 0),
+  );
+  const diffSet = new Set(
+    (source.diffs ?? [])
+      .map((d) => (typeof d?.scope === 'string' ? canonicalizeScopeToken(d.scope) : ''))
+      .filter((s) => s.length > 0),
+  );
+
+  // Any of the system's OWN declared scopes implicated in a diff -> discrepancy.
+  if (declared.some((tok) => diffSet.has(tok))) {
+    return {
+      state: 'discrepancy',
+      glyph: '⚠',
+      color: '#c2410c',
+      title: 'Scope discrepancy: this system’s declared OAuth scope does not match what introspection found',
+    };
+  }
+
+  // Every declared scope confirmed in the actual introspection result -> verified.
+  if (declared.every((tok) => actualSet.has(tok))) {
+    return {
+      state: 'verified',
+      glyph: '✓',
+      color: '#15803d',
+      title: 'Verified against OAuth introspection: every declared scope was confirmed granted',
+    };
+  }
+
+  // Declared scope neither confirmed nor flagged (e.g. partial introspection
+  // read). Stay neutral rather than imply a ✓ we cannot back.
+  return NOT_VERIFIED_STATUS;
 }
 
 // ─── AAP-107: Findings empty-state copy (three distinct states) ────────
@@ -1215,9 +1314,13 @@ function TriggerValue({ value }: { value: string }) {
 function SystemsBlock({
   systems,
   verdict,
+  oauthScopeVerification,
 }: {
   systems: SystemAssessment[];
   verdict?: VerdictSnapshot;
+  // AAP-126 (S10): threaded down so each row's "Verified?" glyph reads real
+  // per-system OAuth introspection evidence.
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
 }) {
   if (!systems || systems.length === 0) return null;
   return (
@@ -1261,10 +1364,38 @@ function SystemsBlock({
         </thead>
         <tbody>
           {systems.map((s, i) => (
-            <SystemRow key={s.systemId + '-' + i} system={s} verdict={verdict} />
+            <SystemRow
+              key={s.systemId + '-' + i}
+              system={s}
+              verdict={verdict}
+              oauthScopeVerification={oauthScopeVerification}
+            />
           ))}
         </tbody>
       </table>
+      {/* AAP-126 (S10): legend so ✓ / ⚠ / — read clearly. The "Verified?"
+          column is deterministic OAuth-scope evidence, not a self-report. */}
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 11,
+          color: '#71717a',
+          lineHeight: 1.5,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '4px 14px',
+        }}
+      >
+        <span>
+          <span style={{ color: '#15803d', fontWeight: 600 }}>✓</span> Verified against OAuth introspection
+        </span>
+        <span>
+          <span style={{ color: '#c2410c', fontWeight: 600 }}>⚠</span> Scope discrepancy
+        </span>
+        <span>
+          <span style={{ color: '#a1a1aa', fontWeight: 600 }}>—</span> No deterministic verification
+        </span>
+      </div>
     </section>
   );
 }
@@ -1272,9 +1403,11 @@ function SystemsBlock({
 function SystemRow({
   system,
   verdict,
+  oauthScopeVerification,
 }: {
   system: SystemAssessment;
   verdict?: VerdictSnapshot;
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
 }) {
   // Screenshot helper — `?expandSystem=<systemId>` pre-expands that row.
   // Used by the headless Chrome capture script. Lives on the client only.
@@ -1304,12 +1437,14 @@ function SystemRow({
   // matching persisted row.
   const severity = systemSeverity(system, verdict);
   const irreversible = hasIrreversibleWrites(system);
-  const findingsCount = findingsTouchingSystem(system.systemId, verdict);
-  const verifiedGlyph = findingsCount > 0 ? '⚠' : '✓';
-  const verifiedColor = findingsCount > 0 ? '#c2410c' : '#15803d';
-  const verifiedTitle = findingsCount > 0
-    ? `${findingsCount} verified finding(s) touch this system`
-    : 'No verified discrepancies for this system';
+  // AAP-126 (S10): "Verified?" glyph from REAL per-system OAuth introspection
+  // (not finding-text overmatch). ✓ only when this system's own declared scope
+  // was deterministically confirmed; ⚠ on a scope discrepancy; "—" when there
+  // is no deterministic verification for it.
+  const verification = systemVerificationStatus(system, oauthScopeVerification);
+  const verifiedGlyph = verification.glyph;
+  const verifiedColor = verification.color;
+  const verifiedTitle = verification.title;
 
   // AAP-105 C2: surface a short canonical name (e.g. "Google Sheets")
   // as the primary row label, with the raw kebab id shown beneath in
@@ -3233,7 +3368,11 @@ export default function MinimalReportView({
         oauthScopeVerification={reportJson.oauthScopeVerification}
       />
       <PurposeBlock json={reportJson} />
-      <SystemsBlock systems={reportJson.systems || []} verdict={reportJson.verdict} />
+      <SystemsBlock
+        systems={reportJson.systems || []}
+        verdict={reportJson.verdict}
+        oauthScopeVerification={reportJson.oauthScopeVerification}
+      />
       <CredentialsBlock discovery={reportJson.localAgentDiscovery} />
       <FindingsBlock
         verdict={reportJson.verdict}
