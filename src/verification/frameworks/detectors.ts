@@ -782,7 +782,13 @@ export function detectGDPR_Article5(sig: VerificationSignals): FrameworkControl 
 // ─── Detector: NIST AI RMF MEASURE / MANAGE ───────────────────────────────
 
 const NIST_MEASURE_NAME = 'MEASURE (2.1, 2.2, 2.3)';
-const NIST_MANAGE_NAME = 'MANAGE (2.1, 4.1)';
+// AAP-134 (B11 sub-cleanup): the old name "MANAGE (2.1, 4.1)" cited three NIST
+// subcategories (and combined with the controlId "MANAGE 1.2" in the render
+// read as "MANAGE 1.2 (2.1, 4.1)"). The detector represents the single
+// documented risk-treatment subcategory MANAGE 1.2 ("Treat and respond to
+// identified risks") — relabel to that one subcategory, mirroring the
+// single-citation style of ARTICLE_12_NAME / ARTICLE_14_NAME.
+const NIST_MANAGE_NAME = 'Risk Treatment (MANAGE 1.2)';
 
 export function detectNIST_Measure(sig: VerificationSignals): FrameworkControl {
   if (sig.actualInventories.length === 0 && sig.diffs.length === 0) {

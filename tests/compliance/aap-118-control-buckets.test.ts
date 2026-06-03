@@ -103,6 +103,12 @@ describe('AAP-118 honest move: company-artifact controls move OUT of self-attest
     ['iso-42001', 'A.7.5', 'data-provenance records'],
     ['nist-ai-rmf', 'GOVERN 1.1', 'legal-requirements register'],
     ['nist-ai-rmf', 'MANAGE 2.4', 'deactivation-mechanism documentation'],
+    // AAP-134: approval-chain-only controls (verdict driven solely by
+    // sig.approvalChain, no agent-observable evidence) moved verifiable →
+    // oos-operator-artifact, joining the EU Art 14(4)(d) decision.
+    ['aiuc-1', 'E004', 'assigned accountability — approval-chain-only'],
+    ['aiuc-1', 'E015.2', 'system activity logging — approval-chain-only'],
+    ['nist-ai-rmf', 'MANAGE 1.2', 'risk treatment — approval-chain-only'],
   ];
 
   for (const [frameworkId, controlId, label] of operatorArtifactControls) {
@@ -140,10 +146,11 @@ describe('AAP-118 honest move: phantom AIUC-1 sub-ids are not verifiable', () =>
   });
 
   it('the wired AIUC-1 verifiable set is exactly the real deterministic-detector controls', () => {
-    // Spec's real AIUC-1 verifiable set is A003, A003.3, A003.4, B006, D003,
-    // A006, A001, E004, E015.2 (9). A003 bare is not wired (only the
-    // A003.3/.4 least-privilege pair is), so the WIRED verifiable set is 8 —
-    // and contains no phantom sub-id.
+    // Spec's real AIUC-1 verifiable set was A003, A003.3, A003.4, B006, D003,
+    // A006, A001, E004, E015.2. A003 bare is not wired (only the A003.3/.4
+    // least-privilege pair is). AAP-134 moved E004 + E015.2 OUT (approval-chain-
+    // only, no agent-observable evidence → oos-operator-artifact), so the WIRED
+    // verifiable set is now 6 — and contains no phantom sub-id.
     const aiucVerifiable = new Set(
       CONTROL_CATALOG.filter(
         (e) => e.frameworkId === 'aiuc-1' && e.bucket === 'verifiable',
@@ -156,8 +163,6 @@ describe('AAP-118 honest move: phantom AIUC-1 sub-ids are not verifiable', () =>
       'A006',
       'B006',
       'D003',
-      'E004',
-      'E015.2',
     ]);
   });
 });
@@ -219,9 +224,12 @@ describe('AAP-118: per-framework bucket counts', () => {
       'oos-not-verifiable': 0,
     },
     'aiuc-1': {
-      verifiable: 8,
+      // AAP-134: E004 + E015.2 moved verifiable → oos-operator-artifact
+      // (approval-chain-only, no agent-observable evidence). So AIUC verifiable
+      // 8→6 and oos-operator-artifact 1→3.
+      verifiable: 6,
       'self-attested': 5,
-      'oos-operator-artifact': 1,
+      'oos-operator-artifact': 3,
       'oos-not-verifiable': 2,
     },
     'nist-ai-rmf': {
@@ -230,9 +238,12 @@ describe('AAP-118: per-framework bucket counts', () => {
       // reaches `verified` only because sources ran, with no declared-vs-actual
       // verdict — see tests/compliance/aap-119-iso-nist-tiering.test.ts). So
       // verifiable 5→4 and oos-operator-artifact 12→13.
-      verifiable: 4,
+      // AAP-134 then moved MANAGE 1.2 verifiable → oos-operator-artifact
+      // (approval-chain-only, no agent-observable evidence). So verifiable 4→3
+      // and oos-operator-artifact 13→14.
+      verifiable: 3,
       'self-attested': 0,
-      'oos-operator-artifact': 13,
+      'oos-operator-artifact': 14,
       'oos-not-verifiable': 2,
     },
   };
@@ -257,12 +268,14 @@ describe('AAP-118: per-framework bucket counts', () => {
     }
     expect(tot).toEqual({
       // AAP-119 (S4): MEASURE 1.1 moved verifiable → oos-operator-artifact.
-      // AAP-133: Art 14(4)(d) moved verifiable → oos-operator-artifact. Net
-      // wired totals are now verifiable 23 and oos-operator-artifact 43. The
-      // distinct-control total (79) is unchanged — both are bucket moves.
-      verifiable: 23,
+      // AAP-133: Art 14(4)(d) moved verifiable → oos-operator-artifact.
+      // AAP-134: AIUC E004 + E015.2 and NIST MANAGE 1.2 (3 approval-chain-only
+      // controls) moved verifiable → oos-operator-artifact. Net wired totals
+      // are now verifiable 20 and oos-operator-artifact 46. The distinct-control
+      // total (79) is unchanged — all are bucket moves.
+      verifiable: 20,
       'self-attested': 8,
-      'oos-operator-artifact': 43,
+      'oos-operator-artifact': 46,
       'oos-not-verifiable': 5,
     });
     const sum = COMPLIANCE_BUCKETS.reduce((acc, b) => acc + tot[b], 0);

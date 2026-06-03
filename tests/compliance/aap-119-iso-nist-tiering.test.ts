@@ -93,10 +93,15 @@ type TierRow = [
  *     produces a deterministic PARTIAL from third-party-SaaS credential names.
  *     Same mechanism that backs GDPR Art. 28 + AIUC-1 A001 (both blessed
  *     `verifiable` by the spec) ⇒ consistent `verifiable`.
- *   - MANAGE 1.2 — risk-treatment prioritisation. ARTIFACT (approval-chain
- *     record); `detectNIST_Manage` returns a deterministic verdict
- *     (verified iff chain present, else partial). Same family as AIUC-1
- *     E004 / E015.2 + EU Art. 12 / 14(4)(d) ⇒ `verifiable`.
+ * The approval-chain-only downgrades (AAP-134):
+ *   - MANAGE 1.2 — risk treatment. ARTIFACT (approval-chain record).
+ *     `detectNIST_Manage` derives its verdict SOLELY from `sig.approvalChain` —
+ *     an operator sign-off log the agent never supplies — and observes no
+ *     agent-side evidence; with no chain it degrades to PARTIAL. Same
+ *     approval-chain-only family as AIUC-1 E004 / E015.2 + EU Art. 14(4)(d),
+ *     all of which AAP-134 / AAP-133 moved to `oos-operator-artifact` so the
+ *     lens renders them as out-of-scope counts, not partial/fail rows. The
+ *     detector is left untouched; only the METADATA bucket is corrected.
  *
  * The bug-hunt row:
  *   - MEASURE 1.1 — risk-measurement-method SELECTION. `detectNIST_Measure`
@@ -128,9 +133,13 @@ const NIST_TIERS: ReadonlyArray<TierRow> = [
   ['MAP 2.1', 'ARTIFACT', true, 'verifiable', 'MCP-inventory detector → PARTIAL (deterministic)'],
   ['GOVERN 6.2', 'ARTIFACT', true, 'verifiable', 'processor detector → PARTIAL (deterministic)'],
   ['MANAGE 3.1', 'ARTIFACT', true, 'verifiable', 'processor detector → PARTIAL (deterministic)'],
-  ['MANAGE 1.2', 'ARTIFACT', true, 'verifiable', 'approval-chain detector → verified/partial (deterministic)'],
-  // ── the bug-hunt downgrade: detector is WIRED but NOT qualifying ──
+  // ── the bug-hunt downgrades: detector is WIRED but NOT qualifying ──
   ['MEASURE 1.1', 'ARTIFACT', false, 'oos-operator-artifact', 'detectNIST_Measure overclaims verified on "sources ran"; no declared-vs-actual verdict'],
+  // AAP-134: detectNIST_Manage derives its verdict SOLELY from sig.approvalChain
+  // (an operator sign-off log the agent never supplies) with no agent-observable
+  // evidence; with no chain it degrades to PARTIAL. Same approval-chain-only
+  // family as AIUC E004 / E015.2 + EU Art 14(4)(d) → oos-operator-artifact.
+  ['MANAGE 1.2', 'ARTIFACT', false, 'oos-operator-artifact', 'approval-chain-only: detectNIST_Manage reads only sig.approvalChain, no agent-observable evidence'],
   ['GOVERN 1.1', 'ARTIFACT', false, 'oos-operator-artifact', 'legal-requirements register'],
   ['GOVERN 1.7', 'ARTIFACT', false, 'oos-operator-artifact', 'decommissioning policy'],
   ['GOVERN 3.2', 'ARTIFACT', false, 'oos-operator-artifact', 'human-AI-roles policy'],
@@ -265,10 +274,14 @@ describe('AAP-119 honest invariant: an ISO/NIST verifiable bucket requires a wir
 
     it(`${frameworkId}: every wired control with a deterministic detector is bucketed verifiable`, () => {
       // The converse: a detector-backed ISO/NIST control must not hide in an
-      // oos bucket (that would be an under-claim). MEASURE 1.1 is the one
-      // detector-backed control we INTENTIONALLY move to operator-artifact
-      // because its detector does not produce a declared-vs-actual verdict —
-      // it is the documented exception.
+      // oos bucket (that would be an under-claim). Two NIST controls are the
+      // INTENTIONAL exceptions, both detector-backed but honestly
+      // oos-operator-artifact:
+      //   - MEASURE 1.1 (AAP-119): detectNIST_Measure does not produce a
+      //     declared-vs-actual verdict (verified merely because sources ran).
+      //   - MANAGE 1.2 (AAP-134): detectNIST_Manage reads ONLY sig.approvalChain
+      //     (operator artifact), with no agent-observable evidence.
+      const oosExceptions = new Set(['MEASURE 1.1', 'MANAGE 1.2']);
       const detectorBacked = new Set(
         CONTROL_CATALOG.filter(
           (e) =>
@@ -278,7 +291,7 @@ describe('AAP-119 honest invariant: an ISO/NIST verifiable bucket requires a wir
       );
       for (const controlId of detectorBacked) {
         const bucket = bucketOf(frameworkId, controlId);
-        if (frameworkId === 'nist-ai-rmf' && controlId === 'MEASURE 1.1') {
+        if (frameworkId === 'nist-ai-rmf' && oosExceptions.has(controlId)) {
           expect(bucket).toBe('oos-operator-artifact');
         } else {
           expect(
@@ -290,14 +303,18 @@ describe('AAP-119 honest invariant: an ISO/NIST verifiable bucket requires a wir
     });
   }
 
-  it('MEASURE 1.1 is the ONLY detector-backed ISO/NIST control not bucketed verifiable (no other overclaim slipped through)', () => {
+  it('only the two documented exceptions (MEASURE 1.1, MANAGE 1.2) are detector-backed ISO/NIST controls not bucketed verifiable (no other overclaim slipped through)', () => {
     const detectorBackedButNotVerifiable = CONTROL_CATALOG.filter(
       (e) =>
         (e.frameworkId === 'iso-42001' || e.frameworkId === 'nist-ai-rmf') &&
         typeof e.deterministicDetector === 'function' &&
         e.bucket !== 'verifiable',
     ).map((e) => `${e.frameworkId} :: ${e.controlId}`);
-    expect([...new Set(detectorBackedButNotVerifiable)]).toEqual([
+    // MEASURE 1.1 (AAP-119: no declared-vs-actual verdict) and MANAGE 1.2
+    // (AAP-134: approval-chain-only, no agent-observable evidence) are the two
+    // INTENTIONAL detector-backed → oos-operator-artifact controls.
+    expect([...new Set(detectorBackedButNotVerifiable)].sort()).toEqual([
+      'nist-ai-rmf :: MANAGE 1.2',
       'nist-ai-rmf :: MEASURE 1.1',
     ]);
   });
@@ -369,11 +386,11 @@ describe('AAP-119: corrected ISO/NIST wired bucket counts', () => {
     });
   });
 
-  it('nist-ai-rmf wired counts (S4: verifiable 5→4, operator-artifact 12→13 after MEASURE 1.1 downgrade)', () => {
+  it('nist-ai-rmf wired counts (S4 MEASURE 1.1 + AAP-134 MANAGE 1.2 downgrades: verifiable 5→3, operator-artifact 12→14)', () => {
     expect(distinctBucketCounts('nist-ai-rmf')).toEqual({
-      verifiable: 4,
+      verifiable: 3,
       'self-attested': 0,
-      'oos-operator-artifact': 13,
+      'oos-operator-artifact': 14,
       'oos-not-verifiable': 2,
     });
   });

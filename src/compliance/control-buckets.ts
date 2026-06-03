@@ -30,8 +30,10 @@
  *   2. The 4 phantom AIUC-1 sub-IDs (`A003.1`, `D003.1`, `D003.3`, `D003.4`)
  *      are NOT in `CONTROL_MAPPINGS` and have no detector, so they are not
  *      wired and cannot be `verifiable`. The wired AIUC-1 verifiable set is
- *      A001, A003.3, A003.4, A006, B006, D003, E004, E015.2 (A003 bare is not
- *      wired; only the A003.3/.4 least-privilege pair is).
+ *      A001, A003.3, A003.4, A006, B006, D003 (A003 bare is not wired; only the
+ *      A003.3/.4 least-privilege pair is). AAP-134 moved E004 + E015.2 OUT of
+ *      verifiable to oos-operator-artifact (approval-chain-only, no
+ *      agent-observable evidence).
  *
  * Bucket is a property of the CONTROL, not of a (findingType, control)
  * pairing — the same control id under two finding types carries the same
@@ -109,12 +111,13 @@ export const BUCKET_BY_CONTROL: Record<
   },
 
   // ── AIUC-1 ────────────────────────────────────────────────────────────────
-  // spec §AIUC-1: VERIFIABLE (9 real ids) = A003, A003.3, A003.4, B006, D003,
-  // A006, A001, E004, E015.2 (A003 bare not wired). SELF-ATTESTED
-  // (agent-observable) = A005 (Q12), B008.2 (Q14), C007 (Q10), C009 (Q10),
-  // E016 (Q10). OPERATOR-ARTIFACT = A002 (output-data policy). NOT-VERIFIABLE
-  // = B007 (CODE), F001 (PROBE). The 4 phantom sub-IDs (A003.1, D003.1/.3/.4)
-  // are absent from the wired set entirely → cannot be verifiable.
+  // spec §AIUC-1: VERIFIABLE (wired) = A003.3, A003.4, B006, D003, A006, A001
+  // (A003 bare not wired). SELF-ATTESTED (agent-observable) = A005 (Q12),
+  // B008.2 (Q14), C007 (Q10), C009 (Q10), E016 (Q10). OPERATOR-ARTIFACT = A002
+  // (output-data policy) + E004 + E015.2 (AAP-134: approval-chain-only, no
+  // agent-observable evidence — see below). NOT-VERIFIABLE = B007 (CODE), F001
+  // (PROBE). The 4 phantom sub-IDs (A003.1, D003.1/.3/.4) are absent from the
+  // wired set entirely → cannot be verifiable.
   'aiuc-1': {
     'A001': 'verifiable', // input data policy — processor detector (PARTIAL)
     'A002': 'oos-operator-artifact', // output data policy (corporate doc the agent can't see)
@@ -128,8 +131,15 @@ export const BUCKET_BY_CONTROL: Record<
     'C007': 'self-attested', // flag high-risk outputs for human review — Q10 (workflow proof is RUNTIME)
     'C009': 'self-attested', // real-time feedback + intervention — Q10
     'D003': 'verifiable', // restrict unsafe tool calls — MCP tools/list inventory
-    'E004': 'verifiable', // assigned accountability — approval chain (named approver)
-    'E015.2': 'verifiable', // log AI activity — approval chain (intact)
+    // AAP-134 (B11): detectAIUC1_E004 / detectAIUC1_E015 derive their verdict
+    // SOLELY from sig.approvalChain (an operator sign-off log the agent never
+    // supplies) and observe no agent-side evidence. On a bare agent audit they
+    // misfire — E004 FAIL/HIGH ("no approval audit trail"), E015.2 partial ("no
+    // structured approval chain"). Bucket both out-of-scope (operator artifact)
+    // like the Art 14(4)(d) decision, so the lens renders them as an
+    // out-of-scope COUNT, not a fail/partial row.
+    'E004': 'oos-operator-artifact', // approval-chain-only (no agent-observable evidence) — AAP-134
+    'E015.2': 'oos-operator-artifact', // approval-chain-only (no agent-observable evidence) — AAP-134
     'E016': 'self-attested', // AI disclosure — Q10 self-report
     'F001': 'oos-not-verifiable', // cyber misuse — PROBE (adversarial)
   },
@@ -180,7 +190,9 @@ export const BUCKET_BY_CONTROL: Record<
   // ── NIST AI RMF ────────────────────────────────────────────────────────────
   // spec §NIST AI RMF (pre-S4): VERIFIABLE (2 catalog-table rows) = MEASURE 1.1
   // + MANAGE 1.2; the live mapper ALSO fires MAP 2.1 / GOVERN 6.2 / MANAGE 3.1
-  // via the MCP-inventory + processor detectors.
+  // via the MCP-inventory + processor detectors. (S4 later downgraded MEASURE
+  // 1.1, and AAP-134 downgraded MANAGE 1.2 — both to oos-operator-artifact; see
+  // below.)
   //
   // AAP-119 (S4) — verifiability TIERS (AAP-42 vocabulary) + a skeptical
   // re-validation of S3's VERIFIABLE calls. NIST AI RMF is a governance
@@ -190,7 +202,7 @@ export const BUCKET_BY_CONTROL: Record<
   //   MAP 2.1     ARTIFACT → verifiable  (MCP-inventory detector → PARTIAL)
   //   GOVERN 6.2  ARTIFACT → verifiable  (processor detector → PARTIAL)
   //   MANAGE 3.1  ARTIFACT → verifiable  (processor detector → PARTIAL)
-  //   MANAGE 1.2  ARTIFACT → verifiable  (approval-chain detector → verified/partial)
+  //   MANAGE 1.2  ARTIFACT → oos-operator-artifact  ◀── AAP-134 (approval-chain-only)
   //   MEASURE 1.1 ARTIFACT → operator-artifact  ◀── S4 DOWNGRADE (see below)
   //   GOVERN 1.1 / 1.7 / 3.2 / 6.1, MAP 1.6 / 3.2 / 3.5 / 4.1 / 5.1,
   //   MEASURE 2.10 / 3.1, MANAGE 2.4   ARTIFACT → operator-artifact
@@ -210,14 +222,23 @@ export const BUCKET_BY_CONTROL: Record<
   // bucket is `oos-operator-artifact` (future-unlockable when an operator
   // supplies the risk-measurement methodology), consistent with the sibling
   // MEASURE rows (2.10 / 3.1). The detector is left untouched (S2's lane); only
-  // this control's METADATA bucket is corrected. The other four detector-backed
-  // NIST controls (MAP 2.1 / GOVERN 6.2 / MANAGE 3.1 / MANAGE 1.2) survive the
-  // re-validation: each produces a genuine deterministic verdict from the
-  // discovery/processor/approval-chain surface, the same mechanism that grounds
-  // the (verified-correct) GDPR Art. 28 / AIUC-1 A001 / E004 / E015.2 set.
+  // this control's METADATA bucket is corrected. The three processor/inventory
+  // detector-backed NIST controls (MAP 2.1 / GOVERN 6.2 / MANAGE 3.1) survive
+  // the re-validation: each produces a genuine deterministic verdict from the
+  // discovery/processor surface, the same mechanism that grounds the
+  // (verified-correct) GDPR Art. 28 / AIUC-1 A001 set.
+  //
+  // AAP-134 (B11): MANAGE 1.2 was bucketed `verifiable` (approval-chain
+  // detector). But detectNIST_Manage derives its verdict SOLELY from
+  // sig.approvalChain — an operator sign-off log the agent never supplies — and
+  // observes no agent-side evidence. With no chain it degrades to PARTIAL
+  // ("MANAGE process undocumented"), misfiring on every bare agent audit. Same
+  // root cause as EU Art 14(4)(d) + AIUC E004 / E015.2. So it joins the
+  // approval-chain-only family in oos-operator-artifact: the lens shows it as an
+  // out-of-scope count, not a partial row. The detector is untouched.
   'nist-ai-rmf': {
     'MEASURE 1.1': 'oos-operator-artifact', // S4 DOWNGRADE: detectNIST_Measure overclaims `verified` on "sources ran"; no declared-vs-actual verdict, so not honestly verifiable
-    'MANAGE 1.2': 'verifiable', // risk-treatment prioritisation — approval chain (deterministic)
+    'MANAGE 1.2': 'oos-operator-artifact', // AAP-134: approval-chain-only (no agent-observable evidence)
     'MAP 2.1': 'verifiable', // bundle-attached MCP-inventory detector fires (PARTIAL)
     'GOVERN 6.2': 'verifiable', // bundle-attached processor detector fires (PARTIAL)
     'MANAGE 3.1': 'verifiable', // bundle-attached processor detector fires (PARTIAL)
