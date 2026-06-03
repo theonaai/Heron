@@ -140,19 +140,22 @@ describe('control catalog representation', () => {
     }
   });
 
-  it('Phase 2 wires GDPR Article 22 + 25 detectors onto the catalog', () => {
+  it('Phase 2 wires GDPR Article 22 + 5(1)(c) detectors onto the catalog', () => {
     const art22 = findCatalogEntry({
       findingType: 'decisions-about-people',
       frameworkId: 'gdpr',
       controlId: 'Art. 22',
     });
-    const art25 = findCatalogEntry({
+    // AAP-135 (B9): the data-minimisation scope-diff detector
+    // (detectGDPR_Article5) is wired under its true citation Art. 5(1)(c),
+    // not the mislabelled Art. 25 (data protection by design).
+    const art5c = findCatalogEntry({
       findingType: 'excessive-access',
       frameworkId: 'gdpr',
-      controlId: 'Art. 25',
+      controlId: 'Art. 5(1)(c)',
     });
     expect(art22?.deterministicDetector).toBeTypeOf('function');
-    expect(art25?.deterministicDetector).toBeTypeOf('function');
+    expect(art5c?.deterministicDetector).toBeTypeOf('function');
   });
 
   it('Phase 2 wires NIST AI RMF MEASURE 1.1 + MANAGE 1.2 detectors', () => {

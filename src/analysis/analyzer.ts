@@ -133,6 +133,55 @@ function isRiskAboutOrchestrationOnly(
   return SCOPE_CREEP_RISK_PATTERN.test(text);
 }
 
+// AAP-137 (B14): reclassify a self-attested SECRETS / CREDENTIALS finding away
+// from `sensitive-data` to `credential-exposure`.
+//
+// Background. AAP-132 retyped the DETERMINISTIC `.env` secret-pattern detector
+// (discovery-detectors.ts) to `credential-exposure` so it maps to GDPR Art. 32
+// ONLY. But the ANALYZER emits a SEPARATE, self-attested secrets finding from
+// the interview transcript ("Plain workspace secrets and inactive credentials
+// increase operational exposure", renders as SLF-002). The LLM types that one
+// `sensitive-data` (its free choice from the prompt's closed enum), which drags
+// in data-protection / transparency controls that do not fit a credential-
+// hygiene gap — EU Art 50(1), GDPR Art 6, AIUC A001. The two findings are two
+// different code paths; AAP-132 only fixed the deterministic one.
+//
+// Signal. A credential / secrets vocabulary match on the risk title +
+// description, mirroring the proven `SLF_SUBCATEGORY_HINTS` classifier in
+// report/mitigation-catalog.ts. The OAuth-scope class is checked FIRST and
+// WINS — broad-OAuth findings legitimately mention "credentials" in passing
+// ("OAuth user credentials with drive scope") and must stay `excessive-access`
+// / personal-data, never get retyped here. We ONLY retype when the LLM already
+// chose `sensitive-data`; a genuine personal-data finding (PII / health, no
+// secrets vocabulary) is untouched and keeps `sensitive-data` and its controls.
+const CREDENTIAL_EXPOSURE_RE =
+  /\b(secrets?|credential|api[-\s]?key|env(?:ironment)?[-\s]?file|\.env\b|token[-\s]?file|service[-\s]account|password|vault|bot\s+token|login\/password|plaintext\s+(?:secret|credential|token|key))/i;
+
+// OAuth-scope vocabulary — when this matches, the finding is about access scope,
+// not secrets-at-rest, so we must NOT retype it. Mirrors the OAuth pattern that
+// precedes (and beats) the credentials pattern in SLF_SUBCATEGORY_HINTS.
+const OAUTH_SCOPE_RE =
+  /\b(oauth\s+(?:scope|permission|access|grant|consent|credentials?)|broad\s+(?:google|microsoft|github|slack)\s+oauth|scope\s+grant|spreadsheets\s+scope|drive\s+scope|gmail\s+scope|full\s+drive|drive\s+full|google\s+oauth\s+(?:scope|permission)|excessive\s+(?:scope|oauth))/i;
+
+/**
+ * Return true when a `sensitive-data`-typed risk is really about plaintext
+ * secrets / credential hygiene (so it should be `credential-exposure`).
+ *
+ * Narrow by design: requires a credential/secret vocabulary hit AND no OAuth-
+ * scope hit, so genuine personal-data findings keep `sensitive-data`.
+ */
+function isSecretsCredentialRisk(risk: {
+  title?: unknown;
+  description?: unknown;
+}): boolean {
+  const title = typeof risk.title === 'string' ? risk.title : '';
+  const description =
+    typeof risk.description === 'string' ? risk.description : '';
+  const text = `${title} ${description}`;
+  if (OAUTH_SCOPE_RE.test(text)) return false;
+  return CREDENTIAL_EXPOSURE_RE.test(text);
+}
+
 /**
  * Recursively walk a parsed JSON object and normalize any "NOT PROVIDED"-style
  * string values to `undefined`. Leaves other types untouched. Mutates in place.
@@ -293,7 +342,21 @@ async function tryParse(
     // mints is by definition self-attested. Verified findings come from
     // typed detectors (router-adapter / discovery-detectors) which stamp
     // MCP / OAU / ENV / PLG themselves.
-    result.risks = result.risks.map((r) => ({ ...r, evidenceSource: 'SLF' as const }));
+    //
+    // AAP-137 (B14) — in the same pass, reclassify a self-attested SECRETS /
+    // CREDENTIALS finding the LLM typed `sensitive-data` to `credential-exposure`
+    // so it maps to GDPR Art. 32 ONLY (via CONTROL_MAPPINGS) instead of pulling
+    // in EU Art 50(1) / GDPR Art 6 / AIUC A001. This is the analyzer-emitted
+    // sibling of AAP-132's deterministic `.env` detector fix. Only `sensitive-
+    // data` risks are touched, and OAuth-scope findings are excluded, so genuine
+    // personal-data self-attestations keep `sensitive-data` and their controls.
+    result.risks = result.risks.map((r) => {
+      const withSource = { ...r, evidenceSource: 'SLF' as const };
+      if (r.findingType === 'sensitive-data' && isSecretsCredentialRisk(r)) {
+        withSource.findingType = 'credential-exposure';
+      }
+      return withSource;
+    });
 
     // Reviewer-feedback fix (2026-04-25): drop "negative" content from
     // scopesDelta (and scopesNeeded) where the LLM put a constraint

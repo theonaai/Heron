@@ -529,6 +529,9 @@ const FINDING_TO_ANNEX_III: Record<FindingType, string[]> = {
   // Other finding types do not gate Annex III controls.
   'excessive-access': [],
   'write-risk': [],
+  // AAP-132: credential-exposure maps only to GDPR Art. 32 (no EU AI Act
+  // controls), so it gates no Annex III category.
+  'credential-exposure': [],
   'scope-creep': [],
   'risk-score': [],
   // Note: keep this Record exhaustive so a new FindingType triggers a
@@ -1087,6 +1090,15 @@ function describeFinding(
       };
     }
 
+    case 'credential-exposure':
+      // AAP-132: credential hygiene / security of processing (GDPR Art. 32).
+      // Emitted only by the typed `.env` secret-pattern detector, never the
+      // prose engine — this case exists to keep the switch exhaustive.
+      return {
+        severity: 'warning',
+        description: `Credential material is stored in plaintext or inactive credentials are retained. Activates ${framework.name} controls (${ids}). Move secrets to a manager and retire unused credentials.`,
+      };
+
     case 'write-risk': {
       const sev: FlagSeverity =
         signals.hasIrreversibleWrites || signals.hasOrgBlastWithWrites
@@ -1161,6 +1173,11 @@ function isFindingActive(
       return signals.hasWriteOps;
     case 'sensitive-data':
       return signals.hasPII || signals.hasHealth;
+    case 'credential-exposure':
+      // AAP-132: typed-detector-only finding (the `.env` secret-pattern scan
+      // in detectors/discovery-detectors.ts). The prose engine has no signal
+      // for credential hygiene, so it never independently raises this finding.
+      return false;
     case 'scope-creep':
       return signals.hasScopeCreep || signals.hasExcessivePerms;
     case 'regulatory-flags':
@@ -1248,7 +1265,10 @@ export function mapFindings(input: MapFindingsInput): CategorizedCompliance {
   const discoveryFindings = collectDiscoveryCapabilities(input.actual);
   const out = mapFindingsCore(input.declared, discoveryFindings);
   if (input.actual) {
-    out.controlResults = runTypedDetectors(input.actual);
+    out.controlResults = runTypedDetectors(
+      input.actual,
+      out.euAiActClassification,
+    );
     // AAP-120 (S2): deterministic-first precedence. Where a typed detector
     // produced a verdict for a control, that verdict OWNS the control — the
     // self-attested prose flag for the same control is demoted (removed from
@@ -1381,12 +1401,49 @@ function collectDiscoveryCapabilities(
 }
 
 /**
+ * AAP-133 — EU AI Act controls that are HIGH-RISK-ONLY obligations
+ * (Chapter III, Section 2) yet are driven by a deterministic detector
+ * that reads only the operator approval-chain artifact. On a non-high-risk
+ * agent these legally DO NOT apply, so their detector verdict must be
+ * forced to `not-applicable` (mirroring how Art 6(2) / Annex III already
+ * renders not-applicable via its own classification gate), never FAIL.
+ */
+const EU_HIGH_RISK_ONLY_CONTROL_IDS: ReadonlySet<string> = new Set([
+  'Art. 12',        // detectEUAIAct_Article12 — record-keeping (Art 12)
+  'Art. 14(4)(d)',  // detectEUAIAct_Article14 — human oversight (Art 14)
+]);
+
+// AAP-133 — the catalog controlId of the EU AI Act high-risk classification
+// gate (detectEUAIAct_AnnexIII4). This control is the canonical "is the agent
+// high-risk?" verdict in the detector path; Art 12 / Art 14(4)(d) ride on it.
+const EU_ANNEX_III_GATE_CONTROL_ID = 'Art. 6(2) + Annex III';
+
+/**
  * Run every catalog entry's `deterministicDetector` against the typed
  * evidence envelope. Detectors that return null are skipped (no
  * relevant evidence). Phase 4 promotes these results into the
  * per-control verdict ladder; Phase 3 just collects them.
+ *
+ * AAP-133 — when the audit is NOT high-risk, EU AI Act high-risk-only
+ * controls (Art 12, Art 14(4)(d)) are gated to `not-applicable` here,
+ * exactly like Art 6(2). This is the detector-path twin of the
+ * `annexIII: true` per-control gate that hides these in the prose path.
+ *
+ * "Not high-risk" is the SAME determination Art 6(2) makes. Two sources can
+ * establish high-risk, and EITHER is sufficient:
+ *   - the prose classification (`annexIIICategories.length > 0`), available
+ *     when an interview transcript was supplied; OR
+ *   - the Art 6(2) / Annex III detector verdict in THIS pass being anything
+ *     other than `not-applicable`. The CLI / HR-pack path supplies no
+ *     transcript, so the prose classification is always `limited` there — but
+ *     `detectEUAIAct_AnnexIII4` still classifies high-risk from the
+ *     verification signals (HR connector / scope). Riding on its verdict keeps
+ *     Art 12 / Art 14(4)(d) in lockstep with Art 6(2) in every path.
  */
-function runTypedDetectors(actual: ActualEvidence): ControlResult[] {
+function runTypedDetectors(
+  actual: ActualEvidence,
+  classification?: EUAIActClassificationResult,
+): ControlResult[] {
   const evidence: TypedEvidenceEnvelope = {};
   if (actual.discovery !== undefined && actual.discovery !== null) {
     evidence.discovery = actual.discovery;
@@ -1396,6 +1453,25 @@ function runTypedDetectors(actual: ActualEvidence): ControlResult[] {
   }
   if (actual.oauthVerifications !== undefined) {
     evidence.oauthVerifications = actual.oauthVerifications;
+  }
+
+  // AAP-133 — establish the high-risk determination once, BEFORE the catalog
+  // walk, so Art 12 / Art 14(4)(d) gating does not depend on catalog order.
+  // High-risk iff prose says so OR the Art 6(2) / Annex III detector returns a
+  // non-`not-applicable` verdict on this evidence.
+  let isHighRisk = (classification?.annexIIICategories.length ?? 0) > 0;
+  if (!isHighRisk) {
+    for (const entry of CONTROL_CATALOG as ControlCatalogEntry[]) {
+      if (
+        entry.frameworkId === 'eu-ai-act' &&
+        entry.controlId === EU_ANNEX_III_GATE_CONTROL_ID &&
+        entry.deterministicDetector
+      ) {
+        const gate = entry.deterministicDetector(evidence) as ControlResult | null;
+        if (gate && gate.verdict !== 'not-applicable') isHighRisk = true;
+        break;
+      }
+    }
   }
 
   const out: ControlResult[] = [];
@@ -1422,7 +1498,36 @@ function runTypedDetectors(actual: ActualEvidence): ControlResult[] {
     // The verdict (result.verdict) is the runtime STATE; bucket is the
     // control METADATA. Detectors never set bucket — the catalog is the
     // single source of truth, identical to the framework stamping above.
-    out.push({ ...result, framework: entry.frameworkId, bucket: entry.bucket });
+    let stamped: ControlResult = {
+      ...result,
+      framework: entry.frameworkId,
+      bucket: entry.bucket,
+    };
+    // AAP-133: gate EU high-risk-only controls to not-applicable when the
+    // agent is not high-risk. The detector for Art 12 / Art 14(4)(d) reads
+    // only the operator approval-chain artifact and FAILs when absent — but
+    // these obligations bind ONLY high-risk systems (Ch III §2). Override the
+    // verdict to match Art 6(2)'s honest not-applicable rather than FAIL.
+    if (
+      !isHighRisk &&
+      entry.frameworkId === 'eu-ai-act' &&
+      EU_HIGH_RISK_ONLY_CONTROL_IDS.has(entry.controlId) &&
+      stamped.verdict !== 'not-applicable'
+    ) {
+      stamped = {
+        ...stamped,
+        verdict: 'not-applicable',
+        severity: 'info',
+        rationale:
+          'Agent is not classified high-risk under EU AI Act Annex III; ' +
+          'this obligation (EU AI Act Chapter III, Section 2) binds only ' +
+          'high-risk systems and does not apply.',
+        evidenceRefs: [
+          { kind: 'declared', ref: 'no Annex III high-risk classification' },
+        ],
+      };
+    }
+    out.push(stamped);
   }
   return out;
 }

@@ -170,6 +170,11 @@ export const FINDING_TYPES = [
   'excessive-access',
   'write-risk',
   'sensitive-data',
+  // AAP-132: SECURITY finding type for credential-hygiene / operational-security
+  // signals (e.g. plaintext `.env` secrets). Distinct from `sensitive-data`
+  // (personal-data processing) so it maps to security-of-processing controls
+  // (GDPR Art. 32) instead of data-protection / transparency controls.
+  'credential-exposure',
   'scope-creep',
   'regulatory-flags',
   'risk-score',

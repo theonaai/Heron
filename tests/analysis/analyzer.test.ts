@@ -357,4 +357,103 @@ describe('analyzer', () => {
       }
     }
   });
+
+  // ── AAP-137 (B14): self-attested secrets finding → credential-exposure ──────
+  //
+  // The LLM types the analyzer's self-attested secrets finding ("Plain
+  // workspace secrets and inactive credentials increase operational exposure",
+  // renders as SLF-002) as `sensitive-data`, which maps (via CONTROL_MAPPINGS)
+  // to EU Art 50(1) / GDPR Art 6 / AIUC A001 — controls that do not fit a
+  // credential-hygiene gap. The analyzer post-processing must reclassify it to
+  // `credential-exposure` (→ GDPR Art 32 only), the analyzer-emitted sibling of
+  // AAP-132's deterministic `.env` detector fix. A genuine personal-data
+  // self-attested finding must stay `sensitive-data`.
+  describe('AAP-137 — self-attested secrets findingType reclassification', () => {
+    const analysisWithRisk = (risk: Record<string, unknown>): string =>
+      JSON.stringify({
+        summary: 'Workspace agent',
+        agentPurpose: 'Do work',
+        agentTrigger: 'manual',
+        systems: [],
+        risks: [risk],
+        recommendations: [],
+        overallRiskLevel: 'medium',
+      });
+
+    it('retypes a sensitive-data secrets finding to credential-exposure', async () => {
+      const mockLLM: LLMClient = {
+        chat: vi.fn().mockResolvedValue(
+          analysisWithRisk({
+            severity: 'medium',
+            title:
+              'Plain workspace secrets and inactive credentials increase operational exposure',
+            description:
+              'API keys and tokens sit in plaintext .env files; inactive credentials are never rotated.',
+            mitigation: 'Move secrets to a vault and rotate inactive keys.',
+            findingType: 'sensitive-data',
+          }),
+        ),
+      };
+
+      const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+
+      expect(outcome.result.risks.length).toBe(1);
+      // Reclassified → maps to GDPR Art 32 only, NOT Art 50(1) / Art 6 / A001.
+      expect(outcome.result.risks[0].findingType).toBe('credential-exposure');
+      // Still self-attested — only the type changed.
+      expect(outcome.result.risks[0].evidenceSource).toBe('SLF');
+    });
+
+    it('keeps a genuine personal-data finding as sensitive-data', async () => {
+      const mockLLM: LLMClient = {
+        chat: vi.fn().mockResolvedValue(
+          analysisWithRisk({
+            severity: 'high',
+            title: 'Agent processes customer health records',
+            description:
+              'The agent reads patient names, diagnoses, and medical history from the EHR.',
+            mitigation: 'Apply a lawful basis and minimise the health data accessed.',
+            findingType: 'sensitive-data',
+          }),
+        ),
+      };
+
+      const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+
+      expect(outcome.result.risks.length).toBe(1);
+      // No secrets vocabulary → unchanged; keeps its data-protection controls.
+      expect(outcome.result.risks[0].findingType).toBe('sensitive-data');
+    });
+
+    it('does NOT retype a broad-OAuth finding that mentions credentials in passing', async () => {
+      // OAuth-scope findings legitimately contain the word "credentials"
+      // ("OAuth user credentials with drive scope"); they are about access
+      // scope, not secrets-at-rest, and must keep their LLM-chosen type.
+      const mockLLM: LLMClient = {
+        chat: vi.fn().mockResolvedValue(
+          analysisWithRisk({
+            severity: 'medium',
+            title: 'Broad Google OAuth access exceeds the stated workflow',
+            description:
+              'OAuth user credentials grant full drive scope beyond the folder/sheet workflow.',
+            mitigation: 'Narrow the OAuth scope to drive.file.',
+            findingType: 'sensitive-data',
+          }),
+        ),
+      };
+
+      const outcome = await analyzeTranscript(mockLLM, sampleTranscript);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+
+      expect(outcome.result.risks.length).toBe(1);
+      // OAuth-scope guard wins → not retyped to credential-exposure.
+      expect(outcome.result.risks[0].findingType).not.toBe('credential-exposure');
+      expect(outcome.result.risks[0].findingType).toBe('sensitive-data');
+    });
+  });
 });

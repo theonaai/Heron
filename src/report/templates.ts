@@ -17,6 +17,7 @@ import {
   composeFrameworkLensRows,
   frameworkLens,
   slfFindingsForFramework,
+  verdictDisplayLabel,
   type FrameworkLens,
   type LensControl,
   type LensFindingRef,
@@ -2251,6 +2252,8 @@ const GAP_LABELS: Record<string, string> = {
   'excessive-access': 'Excessive permissions',
   'write-risk': 'Write operation risks',
   'sensitive-data': 'Data handling',
+  // AAP-132: SECURITY finding type for plaintext / inactive credentials.
+  'credential-exposure': 'Credential hygiene',
   'scope-creep': 'Scope exceeds purpose',
   'decisions-about-people': 'Automated decision-making',
   'regulatory-flags': 'Regulatory concerns',
@@ -2399,7 +2402,13 @@ function renderFrameworkLensBlock(
     `**${composed.surfaced} of ${counts.covered} covered** · ` +
     `${counts.outOfScope} out of scope · ${counts.publishedControlCount} in framework\n\n`;
 
-  if (composed.rows.length === 0 && composed.orphanFindings.length === 0) {
+  // AAP-136 (B13): a card shows ONLY control rows + findings nested under
+  // controls that actually fired. `orphanFindings` (a self-attested finding
+  // whose framework controls all went out-of-scope) is NOT rendered here — it
+  // would read as a phantom loose `↳ SLF` bullet with no control row above it,
+  // and it is already shown in full in the global Self-Attested Findings stream.
+  // The composer still computes `orphanFindings` for the surfaced/coverage math.
+  if (composed.rows.length === 0) {
     out += `_No active controls for this framework._\n\n`;
     return out;
   }
@@ -2410,13 +2419,6 @@ function renderFrameworkLensBlock(
     const nameSuffix = control.controlName ? ` — ${escapeText(control.controlName)}` : '';
     out += `- \`${control.controlId}\` ${renderLensVerdictBadge(control.verdict)}${nameSuffix}\n`;
     for (const ref of row.findings) out += `${renderLensFindingRef(ref)}\n`;
-  }
-
-  // FALLBACK — findings whose anchor could not be resolved to a control render
-  // as standalone compact rows at the end (never dropped, spec point 1).
-  for (const ref of composed.orphanFindings) {
-    const anchor = findingCardAnchor({ code: ref.code, title: ref.title });
-    out += `- ↳ [\`${escapeText(ref.code)}\`](#${anchor}) ${escapeText(ref.title)} ↗\n`;
   }
   out += `\n`;
 
@@ -2610,6 +2612,11 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
         return `Agent processes ${dataSensitivities.join(', ')} data across ${systemNames || 'connected systems'}. Ensure lawful basis under GDPR Art. 6, data minimization (Art. 5(1)(c)), and breach-readiness (Art. 33).`;
       }
       return 'Agent processes personal data. Ensure lawful basis, data minimization, and breach-readiness.';
+
+    case 'credential-exposure':
+      // AAP-132: plaintext / inactive credential hygiene — security of
+      // processing (GDPR Art. 32), NOT personal-data processing.
+      return 'Credential material is stored in plaintext or inactive credentials are retained. Encrypt or move secrets to a manager and retire unused credentials (GDPR Art. 32 — security of processing).';
 
     case 'scope-creep':
       return `Requested scopes on ${systemNames || 'one or more systems'} exceed what is needed for the stated purpose. Review purpose-limitation (GDPR Art. 5(1)(b)) and change-management process.`;
@@ -2912,15 +2919,19 @@ function isGapResult(r: ControlResult): boolean {
  * mixes ✅ / ⚠️ so we stay consistent).
  *
  *   - `fail`           → ❌ fail
- *   - `partial`        → ⚠️ partial
+ *   - `partial`        → ⚠️ Needs review   (AAP-130 / B2 — was "partial")
  *   - `unverified`     → ❓ unverified
  *   - `verified`       → ✅ verified
  *   - `not-applicable` → ➖ n/a
+ *
+ * AAP-130 (B2): the `partial` display string is the shared `verdictDisplayLabel`
+ * ("Needs review"), so the markdown badge and the dashboard `ControlRow` badge
+ * read identically. The verdict VALUE stays `partial`.
  */
 function renderVerdictBadge(verdict: ControlResult['verdict']): string {
   switch (verdict) {
     case 'fail': return '❌ fail';
-    case 'partial': return '⚠️ partial';
+    case 'partial': return `⚠️ ${verdictDisplayLabel('partial')}`;
     case 'unverified': return '❓ unverified';
     case 'verified': return '✅ verified';
     case 'not-applicable': return '➖ n/a';

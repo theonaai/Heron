@@ -40,6 +40,8 @@ const FINDING_TYPE_HINTS: Record<FindingType, string> = {
   'excessive-access': 'Either restrict the granted scope at the provider, or update the declared scope with business justification.',
   'write-risk': 'Confirm each write operation is necessary, reversible, and bounded — or move it behind a human-in-the-loop gate.',
   'sensitive-data': 'Classify data sensitivity at the source, document the legal basis under GDPR Art. 6, and tighten access if the data is not strictly required.',
+  // AAP-132: credential hygiene — security of processing (GDPR Art. 32).
+  'credential-exposure': 'Move plaintext credentials into a secrets manager or OS keychain, and retire inactive credentials (GDPR Art. 32 — security of processing).',
   'scope-creep': 'Reconcile declared scope with enumerated scope: either remove the extra tools / scopes or update the declared inventory with business justification.',
   'regulatory-flags': 'Map the affected control to its regulatory framework (EU AI Act, GDPR, ISO 42001, NIST AI RMF) and assign an owner to close the gap.',
   'risk-score': 'Review the contributing factors (blast radius, data sensitivity, domain) and document why the residual risk is acceptable, or remediate to lower it.',

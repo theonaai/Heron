@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { CONTROL_MAPPINGS } from '../../src/compliance/control-mappings.js';
 import { mapFindings } from '../../src/compliance/mapper.js';
 import type { DiscoveryResult } from '../../src/discovery/types.js';
 
@@ -247,6 +248,103 @@ describe('AAP-105 D4 — makeProcessorDetector reuse', () => {
     expect(ids).not.toContain('nist-ai-rmf:GOVERN 6.2');
     expect(ids).not.toContain('nist-ai-rmf:MANAGE 3.1');
   });
+
+  // AAP-135 (B10): the shared processor detector's rationale must name the
+  // processors observed and what to supply (a written DPA), modelled on ISO
+  // A.4.4's "observed X; supply Y to upgrade" style. One detector change, so
+  // every framework it fires improves.
+  it('processor rationale names the processor and the DPA to supply (GDPR Art. 28)', () => {
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('OPENAI_API_KEY') },
+    });
+    const art28 = out.controlResults.find(
+      (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 28',
+    );
+    expect(art28).toBeDefined();
+    const r = art28!.rationale;
+    // Names the observed processor.
+    expect(r).toContain('OpenAI');
+    // Tells the reader what to supply (actionable, not a bare "activates").
+    expect(r).toContain('DPA');
+    expect(r.toLowerCase()).toContain('supply');
+    expect(r).not.toContain('Discovery surface shows');
+    // OpenAI is a cross-border processor.
+    expect(r.toLowerCase()).toContain('cross-border');
+  });
+
+  it('processor rationale is framework-agnostic — interpolates each control name', () => {
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('SLACK_BOT_TOKEN') },
+    });
+    const a001 = out.controlResults.find(
+      (r) => r.frameworkId === 'aiuc-1' && r.controlId === 'A001',
+    );
+    const iso = out.controlResults.find(
+      (r) => r.frameworkId === 'iso-42001' && r.controlId === 'A.10.3',
+    );
+    expect(a001).toBeDefined();
+    expect(iso).toBeDefined();
+    // The interpolated control name differs per framework.
+    expect(a001!.rationale).toContain('Input data policy');
+    expect(iso!.rationale).toContain('Suppliers');
+    // Both name the processor and ask for a DPA.
+    for (const r of [a001!.rationale, iso!.rationale]) {
+      expect(r).toContain('Slack');
+      expect(r).toContain('DPA');
+    }
+    // Slack is not flagged cross-border (no international-transfer note).
+    expect(a001!.rationale.toLowerCase()).not.toContain('cross-border');
+  });
+});
+
+// ─── AAP-135 (B12) — verified-wedge rationale reads as "no scope drift" ─────
+
+describe('AAP-135 B12 — verified-wedge "no scope drift" rationale', () => {
+  it('GDPR data-minimisation verified rationale is about drift, not "satisfied"', async () => {
+    const { detectGDPR_Article5 } = await import(
+      '../../src/verification/frameworks/detectors.js'
+    );
+    const sig = {
+      diffs: [],
+      actualInventories: [
+        { source: 'oauth-scopes' as const, capturedAt: 't', scopes: [{ service: 'greenhouse', scope: 'candidates:read' }] },
+      ],
+      declaredInventory: {
+        source: 'interview' as const,
+        capturedAt: 't',
+        scopes: [{ service: 'greenhouse', scope: 'candidates:read' }],
+      },
+    };
+    const ctrl = detectGDPR_Article5(sig);
+    expect(ctrl.verdict).toBe('verified');
+    expect(ctrl.rationale.toLowerCase()).toContain('no scope drift');
+    expect(ctrl.rationale.toLowerCase()).not.toContain('data minimisation satisfied');
+  });
+
+  it('AIUC-1 A003 + B006 verified rationales read "no scope drift"', async () => {
+    const { detectAIUC1_A003, detectAIUC1_B006 } = await import(
+      '../../src/verification/frameworks/detectors.js'
+    );
+    const sig = {
+      diffs: [],
+      actualInventories: [
+        { source: 'oauth-scopes' as const, capturedAt: 't', scopes: [{ service: 'greenhouse', scope: 'candidates:read' }] },
+      ],
+      declaredInventory: {
+        source: 'interview' as const,
+        capturedAt: 't',
+        scopes: [{ service: 'greenhouse', scope: 'candidates:read' }],
+      },
+    };
+    const a003 = detectAIUC1_A003(sig);
+    const b006 = detectAIUC1_B006(sig);
+    expect(a003.verdict).toBe('verified');
+    expect(b006.verdict).toBe('verified');
+    expect(a003.rationale.toLowerCase()).toContain('no scope drift');
+    expect(b006.rationale.toLowerCase()).toContain('no scope drift');
+  });
 });
 
 describe('AAP-105 D4 — MCP inventory presence detector', () => {
@@ -329,6 +427,87 @@ describe('AAP-105 D4 — env secret-pattern detector (GDPR Art. 32)', () => {
       (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 32',
     );
     expect(art32).toBeUndefined();
+  });
+});
+
+// ─── AAP-132 — plaintext-secrets finding is SECURITY, not sensitive-data ────
+//
+// The `.env` secret-pattern finding (SLF-002, "...increase operational
+// exposure") is a credential-hygiene / security-of-processing issue, NOT
+// personal-data processing. It must be typed `credential-exposure` and map to
+// GDPR Art. 32 ONLY — never EU Art 50(1) / GDPR Art 6 / AIUC A001.
+describe('AAP-132 — plaintext secrets typed credential-exposure → GDPR Art. 32 only', () => {
+  it('the Art. 32 env-secret ControlResult is typed credential-exposure, not sensitive-data', () => {
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('SLACK_BOT_TOKEN') },
+    });
+    const art32 = out.controlResults.find(
+      (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 32',
+    );
+    expect(art32).toBeDefined();
+    expect(art32!.findingType).toBe('credential-exposure');
+  });
+
+  it('a pure secret-pattern key (no PII, no processor) lights ONLY credential-exposure Art. 32', () => {
+    // APP_SECRET matches the secret-pattern (`_SECRET`) but is NOT a
+    // sensitive-PII key and NOT a third-party processor key, so the only
+    // ControlResult it should light is GDPR Art. 32 under credential-exposure
+    // — nothing under sensitive-data, and no processor controls.
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('APP_SECRET') },
+    });
+    const sensitive = out.controlResults.filter(
+      (r) => r.findingType === 'sensitive-data',
+    );
+    expect(sensitive).toEqual([]);
+    const ids = out.controlResults.map((r) => `${r.findingType}:${r.frameworkId}:${r.controlId}`);
+    expect(ids).toEqual(['credential-exposure:gdpr:Art. 32']);
+  });
+
+  it('credential-exposure maps to GDPR Art. 32 ONLY — not EU Art 50(1) / GDPR Art 6 / AIUC A001', () => {
+    const mapping = CONTROL_MAPPINGS['credential-exposure'];
+    expect(mapping).toBeDefined();
+    const pairs = mapping.controls.map((c) => `${c.frameworkId}:${c.controlId}`);
+    expect(pairs).toEqual(['gdpr:Art. 32']);
+    // Explicitly assert the controls the old sensitive-data routing dragged in
+    // are gone from this finding's mapping.
+    expect(pairs).not.toContain('eu-ai-act:Art. 50(1)');
+    expect(pairs).not.toContain('gdpr:Art. 6');
+    expect(pairs).not.toContain('aiuc-1:A001');
+  });
+
+  it('the sensitive-data mapping is unchanged — still activates Art 50(1), GDPR Art 6, AIUC A001', () => {
+    // Regression guard: AAP-132 only moves the secrets finding OFF
+    // sensitive-data; genuine personal-data findings must still pull the
+    // full data-protection control set.
+    const sd = CONTROL_MAPPINGS['sensitive-data'].controls.map(
+      (c) => `${c.frameworkId}:${c.controlId}`,
+    );
+    expect(sd).toContain('eu-ai-act:Art. 50(1)');
+    expect(sd).toContain('gdpr:Art. 6');
+    expect(sd).toContain('aiuc-1:A001');
+  });
+
+  it('a genuine sensitive-PII key still activates the sensitive-data controls', () => {
+    // STRIPE_SECRET_KEY is a sensitive-PII / financial key — the sensitive-data
+    // detectors must still fire (GDPR Art 6 / 33 / 35 + AIUC A006), proving the
+    // sensitive-data path is intact after the credential-exposure split.
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('STRIPE_SECRET_KEY') },
+    });
+    const sensitiveIds = out.controlResults
+      .filter((r) => r.findingType === 'sensitive-data')
+      .map((r) => `${r.frameworkId}:${r.controlId}`);
+    expect(sensitiveIds).toContain('gdpr:Art. 6');
+    expect(sensitiveIds).toContain('aiuc-1:A006');
+    // And the same key's Art. 32 row is the credential-exposure one.
+    const art32 = out.controlResults.find(
+      (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 32',
+    );
+    expect(art32!.findingType).toBe('credential-exposure');
   });
 });
 

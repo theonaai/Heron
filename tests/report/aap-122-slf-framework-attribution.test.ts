@@ -255,50 +255,56 @@ describe('AAP-122 — markdown lens render (renderStructuredCompliance)', () => 
     return md.slice(start, end);
   }
 
-  it('renders the SLF finding NESTED under its anchored control as a COMPACT reference under EACH mapped framework', () => {
+  it('renders NO nested reference for a finding whose anchor control did not fire in ANY framework (orphan)', () => {
     const findings = [codedSlf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
 
-    // decisions-about-people maps to all five — the finding shows under each card
-    // as a COMPACT nested reference (`↳ [`SLF-…`](#…) Title ↗`), under the control
-    // it anchors to for that framework, NOT a duplicated full finding card.
+    // AAP-136 (B13): a self-attested finding renders in a framework card ONLY
+    // when it can nest under a control that ACTUALLY FIRED. In this fixture the
+    // only fired rows are EU `Art. 14` (decisions-about-people) and GDPR `Art. 6`
+    // (sensitive-data). `decisions-about-people` anchors to a
+    // DIFFERENT control in each framework (EU `Art. 50(1)`, GDPR `Art. 22`,
+    // AIUC `C007`, and nothing in ISO / NIST), none of which fired as a row — so
+    // the finding ORPHANS in every framework and is no longer rendered in any
+    // card (pre-AAP-136 it emitted a loose `↳ SLF` bullet). It remains only in
+    // the global Self-Attested Findings stream.
     for (const header of FRAMEWORK_HEADERS) {
       const block = frameworkBlock(md, header);
-      expect(block).toContain(SLF_TITLE);
-      // S13: a compact NESTED `↳ [`SLF-…`](#…) Title ↗` reference linking to the
-      // global card — NOT a full finding card, and NOT the old per-framework
-      // "Self-attested findings (agent self-report…" blurb (now removed; the
-      // explanation lives ONCE in the bottom legend).
-      expect(block).toMatch(/↳ \[`SLF-\w+`\]\(#[\w-]+\) .* ↗/);
+      expect(block).not.toContain(SLF_TITLE);
+      expect(block).not.toMatch(/↳ \[`SLF-\w+`\]/);
+      // The old per-framework blurb / duplicated full-card markers stay absent too.
       expect(block).not.toContain('Self-attested findings (agent self-report');
       expect(block).not.toMatch(/####\s+SLF-\w+\s+—\s/);
       expect(block).not.toContain('**Severity**');
-      expect(block).not.toContain('🗣️ self-attested\n');
     }
   });
 
-  it('nests the SLF finding UNDER its anchored control (after the activated control rows)', () => {
+  it('an orphan finding leaves the fired control row untouched (EU Art. 14, no nested SLF)', () => {
     const findings = [codedSlf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
     const euBlock = frameworkBlock(md, '#### EU AI Act');
-    // The activated control row (Art. 14, verifiable partial) precedes the
-    // synthesised self-attested anchor control (Art. 50(1)) the finding nests
-    // under, so the finding title comes after Art. 14.
-    expect(euBlock.indexOf('`Art. 14`')).toBeLessThan(euBlock.indexOf(SLF_TITLE));
-    // The finding nests under its anchor control (Art. 50(1) — the first
-    // active-bucket decisions-about-people control for EU AI Act).
-    expect(euBlock).toContain('`Art. 50(1)`');
-    expect(euBlock.indexOf('`Art. 50(1)`')).toBeLessThan(euBlock.indexOf(SLF_TITLE));
+    // AAP-131 + AAP-136: the finding anchors to EU `Art. 50(1)` (the catalog's
+    // baseline transparency control), which did NOT fire as a row here — the only
+    // fired EU row is `Art. 14`. With no fired anchor row, the finding ORPHANS and
+    // renders nothing in this card; the `Art. 14` row stands alone with no nested
+    // SLF reference beneath it.
+    expect(euBlock).toContain('`Art. 14`');
+    expect(euBlock).not.toContain('`Art. 50(1)`');
+    expect(euBlock).not.toContain(SLF_TITLE);
+    expect(euBlock).not.toMatch(/↳ \[`SLF-\w+`\]/);
   });
 
-  it('a finding whose findingType maps to a SUBSET of frameworks shows only under those', () => {
-    // risk-score → iso-42001 / eu-ai-act / nist-ai-rmf, NOT gdpr / aiuc-1.
+  it('a finding whose findingType maps to a SUBSET of frameworks renders in none when it orphans in all', () => {
+    // risk-score → iso-42001 / eu-ai-act / nist-ai-rmf, NOT gdpr / aiuc-1. None of
+    // its mapped controls fired as a row in this fixture (EU fires only Art. 14),
+    // so per AAP-136 the orphan renders in no card — including the EU card it
+    // attributes to. It correctly never appears under GDPR (not even mapped).
     const title = 'Composite risk score derived without documented methodology';
     const findings = [codedSlf({ id: 'rs', title, findingType: 'risk-score' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
 
     expect(frameworkBlock(md, '#### GDPR')).not.toContain(title);
-    expect(frameworkBlock(md, '#### EU AI Act')).toContain(title);
+    expect(frameworkBlock(md, '#### EU AI Act')).not.toContain(title);
   });
 
   it('a finding with NO findingType produces no nested reference anywhere', () => {
@@ -374,14 +380,14 @@ function e2eReport(risks: Risk[]): AuditReport {
   } as unknown as AuditReport;
 }
 
-describe('AAP-122 — end-to-end markdown: finding in BOTH places (global stream NOT emptied)', () => {
+describe('AAP-122 — end-to-end markdown: global Self-Attested Findings stream is never emptied', () => {
   const TITLE = 'Agent decides candidate rejections with no human review';
 
-  it('the SAME finding appears in the global Self-Attested Findings section AND under its framework cards', () => {
+  it('the finding stays in the global Self-Attested Findings stream even when it orphans out of every card', () => {
     const finding = slfVerdictFinding({ id: 'dap', title: TITLE, findingType: 'decisions-about-people' });
     const md = renderMarkdownReport(e2eReport([]), { verdict: e2eVerdict([finding]) });
 
-    // (a) The global "Self-Attested Findings" section still lists it. The
+    // (a) The global "Self-Attested Findings" section still lists it in full. The
     //     section ends at the next h2 (`\n## `) — note the global finding card
     //     header itself is an h4 (`#### SLF-001 — …`) so we must not slice on a
     //     bare `## ` (which would match inside that h4).
@@ -394,38 +400,24 @@ describe('AAP-122 — end-to-end markdown: finding in BOTH places (global stream
     // The global empty-state must NOT have fired.
     expect(globalSection).not.toContain('No self-attested findings.');
 
-    // (b) The Compliance Lens additionally attributes it under a framework card
-    //     NESTED under its anchored control (S13) — a `↳ [`SLF-…`](#…) Title ↗`
-    //     link to the full card in the global stream, NOT a duplicated full card.
+    // (b) AAP-136 (B13): `decisions-about-people` anchors to EU `Art. 50(1)`,
+    //     which did NOT fire as a row here (the only fired EU row is `Art. 14`),
+    //     so the finding ORPHANS in the EU card and renders nothing there. The
+    //     card body holds only its fired control row — no nested `↳ SLF` ref.
     const lensIdx = md.indexOf('### Compliance Lens');
     expect(lensIdx).toBeGreaterThanOrEqual(0);
     const euStart = md.indexOf('#### EU AI Act', lensIdx);
     const euBlock = md.slice(euStart, md.indexOf('#### GDPR', euStart));
-    expect(euBlock).toContain(TITLE);
-    // Nested compact reference link present; the full-card markers are NOT
-    // duplicated here (they remain in the global Self-Attested Findings stream).
-    expect(euBlock).toMatch(/↳ \[`SLF-\d+`\]\(#[\w-]+\) .* ↗/);
-    expect(euBlock).not.toMatch(/####\s+SLF-\d+\s+—\s/);
-    expect(euBlock).not.toContain('**Severity**');
+    expect(euBlock).toContain('`Art. 14`');
+    expect(euBlock).not.toContain(TITLE);
+    expect(euBlock).not.toMatch(/↳ \[`SLF-\d+`\]/);
 
-    // (c) Same title present at least twice (the full global card + the compact
-    //     framework reference).
-    const occurrences = md.split(TITLE).length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
-
-    // (d) S13: the compact reference's anchor matches the global card's heading
-    //     anchor, so the link actually resolves. The global card heading is
-    //     `#### SLF-001 — <title>`; its slug is the lowercase,
-    //     punctuation-stripped, space-hyphenated form.
-    const codeMatch = globalSection.match(/####\s+(SLF-\d+)\s+—\s/);
-    expect(codeMatch).not.toBeNull();
-    const code = codeMatch![1]!;
-    const expectedAnchor = `${code} — ${TITLE}`
-      .toLowerCase()
-      .replace(/[^\w\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-');
-    expect(euBlock).toContain(`[\`${code}\`](#${expectedAnchor})`);
+    // (c) The finding orphans in EVERY framework under this fixture, so the title
+    //     appears ONLY inside the global card (its h4 heading + body description);
+    //     it never appears inside the Compliance Lens section.
+    const lensSection = md.slice(lensIdx, md.indexOf('### Applicability Summary', lensIdx));
+    expect(lensSection).not.toContain(TITLE);
+    expect(lensSection).not.toMatch(/↳ \[`SLF-\d+`\]/);
   });
 
   it('a no-findingType SLF finding stays global-only (in the stream, in NO card)', () => {
@@ -472,7 +464,7 @@ function expandedLensFor(frameworkId: FrameworkId): FrameworkLens {
 }
 
 describe('S13 — dashboard FrameworkCard nests SLF findings under their anchored control', () => {
-  it('renders each self-attested finding NESTED under its anchored control as a COMPACT reference linking to the global card', () => {
+  it('renders NO reference for an SLF finding whose anchor control did not fire (orphan)', () => {
     const html = renderToStaticMarkup(
       FrameworkCard({
         lens: expandedLensFor('gdpr'),
@@ -489,20 +481,20 @@ describe('S13 — dashboard FrameworkCard nests SLF findings under their anchore
         onToggle: () => {},
       }),
     );
-    expect(html).toContain('Processes candidate PII with no retention policy');
-    // S13: a compact NESTED reference — the code badge + an anchor link to the
-    // full card in the GLOBAL stream (`#finding-SLF-001`), with the `↳` / `↗`
-    // affordances. The old per-card "Self-attested findings" heading + "does not
-    // move posture" blurb are GONE (the explanation lives once in the bottom
-    // legend). The FULL-card markers (description text + Mitigation block) are
-    // NOT duplicated here.
-    expect(html).toContain('SLF-001');
-    expect(html).toContain('href="#finding-SLF-001"');
-    expect(html).toContain('↳');
-    expect(html).toContain('↗');
+    // AAP-136 (B13): `sensitive-data` anchors to GDPR `Art. 6`, but the only row
+    // that fired in this lens is the synthetic `CTRL` control — `Art. 6` is not a
+    // fired row, so the finding ORPHANS and is no longer rendered in the card.
+    // (Pre-AAP-136 it emitted a loose `↳ SLF-001` reference at the bottom.) The
+    // full finding still lives in the global Self-Attested Findings stream.
+    expect(html).toContain('CTRL'); // the fired control row is present
+    expect(html).not.toContain('Processes candidate PII with no retention policy');
+    expect(html).not.toContain('SLF-001');
+    expect(html).not.toContain('href="#finding-SLF-001"');
+    expect(html).not.toContain('↳');
+    expect(html).not.toContain('↗');
+    // The old per-card "Self-attested findings" blurb / full-card markers stay absent.
     expect(html).not.toContain('does not move posture');
     expect(html).not.toContain('The agent stores applicant PII indefinitely');
-    expect(html).not.toContain('Mitigation');
     expect(html).not.toContain('🗣️');
   });
 
@@ -520,10 +512,11 @@ describe('S13 — dashboard FrameworkCard nests SLF findings under their anchore
   });
 
   it('header is "{A} of {C} covered · {N−C} out of scope · {N} in framework" — no per-verdict breakdown', () => {
-    // expandedLensFor('gdpr') surfaces one verifiable control (CTRL); supplying
-    // an SLF finding anchors it under a control, raising A. sensitive-data maps
-    // to GDPR Art. 6 (verifiable, active) — synthesised as a self-attested row,
-    // so A = 2 (CTRL + Art. 6), C = 8, oos = 87, N = 95.
+    // expandedLensFor('gdpr') surfaces one verifiable control (CTRL). Supplying a
+    // sensitive-data SLF finding nests it under the already-fired CTRL row rather
+    // than synthesising a phantom Art. 6 anchor (AAP-131: no row is created for a
+    // control that did not independently fire). A therefore stays 1 (CTRL only),
+    // C = 8, oos = 87, N = 95.
     const html = renderToStaticMarkup(
       FrameworkCard({
         lens: expandedLensFor('gdpr'),
@@ -532,7 +525,7 @@ describe('S13 — dashboard FrameworkCard nests SLF findings under their anchore
         onToggle: () => {},
       }),
     );
-    expect(html).toContain('2 of 8 covered');
+    expect(html).toContain('1 of 8 covered');
     expect(html).toContain('87 out of scope · 95 in framework');
     // The old per-verdict breakdown is gone from the header.
     expect(html).not.toContain('self-attested finding');

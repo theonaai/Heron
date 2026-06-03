@@ -272,7 +272,8 @@ describe('forwarded-OAuth wedge — verificationReport threads to the detectors'
     expect(verdictFor('aiuc-1', 'A003.3')).toBe('verified');
     expect(verdictFor('aiuc-1', 'A003.4')).toBe('verified');
     expect(verdictFor('aiuc-1', 'B006')).toBe('verified');
-    expect(verdictFor('gdpr', 'Art. 25')).toBe('verified');
+    // AAP-135 (B9): GDPR data-minimisation control is wired under Art. 5(1)(c).
+    expect(verdictFor('gdpr', 'Art. 5(1)(c)')).toBe('verified');
   });
 
   it('the report and discovery can be threaded together', () => {

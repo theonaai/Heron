@@ -46,6 +46,7 @@ import {
   composeFrameworkLensRows,
   frameworkLens,
   slfFindingsForFramework,
+  verdictDisplayLabel,
   type FrameworkLens,
 } from '@/src/report/compliance-lens';
 import type { ControlResult as LensSourceControlResult } from '@/src/compliance/control-catalog';
@@ -2489,6 +2490,11 @@ function FindingsBlock({
         <div style={{ marginTop: 18, borderTop: '1px dashed #e5e7eb', paddingTop: 14 }}>
           <button
             type="button"
+            // AAP-130 (B1): stable id + open-state flag so a lens SLF reference
+            // (`navigateToFinding`) can expand this section before scrolling to
+            // a specific card even when it is collapsed.
+            id={SLF_TOGGLE_ID}
+            data-slf-open={slfOpen ? 'true' : 'false'}
             onClick={() => setSlfOpen((v) => !v)}
             style={{
               display: 'flex',
@@ -2541,6 +2547,55 @@ function FindingsBlock({
  */
 export function findingAnchorId(code: string): string {
   return `finding-${code}`;
+}
+
+/**
+ * AAP-130 (B1) — the stable DOM id + `data-slf-open` flag on the global
+ * Self-Attested Findings toggle button. A compact lens reference (`FindingRef`)
+ * uses these to EXPAND the global section before scrolling to the target card,
+ * so the `↗` link always lands even when the section is collapsed (when
+ * collapsed the card is not in the DOM, so a bare `#finding-NNN` jump no-ops).
+ */
+export const SLF_TOGGLE_ID = 'self-attested-findings-toggle';
+
+/**
+ * AAP-130 (B1) — navigate a lens SLF reference to its FULL card in the global
+ * Self-Attested Findings stream, expanding the (collapsed) section AND landing
+ * on the specific card. The section is React-controlled, so when it is collapsed
+ * the target card is not mounted and a plain anchor jump does nothing. We:
+ *
+ *   1. click the section toggle when it is collapsed (`data-slf-open !== 'true'`),
+ *      which flips React state and mounts the cards;
+ *   2. then scroll the target card into view once it exists — retried briefly
+ *      across animation frames because the mount happens on the next React
+ *      render, not synchronously after the click.
+ *
+ * No-ops gracefully off the DOM (SSR / static markup): every step guards on
+ * `document` and on the elements actually existing.
+ */
+export function navigateToFinding(code: string): void {
+  if (typeof document === 'undefined') return;
+  const anchorId = findingAnchorId(code);
+
+  // 1. Expand the global Self-Attested section if it is collapsed.
+  const toggle = document.getElementById(SLF_TOGGLE_ID);
+  if (toggle && toggle.getAttribute('data-slf-open') !== 'true') {
+    toggle.click();
+  }
+
+  // 2. Scroll to the target card once it is mounted. The card may already be in
+  //    the DOM (section was open) — scroll immediately; otherwise retry across a
+  //    few frames while React commits the expand.
+  let tries = 0;
+  const land = () => {
+    const target = document.getElementById(anchorId);
+    if (target) {
+      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return;
+    }
+    if (tries++ < 10) requestAnimationFrame(land);
+  };
+  land();
 }
 
 // ─── G8b: host-capability note (NOT a finding) ────────────────────────
@@ -2962,7 +3017,10 @@ export function FrameworkCard({
   // no resolvable anchor fall back to standalone rows. `surfaced` is `A` — the
   // distinct controls shown as rows this audit, the headline numerator.
   const composed = composeFrameworkLensRows(lens, slfFindings);
-  const isEmpty = composed.rows.length === 0 && composed.orphanFindings.length === 0;
+  // AAP-136 (B13): the card is empty when no control row fired. `orphanFindings`
+  // (a self-attested finding whose framework controls all went out-of-scope) is
+  // no longer rendered here, so it does not keep an otherwise-empty card alive.
+  const isEmpty = composed.rows.length === 0;
 
   return (
     <div
@@ -3026,13 +3084,13 @@ export function FrameworkCard({
                   findings={row.findings}
                 />
               ))}
-              {/* FALLBACK — findings whose anchor could not be resolved render as
-                  standalone compact rows at the end (never dropped). */}
-              {composed.orphanFindings.map((f) => (
-                <li key={f.id} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
-                  <FindingRef finding={f} />
-                </li>
-              ))}
+              {/* AAP-136 (B13): `orphanFindings` are NOT rendered here. A
+                  self-attested finding whose framework controls all went
+                  out-of-scope has no fired control to nest under; rendering it
+                  as a loose `↳ SLF` bullet (no control row above it) reads as a
+                  phantom. It is already shown in full in the global
+                  Self-Attested Findings stream. The composer still computes
+                  `orphanFindings` for the surfaced/coverage math. */}
             </ul>
           )}
         </div>
@@ -3047,10 +3105,18 @@ export function FrameworkCard({
  * (`#finding-<code>`). The full card (severity / description / mitigation) is
  * never duplicated here; this only points to it.
  */
-function FindingRef({ finding }: { finding: { id: string; code: string; title: string } }) {
+export function FindingRef({ finding }: { finding: { id: string; code: string; title: string } }) {
   return (
     <a
       href={`#${findingAnchorId(finding.code)}`}
+      // AAP-130 (B1): expand the global Self-Attested section (if collapsed) AND
+      // land on this card, instead of the bare `#finding-NNN` jump that no-ops
+      // when the section is collapsed (the card is unmounted then). The `href`
+      // stays as a no-JS / static-markup fallback.
+      onClick={(e) => {
+        e.preventDefault();
+        navigateToFinding(finding.code);
+      }}
       style={{
         display: 'inline-flex',
         alignItems: 'baseline',
@@ -3221,7 +3287,11 @@ export function ControlRow({
             alignSelf: 'center',
           }}
         >
-          {control.verdict}
+          {/* AAP-130 (B2): the badge shows the shared display LABEL, so
+              `partial` reads "Needs review" (matching the markdown badge). The
+              verdict VALUE — and the palette/severity logic above — stays
+              `partial`. */}
+          {verdictDisplayLabel(control.verdict)}
         </span>
         {control.verdict === 'self-attested' ? (
           <span />

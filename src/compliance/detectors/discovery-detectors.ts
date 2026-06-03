@@ -44,6 +44,13 @@ interface KeyClassification {
   hasExternalProcessor: boolean;
   /** Specific evidence labels for the ControlResult rationale. */
   labels: string[];
+  /**
+   * AAP-135 (B10): human-readable processor / vendor names observed for this
+   * key (e.g. `OpenAI`, `Google Cloud`, `Slack`). Used to make the processor
+   * detector's rationale actionable — naming WHO the processors are so the
+   * reader knows which DPAs to supply.
+   */
+  processorNames: string[];
 }
 
 /**
@@ -60,12 +67,14 @@ interface KeyClassification {
 function classifyKeyName(rawKey: string): KeyClassification {
   const key = rawKey.toLowerCase();
   const labels: string[] = [];
+  const processorNames: string[] = [];
   const out: KeyClassification = {
     hasSensitivePII: false,
     hasHealth: false,
     hasInternationalTransfer: false,
     hasExternalProcessor: false,
     labels,
+    processorNames,
   };
 
   if (/stripe|credit.?card/.test(key)) {
@@ -92,15 +101,26 @@ function classifyKeyName(rawKey: string): KeyClassification {
     out.hasInternationalTransfer = true;
     out.hasExternalProcessor = true;
     labels.push(`${rawKey} → cloud provider (international transfer)`);
+    if (/aws|s3|cloudfront/.test(key)) processorNames.push('AWS');
+    if (/azure/.test(key)) processorNames.push('Azure');
+    if (/gcp|google/.test(key)) processorNames.push('Google Cloud');
+    if (/cloudflare/.test(key)) processorNames.push('Cloudflare');
   }
   if (/openai|anthropic/.test(key)) {
     out.hasInternationalTransfer = true;
     out.hasExternalProcessor = true;
     labels.push(`${rawKey} → AI provider (international transfer)`);
+    if (/openai/.test(key)) processorNames.push('OpenAI');
+    if (/anthropic/.test(key)) processorNames.push('Anthropic');
   }
   if (/slack|hubspot|salesforce|linear|github/.test(key)) {
     out.hasExternalProcessor = true;
     labels.push(`${rawKey} → third-party processor`);
+    if (/slack/.test(key)) processorNames.push('Slack');
+    if (/hubspot/.test(key)) processorNames.push('HubSpot');
+    if (/salesforce/.test(key)) processorNames.push('Salesforce');
+    if (/linear/.test(key)) processorNames.push('Linear');
+    if (/github/.test(key)) processorNames.push('GitHub');
   }
 
   return out;
@@ -112,6 +132,12 @@ interface Aggregate {
   hasInternationalTransfer: boolean;
   hasExternalProcessor: boolean;
   evidence: ControlResultEvidenceRef[];
+  /**
+   * AAP-135 (B10): distinct human-readable processor / vendor names observed
+   * across the discovery surface, in first-seen order. Feeds the actionable
+   * processor-detector rationale ("Heron observed ...; supply a DPA with each").
+   */
+  processorNames: string[];
 }
 
 function walkDiscovery(discovery: DiscoveryResult): Aggregate {
@@ -121,6 +147,7 @@ function walkDiscovery(discovery: DiscoveryResult): Aggregate {
     hasInternationalTransfer: false,
     hasExternalProcessor: false,
     evidence: [],
+    processorNames: [],
   };
 
   const ingest = (key: string, sourceRef: string) => {
@@ -131,6 +158,9 @@ function walkDiscovery(discovery: DiscoveryResult): Aggregate {
     if (c.hasExternalProcessor) agg.hasExternalProcessor = true;
     for (const label of c.labels) {
       agg.evidence.push({ kind: 'inventory', ref: `${sourceRef}: ${label}` });
+    }
+    for (const name of c.processorNames) {
+      if (!agg.processorNames.includes(name)) agg.processorNames.push(name);
     }
   };
 
@@ -223,9 +253,23 @@ function makeProcessorDetector(
       surface: 'actual',
       verdict: 'partial',
       severity: 'medium',
-      rationale: agg.hasInternationalTransfer
-        ? `Discovery surface shows third-party SaaS credentials, including cross-border processors — activates ${frameworkId} ${controlId}.`
-        : `Discovery surface shows third-party SaaS credentials — activates ${frameworkId} ${controlId}.`,
+      // AAP-135 (B10): make the processor rationale actionable, modelled on ISO
+      // A.4.4's "Heron observed X; supply Y to upgrade this control" style.
+      // Name the processors observed and state what to supply (a written DPA /
+      // supplier agreement with each) so the reader knows the next step. The
+      // control name (`controlName`) is interpolated, so this single change
+      // improves every framework the shared detector fires (GDPR Art 28, ISO
+      // A.10.3, NIST GOVERN 6.2 / MANAGE 3.1, AIUC-1 A001).
+      rationale: (() => {
+        const named =
+          agg.processorNames.length > 0
+            ? agg.processorNames.join(', ')
+            : 'unnamed third-party SaaS vendors';
+        const transferNote = agg.hasInternationalTransfer
+          ? ' Some are cross-border processors, so the transfer also needs an Article 46 safeguard (SCCs / adequacy).'
+          : '';
+        return `Heron observed third-party SaaS processors (${named}) in the discovery surface.${transferNote} ${controlName} requires a written DPA / supplier agreement with each — supply them to upgrade this control to verified.`;
+      })(),
       evidenceRefs: agg.evidence,
     };
     return out;
@@ -353,7 +397,12 @@ function makeEnvSecretDetector(
     }
     if (matches.length === 0) return null;
 
-    const findingType: FindingType = 'sensitive-data';
+    // AAP-132 (B4): plaintext `.env` secrets are a credential-hygiene /
+    // security-of-processing gap, NOT personal-data processing. Type the
+    // finding `credential-exposure` so it maps to GDPR Art. 32 ONLY and no
+    // longer pulls in the `sensitive-data` data-protection controls
+    // (EU Art 50(1), GDPR Art 6, AIUC A001).
+    const findingType: FindingType = 'credential-exposure';
     const out: ControlResult = {
       stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
       findingType,
@@ -516,8 +565,12 @@ export const DISCOVERY_DETECTOR_ADAPTERS: ReadonlyArray<DiscoveryAdapterRow> = [
   // `*_SECRET`, `*_PASSWORD`) sitting in plaintext .env files inside a
   // project workspace. GDPR Art. 32 (security of processing) is the
   // canonical landing.
+  //
+  // AAP-132 (B4): typed `credential-exposure` (SECURITY), not `sensitive-data`.
+  // It maps to GDPR Art. 32 ONLY (control-mappings.ts), so the secrets finding
+  // no longer pulls in EU Art 50(1) / GDPR Art 6 / AIUC A001.
   {
-    findingType: 'sensitive-data',
+    findingType: 'credential-exposure',
     frameworkId: 'gdpr',
     controlId: 'Art. 32',
     detector: makeEnvSecretDetector(
