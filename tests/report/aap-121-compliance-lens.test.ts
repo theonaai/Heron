@@ -408,13 +408,14 @@ describe('AAP-121 lens — FIX 1: all five frameworks render', () => {
   it('a 0-active framework still projects an honest "C of ~N" lens', () => {
     // NIST AI RMF has 0 self-attested controls by design; with no verifiable
     // verdict it has 0 active THIS audit — but its card must still summarise
-    // honestly. AAP-128 (S12): coverage is the STATIC capability C = 4 (it does
-    // not collapse to 0 just because nothing fired); out-of-scope = 72 - 4 = 68.
+    // honestly. AAP-128 (S12): coverage is the STATIC capability C (it does
+    // not collapse to 0 just because nothing fired). AAP-134 moved MANAGE 1.2
+    // to oos-operator-artifact, so C = 3 (was 4); out-of-scope = 72 - 3 = 69.
     const lens = frameworkLens('nist-ai-rmf', [], []);
     expect(lens.counts.activeShown).toBe(0);
-    expect(lens.counts.covered).toBe(4);
+    expect(lens.counts.covered).toBe(3);
     expect(lens.counts.publishedControlCount).toBe(72);
-    expect(lens.counts.outOfScope).toBe(68);
+    expect(lens.counts.outOfScope).toBe(69);
     expect(lens.controls).toEqual([]);
   });
 });
@@ -428,11 +429,13 @@ describe('AAP-128 (S12) — coverage C is STATIC (same regardless of what fired)
     // AAP-133: EU AI Act active-bucket C is 4 (Art 14(4)(d) moved to
     // oos-operator-artifact): Art 6(2)+Annex III verifiable + Art 12 verifiable
     // + Art 5 + Art 50(1) self-attested.
+    // AAP-134: AIUC E004 + E015.2 moved to oos-operator-artifact (13 → 11);
+    // NIST MANAGE 1.2 moved to oos-operator-artifact (4 → 3).
     expect(staticCoverageForFramework('eu-ai-act')).toBe(4);
     expect(staticCoverageForFramework('gdpr')).toBe(8);
-    expect(staticCoverageForFramework('aiuc-1')).toBe(13);
+    expect(staticCoverageForFramework('aiuc-1')).toBe(11);
     expect(staticCoverageForFramework('iso-42001')).toBe(2);
-    expect(staticCoverageForFramework('nist-ai-rmf')).toBe(4);
+    expect(staticCoverageForFramework('nist-ai-rmf')).toBe(3);
   });
 
   it('counts.covered equals the static C no matter which controls actually fired', () => {
@@ -559,43 +562,45 @@ describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)
     }
   });
 
-  it('a finding whose anchor control DID fire still nests under it (SLF-001 under GDPR Art. 25)', () => {
-    // GDPR Art. 25 fires as a verifiable controlResult AND a finding anchors to
-    // it (excessive-access → Art. 25). The finding nests under the fired row;
-    // it is a single active row counted once. (AAP-131 acceptance: correct
-    // nesting is PRESERVED where the control did fire.)
+  it('a finding whose anchor control DID fire still nests under it (SLF-001 under GDPR Art. 5(1)(c))', () => {
+    // GDPR Art. 5(1)(c) fires as a verifiable controlResult AND a finding anchors
+    // to it (excessive-access → data minimisation). The finding nests under the
+    // fired row; it is a single active row counted once. (AAP-131 acceptance:
+    // correct nesting is PRESERVED where the control did fire.)
+    // AAP-135: GDPR data-minimisation control id renamed Art. 25 → Art. 5(1)(c).
     const anchor = anchorControlForFinding('gdpr', 'excessive-access');
-    expect(anchor?.controlId).toBe('Art. 25');
+    expect(anchor?.controlId).toBe('Art. 5(1)(c)');
     expect(ACTIVE_BUCKETS.has(anchor!.bucket)).toBe(true);
     const lens = frameworkLens(
       'gdpr',
-      [result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'partial', bucket: 'verifiable' })],
+      [result({ frameworkId: 'gdpr', controlId: 'Art. 5(1)(c)', verdict: 'partial', bucket: 'verifiable' })],
       [],
     );
     const composed = composeFrameworkLensRows(lens, [
       composableFinding({ id: 'f1', code: 'SLF-001', findingType: 'excessive-access' }),
     ]);
-    const art25Rows = composed.rows.filter((r) => r.control.controlId === 'Art. 25');
-    expect(art25Rows).toHaveLength(1);
+    const dataMinRows = composed.rows.filter((r) => r.control.controlId === 'Art. 5(1)(c)');
+    expect(dataMinRows).toHaveLength(1);
     // The finding nested under the fired row, not orphaned.
-    expect(art25Rows[0]!.findings.map((f) => f.code)).toContain('SLF-001');
+    expect(dataMinRows[0]!.findings.map((f) => f.code)).toContain('SLF-001');
     expect(composed.orphanFindings).toHaveLength(0);
     expect(composed.surfaced).toBe(1);
   });
 
   it('the SAME finding nests when its control fired but orphans when it did not', () => {
-    // excessive-access → GDPR Art. 25 (active/verifiable). When Art. 25 fired,
+    // excessive-access → GDPR Art. 5(1)(c) (active/verifiable). When it fired,
     // the finding nests. When NOTHING fired, the identical finding orphans —
     // proving attachment is gated strictly on the control having fired.
+    // AAP-135: GDPR data-minimisation control id renamed Art. 25 → Art. 5(1)(c).
     const finding = composableFinding({ id: 'f1', code: 'SLF-001', findingType: 'excessive-access' });
 
     const firedLens = frameworkLens(
       'gdpr',
-      [result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'verified', bucket: 'verifiable' })],
+      [result({ frameworkId: 'gdpr', controlId: 'Art. 5(1)(c)', verdict: 'verified', bucket: 'verifiable' })],
       [],
     );
     const nested = composeFrameworkLensRows(firedLens, [finding]);
-    expect(nested.rows.find((r) => r.control.controlId === 'Art. 25')?.findings.map((f) => f.code)).toContain(
+    expect(nested.rows.find((r) => r.control.controlId === 'Art. 5(1)(c)')?.findings.map((f) => f.code)).toContain(
       'SLF-001',
     );
     expect(nested.orphanFindings).toHaveLength(0);
@@ -766,9 +771,11 @@ describe('AAP-121 lens — markdown render', () => {
     expect(md).toContain('#### ISO/IEC 42001');
     expect(md).toContain('**0 of 2 covered** · 36 out of scope · 38 in framework');
     expect(md).toContain('#### AIUC-1');
-    expect(md).toContain('**0 of 13 covered** · 37 out of scope · 50 in framework');
+    // AAP-134: AIUC E004 + E015.2 moved out of active → C = 11, oos = 39.
+    expect(md).toContain('**0 of 11 covered** · 39 out of scope · 50 in framework');
     expect(md).toContain('#### NIST AI RMF');
-    expect(md).toContain('**0 of 4 covered** · 68 out of scope · 72 in framework');
+    // AAP-134: NIST MANAGE 1.2 moved out of active → C = 3, oos = 69.
+    expect(md).toContain('**0 of 3 covered** · 69 out of scope · 72 in framework');
   });
 
   // ─── FIX 1: all five framework cards render, even 0-active ones ────────────
@@ -792,9 +799,10 @@ describe('AAP-121 lens — markdown render', () => {
       md.indexOf('### Applicability Summary'),
     );
     // S13: NIST AI RMF has 0 active controls THIS audit (A = 0), but its static
-    // capability is C = 4 of ~72 (68 out of scope); no rows.
+    // capability is C of ~72; no rows. AAP-134 moved MANAGE 1.2 out of active →
+    // C = 3 of ~72 (69 out of scope).
     const nistBlock = lensSection.slice(lensSection.indexOf('#### NIST AI RMF'));
-    expect(nistBlock).toContain('**0 of 4 covered** · 68 out of scope · 72 in framework');
+    expect(nistBlock).toContain('**0 of 3 covered** · 69 out of scope · 72 in framework');
     expect(nistBlock).toContain('No active controls for this framework');
     // ISO/IEC 42001: A = 0, C = 2, 36 out of scope, N = 38.
     const isoBlock = lensSection.slice(

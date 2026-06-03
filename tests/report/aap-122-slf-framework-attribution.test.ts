@@ -281,14 +281,13 @@ describe('AAP-122 — markdown lens render (renderStructuredCompliance)', () => 
     const findings = [codedSlf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
     const euBlock = frameworkBlock(md, '#### EU AI Act');
-    // The activated control row (Art. 14, verifiable partial) precedes the
-    // synthesised self-attested anchor control (Art. 50(1)) the finding nests
-    // under, so the finding title comes after Art. 14.
+    // AAP-131: a finding nests ONLY under a control that ACTUALLY fired — no
+    // synthesised/phantom anchor row. The only EU control fired here is
+    // Art. 14 (verifiable partial, applicable because the fixture is high-risk),
+    // so the finding nests under Art. 14; the old phantom Art. 50(1) row is gone.
+    expect(euBlock).toContain('`Art. 14`');
+    expect(euBlock).not.toContain('`Art. 50(1)`');
     expect(euBlock.indexOf('`Art. 14`')).toBeLessThan(euBlock.indexOf(SLF_TITLE));
-    // The finding nests under its anchor control (Art. 50(1) — the first
-    // active-bucket decisions-about-people control for EU AI Act).
-    expect(euBlock).toContain('`Art. 50(1)`');
-    expect(euBlock.indexOf('`Art. 50(1)`')).toBeLessThan(euBlock.indexOf(SLF_TITLE));
   });
 
   it('a finding whose findingType maps to a SUBSET of frameworks shows only under those', () => {
@@ -520,10 +519,11 @@ describe('S13 — dashboard FrameworkCard nests SLF findings under their anchore
   });
 
   it('header is "{A} of {C} covered · {N−C} out of scope · {N} in framework" — no per-verdict breakdown', () => {
-    // expandedLensFor('gdpr') surfaces one verifiable control (CTRL); supplying
-    // an SLF finding anchors it under a control, raising A. sensitive-data maps
-    // to GDPR Art. 6 (verifiable, active) — synthesised as a self-attested row,
-    // so A = 2 (CTRL + Art. 6), C = 8, oos = 87, N = 95.
+    // expandedLensFor('gdpr') surfaces one verifiable control (CTRL). Supplying a
+    // sensitive-data SLF finding nests it under the already-fired CTRL row rather
+    // than synthesising a phantom Art. 6 anchor (AAP-131: no row is created for a
+    // control that did not independently fire). A therefore stays 1 (CTRL only),
+    // C = 8, oos = 87, N = 95.
     const html = renderToStaticMarkup(
       FrameworkCard({
         lens: expandedLensFor('gdpr'),
@@ -532,7 +532,7 @@ describe('S13 — dashboard FrameworkCard nests SLF findings under their anchore
         onToggle: () => {},
       }),
     );
-    expect(html).toContain('2 of 8 covered');
+    expect(html).toContain('1 of 8 covered');
     expect(html).toContain('87 out of scope · 95 in framework');
     // The old per-verdict breakdown is gone from the header.
     expect(html).not.toContain('self-attested finding');
