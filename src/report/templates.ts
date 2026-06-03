@@ -2387,8 +2387,16 @@ function renderFrameworkLensBlock(
     );
   }
 
+  // AAP-128 (S12) — the headline is STATIC capability coverage: `C of ~N
+  // covered`, where C is the catalog count of this framework's controls Heron
+  // can address (verifiable + self-attested) and N is the published universe.
+  // C is identical every audit; out-of-scope is N − C (also static). The
+  // per-audit verdict breakdown (verified / fail / partial / self-attested,
+  // assembled in `headerParts`) is KEPT as secondary detail in parentheses so
+  // the reader still sees what fired THIS audit — but it no longer drives the
+  // headline figure (which used to be the per-audit `activeShown`).
   let out = `#### ${name}\n\n`;
-  out += `**${counts.activeShown} of ~${counts.publishedControlCount} addressed** `;
+  out += `**${counts.covered} of ~${counts.publishedControlCount} covered** `;
   out += `(${headerParts.join(' · ')}) · ${counts.outOfScope} out of scope\n\n`;
 
   if (lens.controls.length === 0) {
@@ -2453,9 +2461,9 @@ function renderComplianceLens(
   // AAP-127 (S11) FIX 2 — ALWAYS render all five framework cards, even when no
   // control fired this audit. The old all-or-nothing gate (return early with
   // "No active controls" when `lensFrameworks(...)` is empty) is removed: each
-  // card carries an honest per-framework summary that is meaningful regardless
-  // of per-audit signals, so a 0-active framework must still show its card
-  // (matches `allLensFrameworks`, which already enumerates all five).
+  // card now carries an honest STATIC "C of ~N covered · (N−C) out of scope"
+  // capability summary that is meaningful regardless of per-audit signals, so a
+  // 0-active framework must still show its card (matches `allLensFrameworks`).
 
   let out = `### Compliance Lens\n\n`;
   // One-line legend (scope point 4): some controls can earn a clean verified,

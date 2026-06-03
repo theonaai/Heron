@@ -2922,14 +2922,16 @@ function ComplianceBlock({
         </span>
       </div>
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
-          {/* AAP-121 (S5): per-framework lens cards. Header counts by ACTUAL
-              state (verified / fail / partial / self-attested) + an out-of-scope
-              COUNT; on expand, ONLY active controls are listed (verified ->
-              partial -> self-attested); cards expand independently. AAP-127 (S11)
-              FIX 2: ALL FIVE frameworks ALWAYS render — the old all-or-nothing
-              `hasAny` gate (which showed "No active controls from current
-              signals" when nothing fired) is removed, because each card's summary
-              is meaningful regardless of per-audit signals. */}
+          {/* AAP-121 (S5): per-framework lens cards. On expand, ONLY active
+              controls are listed (verified -> partial -> self-attested);
+              cards expand independently. AAP-128 (S12): the card headline is
+              STATIC capability coverage "C of ~N covered · (N−C) out of scope"
+              (identical every audit); the per-audit verdict breakdown stays as
+              secondary detail. AAP-127 (S11) FIX 2: ALL FIVE frameworks ALWAYS
+              render — the old all-or-nothing `hasAny` gate (which showed "No
+              active controls from current signals" when nothing fired) is
+              removed, because each card's static coverage summary is meaningful
+              regardless of per-audit signals. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {lenses.map((lens) => (
               <FrameworkCard
@@ -2964,14 +2966,15 @@ export type ControlResult = NonNullable<
 /**
  * AAP-121 (S5) — per-framework lens card. Driven entirely by the shared
  * `FrameworkLens` projection (no inline counting), so it stays in lockstep with
- * the markdown report. Header counts by ACTUAL state (verified / fail /
- * partial / self-attested); the expanded body lists ONLY active controls, in
- * the projection's order (verified -> partial -> self-attested). Out-of-scope
- * is a COUNT in the header, never a list (per Ilya 2026-06-02).
+ * the markdown report. The expanded body lists ONLY active controls, in the
+ * projection's order (verified -> partial -> self-attested).
  *
- * AAP-127 (S11) — the attributed self-attested findings render as COMPACT
- * references (code + title) linking to the full card in the global stream, not
- * duplicated full cards.
+ * AAP-128 (S12) — the headline is STATIC capability coverage `C of ~N covered`
+ * (`counts.covered`, identical every audit) with `(N−C)` out of scope; the
+ * per-audit verdict breakdown (verified / fail / partial / self-attested) is
+ * KEPT as secondary detail. AAP-127 (S11) — the attributed self-attested
+ * findings render as COMPACT references (code + title) linking to the full card
+ * in the global stream, not duplicated full cards.
  */
 export function FrameworkCard({
   lens,
@@ -3026,8 +3029,12 @@ export function FrameworkCard({
           <span style={{ fontSize: 13, fontWeight: 600, color: '#18181b' }}>
             {FRAMEWORK_LABELS[lens.frameworkId] || lens.frameworkId}
           </span>
+          {/* AAP-128 (S12): STATIC capability coverage "C of ~N covered" —
+              `counts.covered` is catalog-derived and identical every audit, so
+              this figure never moves with which controls fired (contrast the
+              per-audit verdict breakdown to the right). */}
           <span style={{ fontSize: 11, color: '#a1a1aa' }}>
-            {counts.activeShown} of ~{counts.publishedControlCount}
+            {counts.covered} of ~{counts.publishedControlCount} covered
           </span>
         </span>
         <span style={{ fontSize: 11.5, color: '#52525b' }}>

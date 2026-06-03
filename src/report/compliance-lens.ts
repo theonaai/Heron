@@ -41,7 +41,11 @@
  */
 
 import { FRAMEWORKS } from '../compliance/frameworks.js';
-import { findCatalogEntry, type ControlResult } from '../compliance/control-catalog.js';
+import {
+  findCatalogEntry,
+  listCatalogEntries,
+  type ControlResult,
+} from '../compliance/control-catalog.js';
 import { CONTROL_MAPPINGS } from '../compliance/control-mappings.js';
 import { FINDING_TYPES } from '../compliance/types.js';
 import type { ComplianceBucket, FindingType, FrameworkId } from '../compliance/types.js';
@@ -69,6 +73,54 @@ export const OUT_OF_SCOPE_BUCKETS: ReadonlySet<ComplianceBucket> = new Set<Compl
   'oos-operator-artifact',
   'oos-not-verifiable',
 ]);
+
+// ─── Static capability coverage C (AAP-128 / S12) ─────────────────────────────
+
+/**
+ * AAP-128 (S12) — per-framework STATIC capability coverage `C`.
+ *
+ * `C` = the count of DISTINCT controls in `frameworkId`'s catalog whose honest
+ * bucket is in `ACTIVE_BUCKETS` (`verifiable` OR `self-attested`). It is a
+ * property of the catalog/bucket MODEL (`control-catalog.ts` stamps the bucket
+ * from `control-buckets.ts`), NOT of any one audit — so it is identical on
+ * every run regardless of which controls actually fired. This is what the
+ * coverage headline ("C of ~N covered") must read, so the figure never moves
+ * audit-to-audit (contrast `activeShown`, which is per-audit).
+ *
+ * Derived from `CONTROL_CATALOG` (not directly from `BUCKET_BY_CONTROL`) so a
+ * bucket-map entry that is not actually WIRED into a catalog entry cannot
+ * inflate C — only controls that can reach a report are counted, consistent
+ * with the honest-lens principle. (In practice the two agree, because the
+ * catalog's distinct control set per framework equals the bucket map's keys;
+ * computing from the catalog keeps it that way by construction.)
+ *
+ * Computed once at module load and memoised: the catalog is frozen at load.
+ */
+const STATIC_COVERAGE_BY_FRAMEWORK: Record<FrameworkId, number> = (() => {
+  const distinctActive = new Map<FrameworkId, Set<string>>();
+  for (const entry of listCatalogEntries()) {
+    if (!ACTIVE_BUCKETS.has(entry.bucket)) continue;
+    let set = distinctActive.get(entry.frameworkId);
+    if (!set) {
+      set = new Set<string>();
+      distinctActive.set(entry.frameworkId, set);
+    }
+    set.add(entry.controlId);
+  }
+  const out = {} as Record<FrameworkId, number>;
+  for (const frameworkId of Object.keys(FRAMEWORKS) as FrameworkId[]) {
+    out[frameworkId] = distinctActive.get(frameworkId)?.size ?? 0;
+  }
+  return out;
+})();
+
+/**
+ * The static capability coverage `C` for one framework — the headline
+ * numerator. Identical every audit (see `STATIC_COVERAGE_BY_FRAMEWORK`).
+ */
+export function staticCoverageForFramework(frameworkId: FrameworkId): number {
+  return STATIC_COVERAGE_BY_FRAMEWORK[frameworkId] ?? 0;
+}
 
 // ─── Lens row shapes ─────────────────────────────────────────────────────────
 
@@ -105,13 +157,26 @@ export interface FrameworkLensCounts {
    *  partial. Kept distinct so neither renderer has to re-derive it. */
   unverified: number;
   selfAttested: number;
-  /** Active controls the lens LISTS = verified + fail + partial + unverified +
-   *  selfAttested. */
+  /** Active controls the lens LISTS this audit = verified + fail + partial +
+   *  unverified + selfAttested. PER-AUDIT — fluctuates with which controls
+   *  fired. NOT the coverage headline (that is `covered`, below). */
   activeShown: number;
-  /** Honest out-of-scope figure against the published universe:
-   *  `publishedControlCount - activeShown`, floored at 0. */
+  /**
+   * AAP-128 (S12) — STATIC capability coverage `C`: the count of THIS
+   * framework's catalog controls whose bucket is `verifiable` OR
+   * `self-attested`. Computed from the catalog/bucket model
+   * (`control-catalog.ts` + `control-buckets.ts`), NOT from the per-audit
+   * `activeShown`, so it is identical on every audit regardless of which
+   * controls fired. This is the coverage-headline numerator: "C of ~N covered".
+   */
+  covered: number;
+  /** Honest out-of-scope figure against the published universe.
+   *  AAP-128 (S12): now `publishedControlCount - covered` (= N − C, STATIC
+   *  capability), floored at 0 — what Heron structurally cannot address for
+   *  this framework, identical every audit. (Was `publishedControlCount -
+   *  activeShown`, a per-audit figure.) */
   outOfScope: number;
-  /** The framework's published-universe size (the "~104" denominator). */
+  /** The framework's published-universe size (the "~104" denominator, `N`). */
   publishedControlCount: number;
 }
 
@@ -371,7 +436,12 @@ export function frameworkLens(
 
   const activeShown = controls.length;
   const publishedControlCount = FRAMEWORKS[frameworkId]?.publishedControlCount ?? 0;
-  const outOfScope = Math.max(0, publishedControlCount - activeShown);
+  // AAP-128 (S12): coverage is the STATIC capability C (catalog-derived),
+  // identical every audit; out-of-scope is N − C (also static). The per-audit
+  // `activeShown` is kept for the verdict breakdown but is no longer the
+  // headline figure.
+  const covered = staticCoverageForFramework(frameworkId);
+  const outOfScope = Math.max(0, publishedControlCount - covered);
 
   return {
     frameworkId,
@@ -382,6 +452,7 @@ export function frameworkLens(
       unverified,
       selfAttested,
       activeShown,
+      covered,
       outOfScope,
       publishedControlCount,
     },
