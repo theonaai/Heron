@@ -415,12 +415,13 @@ describe('AAP-128 (S12) — coverage C is STATIC (same regardless of what fired)
 
 // ─── 7c. composeFrameworkLensRows — `surfaced` (A) never exceeds C ───────────
 //
-// `anchorControlForFinding` prefers an ACTIVE-bucket control but FALLS BACK to a
-// non-active (often `oos-operator-artifact`) one. A self-attested FINDING that
-// anchors to such a control synthesises a row that IS rendered, but it must NOT
-// inflate the headline numerator A past the static coverage C — otherwise the
-// card reads e.g. "4 of 2 covered" (ISO 42001) or "5 of 4" (NIST AI RMF). The
-// fix counts only DISTINCT ACTIVE-bucket rows in `surfaced`.
+// AAP-131 (Option B, strict): a finding attaches to a framework control ONLY IF
+// that control INDEPENDENTLY FIRED this audit (it is already a row in
+// `lens.controls` from a detector verdict or an independent self-attestation).
+// A phantom control row is NEVER synthesised — a finding whose anchor control
+// did not fire drops to `orphanFindings`. So every row is an
+// independently-fired ACTIVE-bucket control, `surfaced` equals the full visible
+// row count, and A ≤ C ≤ N holds by construction.
 
 /** One coded SLF finding for the composer, carrying a findingType. */
 function composableFinding(args: { id: string; code: string; findingType: FindingType }) {
@@ -441,34 +442,53 @@ function allFindingTypeFindings() {
 }
 
 describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)', () => {
-  it('excludes oos-anchored synthetic rows from `surfaced` but still renders them', () => {
-    // ISO 42001 has C = 2 active controls. With no controlResults, every
-    // findingType anchors to an out-of-scope artifact control (A.6.2.x / A.7.4 /
-    // …), so all rows are synthetic oos rows. A must be 0, not rows.length.
+  it('drops findings whose anchor control did not fire to orphanFindings — never a synthetic row', () => {
+    // ISO 42001 has C = 2 active controls, but with NO controlResults and NO
+    // flags, NOTHING fired this audit (`lens.controls` is empty). Every
+    // findingType therefore has no fired control to nest under → all findings
+    // orphan, NO row is synthesised. (Pre-AAP-131 this synthesised oos rows.)
     const lens = frameworkLens('iso-42001', [], []);
-    const composed = composeFrameworkLensRows(lens, allFindingTypeFindings());
-    // The synthetic rows are STILL rendered (do not remove them).
-    expect(composed.rows.length).toBeGreaterThan(0);
-    // …but every one is out-of-scope, so the numerator is 0.
-    const oosRows = composed.rows.filter((r) => !ACTIVE_BUCKETS.has(r.control.bucket));
-    expect(oosRows.length).toBe(composed.rows.length);
+    const findings = allFindingTypeFindings();
+    const composed = composeFrameworkLensRows(lens, findings);
+    // No control fired → no rows at all; every finding is an orphan.
+    expect(composed.rows).toHaveLength(0);
     expect(composed.surfaced).toBe(0);
+    // Every finding that maps into this framework lands in the orphan list
+    // rather than vanishing or synthesising a phantom row.
+    expect(composed.orphanFindings.length).toBeGreaterThan(0);
     expect(composed.surfaced).toBeLessThanOrEqual(staticCoverageForFramework('iso-42001'));
   });
 
-  it('counts active-bucket finding-anchored rows in `surfaced`', () => {
-    // EU AI Act: feeding every findingType anchors some findings to ACTIVE
-    // controls (Art. 14(4)(d) verifiable, Art. 5 / Art. 50(1) self-attested) and
-    // some to oos (Art. 9(x)). A = the active ones (3), not all 6 rows.
-    const lens = frameworkLens('eu-ai-act', [], []);
-    const composed = composeFrameworkLensRows(lens, allFindingTypeFindings());
-    const activeRows = composed.rows.filter((r) => ACTIVE_BUCKETS.has(r.control.bucket));
-    expect(composed.surfaced).toBe(activeRows.length);
-    expect(composed.surfaced).toBeGreaterThan(0);
-    expect(composed.surfaced).toBeLessThanOrEqual(staticCoverageForFramework('eu-ai-act'));
+  it('an oos-only mapped finding orphans even when other controls fired', () => {
+    // EU AI Act: Art. 14(4)(d) fires as a verifiable controlResult (its active
+    // row). A finding whose type maps ONLY to out-of-scope EU controls (
+    // excessive-access → Art. 9(2)(a) oos-operator-artifact + Art. 15(4-5)
+    // oos-not-verifiable) must NOT anchor to anything — anchorControlForFinding
+    // returns undefined (no active fallback) — so it orphans and never
+    // synthesises an Art. 9(2)(a) ghost row.
+    const lens = frameworkLens(
+      'eu-ai-act',
+      [
+        result({
+          frameworkId: 'eu-ai-act',
+          controlId: 'Art. 14(4)(d)',
+          verdict: 'partial',
+          bucket: 'verifiable',
+          findingType: 'write-risk',
+        }),
+      ],
+      [],
+    );
+    const composed = composeFrameworkLensRows(lens, [
+      composableFinding({ id: 'f1', code: 'SLF-001', findingType: 'excessive-access' }),
+    ]);
+    // Art. 9(2)(a) must NOT appear as a row.
+    expect(composed.rows.map((r) => r.control.controlId)).not.toContain('Art. 9(2)(a)');
+    // The finding orphaned instead.
+    expect(composed.orphanFindings.map((o) => o.code)).toContain('SLF-001');
   });
 
-  it('holds A ≤ C ≤ N on all five frameworks even in the worst SLF fan-out', () => {
+  it('holds A ≤ C ≤ N and surfaced == visible row count on all five frameworks', () => {
     const findings = allFindingTypeFindings();
     for (const frameworkId of allLensFrameworks()) {
       const lens = frameworkLens(frameworkId, [], []);
@@ -477,15 +497,19 @@ describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)
       const N = lens.counts.publishedControlCount;
       expect(composed.surfaced).toBeLessThanOrEqual(C);
       expect(C).toBeLessThanOrEqual(N);
-      // `surfaced` equals the count of DISTINCT active-bucket rows.
+      // AAP-131: every row is an independently-fired ACTIVE-bucket control, so
+      // `surfaced` equals the full visible row count — no uncounted phantoms.
+      expect(composed.surfaced).toBe(composed.rows.length);
       const activeRows = composed.rows.filter((r) => ACTIVE_BUCKETS.has(r.control.bucket));
       expect(composed.surfaced).toBe(activeRows.length);
     }
   });
 
-  it('an active-bucket control that fired AND has a finding still counts once', () => {
+  it('a finding whose anchor control DID fire still nests under it (SLF-001 under GDPR Art. 25)', () => {
     // GDPR Art. 25 fires as a verifiable controlResult AND a finding anchors to
-    // it (excessive-access → Art. 25). It is a single active row → counted once.
+    // it (excessive-access → Art. 25). The finding nests under the fired row;
+    // it is a single active row counted once. (AAP-131 acceptance: correct
+    // nesting is PRESERVED where the control did fire.)
     const anchor = anchorControlForFinding('gdpr', 'excessive-access');
     expect(anchor?.controlId).toBe('Art. 25');
     expect(ACTIVE_BUCKETS.has(anchor!.bucket)).toBe(true);
@@ -499,7 +523,42 @@ describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)
     ]);
     const art25Rows = composed.rows.filter((r) => r.control.controlId === 'Art. 25');
     expect(art25Rows).toHaveLength(1);
+    // The finding nested under the fired row, not orphaned.
+    expect(art25Rows[0]!.findings.map((f) => f.code)).toContain('SLF-001');
+    expect(composed.orphanFindings).toHaveLength(0);
     expect(composed.surfaced).toBe(1);
+  });
+
+  it('the SAME finding nests when its control fired but orphans when it did not', () => {
+    // excessive-access → GDPR Art. 25 (active/verifiable). When Art. 25 fired,
+    // the finding nests. When NOTHING fired, the identical finding orphans —
+    // proving attachment is gated strictly on the control having fired.
+    const finding = composableFinding({ id: 'f1', code: 'SLF-001', findingType: 'excessive-access' });
+
+    const firedLens = frameworkLens(
+      'gdpr',
+      [result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'verified', bucket: 'verifiable' })],
+      [],
+    );
+    const nested = composeFrameworkLensRows(firedLens, [finding]);
+    expect(nested.rows.find((r) => r.control.controlId === 'Art. 25')?.findings.map((f) => f.code)).toContain(
+      'SLF-001',
+    );
+    expect(nested.orphanFindings).toHaveLength(0);
+
+    const emptyLens = frameworkLens('gdpr', [], []);
+    const orphaned = composeFrameworkLensRows(emptyLens, [finding]);
+    expect(orphaned.rows).toHaveLength(0);
+    expect(orphaned.orphanFindings.map((o) => o.code)).toContain('SLF-001');
+  });
+
+  it('anchorControlForFinding returns undefined when only out-of-scope controls map (no fallback)', () => {
+    // AAP-131 removed the `if (!chosen) chosen = inFramework[0]` out-of-scope
+    // fallback. excessive-access maps to EU Art. 9(2)(a) (oos-operator-artifact)
+    // with no active EU control, so the anchor must be undefined rather than the
+    // out-of-scope Art. 9(2)(a).
+    const anchor = anchorControlForFinding('eu-ai-act', 'excessive-access');
+    expect(anchor).toBeUndefined();
   });
 });
 

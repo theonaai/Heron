@@ -356,13 +356,15 @@ export function slfFindingsForFramework<T extends SlfLensFinding>(
  * in templates.ts reads the prose flag's `controlIds[0]`, which is itself
  * seeded from `CONTROL_MAPPINGS`): the finding's `findingType` maps — via
  * `CONTROL_MAPPINGS` — to one or more controls per framework, and the anchor is
- * the FIRST of those, preferring a control whose catalog bucket is active
- * (`verifiable`/`self-attested`) so the finding nests under a control the lens
- * will actually render as a row.
+ * the FIRST of those whose catalog bucket is ACTIVE (`verifiable`/
+ * `self-attested`) so the finding nests under a control the lens can render as
+ * a row.
  *
- * Returns `undefined` when the finding type maps to no control in this
- * framework (the caller then renders the finding as a standalone compact row —
- * the FALLBACK in the redesign spec).
+ * AAP-131 (Option B, strict): there is NO out-of-scope fallback. Returns
+ * `undefined` when the finding type maps to NO ACTIVE control in this framework
+ * (whether because it maps to no control at all, or only to out-of-scope ones).
+ * The caller then drops the finding to the framework's standalone/orphan list —
+ * it must never anchor to a control the lens cannot render.
  */
 export function anchorControlForFinding(
   frameworkId: FrameworkId,
@@ -373,15 +375,18 @@ export function anchorControlForFinding(
   const inFramework = mapping.controls.filter((c) => c.frameworkId === frameworkId);
   if (inFramework.length === 0) return undefined;
 
-  // Prefer the first control whose catalog bucket is ACTIVE so the finding
-  // nests under a renderable row; otherwise fall back to the first mapped
-  // control (still anchored honestly, even if it is itself out of scope).
+  // AAP-131 (Option B, strict): return ONLY a control whose catalog bucket is
+  // ACTIVE (verifiable / self-attested), so the finding can nest under a control
+  // the lens will actually render as a row. There is NO out-of-scope fallback:
+  // anchoring a finding to a control that can never be a row is what produced
+  // the EU Art 9(2)(a) ghost. If none of the finding's mapped controls in this
+  // framework is active, return undefined and the caller drops the finding to
+  // the standalone/orphan list.
   const resolve = (controlId: string) => findControlAcrossFindings(frameworkId, controlId);
-  let chosen = inFramework.find((c) => {
+  const chosen = inFramework.find((c) => {
     const entry = resolve(c.controlId);
     return entry !== undefined && ACTIVE_BUCKETS.has(entry.bucket);
   });
-  if (!chosen) chosen = inFramework[0];
   if (!chosen) return undefined;
 
   const entry = resolve(chosen.controlId);
@@ -414,10 +419,11 @@ export interface LensFindingRef {
 /**
  * S13 — a control row plus the self-attested findings nested under it. The
  * control is rendered with its verdict badge; each nested finding is a compact
- * reference into the global stream. `syntheticSelfAttested` is true when the
- * control did NOT independently activate this audit and exists ONLY because a
- * finding anchors to it — the renderer shows it with the `self-attested`
- * verdict in that case (spec point 1).
+ * reference into the global stream. AAP-131 (Option B, strict): every row here
+ * is a control that INDEPENDENTLY FIRED this audit (a detector verdict or an
+ * independent self-attestation already in `lens.controls`). A finding never
+ * synthesises a phantom row — if its anchor control did not fire, the finding
+ * lands in `orphanFindings` instead.
  */
 export interface LensControlRow {
   control: LensControl;
@@ -427,20 +433,22 @@ export interface LensControlRow {
 /**
  * S13 — the fully composed render model for ONE framework card: the ordered
  * control rows (each with any nested findings) plus any findings whose anchor
- * could not be resolved to a renderable control (FALLBACK — rendered as
- * standalone compact rows at the end). `surfaced` is the redesign's `A`: the
- * count of DISTINCT ACTIVE-bucket controls actually shown as rows this audit
- * (activated + finding-anchored), which is the headline numerator `{A} of {C}
- * covered`. Synthetic rows whose anchor fell back to an out-of-scope bucket are
- * still rendered but excluded from `A`, so it never exceeds `C`.
+ * control did not fire this audit (FALLBACK — rendered as standalone compact
+ * rows at the end). AAP-131 (Option B, strict): rows are ONLY controls that
+ * independently fired; findings never synthesise a phantom row. `surfaced` is
+ * the redesign's `A`: the count of DISTINCT ACTIVE-bucket controls shown as
+ * rows this audit, which is the headline numerator `{A} of {C} covered`. Since
+ * every row is now an independently-fired control, `surfaced` equals the visible
+ * active-row count exactly (no uncounted phantom rows), and stays ≤ C.
  */
 export interface FrameworkLensRows {
   rows: LensControlRow[];
-  /** FALLBACK findings with no resolvable anchor control — standalone rows. */
+  /** FALLBACK findings whose anchor control did not fire this audit — rendered
+   *  as standalone rows (never as a synthesised control row). */
   orphanFindings: LensFindingRef[];
-  /** `A` — distinct ACTIVE-bucket controls surfaced as rows this audit
-   *  (activated + finding-anchored). Excludes synthetic rows whose anchor fell
-   *  back to an out-of-scope bucket, so the headline never reads A > C. */
+  /** `A` — distinct ACTIVE-bucket controls surfaced as rows this audit. Every
+   *  row is an independently-fired control (AAP-131), so this equals the visible
+   *  active-row count and never exceeds C. */
   surfaced: number;
 }
 
@@ -453,11 +461,13 @@ export interface ComposableFinding extends SlfLensFinding {
 
 /**
  * S13 — compose the per-framework render model: nest each self-attested finding
- * under the control it ANCHORS to for this framework, synthesising a
- * `self-attested` control row when the anchor control did not independently
- * activate this audit. Findings whose anchor cannot be resolved to a control
- * fall back to `orphanFindings`. Pure; shared by BOTH renderers so the two
- * surfaces stay identical.
+ * under the control it ANCHORS to for this framework. AAP-131 (Option B,
+ * strict): a finding attaches to a control ONLY IF that control INDEPENDENTLY
+ * FIRED this audit (it is already a row in `lens.controls` from a detector
+ * verdict or an independent self-attestation). If the finding's anchor control
+ * did not fire — or no mapped control in this framework is active — the finding
+ * drops to `orphanFindings`; a phantom control row is NEVER synthesised. Pure;
+ * shared by BOTH renderers so the two surfaces stay identical.
  *
  * `findings` should already be the framework-scoped set
  * (`slfFindingsForFramework(frameworkId, …)`).
@@ -482,33 +492,26 @@ export function composeFrameworkLensRows<T extends ComposableFinding>(
       orphanFindings.push(ref);
       continue;
     }
-    let row = rowByControlId.get(anchor.controlId);
+    const row = rowByControlId.get(anchor.controlId);
     if (!row) {
-      // The anchor control did not independently activate this audit — it
-      // exists ONLY because this finding anchors to it. Synthesise a row with
-      // the `self-attested` verdict (spec point 1).
-      const synthetic: LensControl = {
-        frameworkId,
-        controlId: anchor.controlId,
-        bucket: anchor.bucket,
-        verdict: 'self-attested',
-        severity: 'info',
-        ...(anchor.controlName !== undefined ? { controlName: anchor.controlName } : {}),
-      };
-      row = { control: synthetic, findings: [] };
-      rowByControlId.set(anchor.controlId, row);
-      rows.push(row);
+      // AAP-131 (Option B, strict): the anchor control did NOT independently
+      // activate this audit (it is not already a row from a detector verdict or
+      // an independent self-attestation). Do NOT synthesise a phantom control
+      // row — drop the finding to the standalone/orphan list instead. This kills
+      // the ghost rows (EU Art 9(2)(a), Art 50(1) on sess-20260603-073859) that
+      // appeared only because a finding anchored to a control that never fired.
+      orphanFindings.push(ref);
+      continue;
     }
     row.findings.push(ref);
   }
 
-  // `A` — distinct ACTIVE-bucket controls surfaced as rows (activated +
-  // finding-anchored). A synthetic finding-anchored row whose control fell back
-  // to an out-of-scope bucket (anchorControlForFinding prefers an ACTIVE-bucket
-  // control but FALLS BACK to a non-active one) is still RENDERED, but it must
-  // NOT inflate the numerator past the static coverage denominator `C`
-  // (`staticCoverageForFramework`, which counts only ACTIVE_BUCKETS controls).
-  // Counting only ACTIVE_BUCKETS rows keeps the headline honest: A ≤ C ≤ N.
+  // `A` — distinct ACTIVE-bucket controls surfaced as rows. AAP-131 (Option B,
+  // strict) removed the synthetic-row path, so every row is now an
+  // independently-fired control already in `lens.controls`; those are all
+  // ACTIVE-bucket by construction (out-of-scope controls are never projected
+  // into `lens.controls`). Counting ACTIVE_BUCKETS rows therefore equals the
+  // full visible row count — no uncounted phantom rows — and stays A ≤ C ≤ N.
   const surfaced = rows.filter((row) => ACTIVE_BUCKETS.has(row.control.bucket)).length;
   return { rows, orphanFindings, surfaced };
 }
