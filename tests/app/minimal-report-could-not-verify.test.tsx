@@ -52,9 +52,10 @@ const baseReport = {
     },
     findings: [
       // The failed introspection — marked "could not verify".
+      // T2 / D6 — titles now use a colon, not an em-dash (house style).
       {
         id: 'oau-0-introspection-failed-oauth-scopes',
-        title: 'OAuth introspection failed — oauth-scopes',
+        title: 'OAuth introspection failed: oauth-scopes',
         description:
           'Could not verify granted scopes for oauth-scopes: token rejected. No declared-vs-actual comparison was possible for this source.',
         evidenceSource: 'OAU' as const,
@@ -63,11 +64,12 @@ const baseReport = {
         severityComponents: { br: 1, ds: 1, dm: 1 },
         verificationOutcome: 'unverified' as const,
       },
-      // A real, confirmed OAuth scope discrepancy — NO marker.
+      // A real, confirmed OAuth scope discrepancy — NO marker. T2 / D6 — the
+      // title is now a readable capability with the diff kind, no raw token.
       {
         id: 'oau-1-extra-google-workspace',
-        title: 'OAuth extra — google-workspace',
-        description: 'OAuth scope extra from oauth-scopes',
+        title: 'Extra scope: Google Sheets',
+        description: 'OAuth scope extra from oauth-scopes (google-workspace:spreadsheets)',
         evidenceSource: 'OAU' as const,
         band: 'high' as const,
         severityScore: 9,
@@ -133,7 +135,7 @@ describe('FindingsBlock "Could not verify" bucket (T1 / D1)', () => {
   it('keeps the genuine OAU discrepancy under "Verified discrepancies"', () => {
     const html = render(baseReport);
     const idxVerifiedDiscrepancies = html.indexOf('Verified discrepancies');
-    const idxRealDiscrepancy = html.indexOf('OAuth extra');
+    const idxRealDiscrepancy = html.indexOf('Extra scope: Google Sheets');
     const idxCouldNotVerify = html.indexOf('Could not verify');
     expect(idxRealDiscrepancy).toBeGreaterThan(idxVerifiedDiscrepancies);
     // The real discrepancy renders BEFORE the could-not-verify section.
