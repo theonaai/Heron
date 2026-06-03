@@ -452,7 +452,7 @@ export async function POST(request: Request): Promise<Response> {
         declared,
         agentLabel: body.data.sessionId,
       })
-    : { verifications: [], section: null };
+    : { verifications: [], section: null, report: null };
 
   // ── Persistence ─────────────────────────────────────────────────────
   //
@@ -509,6 +509,13 @@ export async function POST(request: Request): Promise<Response> {
         analyzer: analyzerSubset,
         transcript: transcriptAsQA,
         discovery: finalResult,
+        // AAP-74/G10 — thread the OAuth verification report so the
+        // router-adapter wedge detectors (AIUC-1 A003/A003.3/A003.4/B006,
+        // GDPR Art 25/Art 22) fire on the dashboard path. They read
+        // `evidence.verificationReport` and short-circuit to null without
+        // it, so a clean grant (declared==actual, no diffs) never reached
+        // `verified`.
+        ...(oauth.report ? { verificationReport: oauth.report } : {}),
       });
       patch.compliance = compliance;
       // AAP-69 alias — the dashboard minimal report reads `regulatoryCompliance`.

@@ -34,6 +34,7 @@ import { describe, expect, it } from 'vitest';
 import { recomputeComplianceWithDiscovery } from '../../src/report/recompute-compliance.js';
 import type { DiscoveryResult } from '../../src/discovery/types.js';
 import type { QAPair, SystemAssessment } from '../../src/report/types.js';
+import type { VerificationReport } from '../../src/verification/types.js';
 
 function emptyDiscovery(): DiscoveryResult {
   return {
@@ -207,6 +208,117 @@ describe('AAP-79 / AAP-86 — recomputeComplianceWithDiscovery', () => {
 
     expect(withUndefined.all).toEqual(withEmpty.all);
     expect(withUndefined.signals).toEqual(withEmpty.signals);
+  });
+});
+
+// ─── Forwarded-OAuth wedge: verificationReport threads into the detectors ────
+//
+// Pre-fix, recomputeComplianceWithDiscovery only ever passed
+// `actual: { discovery }`. The router-adapter wedge detectors (AIUC-1
+// A003.3/A003.4/B006, GDPR Art 25/Art 22) build their signals via
+// `envelopeToSignals`, which reads `evidence.verificationReport` and returns
+// null without it — so a clean forwarded OAuth grant produced 0 verified wedge
+// controls. The fix adds a `verificationReport` parameter that flows through to
+// `mapFindings({ declared, actual: { discovery, verificationReport } })`.
+
+/** A clean verified OAuth VerificationReport: declared==actual, no diffs. */
+function cleanVerifiedOAuthReport(): VerificationReport {
+  const capturedAt = '2026-05-29T10:00:00.000Z';
+  return {
+    capturedAt,
+    agentLabel: 'sess-test',
+    declared: [
+      {
+        source: 'interview',
+        capturedAt,
+        scopes: [{ service: 'google-workspace', scope: 'drive.readonly' }],
+      },
+    ],
+    sources: [
+      {
+        sourceId: 'oauth-scopes',
+        verdict: 'verified',
+        diffs: [],
+        inventory: {
+          source: 'oauth-scopes',
+          capturedAt,
+          scopes: [{ service: 'google-workspace', scope: 'drive.readonly' }],
+        },
+      },
+    ],
+  };
+}
+
+describe('forwarded-OAuth wedge — verificationReport threads to the detectors', () => {
+  it('without a verificationReport, the wedge detectors do not run', () => {
+    const out = recomputeComplianceWithDiscovery({
+      analyzer: { systems: analyzerSystems },
+      transcript: [],
+    });
+    // No actual evidence ⇒ prose-only path ⇒ no typed controlResults.
+    expect(out.controlResults).toEqual([]);
+  });
+
+  it('a verified forwarded report lights the wedge controls to `verified`', () => {
+    const out = recomputeComplianceWithDiscovery({
+      analyzer: { systems: analyzerSystems },
+      transcript: [],
+      verificationReport: cleanVerifiedOAuthReport(),
+    });
+    const verdictFor = (frameworkId: string, controlId: string) =>
+      out.controlResults.find(
+        (r) => r.frameworkId === frameworkId && r.controlId === controlId,
+      )?.verdict;
+    expect(verdictFor('aiuc-1', 'A003.3')).toBe('verified');
+    expect(verdictFor('aiuc-1', 'A003.4')).toBe('verified');
+    expect(verdictFor('aiuc-1', 'B006')).toBe('verified');
+    expect(verdictFor('gdpr', 'Art. 25')).toBe('verified');
+  });
+
+  it('the report and discovery can be threaded together', () => {
+    const discovery: DiscoveryResult = {
+      agents: [
+        {
+          runtime: 'codex',
+          configPath: '/Users/me/.codex/config.toml',
+          mcpServers: [],
+          capabilities: [],
+        },
+      ],
+      findings: [],
+      workspaceEnv: [
+        { path: '/Users/me/repo/.env', workspace: '/Users/me/repo', keys: ['STRIPE_SECRET_KEY'] },
+      ],
+      scannedAt: '2026-05-25T00:00:00.000Z',
+      scannedPaths: [],
+    };
+    const out = recomputeComplianceWithDiscovery({
+      analyzer: { systems: analyzerSystems },
+      transcript: transcriptWithoutPII(),
+      discovery,
+      verificationReport: cleanVerifiedOAuthReport(),
+    });
+    // Discovery-driven sensitive-data controls still fire…
+    const ids = out.controlResults.map((r) => `${r.frameworkId}:${r.controlId}`);
+    expect(ids).toContain('gdpr:Art. 6');
+    // …AND the OAuth wedge controls verify.
+    expect(
+      out.controlResults.find((r) => r.frameworkId === 'aiuc-1' && r.controlId === 'B006')?.verdict,
+    ).toBe('verified');
+  });
+
+  it('a null verificationReport is treated as absent (back-compat)', () => {
+    const withNull = recomputeComplianceWithDiscovery({
+      analyzer: { systems: analyzerSystems },
+      transcript: transcriptWithoutPII(),
+      verificationReport: null,
+    });
+    const without = recomputeComplianceWithDiscovery({
+      analyzer: { systems: analyzerSystems },
+      transcript: transcriptWithoutPII(),
+    });
+    expect(withNull.all).toEqual(without.all);
+    expect(withNull.controlResults).toEqual(without.controlResults);
   });
 });
 

@@ -1893,7 +1893,7 @@ export class HeronMCPServer {
           declared: forwardedDeclared,
           agentLabel: sessionId,
         })
-      : { verifications: [], section: null };
+      : { verifications: [], section: null, report: null };
 
     // Re-compute Stage 3 framework mapping with the fresh evidence. This
     // is the load-bearing part of AAP-79 — pre-AAP-79 the mapper ran
@@ -1969,6 +1969,12 @@ export class HeronMCPServer {
         analyzer: analyzerSubset,
         transcript: transcriptAsQA,
         discovery: scrubbed,
+        // G10 — thread the forwarded-OAuth verification report so the
+        // router-adapter wedge detectors (AIUC-1 A003/A003.3/A003.4/B006,
+        // GDPR Art 25/Art 22) fire. They read `evidence.verificationReport`
+        // and short-circuit to null without it — so a clean forwarded grant
+        // (declared==actual, no diffs) never reached `verified` before.
+        ...(oauthForward.report ? { verificationReport: oauthForward.report } : {}),
       });
       reportPatch.compliance = compliance;
       // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
