@@ -149,6 +149,21 @@ export interface VerdictFinding {
   findingType?: FindingType;
   /** Optional kind tag for legacy renderers (discovery / oauth / risk). */
   kind?: string;
+  /**
+   * T1 / D1 — explicit "could not verify" marker. Set to `'unverified'` when
+   * this finding represents a DETERMINISTIC source Heron TRIED but could not
+   * read (e.g. a failed OAuth introspection: expired/rejected token; later, a
+   * skipped MCP enumeration). Such a finding is NOT a confirmed discrepancy —
+   * the source-level verdict was `unverified` — so the renderer routes it to a
+   * separate "Could not verify" bucket instead of "Verified discrepancies",
+   * and excludes it from the "N verified" header counter. Severity stays 0, so
+   * it never moves posture either way.
+   *
+   * Absent on confirmed Verified discrepancies (MCP/OAU/ENV/PLG) and on SLF
+   * findings. The discriminator is THIS field, not the finding id or title —
+   * any future "tried but could not read" finding sets it and routes the same.
+   */
+  verificationOutcome?: 'unverified';
 }
 
 /**
@@ -412,6 +427,9 @@ function oauthIntrospectionFailureFinding(
     title: `OAuth introspection failed — ${v.sourceId}`,
     description: `Could not verify granted scopes for ${v.sourceId}: ${reason}. No declared-vs-actual comparison was possible for this source.`,
     kind: 'oauth',
+    // T1 / D1 — a deterministic source we tried but could not read. Route to
+    // the "Could not verify" bucket, not "Verified discrepancies".
+    verificationOutcome: 'unverified',
   };
 }
 

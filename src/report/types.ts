@@ -437,6 +437,15 @@ export const verdictFindingSnapshotSchema = z.object({
    */
   findingType: z.enum(FINDING_TYPES).optional(),
   kind: z.string().optional(),
+  /**
+   * T1 / D1 — "could not verify" marker. Present (`'unverified'`) on a finding
+   * that represents a deterministic source Heron tried but could not read (a
+   * failed OAuth introspection; later, a skipped MCP enumeration). The
+   * dashboard routes these to the "Could not verify" bucket and excludes them
+   * from the verified count. Optional + absent on confirmed discrepancies, SLF
+   * findings, and legacy report.json blobs persisted before this field existed.
+   */
+  verificationOutcome: z.literal('unverified').optional(),
 });
 export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;
 

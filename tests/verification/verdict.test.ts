@@ -156,6 +156,34 @@ describe('computeVerdict', () => {
     expect(f.description).toContain('invalid or expired');
     // A failed read is honest "could not verify" — posture stays 0.
     expect(verdict.posture).toBe(0);
+    // T1/D1 — the finding carries the explicit "could not verify" marker so the
+    // dashboard routes it to the "Could not verify" bucket, NOT "Verified
+    // discrepancies". The discriminator is a field on the finding, not its id.
+    expect(f.verificationOutcome).toBe('unverified');
+  });
+
+  it('T1/D1 — a genuine OAU discrepancy carries NO could-not-verify marker', () => {
+    // A real declared-vs-actual OAuth scope discrepancy is a confirmed finding.
+    // It must remain a Verified discrepancy: no `verificationOutcome` marker.
+    const oauthVerifications: SourceVerification[] = [
+      {
+        sourceId: 'oauth-scopes',
+        verdict: 'discrepancy',
+        diffs: [
+          {
+            kind: 'extra',
+            dimension: 'scope',
+            source: 'oauth-scopes',
+            actual: { service: 'google-workspace', scope: 'drive.write' },
+            severity: 'high',
+          },
+        ],
+      },
+    ];
+    const verdict = computeVerdict({ oauthVerifications });
+    const oau = verdict.findings.find((f) => f.evidenceSource === 'OAU');
+    expect(oau).toBeDefined();
+    expect(oau?.verificationOutcome).toBeUndefined();
   });
 
   it('stamps interview-derived risks with evidenceSource = SLF', () => {

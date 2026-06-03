@@ -2412,8 +2412,18 @@ function FindingsBlock({
   const coded = assignFindingCodes(
     (verdict?.findings ?? []) as unknown as CodedVerdictFinding[],
   );
+  // T1 / D1 — three buckets, not two. A finding marked `verificationOutcome ===
+  // 'unverified'` is a deterministic source Heron TRIED but could not read (a
+  // failed OAuth introspection; later, a skipped MCP enumeration). It is NOT a
+  // confirmed discrepancy, so it must NOT count as "verified" or render under
+  // "Verified discrepancies". Route it to its own "Could not verify" bucket
+  // off the EXPLICIT marker (not the id prefix or title text). SLF is unchanged.
+  const couldNotVerify = coded
+    .filter((f) => f.evidenceSource !== 'SLF' && f.verificationOutcome === 'unverified')
+    .slice()
+    .sort((a, b) => b.severityScore - a.severityScore);
   const verified = coded
-    .filter((f) => f.evidenceSource !== 'SLF')
+    .filter((f) => f.evidenceSource !== 'SLF' && f.verificationOutcome !== 'unverified')
     .slice()
     .sort((a, b) => b.severityScore - a.severityScore);
   const selfAttested = coded
@@ -2484,6 +2494,31 @@ function FindingsBlock({
         )}
         <HostCapabilityNote capabilities={hostCapabilities} />
       </div>
+
+      {/*
+        T1 / D1 — "Could not verify" subsection. Findings here are deterministic
+        sources Heron TRIED but could not read (failed OAuth introspection;
+        later, skipped MCP enumeration). They are NOT confirmed discrepancies
+        and are NOT in the verified count. No em-dashes in the copy (house
+        style): plain words, commas, parens only.
+      */}
+      {couldNotVerify.length > 0 && (
+        <div style={{ marginTop: 18, borderTop: '1px dashed #e5e7eb', paddingTop: 14 }}>
+          <h3 style={{ margin: '4px 0 4px', fontSize: 14, fontWeight: 600, color: '#18181b' }}>
+            Could not verify
+          </h3>
+          <p style={{ margin: '0 0 12px', fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
+            Deterministic sources Heron tried to read but could not (for example a
+            rejected or expired OAuth token). These are not confirmed discrepancies and
+            do not move the posture indicator.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {couldNotVerify.map((f) => (
+              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} anchorId={findingAnchorId(f.code)} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Self-attested — collapsed by default */}
       {selfAttested.length > 0 && (
