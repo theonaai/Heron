@@ -1393,6 +1393,17 @@ function envKeysFromDiscovery(localAgentDiscovery: unknown): string[] {
   return out;
 }
 
+// T5 (D2): the "Verified?" column legend, shown as a hover/focus hint on an ⓘ
+// next to the header rather than a strip under the table. Plain text (native
+// title), no em-dashes.
+const VERIFIED_LEGEND_HINT = [
+  'What each glyph means:',
+  '✓ Verified: declared OAuth scopes confirmed by introspection',
+  '⚠ Discrepancy: declared scope does not match introspection',
+  '🔑 Found in .env: credential present, scope not introspectable',
+  '— No deterministic evidence: self-reported only',
+].join('\n');
+
 function SystemsBlock({
   systems,
   verdict,
@@ -1445,7 +1456,18 @@ function SystemsBlock({
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Risk</th>
-            <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>Verified?</th>
+            <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>
+              Verified?{' '}
+              <span
+                tabIndex={0}
+                role="img"
+                aria-label={VERIFIED_LEGEND_HINT}
+                title={VERIFIED_LEGEND_HINT}
+                style={{ cursor: 'help', color: '#a1a1aa', fontWeight: 400 }}
+              >
+                ⓘ
+              </span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1460,32 +1482,6 @@ function SystemsBlock({
           ))}
         </tbody>
       </table>
-      {/* AAP-126 (S10): legend so ✓ / ⚠ / — read clearly. The "Verified?"
-          column is deterministic OAuth-scope evidence, not a self-report. */}
-      <div
-        style={{
-          marginTop: 10,
-          fontSize: 11,
-          color: '#71717a',
-          lineHeight: 1.5,
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '4px 14px',
-        }}
-      >
-        <span>
-          <span style={{ color: '#15803d', fontWeight: 600 }}>✓</span> Verified against OAuth introspection
-        </span>
-        <span>
-          <span style={{ color: '#c2410c', fontWeight: 600 }}>⚠</span> Scope discrepancy
-        </span>
-        <span>
-          <span style={{ color: '#2563eb', fontWeight: 600 }}>🔑</span> Found in .env
-        </span>
-        <span>
-          <span style={{ color: '#a1a1aa', fontWeight: 600 }}>—</span> No deterministic verification
-        </span>
-      </div>
     </section>
   );
 }

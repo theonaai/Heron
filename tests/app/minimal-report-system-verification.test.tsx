@@ -439,24 +439,22 @@ function render(reportJson: unknown): string {
   );
 }
 
-describe('MinimalReportView "Verified?" wiring + legend (AAP-126)', () => {
-  it('renders both glyphs and the three-state legend', () => {
+describe('MinimalReportView "Verified?" wiring + legend hint (AAP-126 / T5)', () => {
+  it('T5: the legend lives in an ⓘ hover/focus hint, not a strip under the table', () => {
     const html = render(report);
-    // Both glyphs present in the rendered table.
-    expect(html).toContain('⚠');
-    expect(html).toContain('—');
-    // Legend explains each state.
-    expect(html).toContain('Verified against OAuth introspection');
-    expect(html).toContain('Scope discrepancy');
-    expect(html).toContain('No deterministic verification');
+    // The ⓘ affordance + the hint text (covers every glyph meaning).
+    expect(html).toContain('ⓘ');
+    expect(html).toContain('What each glyph means');
+    expect(html).toContain('Found in .env: credential present, scope not introspectable');
+    expect(html).toContain('No deterministic evidence: self-reported only');
+    // The old bottom-strip copy is gone.
+    expect(html).not.toContain('No deterministic verification (system declares no OAuth scope');
   });
 
-  it('T3: renders 🔑 for the telegram-bot row (token found in .env) and the legend entry', () => {
+  it('renders the per-row glyphs (⚠ discrepancy, 🔑 env-credential) in the table', () => {
     const html = render(report);
-    // telegram-bot's bot token is in workspaceEnv.keys -> 🔑.
-    expect(html).toContain('🔑');
-    // Legend explains the new state.
-    expect(html).toContain('Found in .env');
+    expect(html).toContain('⚠'); // google-sheets: declared scope in an extra diff
+    expect(html).toContain('🔑'); // telegram-bot + google-gemini: credential in .env
   });
 
   it('does not render the old finding-touch tooltip copy', () => {
