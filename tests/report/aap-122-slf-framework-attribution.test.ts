@@ -228,12 +228,11 @@ function baseCompliance(): StructuredCompliance {
 describe('AAP-122 — markdown lens render (renderStructuredCompliance)', () => {
   const SLF_TITLE = 'Agent autonomously rejects loan applicants';
 
-  // The five framework headers (in render order). AAP-123 (S7): the SLF finding
-  // is now rendered as a full finding CARD whose header is itself an h4
-  // (`#### SLF-… — …`), so a framework block can NO LONGER be sliced "to the next
-  // `####`" — that would cut the block off at its own finding card. Slice each
-  // framework block to the start of the next FRAMEWORK header (or the next h3
-  // section), so the block fully contains its finding cards.
+  // The five framework headers (in render order). AAP-127 (S11): the SLF finding
+  // is now a COMPACT reference (`- [`SLF-…`](#…) Title`), so a framework block no
+  // longer contains an h4 finding-card heading. Slicing to the next FRAMEWORK
+  // header (or next h3 section) still cleanly bounds each block; this is robust
+  // either way.
   const FRAMEWORK_HEADERS = [
     '#### EU AI Act',
     '#### GDPR',
@@ -256,19 +255,24 @@ describe('AAP-122 — markdown lens render (renderStructuredCompliance)', () => 
     return md.slice(start, end);
   }
 
-  it('renders the SLF finding under EACH framework its findingType maps to as a finding card, after the control rows', () => {
+  it('renders the SLF finding under EACH framework its findingType maps to as a COMPACT reference, after the control rows', () => {
     const findings = [codedSlf({ id: 'dap', title: SLF_TITLE, findingType: 'decisions-about-people' })];
     const md = renderStructuredCompliance(baseCompliance(), undefined, findings);
 
-    // decisions-about-people maps to all five — the finding shows under each card.
+    // decisions-about-people maps to all five — the finding shows under each card
+    // as a COMPACT one-line reference (code + title, linked to the full card in
+    // the global stream), NOT a duplicated full finding card.
     for (const header of FRAMEWORK_HEADERS) {
       const block = frameworkBlock(md, header);
       expect(block).toContain(SLF_TITLE);
       expect(block).toContain('Self-attested findings (agent self-report');
-      // It is a full finding card now (Vijil-style code header + Severity line),
-      // not a stripped 🗣️ title bullet.
-      expect(block).toMatch(/####\s+SLF-\w+\s+—\s/);
-      expect(block).toContain('**Severity**');
+      // AAP-127 (S11): a compact `- [`SLF-…`](#…) Title` reference linking to the
+      // global card — NOT a full finding card. So the full-card markers (the
+      // `#### SLF-… — …` heading and the `**Severity**` line) must NOT appear
+      // under the framework; they live only in the global stream now.
+      expect(block).toMatch(/- \[`SLF-\w+`\]\(#[\w-]+\)/);
+      expect(block).not.toMatch(/####\s+SLF-\w+\s+—\s/);
+      expect(block).not.toContain('**Severity**');
       expect(block).not.toContain('🗣️');
     }
   });
@@ -384,23 +388,39 @@ describe('AAP-122 — end-to-end markdown: finding in BOTH places (global stream
     // The global empty-state must NOT have fired.
     expect(globalSection).not.toContain('No self-attested findings.');
 
-    // (b) The Compliance Lens additionally attributes it under a framework card.
-    //     AAP-123 (S7): slice the EU AI Act block to the NEXT framework header
-    //     (`#### GDPR`), not "the next `####`" — the SLF finding card is itself
-    //     an h4 (`#### SLF-… — …`) so a bare-`####` slice would cut it off.
+    // (b) The Compliance Lens additionally attributes it under a framework card
+    //     as a COMPACT reference (AAP-127 / S11) — a `[`SLF-…`](#…) Title` link
+    //     to the full card in the global stream, NOT a duplicated full card.
     const lensIdx = md.indexOf('### Compliance Lens');
     expect(lensIdx).toBeGreaterThanOrEqual(0);
     const euStart = md.indexOf('#### EU AI Act', lensIdx);
     const euBlock = md.slice(euStart, md.indexOf('#### GDPR', euStart));
     expect(euBlock).toContain(TITLE);
     expect(euBlock).toContain('Self-attested findings (agent self-report');
-    // It renders as a full finding card here too (code header + Severity line).
-    expect(euBlock).toMatch(/####\s+SLF-\d+\s+—\s/);
-    expect(euBlock).toContain('**Severity**');
+    // Compact reference link present; the full-card markers are NOT duplicated
+    // here (they remain in the global Self-Attested Findings stream).
+    expect(euBlock).toMatch(/- \[`SLF-\d+`\]\(#[\w-]+\)/);
+    expect(euBlock).not.toMatch(/####\s+SLF-\d+\s+—\s/);
+    expect(euBlock).not.toContain('**Severity**');
 
-    // (c) Same title present at least twice (global + at least one card).
+    // (c) Same title present at least twice (the full global card + the compact
+    //     framework reference).
     const occurrences = md.split(TITLE).length - 1;
     expect(occurrences).toBeGreaterThanOrEqual(2);
+
+    // (d) AAP-127 (S11): the compact reference's anchor matches the global
+    //     card's heading anchor, so the link actually resolves. The global
+    //     card heading is `#### SLF-001 — <title>`; its slug is the lowercase,
+    //     punctuation-stripped, space-hyphenated form.
+    const codeMatch = globalSection.match(/####\s+(SLF-\d+)\s+—\s/);
+    expect(codeMatch).not.toBeNull();
+    const code = codeMatch![1]!;
+    const expectedAnchor = `${code} — ${TITLE}`
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-');
+    expect(euBlock).toContain(`[\`${code}\`](#${expectedAnchor})`);
   });
 
   it('a no-findingType SLF finding stays global-only (in the stream, in NO card)', () => {
@@ -446,8 +466,8 @@ function expandedLensFor(frameworkId: FrameworkId): FrameworkLens {
   );
 }
 
-describe('AAP-122 — dashboard FrameworkCard renders the SLF sub-list', () => {
-  it('renders each self-attested finding as a full finding card when findings are attributed', () => {
+describe('AAP-127 (S11) — dashboard FrameworkCard renders the SLF sub-list as compact references', () => {
+  it('renders each self-attested finding as a COMPACT reference (code + title) linking to the global card', () => {
     const html = renderToStaticMarkup(
       FrameworkCard({
         lens: expandedLensFor('gdpr'),
@@ -467,11 +487,14 @@ describe('AAP-122 — dashboard FrameworkCard renders the SLF sub-list', () => {
     expect(html).toContain('Self-attested findings');
     expect(html).toContain('Processes candidate PII with no retention policy');
     expect(html).toContain('does not move posture');
-    // AAP-123 (S7): a full finding card now — code badge, severity band, the
-    // description, and a Mitigation block — not a stripped 🗣️ title bullet.
+    // AAP-127 (S11): a compact reference now — the code badge + an anchor link
+    // to the full card in the GLOBAL stream (`#finding-SLF-001`). The FULL-card
+    // markers (the description text and the Mitigation block) are NOT duplicated
+    // here — they live only in the global card.
     expect(html).toContain('SLF-001');
-    expect(html).toContain('The agent stores applicant PII indefinitely');
-    expect(html).toContain('Mitigation');
+    expect(html).toContain('href="#finding-SLF-001"');
+    expect(html).not.toContain('The agent stores applicant PII indefinitely');
+    expect(html).not.toContain('Mitigation');
     expect(html).not.toContain('🗣️');
   });
 

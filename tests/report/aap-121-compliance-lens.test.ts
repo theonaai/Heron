@@ -456,7 +456,11 @@ describe('AAP-121 lens — markdown render', () => {
     expect(md).toMatch(/#### EU AI Act\n\n\*\*\d+ of ~104 addressed\*\*/);
   });
 
-  it('no active controls at all → honest empty lens', () => {
+  it('no active controls at all → still renders all five framework cards (no empty-state escape hatch)', () => {
+    // AAP-127 (S11) FIX 2: the all-or-nothing early-return ("No active controls
+    // from current signals") is GONE. Even with zero signals, every framework
+    // card renders its honest summary — a 0-active framework no longer collapses
+    // the whole lens to an empty-state line.
     const empty = {
       mappingVersion: 'aap-121-empty',
       mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
@@ -469,7 +473,13 @@ describe('AAP-121 lens — markdown render', () => {
     } as unknown as StructuredCompliance;
     const md = renderStructuredCompliance(empty);
     expect(md).toContain('### Compliance Lens');
-    expect(md).toContain('No active controls from current signals');
+    expect(md).not.toContain('No active controls from current signals');
+    // All five cards present (each summarising honestly even at 0 active).
+    expect(md).toContain('#### EU AI Act');
+    expect(md).toContain('#### GDPR');
+    expect(md).toContain('#### ISO/IEC 42001');
+    expect(md).toContain('#### AIUC-1');
+    expect(md).toContain('#### NIST AI RMF');
   });
 
   // ─── FIX 1: all five framework cards render, even 0-active ones ────────────

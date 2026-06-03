@@ -2477,7 +2477,7 @@ function FindingsBlock({
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {verified.map((f) => (
-              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
+              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} anchorId={findingAnchorId(f.code)} />
             ))}
           </div>
         )}
@@ -2523,7 +2523,7 @@ function FindingsBlock({
                 Self-reported by the agent, not verified. Treat as working hypotheses.
               </p>
               {selfAttested.map((f) => (
-                <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
+                <MinimalFindingCard key={f.code} finding={f} slfState={slfState} anchorId={findingAnchorId(f.code)} />
               ))}
             </div>
           )}
@@ -2531,6 +2531,16 @@ function FindingsBlock({
       )}
     </section>
   );
+}
+
+/**
+ * AAP-127 (S11) — the stable DOM id for a finding's FULL card in the global
+ * stream. The compact per-framework self-attested references in the Compliance
+ * lens link to `#<this>` to scroll to the full card. Keyed by the Vijil-style
+ * `code` (e.g. `SLF-001`), which is unique within an audit, so the id is too.
+ */
+export function findingAnchorId(code: string): string {
+  return `finding-${code}`;
 }
 
 // ─── G8b: host-capability note (NOT a finding) ────────────────────────
@@ -2585,12 +2595,19 @@ function HostCapabilityNote({
 export function MinimalFindingCard({
   finding,
   slfState,
+  anchorId,
 }: {
   finding: CodedVerdictFinding;
   // AAP-110: when present, the SLF mitigation hint is resolved state-aware
   // (e.g. introspection attempted + rejected -> refresh the token). Ignored
   // for non-SLF findings (which use the evidence-source fallback).
   slfState?: SlfMitigationState;
+  // AAP-127 (S11): a DOM id for this card's <article>, so the compact
+  // per-framework self-attested references (in the Compliance lens) can link
+  // (`href="#<anchorId>"`) and scroll to the FULL card here in the global
+  // stream. Set only on the global-stream cards (FindingsBlock); absent
+  // elsewhere so no duplicate ids are emitted.
+  anchorId?: string;
 }) {
   const sevColor = colorForSeverity(finding.severityScore);
   const sevText = formatSeverityNumber(finding.severityScore);
@@ -2632,11 +2649,15 @@ export function MinimalFindingCard({
 
   return (
     <article
+      {...(anchorId ? { id: anchorId } : {})}
       style={{
         border: '1px solid #e5e7eb',
         borderRadius: 8,
         background: '#ffffff',
         padding: '14px 16px',
+        // AAP-127 (S11): give anchored cards a little scroll offset so the
+        // heading is not flush against the viewport top when jumped to.
+        ...(anchorId ? { scrollMarginTop: 16 } : {}),
       }}
     >
       <header style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 6 }}>
@@ -2813,23 +2834,20 @@ function ComplianceBlock({
   // controlIds (S2) — so a cast is honest here.
   const controlResults = (rc.controlResults || []) as unknown as LensSourceControlResult[];
   const flags = (rc.all || []) as unknown as TypedRegulatoryFlag[];
-  // AAP-122 — the verdict's self-attested findings, fed to each framework card
-  // for per-framework attribution. The SAME findings stay in the global
-  // "Self-attested findings" stream above (FindingsBlock) — this is an
-  // additional, framework-scoped view, never a relocation.
+  // AAP-122 — the verdict's self-attested findings, attributed to each framework
+  // card. The SAME findings stay in the global "Self-attested findings" stream
+  // above (FindingsBlock) — this is an additional, framework-scoped view, never
+  // a relocation.
   //
   // AAP-123 (S7) — assign Vijil-style codes here (the SAME pass FindingsBlock
   // runs over the SAME `verdict.findings`, so a framework card's SLF-NNN code
-  // matches the global stream) and feed the FULL coded findings to the per-
-  // framework attribution. `slfFindingsForFramework` is generic over the
-  // finding shape, so each card receives a real `CodedVerdictFinding` and can
-  // render the full finding card rather than a stripped title bullet.
+  // matches the global stream). AAP-127 (S11) — each framework now renders these
+  // as COMPACT references (code + title, scrolling to the full card in the
+  // global stream), not duplicated full cards, so no `slfState` is threaded to
+  // the cards anymore (the global stream still builds its own for its cards).
   const codedFindings = assignFindingCodes(
     (verdict?.findings ?? []) as unknown as CodedVerdictFinding[],
   );
-  // AAP-123 (S7) — built once and handed to every framework card so the SLF
-  // finding cards there show the same state-aware mitigation as the global one.
-  const slfState = buildSlfMitigationState(oauthScopeVerification, localAgentDiscovery);
   // AAP-121 (S5) FIX 1: card for EVERY framework, mandatory-first. A framework
   // with zero active controls (verifiable or self-attested) still gets its
   // card with the honest "0 of ~N, the rest out of scope" summary — it no
@@ -2905,29 +2923,24 @@ function ComplianceBlock({
       </div>
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
           {/* AAP-121 (S5): per-framework lens cards. Header counts by ACTUAL
-              state (verified / fail / partial / self-attested) + an out-of-
-              scope COUNT; on expand, ONLY active controls are listed (verified
-              -> partial -> self-attested). Out-of-scope is a count, never a
-              list. FIX 1: all five frameworks render (0-active included). FIX 2:
-              cards expand independently — multiple can be open at once. */}
-          {hasAny ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {lenses.map((lens) => (
-                <FrameworkCard
-                  key={lens.frameworkId}
-                  lens={lens}
-                  slfFindings={slfFindingsForFramework(lens.frameworkId, codedFindings)}
-                  slfState={slfState}
-                  expanded={expandedFws.has(lens.frameworkId)}
-                  onToggle={() => toggleFramework(lens.frameworkId)}
-                />
-              ))}
-            </div>
-          ) : (
-            <p style={{ fontSize: 12.5, color: '#71717a', margin: 0 }}>
-              No active controls from current signals.
-            </p>
-          )}
+              state (verified / fail / partial / self-attested) + an out-of-scope
+              COUNT; on expand, ONLY active controls are listed (verified ->
+              partial -> self-attested); cards expand independently. AAP-127 (S11)
+              FIX 2: ALL FIVE frameworks ALWAYS render — the old all-or-nothing
+              `hasAny` gate (which showed "No active controls from current
+              signals" when nothing fired) is removed, because each card's summary
+              is meaningful regardless of per-audit signals. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {lenses.map((lens) => (
+              <FrameworkCard
+                key={lens.frameworkId}
+                lens={lens}
+                slfFindings={slfFindingsForFramework(lens.frameworkId, codedFindings)}
+                expanded={expandedFws.has(lens.frameworkId)}
+                onToggle={() => toggleFramework(lens.frameworkId)}
+              />
+            ))}
+          </div>
           <p style={{ marginTop: 14, fontSize: 11.5, color: '#71717a', lineHeight: 1.6 }}>
             Some controls can earn a clean <strong>verified</strong>; others only ever{' '}
             <strong>warn</strong> (the deterministic-flag set), and{' '}
@@ -2954,13 +2967,15 @@ export type ControlResult = NonNullable<
  * the markdown report. Header counts by ACTUAL state (verified / fail /
  * partial / self-attested); the expanded body lists ONLY active controls, in
  * the projection's order (verified -> partial -> self-attested). Out-of-scope
- * is a COUNT in the header, never a list (per Ilya 2026-06-02) — there is no
- * toggle and no "prose only" branch anymore.
+ * is a COUNT in the header, never a list (per Ilya 2026-06-02).
+ *
+ * AAP-127 (S11) — the attributed self-attested findings render as COMPACT
+ * references (code + title) linking to the full card in the global stream, not
+ * duplicated full cards.
  */
 export function FrameworkCard({
   lens,
   slfFindings = [],
-  slfState,
   expanded,
   onToggle,
 }: {
@@ -2969,14 +2984,11 @@ export function FrameworkCard({
   // (deterministically, via CONTROL_MAPPINGS). Rendered after the control rows.
   // The same findings remain in the global stream; this is an additional view.
   //
-  // AAP-123 (S7) — these are now the FULL coded findings (severity / components
-  // / description / code), so each renders as a real `MinimalFindingCard` (the
-  // same card the global Self-attested stream and the Verified discrepancies
-  // use), clearly labelled self-report — not a stripped 🗣️ title bullet.
+  // AAP-127 (S11) — rendered as COMPACT one-line references (code + title,
+  // linking to the full card in the global Self-attested stream), so only the
+  // `code` + `title` are read here. (Was the FULL coded set fed to a per-card
+  // `MinimalFindingCard` in AAP-123/S7; that full card now lives only globally.)
   slfFindings?: readonly CodedVerdictFinding[];
-  // AAP-123 (S7) — state-aware SLF mitigation, threaded straight to each card so
-  // the framework-card finding shows the same mitigation copy as the global one.
-  slfState?: SlfMitigationState;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -3052,30 +3064,51 @@ export function FrameworkCard({
               ))}
             </ul>
           )}
-          {/* AAP-122 — self-attested findings attributed to this framework,
-              after the control rows. The SAME findings are listed in the
-              global "Self-attested findings" stream (FindingsBlock); this is an
-              additional, framework-scoped view, not a relocation.
-              AAP-123 (S7) — render each as a full `MinimalFindingCard` (the same
-              card the Verified discrepancies and the global Self-attested stream
-              use: code / title / description / severity badge / mitigation), so
-              the agent's self-report reads as a real finding. The violet section
-              heading + caption + dashed top-rule keep it unmistakably labelled
-              self-report ("does not move posture"), so a reader never confuses an
-              agent claim for a deterministic control verdict. */}
+          {/* AAP-127 (S11) — self-attested findings attributed to this
+              framework, after the control rows. The SAME findings are listed in
+              FULL (code / title / severity / description / mitigation) in the
+              global "Self-attested findings" stream (FindingsBlock), which is
+              unchanged. Here each is a COMPACT one-line REFERENCE — code + title
+              only — that links/scrolls to its full card in that global stream
+              (`#finding-<code>`), instead of duplicating the whole card. The
+              violet heading + caption keep it unmistakably labelled self-report
+              ("does not move posture"); these are self-attested FINDINGS, a
+              distinct object from the self-attested CONTROL rows above. */}
           {slfFindings.length > 0 && (
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #e5e7eb' }}>
               <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 600, marginBottom: 4 }}>
                 Self-attested findings
               </div>
               <p style={{ margin: '0 0 8px', fontSize: 11, color: '#a1a1aa', lineHeight: 1.5 }}>
-                Agent self-report, does not move posture.
+                Agent self-report, does not move posture. Full detail in the global Self-attested findings stream.
               </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {slfFindings.map((f) => (
-                  <MinimalFindingCard key={f.id} finding={f} slfState={slfState} />
+                  <li key={f.id} style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    <a
+                      href={`#${findingAnchorId(f.code)}`}
+                      style={{ color: '#6d28d9', textDecoration: 'none' }}
+                    >
+                      <span
+                        className="mono"
+                        style={{
+                          display: 'inline-block',
+                          padding: '1px 6px',
+                          marginRight: 8,
+                          background: '#f5f3ff',
+                          color: '#6d28d9',
+                          border: '1px solid #ddd6fe',
+                          borderRadius: 4,
+                          fontSize: 11,
+                        }}
+                      >
+                        {f.code}
+                      </span>
+                      <span style={{ color: '#3f3f46' }}>{f.title}</span>
+                    </a>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           )}
           <p style={{ marginTop: 8, fontSize: 11, color: '#a1a1aa', margin: '8px 0 0' }}>

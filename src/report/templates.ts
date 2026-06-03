@@ -15,7 +15,6 @@ import {
 import {
   allLensFrameworks,
   frameworkLens,
-  lensFrameworks,
   slfFindingsForFramework,
   type FrameworkLens,
   type LensControl,
@@ -1551,6 +1550,28 @@ const EVIDENCE_SOURCE_LABEL: Readonly<Record<EvidenceSource, string>> = {
  * cross-references when present. Mitigations: lookup via
  * `getMitigationHint`, fallback to generic copy.
  */
+/**
+ * AAP-127 (S11) — the GitHub-style heading anchor for a finding card.
+ *
+ * Each finding card's heading is `#### {code} — {title}` (see `renderFindingCard`
+ * below). The compact per-framework reference (S11) links to the FULL card in
+ * the GLOBAL "Self-Attested Findings" stream via this anchor, so the slug here
+ * must match what a markdown renderer auto-generates for that heading:
+ * lowercase, drop characters that are not word-chars / spaces / hyphens (so the
+ * `—` em-dash and the leading `#`s are removed), then spaces → hyphens. The
+ * card heading is slugged from the RAW `code` + `title` (not the `escapeText`-ed
+ * form) because a renderer computes the anchor from the rendered heading text,
+ * with backslash-escapes already resolved.
+ */
+function findingCardAnchor(finding: { code: string; title: string }): string {
+  const headingText = `${finding.code} — ${finding.title}`;
+  return headingText
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
 function renderFindingCard(
   finding: CodedVerdictFinding,
   compliance: StructuredCompliance | undefined,
@@ -2329,18 +2350,18 @@ function renderLensVerdictBadge(verdict: LensControl['verdict']): string {
  * a small sub-list AFTER the control rows. These are the SAME findings the
  * global "Self-Attested Findings" stream lists — shown here additionally for
  * framework attribution, never relocated.
+ *
+ * AAP-127 (S11) — the sub-list is now COMPACT one-line references (code + title,
+ * linked to the full card in the global stream), not duplicated full cards, so
+ * this block no longer needs the card-rendering context (`compliance` /
+ * `slfRiskById` / `slfState`) that the AAP-123/S7 full-card path used.
  */
 function renderFrameworkLensBlock(
   lens: FrameworkLens,
-  // AAP-123 (S7) — the FULL coded findings attributed to this framework (not a
-  // stripped title projection), so each renders as a real finding card.
+  // AAP-127 (S11) — the coded findings attributed to this framework; each
+  // becomes a compact `[code](#anchor) title` reference to its full card in the
+  // global Self-Attested stream. `code` + `title` are the only fields read.
   slfFindings: readonly CodedVerdictFinding[] = [],
-  // Compliance + per-finding legacy Risk + live session state, forwarded to
-  // `renderFindingCard` so the framework-card finding reads identically to the
-  // global Self-Attested stream's card (anchor line + state-aware mitigation).
-  compliance?: StructuredCompliance,
-  slfRiskById?: Map<string, Risk>,
-  slfState?: SlfMitigationState,
 ): string {
   const name = LENS_FRAMEWORK_NAMES[lens.frameworkId] ?? lens.frameworkId;
   const { counts } = lens;
@@ -2381,21 +2402,25 @@ function renderFrameworkLensBlock(
     out += `\n`;
   }
 
-  // AAP-122 — self-attested findings attributed to this framework (after the
-  // control rows). The same findings remain in the global "Self-Attested
-  // Findings" stream; this is an additional, framework-scoped view.
-  // AAP-123 (S7) — render each as a full finding card via `renderFindingCard`
-  // (the SAME card the global Self-Attested stream and the Verified stream use:
-  // code / severity / formula / description / mitigation), so the agent's
-  // self-report reads as a real finding. The italic label keeps it clearly
-  // marked self-report ("does not move posture").
+  // AAP-127 (S11) — self-attested findings attributed to this framework, AFTER
+  // the control rows. These are the SAME findings the GLOBAL "Self-Attested
+  // Findings" stream lists in FULL (code / severity / formula / description /
+  // mitigation); that global stream is unchanged. Here each is a COMPACT
+  // ONE-LINE REFERENCE — finding code + title only, linked to the full card in
+  // the global stream via its heading anchor. No severity / description /
+  // mitigation is duplicated under the framework; the reader follows the link
+  // for the full card. (Replaces the AAP-123/S7 full-card duplication.)
+  //
+  // These references are self-attested FINDINGS (the agent's interview answers),
+  // a distinct object from the self-attested CONTROL rows above (prose-flag
+  // controls). The label below and the control-row badges keep the two clearly
+  // separate, and the header counts each separately (see `headerParts`).
   if (slfFindings.length > 0) {
-    out += `_Self-attested findings (agent self-report, does not move posture):_\n\n`;
+    out += `_Self-attested findings (agent self-report, does not move posture — full detail in the [Self-Attested Findings](#self-attested-findings) stream):_\n\n`;
     for (const f of slfFindings) {
-      const legacy = slfRiskById?.get(f.id);
-      out += renderFindingCard(f, compliance, legacy, slfState);
-      out += `\n\n`;
+      out += `- [\`${escapeText(f.code)}\`](#${findingCardAnchor(f)}) ${escapeText(f.title)}\n`;
     }
+    out += `\n`;
   }
 
   return out;
@@ -2415,21 +2440,22 @@ function renderFrameworkLensBlock(
  */
 function renderComplianceLens(
   c: StructuredCompliance,
-  // AAP-123 (S7) — the FULL coded findings (was a stripped `SlfLensFinding[]`)
-  // so each per-framework sub-list can render a real finding card. The risk map
-  // + slfState enrich those cards (anchor line + state-aware mitigation).
+  // AAP-127 (S11) — the coded findings; each becomes a compact reference under
+  // every framework its finding-type maps to (linked to the full card in the
+  // global Self-Attested stream). Was the FULL coded set fed to a per-framework
+  // card renderer (AAP-123/S7); the full card now lives only in the global
+  // stream, so no risk map / slfState is needed here anymore.
   slfFindings: readonly CodedVerdictFinding[] = [],
-  slfRiskById?: Map<string, Risk>,
-  slfState?: SlfMitigationState,
 ): string {
   const controlResults = ((c as any).controlResults ?? []) as ControlResult[];
   const allFlags = (c.all ?? []) as TypedRegulatoryFlag[];
 
-  // If NO framework surfaced any active control, the lens is honestly empty —
-  // five all-zero cards would be pure noise. Otherwise render all five.
-  if (lensFrameworks(controlResults, allFlags).length === 0) {
-    return `### Compliance Lens\n\n_No active controls from current signals._\n`;
-  }
+  // AAP-127 (S11) FIX 2 — ALWAYS render all five framework cards, even when no
+  // control fired this audit. The old all-or-nothing gate (return early with
+  // "No active controls" when `lensFrameworks(...)` is empty) is removed: each
+  // card carries an honest per-framework summary that is meaningful regardless
+  // of per-audit signals, so a 0-active framework must still show its card
+  // (matches `allLensFrameworks`, which already enumerates all five).
 
   let out = `### Compliance Lens\n\n`;
   // One-line legend (scope point 4): some controls can earn a clean verified,
@@ -2444,15 +2470,11 @@ function renderComplianceLens(
   for (const frameworkId of allLensFrameworks()) {
     // AAP-122 — the SLF findings whose finding-type maps to this framework
     // (deterministically, via CONTROL_MAPPINGS). Empty for findings with no
-    // findingType, so those stay global-only. AAP-123 (S7) — `slfFindingsFor-
-    // Framework` is generic, so it returns the FULL coded findings here, fed
-    // straight to the card renderer.
+    // findingType, so those stay global-only. AAP-127 (S11) — rendered as
+    // compact references, not full cards.
     out += renderFrameworkLensBlock(
       frameworkLens(frameworkId, controlResults, allFlags),
       slfFindingsForFramework(frameworkId, slfFindings),
-      c,
-      slfRiskById,
-      slfState,
     );
   }
   return out;
@@ -3026,14 +3048,17 @@ ${tableRows}`;
 export function renderStructuredCompliance(
   c: StructuredCompliance,
   report?: AuditReport,
-  // AAP-123 (S7) — full coded findings (+ legacy-risk map + session state) so
-  // the per-framework SLF sub-lists render real finding cards. All optional:
-  // existing callers (and the AAP-122 unit test) that pass only stripped
-  // findings still type-check (the card renderer is defensive about absent
-  // severity / risk / state).
+  // AAP-123 (S7) — the coded findings so the per-framework SLF sub-lists can be
+  // built. AAP-127 (S11) — those sub-lists are now COMPACT references (code +
+  // title, linked to the full card in the GLOBAL stream), so only `code` +
+  // `title` are read here; the legacy-risk map + session state, which the
+  // AAP-123 full-card path needed, are no longer forwarded to the lens. The
+  // params are kept on this (public) signature for caller back-compat — the
+  // full global cards (`renderFindingsBlock`) still consume `slfRiskById` /
+  // `slfState` upstream.
   slfFindings: readonly CodedVerdictFinding[] = [],
-  slfRiskById?: Map<string, Risk>,
-  slfState?: SlfMitigationState,
+  _slfRiskById?: Map<string, Risk>,
+  _slfState?: SlfMitigationState,
 ): string {
   return [
     `## Regulatory Compliance`,
@@ -3042,7 +3067,7 @@ export function renderStructuredCompliance(
     ``,
     `Findings are anchored to EU AI Act 2024/1689, GDPR 2016/679, ISO/IEC 42001 (AI management system), AIUC-1 (agent-native standard, pinned to Q2-2026 release 2026-04-15), and NIST AI RMF 1.0 (US-origin voluntary risk-management framework; GOVERN/MAP/MEASURE/MANAGE). Mapping version: \`${c.mappingVersion}\`. EU AI Act is a single framework entry; Annex III high-risk obligations are surfaced as a classification scope label on that entry (replacing the prior two-entry split). Control mappings are indicative — they show which framework clauses a finding typically activates and do not constitute legal advice.`,
     ``,
-    renderComplianceLens(c, slfFindings, slfRiskById, slfState),
+    renderComplianceLens(c, slfFindings),
     ``,
     renderApplicabilitySummary(c),
     ``,
