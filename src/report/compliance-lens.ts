@@ -429,14 +429,18 @@ export interface LensControlRow {
  * control rows (each with any nested findings) plus any findings whose anchor
  * could not be resolved to a renderable control (FALLBACK — rendered as
  * standalone compact rows at the end). `surfaced` is the redesign's `A`: the
- * count of DISTINCT controls actually shown as rows this audit (activated +
- * finding-anchored), which is the headline numerator `{A} of {C} covered`.
+ * count of DISTINCT ACTIVE-bucket controls actually shown as rows this audit
+ * (activated + finding-anchored), which is the headline numerator `{A} of {C}
+ * covered`. Synthetic rows whose anchor fell back to an out-of-scope bucket are
+ * still rendered but excluded from `A`, so it never exceeds `C`.
  */
 export interface FrameworkLensRows {
   rows: LensControlRow[];
   /** FALLBACK findings with no resolvable anchor control — standalone rows. */
   orphanFindings: LensFindingRef[];
-  /** `A` — distinct controls surfaced as rows this audit. */
+  /** `A` — distinct ACTIVE-bucket controls surfaced as rows this audit
+   *  (activated + finding-anchored). Excludes synthetic rows whose anchor fell
+   *  back to an out-of-scope bucket, so the headline never reads A > C. */
   surfaced: number;
 }
 
@@ -498,8 +502,14 @@ export function composeFrameworkLensRows<T extends ComposableFinding>(
     row.findings.push(ref);
   }
 
-  // `A` — distinct controls surfaced as rows (activated + finding-anchored).
-  const surfaced = rows.length;
+  // `A` — distinct ACTIVE-bucket controls surfaced as rows (activated +
+  // finding-anchored). A synthetic finding-anchored row whose control fell back
+  // to an out-of-scope bucket (anchorControlForFinding prefers an ACTIVE-bucket
+  // control but FALLS BACK to a non-active one) is still RENDERED, but it must
+  // NOT inflate the numerator past the static coverage denominator `C`
+  // (`staticCoverageForFramework`, which counts only ACTIVE_BUCKETS controls).
+  // Counting only ACTIVE_BUCKETS rows keeps the headline honest: A ≤ C ≤ N.
+  const surfaced = rows.filter((row) => ACTIVE_BUCKETS.has(row.control.bucket)).length;
   return { rows, orphanFindings, surfaced };
 }
 

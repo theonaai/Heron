@@ -29,11 +29,15 @@ import {
   OUT_OF_SCOPE_BUCKETS,
   activeControlResultsForFramework,
   allLensFrameworks,
+  anchorControlForFinding,
+  composeFrameworkLensRows,
   frameworkLens,
   lensFrameworks,
   selfAttestedControlsForFramework,
   staticCoverageForFramework,
 } from '../../src/report/compliance-lens.js';
+import { FINDING_TYPES } from '../../src/compliance/types.js';
+import type { FindingType } from '../../src/compliance/types.js';
 import { renderStructuredCompliance } from '../../src/report/templates.js';
 import { FRAMEWORKS } from '../../src/compliance/frameworks.js';
 import type { ControlResult } from '../../src/compliance/control-catalog.js';
@@ -406,6 +410,96 @@ describe('AAP-128 (S12) — coverage C is STATIC (same regardless of what fired)
     expect(auditA.counts.outOfScope).toBe(87);
     expect(auditB.counts.outOfScope).toBe(87);
     expect(auditC.counts.outOfScope).toBe(87);
+  });
+});
+
+// ─── 7c. composeFrameworkLensRows — `surfaced` (A) never exceeds C ───────────
+//
+// `anchorControlForFinding` prefers an ACTIVE-bucket control but FALLS BACK to a
+// non-active (often `oos-operator-artifact`) one. A self-attested FINDING that
+// anchors to such a control synthesises a row that IS rendered, but it must NOT
+// inflate the headline numerator A past the static coverage C — otherwise the
+// card reads e.g. "4 of 2 covered" (ISO 42001) or "5 of 4" (NIST AI RMF). The
+// fix counts only DISTINCT ACTIVE-bucket rows in `surfaced`.
+
+/** One coded SLF finding for the composer, carrying a findingType. */
+function composableFinding(args: { id: string; code: string; findingType: FindingType }) {
+  return {
+    id: args.id,
+    code: args.code,
+    title: `finding ${args.findingType}`,
+    evidenceSource: 'SLF',
+    findingType: args.findingType,
+  };
+}
+
+/** Every findingType as an SLF finding — fans the worst case across the card. */
+function allFindingTypeFindings() {
+  return FINDING_TYPES.map((ft, i) =>
+    composableFinding({ id: `f${i}`, code: `SLF-${String(i).padStart(3, '0')}`, findingType: ft }),
+  );
+}
+
+describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)', () => {
+  it('excludes oos-anchored synthetic rows from `surfaced` but still renders them', () => {
+    // ISO 42001 has C = 2 active controls. With no controlResults, every
+    // findingType anchors to an out-of-scope artifact control (A.6.2.x / A.7.4 /
+    // …), so all rows are synthetic oos rows. A must be 0, not rows.length.
+    const lens = frameworkLens('iso-42001', [], []);
+    const composed = composeFrameworkLensRows(lens, allFindingTypeFindings());
+    // The synthetic rows are STILL rendered (do not remove them).
+    expect(composed.rows.length).toBeGreaterThan(0);
+    // …but every one is out-of-scope, so the numerator is 0.
+    const oosRows = composed.rows.filter((r) => !ACTIVE_BUCKETS.has(r.control.bucket));
+    expect(oosRows.length).toBe(composed.rows.length);
+    expect(composed.surfaced).toBe(0);
+    expect(composed.surfaced).toBeLessThanOrEqual(staticCoverageForFramework('iso-42001'));
+  });
+
+  it('counts active-bucket finding-anchored rows in `surfaced`', () => {
+    // EU AI Act: feeding every findingType anchors some findings to ACTIVE
+    // controls (Art. 14(4)(d) verifiable, Art. 5 / Art. 50(1) self-attested) and
+    // some to oos (Art. 9(x)). A = the active ones (3), not all 6 rows.
+    const lens = frameworkLens('eu-ai-act', [], []);
+    const composed = composeFrameworkLensRows(lens, allFindingTypeFindings());
+    const activeRows = composed.rows.filter((r) => ACTIVE_BUCKETS.has(r.control.bucket));
+    expect(composed.surfaced).toBe(activeRows.length);
+    expect(composed.surfaced).toBeGreaterThan(0);
+    expect(composed.surfaced).toBeLessThanOrEqual(staticCoverageForFramework('eu-ai-act'));
+  });
+
+  it('holds A ≤ C ≤ N on all five frameworks even in the worst SLF fan-out', () => {
+    const findings = allFindingTypeFindings();
+    for (const frameworkId of allLensFrameworks()) {
+      const lens = frameworkLens(frameworkId, [], []);
+      const composed = composeFrameworkLensRows(lens, findings);
+      const C = lens.counts.covered;
+      const N = lens.counts.publishedControlCount;
+      expect(composed.surfaced).toBeLessThanOrEqual(C);
+      expect(C).toBeLessThanOrEqual(N);
+      // `surfaced` equals the count of DISTINCT active-bucket rows.
+      const activeRows = composed.rows.filter((r) => ACTIVE_BUCKETS.has(r.control.bucket));
+      expect(composed.surfaced).toBe(activeRows.length);
+    }
+  });
+
+  it('an active-bucket control that fired AND has a finding still counts once', () => {
+    // GDPR Art. 25 fires as a verifiable controlResult AND a finding anchors to
+    // it (excessive-access → Art. 25). It is a single active row → counted once.
+    const anchor = anchorControlForFinding('gdpr', 'excessive-access');
+    expect(anchor?.controlId).toBe('Art. 25');
+    expect(ACTIVE_BUCKETS.has(anchor!.bucket)).toBe(true);
+    const lens = frameworkLens(
+      'gdpr',
+      [result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'partial', bucket: 'verifiable' })],
+      [],
+    );
+    const composed = composeFrameworkLensRows(lens, [
+      composableFinding({ id: 'f1', code: 'SLF-001', findingType: 'excessive-access' }),
+    ]);
+    const art25Rows = composed.rows.filter((r) => r.control.controlId === 'Art. 25');
+    expect(art25Rows).toHaveLength(1);
+    expect(composed.surfaced).toBe(1);
   });
 });
 
