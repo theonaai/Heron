@@ -19,6 +19,32 @@ import {
   scoreSystemRisk,
   type RiskScorableSystem,
 } from '../../src/verification/systems-risk.js';
+import type { ActualScope, SourceVerification } from '../../src/verification/types.js';
+
+/** Build a `verified`/`discrepancy` OAuth source carrying the given scopes. */
+function oauthSource(
+  service: 'google-workspace' | 'greenhouse' | 'bamboohr',
+  scopes: string[],
+  verdict: 'verified' | 'discrepancy' = 'verified',
+): SourceVerification {
+  const scopeRows: ActualScope[] = scopes.map((scope) => ({ service, scope }));
+  return {
+    sourceId: 'oauth-scopes',
+    verdict,
+    diffs: [],
+    inventory: { source: 'oauth-scopes', capturedAt: '2026-06-02T00:00:00.000Z', scopes: scopeRows },
+  };
+}
+
+/** Build an `unverified` (errored) OAuth source — carries NO inventory. */
+function oauthErrorSource(): SourceVerification {
+  return {
+    sourceId: 'oauth-scopes',
+    verdict: 'unverified',
+    diffs: [],
+    error: { kind: 'unauthorized', message: 'token expired' },
+  };
+}
 
 describe('blastRadiusAxis', () => {
   it('maps single-record / single-user to band 1', () => {
@@ -264,5 +290,109 @@ describe('computeSystemsRisk — HWM aggregation', () => {
     expect(summary.systems).toHaveLength(3);
     expect(summary.posture).toBe(6); // max(1, 4, 6)
     expect(summary.postureBand).toBe('medium');
+  });
+});
+
+describe('AAP-115 — DS-tier floor from verified OAuth scopes (scoreSystemRisk)', () => {
+  it('a personal-data scope floors DS to T2 even when the LLM tier is T1', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'gmail',
+      dataSensitivity: 'agent claims it only reads subject lines, non-sensitive',
+      dataSensitivityTier: 'T1', // agent UNDER-reported
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    // gmail.readonly inherently grants mailbox contents → floor T2.
+    const r = scoreSystemRisk(sys, 'T2');
+    expect(r.llmTier).toBe('T1');
+    expect(r.scopeFloorTier).toBe('T2');
+    expect(r.dsTier).toBe('T2'); // finalTier = max(T1, T2)
+    expect(r.ds).toBe(2);
+    expect(r.severity).toBe(2); // BR1 × DS2 × 1.0 — was 1 before the floor
+    expect(r.dsBasis).toMatch(/floored to T2/);
+  });
+
+  it('finalTier = max(llmTier, scopeFloor): the floor may only RAISE, never lower', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'payroll-gmail',
+      dataSensitivity: 'bank details and tax IDs',
+      dataSensitivityTier: 'T3', // LLM already high
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    // A T2 scope floor must NOT pull the LLM's T3 down to T2.
+    const r = scoreSystemRisk(sys, 'T2');
+    expect(r.llmTier).toBe('T3');
+    expect(r.dsTier).toBe('T3'); // max(T3, T2) = T3
+    expect(r.ds).toBe(3);
+    // basis stays the prose basis (floor did not move the tier).
+    expect(r.dsBasis).not.toMatch(/floored/);
+  });
+
+  it('no scope floor (undefined) leaves the LLM tier untouched', () => {
+    const sys: RiskScorableSystem = {
+      systemId: 'drive',
+      dataSensitivity: 'mostly folder structure',
+      dataSensitivityTier: 'T1',
+      blastRadius: 'single-user',
+      writeOperations: [],
+    };
+    const r = scoreSystemRisk(sys, undefined);
+    expect(r.dsTier).toBe('T1');
+    expect(r.scopeFloorTier).toBeUndefined();
+  });
+});
+
+describe('AAP-115 — DS floor wiring through computeSystemsRisk', () => {
+  it('a verified gmail scope floors the google system DS; a broad drive scope does NOT', () => {
+    const systems: RiskScorableSystem[] = [
+      // Google system the agent rated T1; granted scope includes gmail (T2) → floored.
+      { systemId: 'google-sheets', dataSensitivity: 'claims non-sensitive', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] },
+    ];
+    // Verified scopes: gmail.readonly (personal data → T2) + drive (broad, no floor).
+    const oauth = [oauthSource('google-workspace', ['gmail.readonly', 'drive'])];
+    const summary = computeSystemsRisk(systems, oauth);
+    const row = summary.systems[0];
+    expect(row.llmTier).toBe('T1');
+    expect(row.scopeFloorTier).toBe('T2'); // gmail floored; drive did NOT contribute
+    expect(row.dsTier).toBe('T2');
+    expect(row.ds).toBe(2);
+    expect(summary.posture).toBe(2); // BR1 × DS2 — floored above the LLM's T1=1
+  });
+
+  it('ONLY broad scopes (drive/sheets) produce NO floor — BR ⟂ DS preserved', () => {
+    const systems: RiskScorableSystem[] = [
+      { systemId: 'google-sheets', dataSensitivity: 'spreadsheet cells', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] },
+    ];
+    const oauth = [oauthSource('google-workspace', ['drive', 'spreadsheets'])];
+    const summary = computeSystemsRisk(systems, oauth);
+    const row = summary.systems[0];
+    expect(row.scopeFloorTier).toBeUndefined();
+    expect(row.dsTier).toBe('T1'); // unchanged — broad scopes are a BR concern
+  });
+
+  it('verified scopes only floor the system that maps to that connector', () => {
+    const systems: RiskScorableSystem[] = [
+      { systemId: 'gmail', dataSensitivity: 'claims non-sensitive', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] },
+      // unrelated system; the google scopes must not floor it.
+      { systemId: 'linear-theona', dataSensitivity: 'issue text', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] },
+    ];
+    const oauth = [oauthSource('google-workspace', ['gmail.readonly'])];
+    const summary = computeSystemsRisk(systems, oauth);
+    const gmail = summary.systems.find((s) => s.systemId === 'gmail')!;
+    const linear = summary.systems.find((s) => s.systemId === 'linear-theona')!;
+    expect(gmail.dsTier).toBe('T2'); // floored
+    expect(linear.dsTier).toBe('T1'); // untouched — does not map to google-workspace
+    expect(linear.scopeFloorTier).toBeUndefined();
+  });
+
+  it('an UNVERIFIED (errored) introspection never floors DS (no trustworthy inventory)', () => {
+    const systems: RiskScorableSystem[] = [
+      { systemId: 'gmail', dataSensitivity: 'claims non-sensitive', dataSensitivityTier: 'T1', blastRadius: 'single-user', writeOperations: [] },
+    ];
+    const summary = computeSystemsRisk(systems, [oauthErrorSource()]);
+    const row = summary.systems[0];
+    expect(row.dsTier).toBe('T1'); // a failed read cannot floor
+    expect(row.scopeFloorTier).toBeUndefined();
   });
 });

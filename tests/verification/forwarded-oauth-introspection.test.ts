@@ -26,6 +26,7 @@ import {
   type ForwardedOAuthRecord,
 } from '@/src/verification/forwarded-oauth-introspection';
 import { computeVerdict } from '@/src/verification/verdict';
+import { recomputeComplianceWithDiscovery } from '@/src/report/recompute-compliance';
 import type { DeclaredInventory } from '@/src/verification/types';
 
 const FIXED = new Date('2026-05-29T10:00:00.000Z');
@@ -264,6 +265,84 @@ describe('runForwardedOAuthScopeVerification — diff → SourceVerification', (
     expect(out.section.sources[0]!.diffs).toHaveLength(0);
   });
 
+  it('surfaces the full orchestrator report so the wedge detectors can be fed', async () => {
+    // The handler / scan route thread `report` into the compliance recompute.
+    // It must carry the declared baseline + the verified source the
+    // router-adapter wedge detectors read.
+    const declared: DeclaredInventory[] = [
+      {
+        source: 'interview',
+        capturedAt: FIXED.toISOString(),
+        scopes: [{ service: 'google-workspace', scope: 'drive.file' }],
+      },
+    ];
+    const records: ForwardedOAuthRecord[] = [
+      {
+        provider: 'google-workspace',
+        introspection: parseForwardedTokenInfo(
+          'google-workspace',
+          { scope: 'https://www.googleapis.com/auth/drive.file' },
+          { now },
+        ),
+      },
+    ];
+    const out = await runForwardedOAuthScopeVerification({ records, declared, now });
+    expect(out.report).not.toBeNull();
+    expect(out.report!.declared[0]?.scopes).toHaveLength(1);
+    expect(out.report!.sources[0]?.verdict).toBe('verified');
+    // Empty-records call surfaces a null report.
+    const empty = await runForwardedOAuthScopeVerification({ records: [], now });
+    expect(empty.report).toBeNull();
+  });
+
+  it('threading the verified report into recompute lights the wedge controls', async () => {
+    // The end-to-end fix: a clean forwarded grant (declared==actual, no diffs)
+    // must make the router-adapter wedge controls (AIUC-1 A003.3/A003.4/B006,
+    // GDPR Art 25) reach `verified` in the recomputed compliance. Without the
+    // report threaded, those detectors short-circuit to null (0 controlResults).
+    const declared: DeclaredInventory[] = [
+      {
+        source: 'interview',
+        capturedAt: FIXED.toISOString(),
+        scopes: [{ service: 'google-workspace', scope: 'drive.readonly' }],
+      },
+    ];
+    const records: ForwardedOAuthRecord[] = [
+      {
+        provider: 'google-workspace',
+        introspection: parseForwardedTokenInfo(
+          'google-workspace',
+          { scope: 'https://www.googleapis.com/auth/drive.readonly' },
+          { now },
+        ),
+      },
+    ];
+    const out = await runForwardedOAuthScopeVerification({ records, declared, now });
+    expect(out.report).not.toBeNull();
+
+    // Without the report: typed detectors never run → no controlResults.
+    const without = recomputeComplianceWithDiscovery({
+      analyzer: { systems: [] },
+      transcript: [],
+    });
+    expect(without.controlResults).toEqual([]);
+
+    // With the report threaded: the wedge controls fire and verify.
+    const withReport = recomputeComplianceWithDiscovery({
+      analyzer: { systems: [] },
+      transcript: [],
+      verificationReport: out.report!,
+    });
+    const verdictFor = (frameworkId: string, controlId: string) =>
+      withReport.controlResults.find(
+        (r) => r.frameworkId === frameworkId && r.controlId === controlId,
+      )?.verdict;
+    expect(verdictFor('aiuc-1', 'A003.3')).toBe('verified');
+    expect(verdictFor('aiuc-1', 'A003.4')).toBe('verified');
+    expect(verdictFor('aiuc-1', 'B006')).toBe('verified');
+    expect(verdictFor('gdpr', 'Art. 25')).toBe('verified');
+  });
+
   it('an introspection-error record comes back unverified (NOT a clean verified)', async () => {
     const records: ForwardedOAuthRecord[] = [
       {
@@ -318,7 +397,11 @@ describe('forwarded OAuth → verdict posture (OAU finding drives the gradient)'
     });
   });
 
-  it('an introspection-error alone yields NO OAU finding and zero posture', () => {
+  it('an introspection-error surfaces one informational OAU finding and zero posture (AAP-115)', () => {
+    // AAP-115 — a failed introspection (expired/revoked token) must be VISIBLE,
+    // not silently empty. It now surfaces as ONE informational OAU finding
+    // (severityScore 0) so the failure shows up in the findings list, while
+    // posture stays 0 (a failed read makes no risk claim either way).
     const records: ForwardedOAuthRecord[] = [
       {
         provider: 'google-workspace',
@@ -333,7 +416,11 @@ describe('forwarded OAuth → verdict posture (OAU finding drives the gradient)'
       const verdict = computeVerdict({
         oauthVerifications: forwarded.verifications,
       });
-      expect(verdict.findings.filter((f) => f.evidenceSource === 'OAU')).toHaveLength(0);
+      const oau = verdict.findings.filter((f) => f.evidenceSource === 'OAU');
+      expect(oau).toHaveLength(1);
+      expect(oau[0].band).toBe('informational');
+      expect(oau[0].severityScore).toBe(0);
+      expect(oau[0].title).toContain('introspection failed');
       expect(verdict.posture).toBe(0);
     });
   });

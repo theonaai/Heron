@@ -41,9 +41,14 @@
  */
 
 import { FRAMEWORKS } from '../compliance/frameworks.js';
-import { findCatalogEntry, type ControlResult } from '../compliance/control-catalog.js';
+import {
+  findCatalogEntry,
+  listCatalogEntries,
+  type ControlResult,
+} from '../compliance/control-catalog.js';
+import { CONTROL_MAPPINGS } from '../compliance/control-mappings.js';
 import { FINDING_TYPES } from '../compliance/types.js';
-import type { ComplianceBucket, FrameworkId } from '../compliance/types.js';
+import type { ComplianceBucket, FindingType, FrameworkId } from '../compliance/types.js';
 import type { TypedRegulatoryFlag } from '../compliance/mapper.js';
 import { dedupeControlResults } from './control-results-projection.js';
 
@@ -68,6 +73,54 @@ export const OUT_OF_SCOPE_BUCKETS: ReadonlySet<ComplianceBucket> = new Set<Compl
   'oos-operator-artifact',
   'oos-not-verifiable',
 ]);
+
+// ─── Static capability coverage C (AAP-128 / S12) ─────────────────────────────
+
+/**
+ * AAP-128 (S12) — per-framework STATIC capability coverage `C`.
+ *
+ * `C` = the count of DISTINCT controls in `frameworkId`'s catalog whose honest
+ * bucket is in `ACTIVE_BUCKETS` (`verifiable` OR `self-attested`). It is a
+ * property of the catalog/bucket MODEL (`control-catalog.ts` stamps the bucket
+ * from `control-buckets.ts`), NOT of any one audit — so it is identical on
+ * every run regardless of which controls actually fired. This is what the
+ * coverage headline ("C of ~N covered") must read, so the figure never moves
+ * audit-to-audit (contrast `activeShown`, which is per-audit).
+ *
+ * Derived from `CONTROL_CATALOG` (not directly from `BUCKET_BY_CONTROL`) so a
+ * bucket-map entry that is not actually WIRED into a catalog entry cannot
+ * inflate C — only controls that can reach a report are counted, consistent
+ * with the honest-lens principle. (In practice the two agree, because the
+ * catalog's distinct control set per framework equals the bucket map's keys;
+ * computing from the catalog keeps it that way by construction.)
+ *
+ * Computed once at module load and memoised: the catalog is frozen at load.
+ */
+const STATIC_COVERAGE_BY_FRAMEWORK: Record<FrameworkId, number> = (() => {
+  const distinctActive = new Map<FrameworkId, Set<string>>();
+  for (const entry of listCatalogEntries()) {
+    if (!ACTIVE_BUCKETS.has(entry.bucket)) continue;
+    let set = distinctActive.get(entry.frameworkId);
+    if (!set) {
+      set = new Set<string>();
+      distinctActive.set(entry.frameworkId, set);
+    }
+    set.add(entry.controlId);
+  }
+  const out = {} as Record<FrameworkId, number>;
+  for (const frameworkId of Object.keys(FRAMEWORKS) as FrameworkId[]) {
+    out[frameworkId] = distinctActive.get(frameworkId)?.size ?? 0;
+  }
+  return out;
+})();
+
+/**
+ * The static capability coverage `C` for one framework — the headline
+ * numerator. Identical every audit (see `STATIC_COVERAGE_BY_FRAMEWORK`).
+ */
+export function staticCoverageForFramework(frameworkId: FrameworkId): number {
+  return STATIC_COVERAGE_BY_FRAMEWORK[frameworkId] ?? 0;
+}
 
 // ─── Lens row shapes ─────────────────────────────────────────────────────────
 
@@ -104,13 +157,26 @@ export interface FrameworkLensCounts {
    *  partial. Kept distinct so neither renderer has to re-derive it. */
   unverified: number;
   selfAttested: number;
-  /** Active controls the lens LISTS = verified + fail + partial + unverified +
-   *  selfAttested. */
+  /** Active controls the lens LISTS this audit = verified + fail + partial +
+   *  unverified + selfAttested. PER-AUDIT — fluctuates with which controls
+   *  fired. NOT the coverage headline (that is `covered`, below). */
   activeShown: number;
-  /** Honest out-of-scope figure against the published universe:
-   *  `publishedControlCount - activeShown`, floored at 0. */
+  /**
+   * AAP-128 (S12) — STATIC capability coverage `C`: the count of THIS
+   * framework's catalog controls whose bucket is `verifiable` OR
+   * `self-attested`. Computed from the catalog/bucket model
+   * (`control-catalog.ts` + `control-buckets.ts`), NOT from the per-audit
+   * `activeShown`, so it is identical on every audit regardless of which
+   * controls fired. This is the coverage-headline numerator: "C of ~N covered".
+   */
+  covered: number;
+  /** Honest out-of-scope figure against the published universe.
+   *  AAP-128 (S12): now `publishedControlCount - covered` (= N − C, STATIC
+   *  capability), floored at 0 — what Heron structurally cannot address for
+   *  this framework, identical every audit. (Was `publishedControlCount -
+   *  activeShown`, a per-audit figure.) */
   outOfScope: number;
-  /** The framework's published-universe size (the "~104" denominator). */
+  /** The framework's published-universe size (the "~104" denominator, `N`). */
   publishedControlCount: number;
 }
 
@@ -193,6 +259,258 @@ export function selfAttestedControlsForFramework(
     }
   }
   return out;
+}
+
+// ─── Lane B — self-attested FINDINGS attributed to frameworks (AAP-122) ───────
+
+/**
+ * AAP-122 — the load-bearing fields of a self-attested (`evidenceSource: 'SLF'`)
+ * finding the lens needs to attribute it to a framework card. Structural so
+ * BOTH the verdict's live `VerdictFinding` (verdict.ts) and the persisted
+ * `VerdictFindingSnapshot` (report/types.ts) — and the dashboard's wire shape —
+ * satisfy it without a coupling import. The renderers pass their own finding
+ * objects straight through.
+ *
+ * NOTE the two lanes are distinct. Lane A (`selfAttestedControlsForFramework`,
+ * above) renders self-attested CONTROLS from prose `TypedRegulatoryFlag`s and
+ * is UNTOUCHED. Lane B (here) renders the global "Self-Attested Findings"
+ * stream's `VerdictFinding`s additionally under each framework card, AFTER the
+ * control rows, without removing them from the global list.
+ */
+export interface SlfLensFinding {
+  /** Stable finding id (for React keys / de-dup). */
+  id: string;
+  /** Human-readable finding title. */
+  title: string;
+  /** Provenance — only `'SLF'` findings are attributed; others are ignored. */
+  evidenceSource: string;
+  /**
+   * The bounded finding-type classification, when the analyzer assigned one.
+   * Absent → the finding gets no card and stays global-only.
+   */
+  findingType?: FindingType;
+}
+
+/**
+ * AAP-122 — the DISTINCT frameworks a finding type maps to, derived
+ * DETERMINISTICALLY from the `CONTROL_MAPPINGS` table (one finding type can
+ * activate controls across several frameworks). The framework identity comes
+ * entirely from the table; the LLM never names a framework. Returns frameworks
+ * in `CONTROL_MAPPINGS` order, deduped. An unknown / unmapped finding type
+ * yields an empty array.
+ */
+export function frameworkIdsForFindingType(findingType: FindingType): FrameworkId[] {
+  const mapping = CONTROL_MAPPINGS[findingType];
+  if (!mapping) return [];
+  const out: FrameworkId[] = [];
+  const seen = new Set<FrameworkId>();
+  for (const control of mapping.controls) {
+    if (seen.has(control.frameworkId)) continue;
+    seen.add(control.frameworkId);
+    out.push(control.frameworkId);
+  }
+  return out;
+}
+
+/**
+ * AAP-122 — the self-attested findings that belong under one framework's card.
+ *
+ * A finding is attributed to `frameworkId` when it is an SLF finding, carries a
+ * `findingType`, and that finding type maps (via `CONTROL_MAPPINGS`) to at
+ * least one control in `frameworkId`. The SAME finding fans out to every
+ * framework its type maps to — so a `decisions-about-people` finding appears
+ * under EU AI Act, GDPR, ISO 42001, AIUC-1, and NIST AI RMF. A finding with no
+ * `findingType`, or whose type maps to no controls, is attributed to NO card
+ * (it stays in the global stream only).
+ *
+ * Pure and additive: it neither mutates nor consumes the global list — the
+ * caller still renders that list in full. Order is preserved from the input.
+ *
+ * AAP-123 (S7) — generic over the concrete finding shape. The body reads ONLY
+ * `evidenceSource` + `findingType` (both on the `SlfLensFinding` base), so the
+ * caller can feed its own richer finding objects — e.g. a `CodedVerdictFinding`
+ * carrying severity / description / code — and get the SAME concrete type back.
+ * That is what lets each framework card render the finding as a full finding
+ * card (not a stripped title bullet) without a second lookup or a cast.
+ */
+export function slfFindingsForFramework<T extends SlfLensFinding>(
+  frameworkId: FrameworkId,
+  findings: readonly T[],
+): T[] {
+  const out: T[] = [];
+  for (const f of findings) {
+    if (f.evidenceSource !== 'SLF') continue;
+    if (f.findingType === undefined) continue;
+    if (!frameworkIdsForFindingType(f.findingType).includes(frameworkId)) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+// ─── Finding → anchored control resolution (S13) ──────────────────────────────
+
+/**
+ * S13 — the control a self-attested FINDING is ANCHORED to for a given
+ * framework. This is the SAME deterministic table the global finding card's
+ * "Anchored to: <framework> <article>" line is built from (`getFrameworkBasis`
+ * in templates.ts reads the prose flag's `controlIds[0]`, which is itself
+ * seeded from `CONTROL_MAPPINGS`): the finding's `findingType` maps — via
+ * `CONTROL_MAPPINGS` — to one or more controls per framework, and the anchor is
+ * the FIRST of those, preferring a control whose catalog bucket is active
+ * (`verifiable`/`self-attested`) so the finding nests under a control the lens
+ * will actually render as a row.
+ *
+ * Returns `undefined` when the finding type maps to no control in this
+ * framework (the caller then renders the finding as a standalone compact row —
+ * the FALLBACK in the redesign spec).
+ */
+export function anchorControlForFinding(
+  frameworkId: FrameworkId,
+  findingType: FindingType,
+): { controlId: string; controlName?: string; bucket: ComplianceBucket } | undefined {
+  const mapping = CONTROL_MAPPINGS[findingType];
+  if (!mapping) return undefined;
+  const inFramework = mapping.controls.filter((c) => c.frameworkId === frameworkId);
+  if (inFramework.length === 0) return undefined;
+
+  // Prefer the first control whose catalog bucket is ACTIVE so the finding
+  // nests under a renderable row; otherwise fall back to the first mapped
+  // control (still anchored honestly, even if it is itself out of scope).
+  const resolve = (controlId: string) => findControlAcrossFindings(frameworkId, controlId);
+  let chosen = inFramework.find((c) => {
+    const entry = resolve(c.controlId);
+    return entry !== undefined && ACTIVE_BUCKETS.has(entry.bucket);
+  });
+  if (!chosen) chosen = inFramework[0];
+  if (!chosen) return undefined;
+
+  const entry = resolve(chosen.controlId);
+  const out: { controlId: string; controlName?: string; bucket: ComplianceBucket } = {
+    controlId: chosen.controlId,
+    bucket: entry?.bucket ?? 'self-attested',
+  };
+  const name = entry?.controlName ?? chosen.note;
+  if (name !== undefined) out.controlName = name;
+  return out;
+}
+
+// ─── Composed framework rows: findings nested under their anchor control (S13) ─
+
+/**
+ * S13 — one compact reference to a self-attested FINDING, nested under the
+ * control it anchors to (or standalone in the fallback path). Carries only the
+ * fields a renderer needs to draw a one-line `CODE  Title  ↗` reference that
+ * links to the FULL card in the global Self-Attested Findings stream.
+ */
+export interface LensFindingRef {
+  /** Stable finding id (React key). */
+  id: string;
+  /** Vijil-style finding code, e.g. `SLF-001`. */
+  code: string;
+  /** Human-readable finding title. */
+  title: string;
+}
+
+/**
+ * S13 — a control row plus the self-attested findings nested under it. The
+ * control is rendered with its verdict badge; each nested finding is a compact
+ * reference into the global stream. `syntheticSelfAttested` is true when the
+ * control did NOT independently activate this audit and exists ONLY because a
+ * finding anchors to it — the renderer shows it with the `self-attested`
+ * verdict in that case (spec point 1).
+ */
+export interface LensControlRow {
+  control: LensControl;
+  findings: LensFindingRef[];
+}
+
+/**
+ * S13 — the fully composed render model for ONE framework card: the ordered
+ * control rows (each with any nested findings) plus any findings whose anchor
+ * could not be resolved to a renderable control (FALLBACK — rendered as
+ * standalone compact rows at the end). `surfaced` is the redesign's `A`: the
+ * count of DISTINCT ACTIVE-bucket controls actually shown as rows this audit
+ * (activated + finding-anchored), which is the headline numerator `{A} of {C}
+ * covered`. Synthetic rows whose anchor fell back to an out-of-scope bucket are
+ * still rendered but excluded from `A`, so it never exceeds `C`.
+ */
+export interface FrameworkLensRows {
+  rows: LensControlRow[];
+  /** FALLBACK findings with no resolvable anchor control — standalone rows. */
+  orphanFindings: LensFindingRef[];
+  /** `A` — distinct ACTIVE-bucket controls surfaced as rows this audit
+   *  (activated + finding-anchored). Excludes synthetic rows whose anchor fell
+   *  back to an out-of-scope bucket, so the headline never reads A > C. */
+  surfaced: number;
+}
+
+/** The finding shape `composeFrameworkLensRows` reads — code + title + the
+ *  attribution fields. Both the dashboard's `CodedVerdictFinding` and the
+ *  markdown path satisfy it structurally. */
+export interface ComposableFinding extends SlfLensFinding {
+  code: string;
+}
+
+/**
+ * S13 — compose the per-framework render model: nest each self-attested finding
+ * under the control it ANCHORS to for this framework, synthesising a
+ * `self-attested` control row when the anchor control did not independently
+ * activate this audit. Findings whose anchor cannot be resolved to a control
+ * fall back to `orphanFindings`. Pure; shared by BOTH renderers so the two
+ * surfaces stay identical.
+ *
+ * `findings` should already be the framework-scoped set
+ * (`slfFindingsForFramework(frameworkId, …)`).
+ */
+export function composeFrameworkLensRows<T extends ComposableFinding>(
+  lens: FrameworkLens,
+  findings: readonly T[],
+): FrameworkLensRows {
+  const { frameworkId } = lens;
+  // Start from the activated controls, preserving the projection's order.
+  const rows: LensControlRow[] = lens.controls.map((control) => ({ control, findings: [] }));
+  const rowByControlId = new Map<string, LensControlRow>();
+  for (const row of rows) rowByControlId.set(row.control.controlId, row);
+
+  const orphanFindings: LensFindingRef[] = [];
+
+  for (const f of findings) {
+    const ref: LensFindingRef = { id: f.id, code: f.code, title: f.title };
+    const anchor =
+      f.findingType !== undefined ? anchorControlForFinding(frameworkId, f.findingType) : undefined;
+    if (!anchor) {
+      orphanFindings.push(ref);
+      continue;
+    }
+    let row = rowByControlId.get(anchor.controlId);
+    if (!row) {
+      // The anchor control did not independently activate this audit — it
+      // exists ONLY because this finding anchors to it. Synthesise a row with
+      // the `self-attested` verdict (spec point 1).
+      const synthetic: LensControl = {
+        frameworkId,
+        controlId: anchor.controlId,
+        bucket: anchor.bucket,
+        verdict: 'self-attested',
+        severity: 'info',
+        ...(anchor.controlName !== undefined ? { controlName: anchor.controlName } : {}),
+      };
+      row = { control: synthetic, findings: [] };
+      rowByControlId.set(anchor.controlId, row);
+      rows.push(row);
+    }
+    row.findings.push(ref);
+  }
+
+  // `A` — distinct ACTIVE-bucket controls surfaced as rows (activated +
+  // finding-anchored). A synthetic finding-anchored row whose control fell back
+  // to an out-of-scope bucket (anchorControlForFinding prefers an ACTIVE-bucket
+  // control but FALLS BACK to a non-active one) is still RENDERED, but it must
+  // NOT inflate the numerator past the static coverage denominator `C`
+  // (`staticCoverageForFramework`, which counts only ACTIVE_BUCKETS controls).
+  // Counting only ACTIVE_BUCKETS rows keeps the headline honest: A ≤ C ≤ N.
+  const surfaced = rows.filter((row) => ACTIVE_BUCKETS.has(row.control.bucket)).length;
+  return { rows, orphanFindings, surfaced };
 }
 
 // ─── Verifiable control extraction from controlResults ───────────────────────
@@ -284,7 +602,12 @@ export function frameworkLens(
 
   const activeShown = controls.length;
   const publishedControlCount = FRAMEWORKS[frameworkId]?.publishedControlCount ?? 0;
-  const outOfScope = Math.max(0, publishedControlCount - activeShown);
+  // AAP-128 (S12): coverage is the STATIC capability C (catalog-derived),
+  // identical every audit; out-of-scope is N − C (also static). The per-audit
+  // `activeShown` is kept for the verdict breakdown but is no longer the
+  // headline figure.
+  const covered = staticCoverageForFramework(frameworkId);
+  const outOfScope = Math.max(0, publishedControlCount - covered);
 
   return {
     frameworkId,
@@ -295,6 +618,7 @@ export function frameworkLens(
       unverified,
       selfAttested,
       activeShown,
+      covered,
       outOfScope,
       publishedControlCount,
     },

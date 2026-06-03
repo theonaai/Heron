@@ -75,6 +75,9 @@ import {
   runOAuthScopeVerification,
   type OAuthSourceInput,
 } from '@/src/verification/oauth-scope-runner';
+import { buildDeclaredBaselineForConnectors } from '@/src/verification/declared-baseline';
+import type { DeclaredInventory } from '@/src/verification/types';
+import type { OAuthScopeConnector } from '@/lib/report-json';
 import { recomputeComplianceWithDiscovery } from '@/src/report/recompute-compliance';
 import { persistVerifiedMarkdown } from '@/src/report/persist-verified-markdown';
 import type {
@@ -422,12 +425,34 @@ export async function POST(request: Request): Promise<Response> {
   // The route never logs the credential payload — the runner errors
   // out at the validator boundary before any Authorization header is
   // built when shape rules fail.
+  //
+  // AAP-115 (S1) — wire the DECLARED baseline. Previously this passed
+  // `declared: []`, so every granted scope surfaced as an `extra` diff
+  // and the verdict was always FAIL — a clean agent could never reach
+  // VERIFIED on the wedge controls (AIUC-1 A003.3/A003.4/B006, GDPR
+  // Art 25/Art 5(1)(c)) in the dashboard flow. We now build the declared
+  // baseline from the agent's interview-captured Q2 `systems_enum` /
+  // Q3 `scopes_current` answers, which the analyzer has already parsed
+  // into `report.json.systems[].scopesRequested`, re-keyed onto the
+  // connector kinds being introspected (see `declared-baseline.ts`).
+  // The differ then does a real declared-vs-actual comparison.
+  const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
+  const declaredSystems = reportJson?.systems;
+  const declaredBaseline =
+    oauthSources.length > 0
+      ? buildDeclaredBaselineForConnectors({
+          systems: Array.isArray(declaredSystems) ? declaredSystems : undefined,
+          connectors: oauthSources.map((s) => s.kind as OAuthScopeConnector),
+        })
+      : undefined;
+  const declared: DeclaredInventory[] = declaredBaseline ? [declaredBaseline] : [];
   const oauth = oauthSources.length > 0
     ? await runOAuthScopeVerification({
         inputs: oauthSources as OAuthSourceInput[],
+        declared,
         agentLabel: body.data.sessionId,
       })
-    : { verifications: [], section: null };
+    : { verifications: [], section: null, report: null };
 
   // ── Persistence ─────────────────────────────────────────────────────
   //
@@ -448,8 +473,9 @@ export async function POST(request: Request): Promise<Response> {
   // plus the discovery / oauth overrides) so the status we persist on
   // `verification` is derived from the verdict instead of hardcoded
   // 'verified'. The override args mean the verdict reflects the fresh
-  // Surface 2 evidence on the same tick as the patch.
-  const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
+  // Surface 2 evidence on the same tick as the patch. `reportJson` was
+  // resolved above (AAP-115) so the declared baseline could read
+  // `systems[]` before the OAuth introspection ran.
   const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
     reportJson,
     transcript: session.transcript,
@@ -483,6 +509,13 @@ export async function POST(request: Request): Promise<Response> {
         analyzer: analyzerSubset,
         transcript: transcriptAsQA,
         discovery: finalResult,
+        // AAP-74/G10 — thread the OAuth verification report so the
+        // router-adapter wedge detectors (AIUC-1 A003/A003.3/A003.4/B006,
+        // GDPR Art 25/Art 22) fire on the dashboard path. They read
+        // `evidence.verificationReport` and short-circuit to null without
+        // it, so a clean grant (declared==actual, no diffs) never reached
+        // `verified`.
+        ...(oauth.report ? { verificationReport: oauth.report } : {}),
       });
       patch.compliance = compliance;
       // AAP-69 alias — the dashboard minimal report reads `regulatoryCompliance`.

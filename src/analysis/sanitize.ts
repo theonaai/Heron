@@ -655,6 +655,17 @@ export function sanitizeFrequencyFields(sys: Record<string, unknown>): void {
     if (typeof freq.batchSize === 'string' && freq.batchSize.length > 20) {
       freq.batchSize = truncateWithEllipsis(freq.batchSize, 20);
     }
+    // The LLM sometimes emits a non-positive / non-integer numeric batchSize
+    // (e.g. 0 for an unbatched system). That fails the schema's
+    // z.number().int().positive() branch and would reject the ENTIRE analysis
+    // (one stray field nukes the whole audit). Drop it: an absent batchSize is
+    // valid, and the prose parser already guards `n > 0`.
+    if (
+      typeof freq.batchSize === 'number' &&
+      !(Number.isInteger(freq.batchSize) && freq.batchSize > 0)
+    ) {
+      delete freq.batchSize;
+    }
     if (typeof freq.notes === 'string' && freq.notes.length > 400) {
       freq.notes = truncateWithEllipsis(freq.notes, 400);
     }

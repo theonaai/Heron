@@ -42,6 +42,7 @@ import {
   mapFindings,
   type CategorizedCompliance,
 } from '../compliance/mapper.js';
+import type { VerificationReport } from '../verification/types.js';
 import type {
   AnalysisResult,
   QAPair,
@@ -71,12 +72,29 @@ export interface RecomputeAnalyzerSubset {
  * function tolerates partial / undefined fields — anything missing
  * falls through as "no extra signal" and the mapper output matches the
  * Stage 3 original.
+ *
+ * `verificationReport` is the Surface 2 verification output (diff +
+ * inventory + approval chain). The forwarded-OAuth path (G10) threads
+ * the orchestrator's report in so the router-adapter wedge detectors
+ * (AIUC-1 A003/A003.3/A003.4/B006, GDPR Art 25/Art 22) fire — those
+ * detectors read `evidence.verificationReport` and short-circuit to null
+ * without it, so a clean forwarded OAuth grant never reached `verified`
+ * before. When both `discovery` and `verificationReport` are absent the
+ * caller passes neither and the mapper runs the prose-only path unchanged.
  */
 export function recomputeComplianceWithDiscovery(args: {
   analyzer: RecomputeAnalyzerSubset;
   transcript: QAPair[];
   discovery?: DiscoveryResult | null;
+  verificationReport?: VerificationReport | null;
 }): CategorizedCompliance {
+  // Build the `actual` envelope only when at least one Surface 2 signal is
+  // present; an empty envelope would flip the mapper out of the prose-only
+  // path and run the typed detectors against nothing.
+  const actual: { discovery?: DiscoveryResult; verificationReport?: VerificationReport } = {};
+  if (args.discovery) actual.discovery = args.discovery;
+  if (args.verificationReport) actual.verificationReport = args.verificationReport;
+  const hasActual = actual.discovery !== undefined || actual.verificationReport !== undefined;
   return mapFindings({
     declared: {
       systems: args.analyzer.systems,
@@ -88,8 +106,6 @@ export function recomputeComplianceWithDiscovery(args: {
         ? { decisionMakingDetails: args.analyzer.decisionMakingDetails }
         : {}),
     },
-    ...(args.discovery
-      ? { actual: { discovery: args.discovery } }
-      : {}),
+    ...(hasActual ? { actual } : {}),
   });
 }

@@ -77,6 +77,10 @@ import {
   scrubMessageMulti,
   scrubSecrets,
 } from './scrub.js';
+// AAP-124: the Google scope-URI prefix is defined ONCE in the shared
+// `scope-canonical` module so the declared side, the differ's match key, and
+// this connector all strip the same prefix and cannot drift.
+import { GOOGLE_SCOPE_URI_PREFIX } from '../../scope-canonical.js';
 
 // ─── Endpoint constants ────────────────────────────────────────────
 
@@ -101,12 +105,10 @@ export const GOOGLE_TOKENINFO_URL = `${GOOGLE_DEFAULT_BASE_URL}/tokeninfo`;
  */
 export const GOOGLE_TOKEN_URL = `${GOOGLE_DEFAULT_BASE_URL}/token`;
 
-/**
- * Canonical Google scope URI prefix. Stripped from every scope string
- * before emission so the short form (`gmail.readonly`) survives
- * downstream. Set once here so the canonicalizer and the docs agree.
- */
-const GOOGLE_SCOPE_URI_PREFIX = 'https://www.googleapis.com/auth/';
+// `GOOGLE_SCOPE_URI_PREFIX` is imported from the shared `scope-canonical`
+// module (see the import block above). `canonicalizeGoogleScope` below strips
+// the same prefix the declared side and the differ strip, then layers
+// Google-specific OIDC / unknown-shape semantics on top.
 
 /**
  * OIDC standard scopes — preserved as-is. They are NOT URI-form and

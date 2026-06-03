@@ -107,6 +107,11 @@ import {
   type ForwardedOAuthProvider,
   type ForwardedOAuthRecord,
 } from '../verification/forwarded-oauth-introspection.js';
+// AAP-115 (S1) — declared baseline from the interview-captured Q2/Q3
+// answers (analyzer `report.json.systems[]`) so the forwarded-OAuth
+// scope diff reaches VERIFIED instead of flagging every grant as extra.
+import { buildDeclaredBaselineForConnectors } from '../verification/declared-baseline.js';
+import type { DeclaredInventory } from '../verification/types.js';
 import { secretlintScrub } from '../discovery/secretlint-scrub.js';
 import { recomputeComplianceWithDiscovery } from '../report/recompute-compliance.js';
 import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js';
@@ -492,21 +497,20 @@ const REPORT_MCP_TOOLS_LIST_DEF: ToolDefinition = {
 const REPORT_OAUTH_SCOPES_DEF: ToolDefinition = {
   name: 'report_oauth_scopes',
   description:
-    "Forward your OAuth provider's token-introspection response to Heron so it can " +
-    'verify your GRANTED scopes deterministically.\n\n' +
-    'For each OAuth provider you use (Google Workspace, etc.):\n' +
-    '  1. Call the provider\'s introspection endpoint with YOUR access token.\n' +
-    '     Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<your-token>\n' +
+    'Forward the token-introspection response for the OAuth credentials configured ' +
+    'for this deployment so Heron can verify your GRANTED scopes deterministically. ' +
+    'This covers credentials the agent HOLDS (token files, env, connector config), ' +
+    'not only providers you happened to call this session.\n\n' +
+    'For each configured OAuth provider (Google Workspace, etc.):\n' +
+    '  1. Read ONLY the access_token value (from the configured token file / env) ' +
+    "solely to call the provider's introspection endpoint.\n" +
+    '     Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<token>\n' +
     '  2. Forward the RAW introspection response here (it contains the granted ' +
-    '`scope` field). Do NOT send the token itself — only the introspection response.\n\n' +
-    'Heron will:\n' +
-    '  - Parse the granted scopes from the response\n' +
-    '  - Diff them against your declared usage to surface over-broad grants\n\n' +
-    'NEVER:\n' +
-    '  - Reads, stores, or asks for your access/refresh token — only the ' +
-    'introspection response\n\n' +
+    '`scope` field). Forward the RESPONSE only, never the token.\n\n' +
+    'This does not expose a secret: the token value never leaves your process and is ' +
+    'never sent to Heron; you forward only the granted-scope response (agent-as-transport).\n\n' +
     'If the introspection call fails (token expired/invalid), forward the error ' +
-    'response anyway — Heron records an honest "introspection attempted" state.',
+    'response anyway so Heron records an honest "introspection attempted" state.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1858,15 +1862,38 @@ export class HeronMCPServer {
     // from the MCP path, not just the dashboard. Empty when the agent
     // forwarded nothing (the OAuth section stays absent / "N/A").
     const forwardedOAuthRecords = await listReportedOAuthScopes(sessionId);
+    // AAP-115 (S1) — build the declared baseline from the agent's
+    // interview-captured Q2 `systems_enum` / Q3 `scopes_current` answers
+    // (already parsed by the analyzer into `report.json.systems[]`),
+    // re-keyed onto the providers the agent forwarded introspection for.
+    // Without this the forwarded path passed `declared: []` and every
+    // granted scope read as an `extra` diff → always FAIL. With it, a
+    // clean agent reaches VERIFIED on the wedge controls.
+    const forwardedReportJson = (session.reportJson as AuditReport | undefined) ?? null;
+    const forwardedDeclaredSystems = forwardedReportJson?.systems;
+    const forwardedDeclaredBaseline = forwardedOAuthRecords.length > 0
+      ? buildDeclaredBaselineForConnectors({
+          systems: Array.isArray(forwardedDeclaredSystems)
+            ? forwardedDeclaredSystems
+            : undefined,
+          connectors: forwardedOAuthRecords.map(
+            (r) => r.provider as ForwardedOAuthProvider,
+          ),
+        })
+      : undefined;
+    const forwardedDeclared: DeclaredInventory[] = forwardedDeclaredBaseline
+      ? [forwardedDeclaredBaseline]
+      : [];
     const oauthForward = forwardedOAuthRecords.length > 0
       ? await runForwardedOAuthScopeVerification({
           records: forwardedOAuthRecords.map((r): ForwardedOAuthRecord => ({
             provider: r.provider as ForwardedOAuthProvider,
             introspection: r.introspection,
           })),
+          declared: forwardedDeclared,
           agentLabel: sessionId,
         })
-      : { verifications: [], section: null };
+      : { verifications: [], section: null, report: null };
 
     // Re-compute Stage 3 framework mapping with the fresh evidence. This
     // is the load-bearing part of AAP-79 — pre-AAP-79 the mapper ran
@@ -1942,6 +1969,12 @@ export class HeronMCPServer {
         analyzer: analyzerSubset,
         transcript: transcriptAsQA,
         discovery: scrubbed,
+        // G10 — thread the forwarded-OAuth verification report so the
+        // router-adapter wedge detectors (AIUC-1 A003/A003.3/A003.4/B006,
+        // GDPR Art 25/Art 22) fire. They read `evidence.verificationReport`
+        // and short-circuit to null without it — so a clean forwarded grant
+        // (declared==actual, no diffs) never reached `verified` before.
+        ...(oauthForward.report ? { verificationReport: oauthForward.report } : {}),
       });
       reportPatch.compliance = compliance;
       // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.

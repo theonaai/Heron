@@ -40,6 +40,7 @@ import type {
   DeclaredTool,
   DiffEntry,
 } from './types.js';
+import { canonicalizeScopeToken } from './scope-canonical.js';
 
 const SEVERITY_EXTRA = 'high' as const;
 const SEVERITY_MISSING = 'medium' as const;
@@ -193,9 +194,17 @@ function diffScopes(
 }
 
 function scopeKey(s: { service: string; scope: string }): string {
+  // AAP-124: canonicalize the scope token to ONE form before matching, so a
+  // scope declared as a full Google URL
+  // (`https://www.googleapis.com/auth/spreadsheets`) and granted as the short
+  // tokeninfo name (`spreadsheets`) produce the SAME key and MATCH instead of
+  // surfacing as a spurious extra+missing pair. Both sides go through the same
+  // shared helper here — this is the single comparison point, so the two sides
+  // cannot drift. Only the Google URL prefix is stripped; `drive` and
+  // `drive.file` stay distinct keys (the helper preserves the subscope path).
   // The shared key includes `\x00` so a service named 'a' + scope 'b:c'
   // cannot collide with service 'a:b' + scope 'c'.
-  return `${s.service}\x00${s.scope}`;
+  return `${s.service}\x00${canonicalizeScopeToken(s.scope)}`;
 }
 
 // ─── Defensive cloning ─────────────────────────────────────────────────────

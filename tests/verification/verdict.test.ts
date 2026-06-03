@@ -44,6 +44,28 @@ describe('computeVerdict', () => {
     expect(verdict.discrepancies).toEqual([]);
   });
 
+  it('AAP-122: carries the risk findingType onto the SLF VerdictFinding', () => {
+    const interviewFindings: Risk[] = [
+      {
+        severity: 'high',
+        title: 'Automated hiring decision',
+        description: 'Agent rejects candidates with no human review.',
+        findingType: 'decisions-about-people',
+      },
+      // A risk with no findingType stays unattributed (global-only).
+      { severity: 'medium', title: 'Unclassified concern', description: 'misc' },
+    ];
+    const verdict = computeVerdict({ interviewFindings });
+    const slf = (verdict.findings ?? []).filter((f) => f.evidenceSource === 'SLF');
+    const classified = slf.find((f) => f.title === 'Automated hiring decision');
+    const unclassified = slf.find((f) => f.title === 'Unclassified concern');
+    expect(classified?.findingType).toBe('decisions-about-people');
+    // Absent (not set to undefined as an own property) when the risk omits it.
+    expect(unclassified?.findingType).toBeUndefined();
+    // findingType never moves posture — these are SLF findings.
+    expect(verdict.posture).toBe(0);
+  });
+
   it('returns unverified with no risk when inputs are empty', () => {
     const verdict = computeVerdict({});
     expect(verdict.status).toBe('unverified');
@@ -110,6 +132,30 @@ describe('computeVerdict', () => {
     expect(verdict.findings).toHaveLength(1);
     expect(verdict.findings[0].evidenceSource).toBe('OAU');
     expect(verdict.findings[0].title).toContain('drive.write');
+  });
+
+  it('AAP-115 — SURFACES a failed introspection as an informational finding (not silently empty)', () => {
+    // An expired/revoked token: the source read errors → verdict `unverified`,
+    // empty diffs. Pre-AAP-115 this produced NO finding (the failure was only a
+    // status-table row). Now it surfaces as a visible informational finding.
+    const oauthVerifications: SourceVerification[] = [
+      {
+        sourceId: 'oauth-scopes',
+        verdict: 'unverified',
+        diffs: [],
+        error: { kind: 'unauthorized', message: 'Google Workspace access_token rejected by tokeninfo (invalid or expired).' },
+      },
+    ];
+    const verdict = computeVerdict({ oauthVerifications });
+    expect(verdict.findings).toHaveLength(1);
+    const f = verdict.findings[0];
+    expect(f.evidenceSource).toBe('OAU');
+    expect(f.band).toBe('informational');
+    expect(f.severityScore).toBe(0); // never moves posture
+    expect(f.title).toContain('introspection failed');
+    expect(f.description).toContain('invalid or expired');
+    // A failed read is honest "could not verify" — posture stays 0.
+    expect(verdict.posture).toBe(0);
   });
 
   it('stamps interview-derived risks with evidenceSource = SLF', () => {

@@ -15,6 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sanitizeAnalyzerOutput,
+  sanitizeFrequencyFields,
   toShortSystemId,
   stripScopeLeadIn,
   extractInlineSourceRefs,
@@ -22,6 +23,28 @@ import {
   mergeDuplicateRisks,
 } from '../../src/analysis/sanitize.js';
 import { analysisResultSchema } from '../../src/report/types.js';
+
+// ─── sanitizeFrequencyFields — batchSize coercion (AAP-129 follow-up) ──────
+
+describe('sanitizeFrequencyFields — batchSize coercion', () => {
+  it('drops a non-positive / non-integer numeric batchSize (would otherwise reject the whole analysis)', () => {
+    for (const bad of [0, -3, 2.5, Number.NaN]) {
+      const sys: Record<string, unknown> = { frequency: { batchSize: bad, callsPerRun: '10' } };
+      sanitizeFrequencyFields(sys);
+      expect((sys.frequency as Record<string, unknown>).batchSize).toBeUndefined();
+    }
+  });
+
+  it('keeps a valid positive-int batchSize and a string batchSize', () => {
+    const num: Record<string, unknown> = { frequency: { batchSize: 40 } };
+    sanitizeFrequencyFields(num);
+    expect((num.frequency as Record<string, unknown>).batchSize).toBe(40);
+
+    const str: Record<string, unknown> = { frequency: { batchSize: '5-50 contacts' } };
+    sanitizeFrequencyFields(str);
+    expect((str.frequency as Record<string, unknown>).batchSize).toBe('5-50 contacts');
+  });
+});
 
 // ─── Real fixtures from sess-20260520-144012-f13a80 ──────────────────────
 

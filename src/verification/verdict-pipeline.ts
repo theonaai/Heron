@@ -213,6 +213,9 @@ export function buildVerdictSnapshot(verdict: Verdict): {
     evidenceSource: 'MCP' | 'OAU' | 'ENV' | 'PLG' | 'SLF';
     title: string;
     description: string;
+    // AAP-122 — SLF finding's bounded finding-type, threaded into the snapshot
+    // so the dashboard can attribute it to framework card(s).
+    findingType?: import('../compliance/types.js').FindingType;
     kind?: string;
   }>;
   // AAP-105 (G8b) — global-scope MCP servers reclassified out of
@@ -243,6 +246,7 @@ export function buildVerdictSnapshot(verdict: Verdict): {
       evidenceSource: f.evidenceSource,
       title: f.title,
       description: f.description,
+      ...(f.findingType !== undefined ? { findingType: f.findingType } : {}),
       ...(f.kind !== undefined ? { kind: f.kind } : {}),
     })),
     hostCapabilities: (verdict.hostCapabilities ?? []).map((h) => ({

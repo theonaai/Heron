@@ -257,8 +257,149 @@ function isMentioned(server: DiscoveredMcpServer, body: string): boolean {
   return false;
 }
 
+/**
+ * AAP-125 (S9) — negation cues that scope FORWARD over the rest of the
+ * clause. A service keyword appearing after one of these inside the same
+ * clause is being named as something the agent does NOT use, so it must
+ * not be treated as a declared-or-used service.
+ *
+ * The live failure (sess-20260602-094153): Q30 answered "I found NO
+ * integration with an incident tool, ticketing system, PagerDuty/Opsgenie,
+ * Linear/Jira, ..." — `jira` was named only as an EXAMPLE of an absent
+ * tool, yet the flat `body.includes('jira')` mention check raised a false
+ * "MISSING jira". A leading negation ("found no integration with") governs
+ * every item in the list that follows, up to the clause boundary.
+ *
+ * Forward-scoping cues: the negation precedes the keyword in the clause.
+ * Anchored with a word boundary on the right so `note` / `cannot` style
+ * substrings can't accidentally trip "no" / "not". `don't` etc. are
+ * matched in both the curly-apostrophe (’) and straight-quote (') forms;
+ * the answer text reaching here is lower-cased but apostrophes are
+ * preserved.
+ */
+const FORWARD_NEGATION_CUES: RegExp[] = [
+  // bare determiner / adverb negations: "no X", "not X", "never X"
+  /\bno\b/,
+  /\bnot\b/,
+  /\bnone\b/,
+  /\bnever\b/,
+  /\bneither\b/,
+  /\bnor\b/,
+  /\bwithout\b/,
+  /\black(?:s|ing|ed)?\b/,
+  /\babsent\b/,
+  /\bunused\b/,
+  // verb-phrase negations: "do not use", "don't use", "isn't", "aren't",
+  // "wasn't", "doesn't", "didn't", "haven't", "hasn't", "can't", "cannot".
+  // The contraction class covers BOTH the straight (') and curly (’)
+  // apostrophe — interview transcripts routinely carry smart quotes.
+  /\b(?:do|does|did|is|are|was|were|have|has|had|can|could|would|should|will)\s*n[o’']?t\b/,
+  /\bcannot\b/,
+  /\bn[o’']t\b/, // standalone contraction tail: "isn't" tokenised loosely
+];
+
+/**
+ * AAP-125 (S9) — postfix negation shapes where the keyword comes FIRST and
+ * the negation follows: "X is not configured", "X not present", "X is not
+ * set up / not wired / absent". Matched as a template after the keyword.
+ * Kept tight: only a short bridge of copula/filler words between the
+ * keyword and the negated predicate, so an unrelated later "not" in the
+ * same sentence can't retro-negate a positive mention.
+ */
+const POSTFIX_NEGATION_AFTER_KEYWORD: RegExp =
+  /^(?:\s+(?:is|are|was|were|isn[’']?t|aren[’']?t|wasn[’']?t|weren[’']?t|'s|been|being|server|integration|mcp|tool|connector|access|wiring|wired|setup))*\s*(?:\b(?:not|never|no longer)\b|n[o’']t\b|\babsent\b|\bunconfigured\b|\bunused\b|\bmissing\b|\bunavailable\b)/;
+
+/**
+ * AAP-125 (S9) — split a clause at contrastive / coordinating boundaries.
+ * Forward negation scope ends at "but" / "however" / "although" / "though"
+ * / "except" / "yet" / "instead" so "we don't use Slack but we do use
+ * Jira" leaves the Jira clause positive. Sentence punctuation already
+ * bounds clauses upstream; this handles intra-sentence contrast.
+ */
+const CONTRAST_BOUNDARY: RegExp =
+  /\b(?:but|however|although|though|except|whereas|yet|instead|rather)\b/g;
+
+/** Split the body into sentence-sized units. Newlines (one per QA pair
+ *  answer) and ./?/!/; terminators bound a sentence. Empty units dropped. */
+function splitSentences(body: string): string[] {
+  return body
+    .split(/[.!?;\n]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * AAP-125 (S9) — split a sentence at contrast boundaries into sub-clauses.
+ * The contrast word itself starts the NEXT clause (forward negation should
+ * not leak past it). Returns at least one clause.
+ */
+function splitOnContrast(sentence: string): string[] {
+  CONTRAST_BOUNDARY.lastIndex = 0;
+  const cutPoints: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = CONTRAST_BOUNDARY.exec(sentence)) !== null) {
+    cutPoints.push(m.index);
+    if (m.index === CONTRAST_BOUNDARY.lastIndex) CONTRAST_BOUNDARY.lastIndex++;
+  }
+  if (cutPoints.length === 0) return [sentence];
+  const clauses: string[] = [];
+  let start = 0;
+  for (const cut of cutPoints) {
+    clauses.push(sentence.slice(start, cut));
+    start = cut;
+  }
+  clauses.push(sentence.slice(start));
+  return clauses.map((c) => c.trim()).filter((c) => c.length > 0);
+}
+
+/**
+ * AAP-125 (S9) — is THIS keyword occurrence (at `idx` inside `clause`)
+ * negated? Two shapes:
+ *   (1) forward: a negation cue appears in the clause text BEFORE the
+ *       keyword — covers "no X", "found no ... X", "don't use X", and
+ *       every item of a negated list ("no integration with A, B, X").
+ *   (2) postfix: the text immediately AFTER the keyword matches a
+ *       not-configured / not-present / absent template.
+ */
+function occurrenceIsNegated(clause: string, idx: number, kwLen: number): boolean {
+  const before = clause.slice(0, idx);
+  for (const cue of FORWARD_NEGATION_CUES) {
+    if (cue.test(before)) return true;
+  }
+  const after = clause.slice(idx + kwLen);
+  if (POSTFIX_NEGATION_AFTER_KEYWORD.test(after)) return true;
+  return false;
+}
+
+/**
+ * AAP-125 (S9) — negation-aware replacement for the old flat
+ * `body.includes(keyword)`. Returns true only when the keyword appears in
+ * at least one clause where the occurrence is NOT negated, i.e. a genuine
+ * positive/declared mention.
+ *
+ * Conservative bias (false MISSING is worse than a missed one here, per
+ * the ticket): if EVERY occurrence of the keyword sits inside a negation,
+ * we treat the keyword as not-positively-mentioned and the MISSING pass
+ * stays silent. A single positive mention anywhere ("we use jira") still
+ * counts — so genuine declared-but-absent services keep flagging.
+ */
 function transcriptMentionsKeyword(body: string, keyword: string): boolean {
-  return body.includes(keyword.toLowerCase());
+  const kw = keyword.toLowerCase();
+  if (!body.includes(kw)) return false;
+  const kwLen = kw.length;
+  for (const sentence of splitSentences(body)) {
+    if (!sentence.includes(kw)) continue;
+    for (const clause of splitOnContrast(sentence)) {
+      let from = 0;
+      let idx = clause.indexOf(kw, from);
+      while (idx !== -1) {
+        if (!occurrenceIsNegated(clause, idx, kwLen)) return true;
+        from = idx + kwLen;
+        idx = clause.indexOf(kw, from);
+      }
+    }
+  }
+  return false;
 }
 
 function transcriptMentionsCredentials(body: string): boolean {
@@ -439,6 +580,13 @@ export function diffAgainstTranscript(
   // MISSING side; both stem from Heron conflating "declared integration"
   // (REST / OAuth / MCP) with "MCP server". A genuinely declared-but-
   // absent service (no MCP, no plugin, no env signal) still flags.
+  //
+  // AAP-125 (S9) — the keyword "mention" check is negation-aware. A
+  // service named only inside a negative / absence statement ("found no
+  // integration with ... Linear/Jira", "we don't use Slack") is NOT a
+  // declared-or-used service and must not raise a MISSING. Only a
+  // positive mention in a non-negated clause counts. See
+  // `transcriptMentionsKeyword` for the clause-bounded heuristic.
   for (const kw of CANONICAL_KEYWORDS) {
     if (!transcriptMentionsKeyword(body, kw)) continue;
     let matched = false;

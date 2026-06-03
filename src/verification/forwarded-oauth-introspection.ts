@@ -52,6 +52,7 @@ import type {
   DeterministicSourceError,
   DeterministicSourceResult,
   SourceVerification,
+  VerificationReport,
 } from './types.js';
 import type {
   OAuthScopeConnector,
@@ -319,11 +320,18 @@ export interface ForwardedOAuthRecord {
 
 /**
  * Run the scope diff for one-or-more agent-forwarded introspections and
- * return BOTH:
+ * return:
  *   - `verifications`: raw `SourceVerification[]` for the verdict pipeline
  *     (consumed via `oauthVerificationsOverride` → `oauthVerifications`).
  *   - `section`: the public `OAuthScopeVerificationSection` for report.json
  *     + the dashboard renderer.
+ *   - `report`: the FULL `VerificationReport` the shared orchestrator built
+ *     (same `capturedAt` / `agentLabel` / `declared` / `sources`). The
+ *     start_verification handler + the scan route thread this into
+ *     `recomputeComplianceWithDiscovery` so the typed wedge detectors
+ *     (`router-adapter.ts`, which read `evidence.verificationReport`) fire —
+ *     `verifications` alone is NOT enough, because those detectors short-circuit
+ *     to null without a `verificationReport` on the envelope.
  *
  * Mirrors `runOAuthScopeVerification` in `oauth-scope-runner.ts` exactly,
  * except the source is the in-memory `ForwardedOAuthIntrospectionSource`
@@ -344,12 +352,17 @@ export async function runForwardedOAuthScopeVerification(args: {
 }): Promise<{
   verifications: SourceVerification[];
   section: OAuthScopeVerificationSection;
+  /** The full orchestrator report — thread into the compliance recompute so
+   *  the wedge detectors (which read `evidence.verificationReport`) fire.
+   *  `null` when no records were forwarded. */
+  report: VerificationReport | null;
 }> {
   const nowFn = args.now ?? (() => new Date());
   if (args.records.length === 0) {
     return {
       verifications: [],
       section: { capturedAt: nowFn().toISOString(), sources: [] },
+      report: null,
     };
   }
 
@@ -375,6 +388,7 @@ export async function runForwardedOAuthScopeVerification(args: {
       capturedAt: report.capturedAt,
       sources: sectionSources,
     },
+    report,
   };
 }
 

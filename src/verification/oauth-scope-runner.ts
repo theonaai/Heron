@@ -39,6 +39,7 @@ import type {
   DeclaredInventory,
   DeterministicSourceError,
   SourceVerification,
+  VerificationReport,
 } from './types.js';
 import type {
   OAuthScopeConnector,
@@ -149,11 +150,20 @@ export async function runOAuthScopeVerification(args: {
    * One entry per input, in the same order.
    */
   section: OAuthScopeVerificationSection;
+  /**
+   * The full orchestrator report. The scan route threads this into
+   * `recomputeComplianceWithDiscovery` so the router-adapter wedge
+   * detectors (which read `evidence.verificationReport`) fire on the
+   * dashboard path — they short-circuit to null without it. `null` when
+   * no inputs were supplied.
+   */
+  report: VerificationReport | null;
 }> {
   if (args.inputs.length === 0) {
     return {
       verifications: [],
       section: { capturedAt: (args.now ?? (() => new Date()))().toISOString(), sources: [] },
+      report: null,
     };
   }
 
@@ -183,6 +193,7 @@ export async function runOAuthScopeVerification(args: {
       capturedAt: report.capturedAt,
       sources,
     },
+    report,
   };
 }
 

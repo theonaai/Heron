@@ -43,12 +43,22 @@ import type {
 } from '@/src/report/types';
 import {
   allLensFrameworks,
+  composeFrameworkLensRows,
   frameworkLens,
-  lensFrameworks,
+  slfFindingsForFramework,
   type FrameworkLens,
 } from '@/src/report/compliance-lens';
 import type { ControlResult as LensSourceControlResult } from '@/src/compliance/control-catalog';
 import type { TypedRegulatoryFlag } from '@/src/compliance/mapper';
+// AAP-126 (S10): the systems-table "Verified?" glyph is driven from REAL
+// per-system OAuth introspection. We map a system to its connector exactly
+// the way the declared-baseline builder does (`connectorForSystemId`) and
+// compare the system's OWN declared scopes against that connector's
+// introspection result using the SAME shared scope-token canonicalizer the
+// differ / declared baseline / DS floor use, so the dashboard glyph cannot
+// drift from the backend comparison.
+import { connectorForSystemId } from '@/src/verification/declared-baseline';
+import { canonicalizeScopeToken } from '@/src/verification/scope-canonical';
 
 // ─── Minimal types we read from reportJson ──────────────────────────────
 
@@ -152,7 +162,21 @@ interface MinimalReportJson {
     // `introspection-error: ... invalid_token ...`). AAP-110 reads it so the
     // SLF OAuth mitigation is state-aware (attempted + rejected -> refresh the
     // token, not "enable introspection").
-    sources?: Array<{ connector?: string; verdict?: string; errorMessage?: string }>;
+    //
+    // AAP-126 (S10): `actualScopes` + `diffs` are read by the systems table's
+    // "Verified?" column to drive the per-system glyph from REAL introspection
+    // evidence (✓ only when the system's own declared scope is confirmed; ⚠
+    // when it shows up in a diff; — when the connector was not introspected or
+    // the system declared no OAuth scope). Mirrors
+    // `OAuthScopeVerificationSourceResult` in lib/report-json.ts; both fields
+    // optional so legacy/partial blobs degrade to "—" rather than throw.
+    sources?: Array<{
+      connector?: string;
+      verdict?: string;
+      errorMessage?: string;
+      actualScopes?: Array<{ service?: string; scope?: string }>;
+      diffs?: Array<{ kind?: string; service?: string; scope?: string }>;
+    }>;
   };
 }
 
@@ -375,43 +399,119 @@ function hasIrreversibleWrites(system: SystemAssessment): boolean {
   return (system.writeOperations || []).some((w) => !w.reversible);
 }
 
-// ─── Per-system finding lookup ────────────────────────────────────────
+// ─── AAP-126 (S10): per-system "Verified?" status ─────────────────────
 //
-// Maps a system row to the count of verified findings that touch it. The
-// finding shape doesn't carry an explicit systemId, so we match on title /
-// description containing the systemId stem. Conservative — used only to
-// render a ✓ / ⚠ glyph in the Verified? column.
+// THE BUG THIS REPLACES. The old `findingsTouchingSystem` rendered ✓ for ANY
+// system that had no VERIFIED finding whose title/description text happened to
+// mention the system-id stem. Two ways that was dishonest in a column titled
+// "Verified?":
+//   (1) ✓ showed for systems that were NEVER introspected at all (gamma /
+//       telegram / wellkid had no OAuth verification, yet read as "verified").
+//   (2) the short "google" stem matched the text of findings for EVERY
+//       google-* system, including `google-gemini` (which has no OAuth scopes),
+//       so an unrelated finding could flip an unverified system to ⚠.
+//
+// THE FIX. Drive the glyph from REAL per-system verification evidence:
+//   1. Map the system to its OAuth connector the SAME way the declared-baseline
+//      builder does (`connectorForSystemId`). No connector -> not verifiable.
+//   2. Find that connector's introspection result in `oauthScopeVerification`.
+//      Not introspected (no matching source) -> "—" Not verified.
+//   3. Canonicalize the system's OWN declared scopes (`scopesRequested`) via the
+//      shared `canonicalizeScopeToken` (so a full Google scope URL matches the
+//      short tokeninfo form the connector emits — same helper as the differ).
+//        - No declared OAuth scope            -> "—" Not verified.
+//        - A declared scope appears in `diffs` -> ⚠ Discrepancy (its own access
+//          is implicated: a `missing` it declared-but-lacks, or an `extra`
+//          granted-but-undeclared scope it nonetheless lists).
+//        - >=1 declared scope AND every declared scope is in `actualScopes`
+//          with no diff hit -> ✓ Verified.
+//        - otherwise (declared scope neither confirmed nor flagged) -> "—".
+//
+// Conservative by construction: ✓ ONLY when the system's own declared access
+// was deterministically confirmed against introspection. When in doubt we show
+// the neutral "—", never a misleading ✓.
 
-function findingsTouchingSystem(
-  systemId: string,
-  verdict?: VerdictSnapshot,
-): number {
-  if (!verdict?.findings) return 0;
-  // Build a small set of tokens to match against: the full systemId,
-  // the head (e.g. "google") and the tail (e.g. "drive", "sheets").
-  // Conservative — these are short tokens but findings titles are
-  // short too so the false-positive risk is low.
-  const id = systemId.toLowerCase();
-  const parts = id.split(/[-_]/);
-  const tokens = new Set<string>([id]);
-  parts.forEach((p) => {
-    if (p.length >= 4) tokens.add(p);
-  });
-  return verdict.findings.filter((f) => {
-    if (f.evidenceSource === 'SLF') return false; // verified only
-    const blob = `${f.title} ${f.description}`.toLowerCase();
-    for (const t of tokens) {
-      // Match on word-ish boundary so "drive" doesn't also match
-      // "google-drive" via the stem.
-      const re = new RegExp(`\\b${escapeRegex(t)}\\b`);
-      if (re.test(blob)) return true;
-    }
-    return false;
-  }).length;
+export type SystemVerificationState = 'verified' | 'discrepancy' | 'unverified';
+
+export interface SystemVerificationStatus {
+  state: SystemVerificationState;
+  glyph: '✓' | '⚠' | '—';
+  /** Hex color for the glyph (green / orange / neutral grey). */
+  color: string;
+  /** Per-cell tooltip explaining what the glyph means. */
+  title: string;
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NOT_VERIFIED_STATUS: SystemVerificationStatus = {
+  state: 'unverified',
+  glyph: '—',
+  color: '#a1a1aa',
+  title: 'No deterministic verification (system declares no OAuth scope, or its connector was not introspected)',
+};
+
+/** Minimal shape this helper reads off `oauthScopeVerification`. */
+type OAuthSourceLike = NonNullable<
+  NonNullable<MinimalReportJson['oauthScopeVerification']>['sources']
+>[number];
+
+/**
+ * Resolve the "Verified?" status for one system row from real OAuth-scope
+ * introspection evidence. Pure + exported so the matching logic is unit-tested
+ * directly (the project's vitest setup has no DOM).
+ */
+export function systemVerificationStatus(
+  system: Pick<SystemAssessment, 'systemId' | 'scopesRequested'>,
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'],
+): SystemVerificationStatus {
+  const connector = connectorForSystemId(system.systemId || '');
+  if (!connector) return NOT_VERIFIED_STATUS;
+
+  const sources: OAuthSourceLike[] = oauthScopeVerification?.sources ?? [];
+  const source = sources.find((s) => s.connector === connector);
+  if (!source) return NOT_VERIFIED_STATUS;
+
+  // The system's OWN declared scopes, canonicalized to the short comparison
+  // form (full Google URL -> short tokeninfo name) the connector emits.
+  const declared = (Array.isArray(system.scopesRequested) ? system.scopesRequested : [])
+    .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    .map((s) => canonicalizeScopeToken(s));
+  if (declared.length === 0) return NOT_VERIFIED_STATUS;
+
+  // Canonicalize both sides of the comparison the same way.
+  const actualSet = new Set(
+    (source.actualScopes ?? [])
+      .map((a) => (typeof a?.scope === 'string' ? canonicalizeScopeToken(a.scope) : ''))
+      .filter((s) => s.length > 0),
+  );
+  const diffSet = new Set(
+    (source.diffs ?? [])
+      .map((d) => (typeof d?.scope === 'string' ? canonicalizeScopeToken(d.scope) : ''))
+      .filter((s) => s.length > 0),
+  );
+
+  // Any of the system's OWN declared scopes implicated in a diff -> discrepancy.
+  if (declared.some((tok) => diffSet.has(tok))) {
+    return {
+      state: 'discrepancy',
+      glyph: '⚠',
+      color: '#c2410c',
+      title: 'Scope discrepancy: this system’s declared OAuth scope does not match what introspection found',
+    };
+  }
+
+  // Every declared scope confirmed in the actual introspection result -> verified.
+  if (declared.every((tok) => actualSet.has(tok))) {
+    return {
+      state: 'verified',
+      glyph: '✓',
+      color: '#15803d',
+      title: 'Verified against OAuth introspection: every declared scope was confirmed granted',
+    };
+  }
+
+  // Declared scope neither confirmed nor flagged (e.g. partial introspection
+  // read). Stay neutral rather than imply a ✓ we cannot back.
+  return NOT_VERIFIED_STATUS;
 }
 
 // ─── AAP-107: Findings empty-state copy (three distinct states) ────────
@@ -1214,9 +1314,13 @@ function TriggerValue({ value }: { value: string }) {
 function SystemsBlock({
   systems,
   verdict,
+  oauthScopeVerification,
 }: {
   systems: SystemAssessment[];
   verdict?: VerdictSnapshot;
+  // AAP-126 (S10): threaded down so each row's "Verified?" glyph reads real
+  // per-system OAuth introspection evidence.
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
 }) {
   if (!systems || systems.length === 0) return null;
   return (
@@ -1252,17 +1356,46 @@ function SystemsBlock({
           <tr style={{ textAlign: 'left', color: '#71717a', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
             <th style={{ padding: '8px 8px 8px 0', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>System</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Access</th>
-            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
+            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>
+            <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Risk</th>
             <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>Verified?</th>
           </tr>
         </thead>
         <tbody>
           {systems.map((s, i) => (
-            <SystemRow key={s.systemId + '-' + i} system={s} verdict={verdict} />
+            <SystemRow
+              key={s.systemId + '-' + i}
+              system={s}
+              verdict={verdict}
+              oauthScopeVerification={oauthScopeVerification}
+            />
           ))}
         </tbody>
       </table>
+      {/* AAP-126 (S10): legend so ✓ / ⚠ / — read clearly. The "Verified?"
+          column is deterministic OAuth-scope evidence, not a self-report. */}
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 11,
+          color: '#71717a',
+          lineHeight: 1.5,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '4px 14px',
+        }}
+      >
+        <span>
+          <span style={{ color: '#15803d', fontWeight: 600 }}>✓</span> Verified against OAuth introspection
+        </span>
+        <span>
+          <span style={{ color: '#c2410c', fontWeight: 600 }}>⚠</span> Scope discrepancy
+        </span>
+        <span>
+          <span style={{ color: '#a1a1aa', fontWeight: 600 }}>—</span> No deterministic verification
+        </span>
+      </div>
     </section>
   );
 }
@@ -1270,9 +1403,11 @@ function SystemsBlock({
 function SystemRow({
   system,
   verdict,
+  oauthScopeVerification,
 }: {
   system: SystemAssessment;
   verdict?: VerdictSnapshot;
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
 }) {
   // Screenshot helper — `?expandSystem=<systemId>` pre-expands that row.
   // Used by the headless Chrome capture script. Lives on the client only.
@@ -1302,12 +1437,14 @@ function SystemRow({
   // matching persisted row.
   const severity = systemSeverity(system, verdict);
   const irreversible = hasIrreversibleWrites(system);
-  const findingsCount = findingsTouchingSystem(system.systemId, verdict);
-  const verifiedGlyph = findingsCount > 0 ? '⚠' : '✓';
-  const verifiedColor = findingsCount > 0 ? '#c2410c' : '#15803d';
-  const verifiedTitle = findingsCount > 0
-    ? `${findingsCount} verified finding(s) touch this system`
-    : 'No verified discrepancies for this system';
+  // AAP-126 (S10): "Verified?" glyph from REAL per-system OAuth introspection
+  // (not finding-text overmatch). ✓ only when this system's own declared scope
+  // was deterministically confirmed; ⚠ on a scope discrepancy; "—" when there
+  // is no deterministic verification for it.
+  const verification = systemVerificationStatus(system, oauthScopeVerification);
+  const verifiedGlyph = verification.glyph;
+  const verifiedColor = verification.color;
+  const verifiedTitle = verification.title;
 
   // AAP-105 C2: surface a short canonical name (e.g. "Google Sheets")
   // as the primary row label, with the raw kebab id shown beneath in
@@ -1367,7 +1504,8 @@ function SystemRow({
           ) : (
             <span style={{ color: '#a1a1aa' }}>—</span>
           )}
-        </td>        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
+        </td>
+        <td style={{ padding: '10px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#3f3f46' }}>
           {system.writeOperations.length === 0 ? (
             <span style={{ color: '#a1a1aa' }}>—</span>
           ) : (
@@ -2339,7 +2477,7 @@ function FindingsBlock({
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {verified.map((f) => (
-              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
+              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} anchorId={findingAnchorId(f.code)} />
             ))}
           </div>
         )}
@@ -2385,7 +2523,7 @@ function FindingsBlock({
                 Self-reported by the agent, not verified. Treat as working hypotheses.
               </p>
               {selfAttested.map((f) => (
-                <MinimalFindingCard key={f.code} finding={f} slfState={slfState} />
+                <MinimalFindingCard key={f.code} finding={f} slfState={slfState} anchorId={findingAnchorId(f.code)} />
               ))}
             </div>
           )}
@@ -2393,6 +2531,16 @@ function FindingsBlock({
       )}
     </section>
   );
+}
+
+/**
+ * AAP-127 (S11) — the stable DOM id for a finding's FULL card in the global
+ * stream. The compact per-framework self-attested references in the Compliance
+ * lens link to `#<this>` to scroll to the full card. Keyed by the Vijil-style
+ * `code` (e.g. `SLF-001`), which is unique within an audit, so the id is too.
+ */
+export function findingAnchorId(code: string): string {
+  return `finding-${code}`;
 }
 
 // ─── G8b: host-capability note (NOT a finding) ────────────────────────
@@ -2447,12 +2595,19 @@ function HostCapabilityNote({
 export function MinimalFindingCard({
   finding,
   slfState,
+  anchorId,
 }: {
   finding: CodedVerdictFinding;
   // AAP-110: when present, the SLF mitigation hint is resolved state-aware
   // (e.g. introspection attempted + rejected -> refresh the token). Ignored
   // for non-SLF findings (which use the evidence-source fallback).
   slfState?: SlfMitigationState;
+  // AAP-127 (S11): a DOM id for this card's <article>, so the compact
+  // per-framework self-attested references (in the Compliance lens) can link
+  // (`href="#<anchorId>"`) and scroll to the FULL card here in the global
+  // stream. Set only on the global-stream cards (FindingsBlock); absent
+  // elsewhere so no duplicate ids are emitted.
+  anchorId?: string;
 }) {
   const sevColor = colorForSeverity(finding.severityScore);
   const sevText = formatSeverityNumber(finding.severityScore);
@@ -2494,11 +2649,15 @@ export function MinimalFindingCard({
 
   return (
     <article
+      {...(anchorId ? { id: anchorId } : {})}
       style={{
         border: '1px solid #e5e7eb',
         borderRadius: 8,
         background: '#ffffff',
         padding: '14px 16px',
+        // AAP-127 (S11): give anchored cards a little scroll offset so the
+        // heading is not flush against the viewport top when jumped to.
+        ...(anchorId ? { scrollMarginTop: 16 } : {}),
       }}
     >
       <header style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 6 }}>
@@ -2632,11 +2791,24 @@ const FRAMEWORK_LABELS: Record<string, string> = {
 
 function ComplianceBlock({
   rc,
+  verdict,
+  oauthScopeVerification,
+  localAgentDiscovery,
 }: {
   rc: MinimalReportJson['regulatoryCompliance'] | undefined;
+  // AAP-122 — the verdict snapshot's findings feed the per-framework
+  // attribution of self-attested findings under each lens card. Optional so
+  // pre-verdict / legacy report.json (no verdict block) renders controls with
+  // no SLF sub-list.
+  verdict?: VerdictSnapshot;
+  // AAP-123 (S7) — live session state for the state-aware SLF mitigation hint,
+  // so the finding cards now rendered under each framework match the global
+  // Self-attested stream's mitigation copy. Same inputs FindingsBlock receives.
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  localAgentDiscovery?: unknown;
 }) {
-  const initialOpen = useExpandFlag('compliance');
-  const [open, setOpen] = useState(false);
+  // The compliance lens is ALWAYS expanded (per Ilya 2026-06-02): the 5 framework
+  // cards are always shown; only each card's internals collapse, multiple at once.
   // AAP-121 (S5) FIX 2: framework cards expand independently — multiple can be
   // open at once. Per-card open-state is a Set of frameworkIds, not a single
   // active id, so opening one card no longer collapses the others.
@@ -2653,9 +2825,6 @@ function ComplianceBlock({
       else next.add(frameworkId);
       return next;
     });
-  useEffect(() => {
-    if (initialOpen) setOpen(true);
-  }, [initialOpen]);
   if (!rc) return null;
   // AAP-121 (S5): the lens is driven by the SHARED projection
   // (src/report/compliance-lens.ts) so the dashboard and the markdown report
@@ -2665,31 +2834,26 @@ function ComplianceBlock({
   // controlIds (S2) — so a cast is honest here.
   const controlResults = (rc.controlResults || []) as unknown as LensSourceControlResult[];
   const flags = (rc.all || []) as unknown as TypedRegulatoryFlag[];
+  // AAP-122 — the verdict's self-attested findings, attributed to each framework
+  // card. The SAME findings stay in the global "Self-attested findings" stream
+  // above (FindingsBlock) — this is an additional, framework-scoped view, never
+  // a relocation.
+  //
+  // AAP-123 (S7) — assign Vijil-style codes here (the SAME pass FindingsBlock
+  // runs over the SAME `verdict.findings`, so a framework card's SLF-NNN code
+  // matches the global stream). AAP-127 (S11) — each framework now renders these
+  // as COMPACT references (code + title, scrolling to the full card in the
+  // global stream), not duplicated full cards, so no `slfState` is threaded to
+  // the cards anymore (the global stream still builds its own for its cards).
+  const codedFindings = assignFindingCodes(
+    (verdict?.findings ?? []) as unknown as CodedVerdictFinding[],
+  );
   // AAP-121 (S5) FIX 1: card for EVERY framework, mandatory-first. A framework
   // with zero active controls (verifiable or self-attested) still gets its
   // card with the honest "0 of ~N, the rest out of scope" summary — it no
   // longer vanishes (e.g. ISO 42001 / NIST AI RMF have 0 self-attested by
   // design, so they would disappear from a real audit otherwise).
   const lenses = allLensFrameworks().map((fwId) => frameworkLens(fwId, controlResults, flags));
-  // The honest "how many frameworks did we actually say something about" count
-  // backs the collapsed-header "N frameworks addressed" figure — it stays tied
-  // to frameworks with at least one active control, NOT the rendered card count.
-  const addressedCount = lensFrameworks(controlResults, flags).length;
-  // State-based roll-up for the collapsed header — summed across all framework
-  // cards. No "prose only" special case: every framework is one typed path now.
-  const rollup = lenses.reduce(
-    (acc, l) => ({
-      verified: acc.verified + l.counts.verified,
-      fail: acc.fail + l.counts.fail,
-      partial: acc.partial + l.counts.partial + l.counts.unverified,
-      selfAttested: acc.selfAttested + l.counts.selfAttested,
-      outOfScope: acc.outOfScope + l.counts.outOfScope,
-    }),
-    { verified: 0, fail: 0, partial: 0, selfAttested: 0, outOfScope: 0 },
-  );
-  // Whether any framework surfaced an active control — gates the honest-empty
-  // copy. (`lenses` is now always all five, so it can't be the empty signal.)
-  const hasAny = addressedCount > 0;
 
   return (
     <section
@@ -2702,85 +2866,51 @@ function ComplianceBlock({
       }}
       aria-label="Compliance lens"
     >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: 'flex',
-          width: '100%',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          background: 'transparent',
-          border: 'none',
-          padding: 0,
-          cursor: 'pointer',
-          textAlign: 'left',
-        }}
-      >
-        <span>
-          <span
-            style={{
-              fontSize: 11,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              color: '#71717a',
-              fontWeight: 600,
-              marginRight: 10,
-            }}
-          >
-            Compliance lens
-          </span>
-          <span style={{ fontSize: 13, color: '#18181b' }}>
-            {addressedCount} framework{addressedCount === 1 ? '' : 's'} addressed
-            {hasAny && (
-              <>
-                {' · '}
-                {rollup.verified} verified
-                {' · '}
-                {rollup.selfAttested} self-attested
-                {' · '}
-                {rollup.outOfScope} out of scope
-              </>
-            )}
-          </span>
+      {/* S13 — NO top-of-lens aggregate (spec point 4). Just the section label;
+          all numbers are per-framework on each card. The single legend lives
+          ONCE at the bottom. */}
+      <div>
+        <span
+          style={{
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: '#71717a',
+            fontWeight: 600,
+          }}
+        >
+          Compliance lens
         </span>
-        <span style={{ fontSize: 12, color: '#1d4ed8', fontWeight: 600 }}>
-          {open ? 'Hide ▾' : 'Detail ▸'}
-        </span>
-      </button>
-      {open && (
-        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
-          {/* AAP-121 (S5): per-framework lens cards. Header counts by ACTUAL
-              state (verified / fail / partial / self-attested) + an out-of-
-              scope COUNT; on expand, ONLY active controls are listed (verified
-              -> partial -> self-attested). Out-of-scope is a count, never a
-              list. FIX 1: all five frameworks render (0-active included). FIX 2:
-              cards expand independently — multiple can be open at once. */}
-          {hasAny ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {lenses.map((lens) => (
-                <FrameworkCard
-                  key={lens.frameworkId}
-                  lens={lens}
-                  expanded={expandedFws.has(lens.frameworkId)}
-                  onToggle={() => toggleFramework(lens.frameworkId)}
-                />
-              ))}
-            </div>
-          ) : (
-            <p style={{ fontSize: 12.5, color: '#71717a', margin: 0 }}>
-              No active controls from current signals.
-            </p>
-          )}
-          <p style={{ marginTop: 14, fontSize: 11.5, color: '#71717a', lineHeight: 1.6 }}>
+      </div>
+      <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
+          {/* S13: per-framework lens cards. On expand, controls are listed
+              (verified -> partial -> self-attested) with self-attested FINDINGS
+              nested under their anchored control. Cards expand independently.
+              The headline is "{A} of {C} covered · {N−C} out of scope · {N} in
+              framework" (no per-verdict breakdown, no `~` prefix). ALL FIVE
+              frameworks always render. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {lenses.map((lens) => (
+              <FrameworkCard
+                key={lens.frameworkId}
+                lens={lens}
+                slfFindings={slfFindingsForFramework(lens.frameworkId, codedFindings)}
+                expanded={expandedFws.has(lens.frameworkId)}
+                onToggle={() => toggleFramework(lens.frameworkId)}
+              />
+            ))}
+          </div>
+          {/* S13 — the single legend, ONCE at the bottom (spec points 4 + 5). */}
+          <p style={{ marginTop: 14, fontSize: 12.5, color: '#71717a', lineHeight: 1.6 }}>
             Some controls can earn a clean <strong>verified</strong>; others only ever{' '}
             <strong>warn</strong> (the deterministic-flag set), and{' '}
             <strong>self-attested</strong> controls are the agent&apos;s own answers, not
-            deterministic verdicts. Out-of-scope controls need a corporate artifact or an
-            external probe Heron can&apos;t reach in an interview, so they are a count only.
+            deterministic verdicts. Findings nested under a control (↳) are self-reported
+            (full detail in the global Self-Attested Findings stream) and do not move posture.
+            Out-of-scope controls need a corporate artifact or an external probe Heron
+            can&apos;t reach in an interview, so they are a count only.
           </p>
         </div>
-      )}
     </section>
   );
 }
@@ -2796,26 +2926,43 @@ export type ControlResult = NonNullable<
 /**
  * AAP-121 (S5) — per-framework lens card. Driven entirely by the shared
  * `FrameworkLens` projection (no inline counting), so it stays in lockstep with
- * the markdown report. Header counts by ACTUAL state (verified / fail /
- * partial / self-attested); the expanded body lists ONLY active controls, in
- * the projection's order (verified -> partial -> self-attested). Out-of-scope
- * is a COUNT in the header, never a list (per Ilya 2026-06-02) — there is no
- * toggle and no "prose only" branch anymore.
+ * the markdown report. The expanded body lists ONLY active controls, in the
+ * projection's order (verified -> partial -> self-attested).
+ *
+ * AAP-128 (S12) — the headline is STATIC capability coverage `C of ~N covered`
+ * (`counts.covered`, identical every audit) with `(N−C)` out of scope; the
+ * per-audit verdict breakdown (verified / fail / partial / self-attested) is
+ * KEPT as secondary detail. AAP-127 (S11) — the attributed self-attested
+ * findings render as COMPACT references (code + title) linking to the full card
+ * in the global stream, not duplicated full cards.
  */
-function FrameworkCard({
+export function FrameworkCard({
   lens,
+  slfFindings = [],
   expanded,
   onToggle,
 }: {
   lens: FrameworkLens;
+  // AAP-122 — self-attested findings whose finding-type maps to THIS framework
+  // (deterministically, via CONTROL_MAPPINGS). Rendered after the control rows.
+  // The same findings remain in the global stream; this is an additional view.
+  //
+  // AAP-127 (S11) — rendered as COMPACT one-line references (code + title,
+  // linking to the full card in the global Self-attested stream), so only the
+  // `code` + `title` are read here. (Was the FULL coded set fed to a per-card
+  // `MinimalFindingCard` in AAP-123/S7; that full card now lives only globally.)
+  slfFindings?: readonly CodedVerdictFinding[];
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const { counts, controls } = lens;
-  // `partial` in the header folds in `unverified` verifiable controls (evidence
-  // absent) so the reader sees one "needs evidence" figure; both still list
-  // individually below with their own verdict badge.
-  const partialish = counts.partial + counts.unverified;
+  const { counts } = lens;
+  // S13 — compose the render model: each self-attested FINDING nests under the
+  // control it anchors to for this framework (synthesising a `self-attested`
+  // control row when the anchor did not independently activate); findings with
+  // no resolvable anchor fall back to standalone rows. `surfaced` is `A` — the
+  // distinct controls shown as rows this audit, the headline numerator.
+  const composed = composeFrameworkLensRows(lens, slfFindings);
+  const isEmpty = composed.rows.length === 0 && composed.orphanFindings.length === 0;
 
   return (
     <div
@@ -2845,38 +2992,93 @@ function FrameworkCard({
           <span style={{ fontSize: 13, fontWeight: 600, color: '#18181b' }}>
             {FRAMEWORK_LABELS[lens.frameworkId] || lens.frameworkId}
           </span>
-          <span style={{ fontSize: 11, color: '#a1a1aa' }}>
-            {counts.activeShown} of ~{counts.publishedControlCount}
-          </span>
         </span>
+        {/* S13 — the header line: "{A} of {C} covered · {N−C} out of scope · {N}
+            in framework". A = `composed.surfaced` (distinct controls shown as
+            rows this audit), C = `counts.covered` (static catalog capability),
+            N = `counts.publishedControlCount`. No per-verdict breakdown (badges
+            on each row show that), no `~` prefix (exact integers). */}
         <span style={{ fontSize: 11.5, color: '#52525b' }}>
-          {counts.verified} verified · {counts.fail} fail · {partialish} partial ·{' '}
-          {counts.selfAttested} self-attested
-          <span style={{ marginLeft: 6, color: '#a1a1aa' }}>
-            · {counts.outOfScope} out of scope
+          {composed.surfaced} of {counts.covered} covered
+          <span style={{ color: '#a1a1aa' }}>
+            {' · '}
+            {counts.outOfScope} out of scope · {counts.publishedControlCount} in framework
           </span>
         </span>
       </button>
       {expanded && (
         <div style={{ padding: '6px 14px 12px', borderTop: '1px solid #e5e7eb' }}>
-          {controls.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#71717a', margin: '4px 0 0' }}>
+          {isEmpty ? (
+            <p style={{ fontSize: 13, color: '#71717a', margin: '4px 0 0' }}>
               No active controls for this framework.
             </p>
           ) : (
             <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {controls.map((c, i) => (
-                <ControlRow key={c.controlId + '-' + i} control={c} />
+              {/* S13 — each control row, with any self-attested FINDINGS nested
+                  directly under it as compact `↳ CODE Title ↗` references into
+                  the global Self-Attested Findings stream. A control synthesised
+                  ONLY because a finding anchors to it renders with the
+                  `self-attested` verdict badge. */}
+              {composed.rows.map((row, i) => (
+                <ControlRow
+                  key={row.control.controlId + '-' + i}
+                  control={row.control}
+                  findings={row.findings}
+                />
+              ))}
+              {/* FALLBACK — findings whose anchor could not be resolved render as
+                  standalone compact rows at the end (never dropped). */}
+              {composed.orphanFindings.map((f) => (
+                <li key={f.id} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
+                  <FindingRef finding={f} />
+                </li>
               ))}
             </ul>
           )}
-          <p style={{ marginTop: 8, fontSize: 11, color: '#a1a1aa', margin: '8px 0 0' }}>
-            {counts.outOfScope} more out of scope — needs a corporate artifact or an external
-            probe Heron can&apos;t reach in an interview.
-          </p>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * S13 — a compact one-line reference to a self-attested FINDING: `↳ CODE Title
+ * ↗`, linking to the FULL card in the GLOBAL "Self-Attested Findings" stream
+ * (`#finding-<code>`). The full card (severity / description / mitigation) is
+ * never duplicated here; this only points to it.
+ */
+function FindingRef({ finding }: { finding: { id: string; code: string; title: string } }) {
+  return (
+    <a
+      href={`#${findingAnchorId(finding.code)}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'baseline',
+        gap: 6,
+        fontSize: 12.5,
+        lineHeight: 1.5,
+        color: '#6d28d9',
+        textDecoration: 'none',
+      }}
+    >
+      <span aria-hidden style={{ color: '#a1a1aa' }}>↳</span>
+      <span
+        className="mono"
+        style={{
+          display: 'inline-block',
+          padding: '1px 6px',
+          background: '#f5f3ff',
+          color: '#6d28d9',
+          border: '1px solid #ddd6fe',
+          borderRadius: 4,
+          fontSize: 11,
+        }}
+      >
+        {finding.code}
+      </span>
+      <span style={{ color: '#3f3f46' }}>{finding.title}</span>
+      <span aria-hidden style={{ color: '#a1a1aa' }}>↗</span>
+    </a>
   );
 }
 
@@ -2920,7 +3122,15 @@ type ControlRowControl = Omit<ControlResult, 'verdict'> & {
   verdict: ControlResult['verdict'] | 'self-attested';
 };
 
-export function ControlRow({ control }: { control: ControlRowControl }) {
+export function ControlRow({
+  control,
+  findings = [],
+}: {
+  control: ControlRowControl;
+  // S13 — self-attested FINDINGS nested under this control, rendered as compact
+  // `↳ CODE Title ↗` references below the row's description/evidence.
+  findings?: readonly { id: string; code: string; title: string }[];
+}) {
   const verdictPalette =
     control.verdict === 'verified'
       ? { bg: '#f0fdf4', ink: '#15803d' }
@@ -2974,21 +3184,27 @@ export function ControlRow({ control }: { control: ControlRowControl }) {
         borderBottom: '1px solid #f1f5f9',
       }}
     >
+      {/* S13 readability — the control id stays a fixed narrow column, but the
+          DESCRIPTION (controlName) takes the full remaining width (`1fr`) so it
+          no longer wraps into a cramped column, and the badges sit at the right.
+          The verbose rationale renders full-width below (no `62ch` cap). The
+          severity badge is hidden for `self-attested` rows (agent self-reports
+          carry no deterministic severity). */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(110px, max-content) 1fr max-content max-content',
-          gap: 10,
-          alignItems: 'center',
+          gridTemplateColumns: 'minmax(96px, max-content) 1fr max-content max-content',
+          gap: 12,
+          alignItems: 'baseline',
         }}
       >
         <span
           className="mono"
-          style={{ fontSize: 11.5, color: '#3f3f46', whiteSpace: 'nowrap' }}
+          style={{ fontSize: 12, color: '#3f3f46', whiteSpace: 'nowrap' }}
         >
           {control.controlId}
         </span>
-        <span style={{ fontSize: 12, color: '#52525b', lineHeight: 1.4 }}>
+        <span style={{ fontSize: 13, color: '#3f3f46', lineHeight: 1.5 }}>
           {control.controlName || ''}
         </span>
         <span
@@ -3002,34 +3218,39 @@ export function ControlRow({ control }: { control: ControlRowControl }) {
             background: verdictPalette.bg,
             color: verdictPalette.ink,
             whiteSpace: 'nowrap',
+            alignSelf: 'center',
           }}
         >
           {control.verdict}
         </span>
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: '0.04em',
-            padding: '2px 7px',
-            borderRadius: 3,
-            background: sevPalette.bg,
-            color: sevPalette.ink,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {control.severity}
-        </span>
+        {control.verdict === 'self-attested' ? (
+          <span />
+        ) : (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              padding: '2px 7px',
+              borderRadius: 3,
+              background: sevPalette.bg,
+              color: sevPalette.ink,
+              whiteSpace: 'nowrap',
+              alignSelf: 'center',
+            }}
+          >
+            {control.severity}
+          </span>
+        )}
       </div>
       {rationale && (
         <p
           style={{
             margin: 0,
-            fontSize: 11.5,
-            color: '#71717a',
-            lineHeight: 1.5,
-            maxWidth: '62ch',
+            fontSize: 13,
+            color: '#52525b',
+            lineHeight: 1.6,
           }}
         >
           {rationale}
@@ -3049,6 +3270,15 @@ export function ControlRow({ control }: { control: ControlRowControl }) {
           Evidence: {refsShown.join(', ')}
           {refsExtra > 0 && ` +${refsExtra} more`}
         </p>
+      )}
+      {/* S13 — self-attested FINDINGS nested under this control: compact
+          `↳ CODE Title ↗` references into the global Self-Attested stream. */}
+      {findings.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+          {findings.map((f) => (
+            <FindingRef key={f.id} finding={f} />
+          ))}
+        </div>
       )}
     </li>
   );
@@ -3160,7 +3390,11 @@ export default function MinimalReportView({
         oauthScopeVerification={reportJson.oauthScopeVerification}
       />
       <PurposeBlock json={reportJson} />
-      <SystemsBlock systems={reportJson.systems || []} verdict={reportJson.verdict} />
+      <SystemsBlock
+        systems={reportJson.systems || []}
+        verdict={reportJson.verdict}
+        oauthScopeVerification={reportJson.oauthScopeVerification}
+      />
       <CredentialsBlock discovery={reportJson.localAgentDiscovery} />
       <FindingsBlock
         verdict={reportJson.verdict}
@@ -3168,7 +3402,12 @@ export default function MinimalReportView({
         verification={reportJson.verification}
         localAgentDiscovery={reportJson.localAgentDiscovery}
       />
-      <ComplianceBlock rc={reportJson.regulatoryCompliance} />
+      <ComplianceBlock
+        rc={reportJson.regulatoryCompliance}
+        verdict={reportJson.verdict}
+        oauthScopeVerification={reportJson.oauthScopeVerification}
+        localAgentDiscovery={reportJson.localAgentDiscovery}
+      />
       <FooterToggle onSwitch={onSwitchToFullLayout} />
     </div>
   );

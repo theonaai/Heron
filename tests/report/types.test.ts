@@ -11,6 +11,7 @@ import {
   systemAssessmentSchema,
   analysisResultSchema,
   frequencyShapeSchema,
+  riskSchema,
 } from '../../src/report/types.js';
 
 describe('systemAssessmentSchema — AAP-65 tightened shape', () => {
@@ -201,5 +202,47 @@ describe('analysisResultSchema — AAP-65 top-level caps', () => {
         overallRiskLevel: 'low',
       }),
     ).toThrow();
+  });
+});
+
+// ─── AAP-122 — riskSchema.findingType (bounded, optional) ────────────────────
+
+describe('riskSchema — AAP-122 findingType', () => {
+  const base = { severity: 'high', title: 'T', description: 'D' } as const;
+
+  it('parses a risk WITHOUT findingType (legacy / unclassified — stays global-only)', () => {
+    const r = riskSchema.parse({ ...base });
+    expect(r.findingType).toBeUndefined();
+  });
+
+  it('accepts each of the seven closed finding types and round-trips the value', () => {
+    for (const ft of [
+      'excessive-access',
+      'write-risk',
+      'sensitive-data',
+      'scope-creep',
+      'regulatory-flags',
+      'risk-score',
+      'decisions-about-people',
+    ] as const) {
+      expect(riskSchema.parse({ ...base, findingType: ft }).findingType).toBe(ft);
+    }
+  });
+
+  it('rejects a findingType outside the closed enum (no free-form values)', () => {
+    expect(() => riskSchema.parse({ ...base, findingType: 'made-up-category' })).toThrow();
+    expect(() => riskSchema.parse({ ...base, findingType: 'eu-ai-act' })).toThrow();
+  });
+
+  it('round-trips findingType through analysisResultSchema (the analyzer parse path)', () => {
+    const parsed = analysisResultSchema.parse({
+      summary: 's',
+      agentPurpose: 'p',
+      systems: [],
+      risks: [{ ...base, findingType: 'decisions-about-people' }],
+      recommendations: [],
+      overallRiskLevel: 'high',
+    });
+    expect(parsed.risks[0]!.findingType).toBe('decisions-about-people');
   });
 });
