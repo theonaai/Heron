@@ -812,3 +812,135 @@ describe('AAP-121 lens — markdown render', () => {
     expect(isoBlock).toContain('**0 of 2 covered** · 36 out of scope · 38 in framework');
   });
 });
+
+// ─── AAP-136 (B13): orphan findings are NOT rendered inside framework cards ───
+//
+// After AAP-131 (a finding nests under a control only if that control fired), a
+// self-attested finding whose framework controls all went out-of-scope has no
+// fired control to nest under. It lands in `orphanFindings`. AAP-136 decision:
+// do NOT render `orphanFindings` inside the framework card (they would read as
+// phantom loose `↳ SLF` bullets with no control row above them). Every such
+// finding still appears in full in the global Self-Attested Findings stream.
+// `composeFrameworkLensRows` keeps COMPUTING `orphanFindings` for the
+// surfaced/coverage math — only the card-level RENDER of them goes away.
+
+/** A coded self-attested finding the lens composer + global stream both read. */
+function codedSlf(args: { id: string; code: string; title: string; findingType: FindingType }) {
+  return {
+    id: args.id,
+    code: args.code,
+    band: 'medium',
+    severityScore: 4,
+    severityComponents: { br: 2, ds: 2, dm: 1 },
+    evidenceSource: 'SLF',
+    title: args.title,
+    description: `description for ${args.code}`,
+    findingType: args.findingType,
+  } as unknown as Parameters<typeof renderStructuredCompliance>[2][number];
+}
+
+describe('AAP-136 (B13) — orphan findings never render as loose card bullets', () => {
+  // EU AI Act fires ONLY Art. 6(2) + Annex III. `excessive-access` maps in the
+  // EU framework ONLY to out-of-scope controls (Art. 9(2)(a) etc.), so SLF-001
+  // has no fired EU control to nest under and ORPHANS in the EU card. The SAME
+  // SLF-001 nests under GDPR Art. 5(1)(c), which fires here.
+  function blob(): StructuredCompliance {
+    return {
+      mappingVersion: 'aap-136-fixture',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['eu-ai-act', 'gdpr'],
+      all: [],
+      euAiActClassification: { classification: 'high-risk', annexIIICategories: ['employment'] },
+      signals: {} as StructuredCompliance['signals'],
+      controlResults: [
+        result({
+          frameworkId: 'eu-ai-act',
+          controlId: 'Art. 6(2) + Annex III',
+          verdict: 'partial',
+          bucket: 'verifiable',
+          findingType: 'decisions-about-people',
+        }),
+        result({
+          frameworkId: 'gdpr',
+          controlId: 'Art. 5(1)(c)',
+          verdict: 'verified',
+          bucket: 'verifiable',
+          findingType: 'excessive-access',
+        }),
+      ],
+    } as unknown as StructuredCompliance;
+  }
+
+  const slfFindings = [
+    codedSlf({
+      id: 'f1',
+      code: 'SLF-001',
+      title: 'Broad Google OAuth access exceeds the stated folder workflow',
+      findingType: 'excessive-access',
+    }),
+  ];
+
+  function euCard(md: string): string {
+    const lens = md.slice(md.indexOf('### Compliance Lens'));
+    const start = lens.indexOf('#### EU AI Act');
+    const end = lens.indexOf('#### GDPR', start);
+    return lens.slice(start, end === -1 ? undefined : end);
+  }
+  function gdprCard(md: string): string {
+    const lens = md.slice(md.indexOf('### Compliance Lens'));
+    const start = lens.indexOf('#### GDPR');
+    const end = lens.indexOf('#### ISO/IEC 42001', start);
+    return lens.slice(start, end === -1 ? undefined : end);
+  }
+
+  it('confirms SLF-001 orphans in EU AI Act but nests under GDPR Art. 5(1)(c)', () => {
+    // Guards the premise: the EU anchor is undefined (orphan), the GDPR anchor is
+    // the fired active control. If this ever changes the render tests below would
+    // pass vacuously, so pin it.
+    expect(anchorControlForFinding('eu-ai-act', 'excessive-access')).toBeUndefined();
+    expect(anchorControlForFinding('gdpr', 'excessive-access')?.controlId).toBe('Art. 5(1)(c)');
+  });
+
+  it('renders NO loose ↳ SLF bullet for an orphan finding inside the framework card', () => {
+    const md = renderStructuredCompliance(blob(), undefined, slfFindings);
+    // The EU AI Act card must NOT contain SLF-001 at all — it orphaned there, and
+    // orphans are no longer rendered in the card. (Pre-AAP-136 this emitted a
+    // top-level `- ↳ [SLF-001]...` bullet at the bottom of the EU card.)
+    const eu = euCard(md);
+    expect(eu).toContain('Art. 6(2) + Annex III'); // the fired control row is present
+    expect(eu).not.toContain('SLF-001');
+    expect(eu).not.toContain('↳');
+  });
+
+  it('still nests a finding under a control that fired (SLF-001 under GDPR Art. 5(1)(c))', () => {
+    const md = renderStructuredCompliance(blob(), undefined, slfFindings);
+    const gdpr = gdprCard(md);
+    // The fired control row, then the nested finding ref directly beneath it as an
+    // INDENTED `    - ↳` bullet (nested, not a loose top-level bullet).
+    expect(gdpr).toContain('`Art. 5(1)(c)`');
+    expect(gdpr).toContain('    - ↳ [`SLF-001`]');
+  });
+
+  it('an orphan-only framework card shows the "No active controls" empty state', () => {
+    // GDPR fires nothing; SLF-001 maps into GDPR but its only active anchor
+    // (Art. 5(1)(c)) did NOT fire, so it orphans. With orphans no longer
+    // rendered, the GDPR card body must fall back to the empty-state line rather
+    // than show a bare `- ↳ SLF-001` bullet with no control above it.
+    const emptyGdpr = {
+      mappingVersion: 'aap-136-empty-gdpr',
+      mandatory: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      voluntary: { privacy: [], ip: [], 'consumer-protection': [], 'sector-specific': [] },
+      frameworksActivated: ['gdpr'],
+      all: [],
+      euAiActClassification: { classification: 'unclassified', annexIIICategories: [] },
+      signals: {} as StructuredCompliance['signals'],
+      controlResults: [],
+    } as unknown as StructuredCompliance;
+    const md = renderStructuredCompliance(emptyGdpr, undefined, slfFindings);
+    const gdpr = gdprCard(md);
+    expect(gdpr).toContain('No active controls for this framework');
+    expect(gdpr).not.toContain('SLF-001');
+    expect(gdpr).not.toContain('↳');
+  });
+});

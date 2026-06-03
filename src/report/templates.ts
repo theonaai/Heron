@@ -2402,7 +2402,13 @@ function renderFrameworkLensBlock(
     `**${composed.surfaced} of ${counts.covered} covered** · ` +
     `${counts.outOfScope} out of scope · ${counts.publishedControlCount} in framework\n\n`;
 
-  if (composed.rows.length === 0 && composed.orphanFindings.length === 0) {
+  // AAP-136 (B13): a card shows ONLY control rows + findings nested under
+  // controls that actually fired. `orphanFindings` (a self-attested finding
+  // whose framework controls all went out-of-scope) is NOT rendered here — it
+  // would read as a phantom loose `↳ SLF` bullet with no control row above it,
+  // and it is already shown in full in the global Self-Attested Findings stream.
+  // The composer still computes `orphanFindings` for the surfaced/coverage math.
+  if (composed.rows.length === 0) {
     out += `_No active controls for this framework._\n\n`;
     return out;
   }
@@ -2413,13 +2419,6 @@ function renderFrameworkLensBlock(
     const nameSuffix = control.controlName ? ` — ${escapeText(control.controlName)}` : '';
     out += `- \`${control.controlId}\` ${renderLensVerdictBadge(control.verdict)}${nameSuffix}\n`;
     for (const ref of row.findings) out += `${renderLensFindingRef(ref)}\n`;
-  }
-
-  // FALLBACK — findings whose anchor could not be resolved to a control render
-  // as standalone compact rows at the end (never dropped, spec point 1).
-  for (const ref of composed.orphanFindings) {
-    const anchor = findingCardAnchor({ code: ref.code, title: ref.title });
-    out += `- ↳ [\`${escapeText(ref.code)}\`](#${anchor}) ${escapeText(ref.title)} ↗\n`;
   }
   out += `\n`;
 

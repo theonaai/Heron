@@ -3017,7 +3017,10 @@ export function FrameworkCard({
   // no resolvable anchor fall back to standalone rows. `surfaced` is `A` — the
   // distinct controls shown as rows this audit, the headline numerator.
   const composed = composeFrameworkLensRows(lens, slfFindings);
-  const isEmpty = composed.rows.length === 0 && composed.orphanFindings.length === 0;
+  // AAP-136 (B13): the card is empty when no control row fired. `orphanFindings`
+  // (a self-attested finding whose framework controls all went out-of-scope) is
+  // no longer rendered here, so it does not keep an otherwise-empty card alive.
+  const isEmpty = composed.rows.length === 0;
 
   return (
     <div
@@ -3081,13 +3084,13 @@ export function FrameworkCard({
                   findings={row.findings}
                 />
               ))}
-              {/* FALLBACK — findings whose anchor could not be resolved render as
-                  standalone compact rows at the end (never dropped). */}
-              {composed.orphanFindings.map((f) => (
-                <li key={f.id} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
-                  <FindingRef finding={f} />
-                </li>
-              ))}
+              {/* AAP-136 (B13): `orphanFindings` are NOT rendered here. A
+                  self-attested finding whose framework controls all went
+                  out-of-scope has no fired control to nest under; rendering it
+                  as a loose `↳ SLF` bullet (no control row above it) reads as a
+                  phantom. It is already shown in full in the global
+                  Self-Attested Findings stream. The composer still computes
+                  `orphanFindings` for the surfaced/coverage math. */}
             </ul>
           )}
         </div>
