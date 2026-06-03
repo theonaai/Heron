@@ -432,11 +432,11 @@ function hasIrreversibleWrites(system: SystemAssessment): boolean {
 // was deterministically confirmed against introspection. When in doubt we show
 // the neutral "—", never a misleading ✓.
 
-export type SystemVerificationState = 'verified' | 'discrepancy' | 'unverified';
+export type SystemVerificationState = 'verified' | 'discrepancy' | 'unverified' | 'env-credential';
 
 export interface SystemVerificationStatus {
   state: SystemVerificationState;
-  glyph: '✓' | '⚠' | '—';
+  glyph: '✓' | '⚠' | '—' | '🔑';
   /** Hex color for the glyph (green / orange / neutral grey). */
   color: string;
   /** Per-cell tooltip explaining what the glyph means. */
@@ -450,17 +450,83 @@ const NOT_VERIFIED_STATUS: SystemVerificationStatus = {
   title: 'No deterministic verification (system declares no OAuth scope, or its connector was not introspected)',
 };
 
+const ENV_CREDENTIAL_STATUS: SystemVerificationStatus = {
+  state: 'env-credential',
+  glyph: '🔑',
+  color: '#2563eb',
+  title: 'Found in .env: credential present, scope not introspectable',
+};
+
+/**
+ * T3 (D3) — deterministic, conservative brand-stem matcher linking a systemId to
+ * an env VARIABLE NAME (for example `openai` to `OPENAI_API_KEY`). Tokenizes both
+ * sides on `-`/`_`, lowercases, and matches on whole-token equality (NOT
+ * substring), so `gem` never matches `GEMINI` and `open` never matches `OPENAI`.
+ * Brand tokens of 2 chars or fewer are too generic to be a brand and never match.
+ * Mirrors the discipline of `connectorForSystemId`.
+ */
+export function systemMatchesEnvCredential(
+  systemId: string,
+  envKeys: readonly string[],
+): boolean {
+  const sysTokens = (systemId || '')
+    .toLowerCase()
+    .split(/[-_]/)
+    .filter((t) => t.length > 2);
+  if (sysTokens.length === 0 || envKeys.length === 0) return false;
+  const envTokens = new Set<string>();
+  for (const k of envKeys) {
+    if (typeof k !== 'string') continue;
+    for (const t of k.toLowerCase().split(/[-_]/)) {
+      if (t.length > 0) envTokens.add(t);
+    }
+  }
+  return sysTokens.some((t) => envTokens.has(t));
+}
+
 /** Minimal shape this helper reads off `oauthScopeVerification`. */
 type OAuthSourceLike = NonNullable<
   NonNullable<MinimalReportJson['oauthScopeVerification']>['sources']
 >[number];
 
 /**
- * Resolve the "Verified?" status for one system row from real OAuth-scope
- * introspection evidence. Pure + exported so the matching logic is unit-tested
- * directly (the project's vitest setup has no DOM).
+ * Resolve the "Verified?" status for one system row.
+ *
+ * First the deterministic OAuth-scope introspection check (`oauthOnlyStatus`).
+ * If that yields no verdict (state `unverified`), T3 (D3) applies the
+ * env-credential gate: a system that is NOT OAuth-verifiable (no connector, or it
+ * declares no OAuth scope) but whose credential was found in `.env` (matched by
+ * `systemMatchesEnvCredential`) resolves to a 🔑 status instead of a bare "—". A
+ * real OAuth ✓/⚠ is never overridden. Pure + exported for direct unit testing.
  */
 export function systemVerificationStatus(
+  system: Pick<SystemAssessment, 'systemId' | 'scopesRequested'>,
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'],
+  envKeys: readonly string[] = [],
+): SystemVerificationStatus {
+  const oauth = oauthOnlyStatus(system, oauthScopeVerification);
+  if (oauth.state !== 'unverified') return oauth;
+
+  // T3 (D3) env-credential gate. Fire ONLY when the system is genuinely not
+  // OAuth-verifiable (no connector OR it declares no OAuth scope). This excludes
+  // a true OAuth system whose introspection merely failed or was partial: that
+  // stays "—" so its failure surfaces as a finding, never a misleading 🔑.
+  const declaredCount = (Array.isArray(system.scopesRequested) ? system.scopesRequested : [])
+    .filter((s) => typeof s === 'string' && s.trim().length > 0).length;
+  const notOAuthVerifiable =
+    connectorForSystemId(system.systemId || '') === undefined || declaredCount === 0;
+  if (notOAuthVerifiable && systemMatchesEnvCredential(system.systemId || '', envKeys)) {
+    return ENV_CREDENTIAL_STATUS;
+  }
+  return oauth;
+}
+
+/**
+ * The deterministic OAuth-scope introspection check (AAP-126 / S10). Returns ✓
+ * when every declared scope is confirmed, ⚠ on a scope discrepancy, "—" when
+ * there is no deterministic OAuth verification for the system.
+ */
+function oauthOnlyStatus(
   system: Pick<SystemAssessment, 'systemId' | 'scopesRequested'>,
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'],
 ): SystemVerificationStatus {
@@ -1312,18 +1378,37 @@ function TriggerValue({ value }: { value: string }) {
 
 // ─── Block 3: Systems & access ────────────────────────────────────────
 
+/** Flatten the env VARIABLE NAMES across every `.env` the discovery scan read. */
+function envKeysFromDiscovery(localAgentDiscovery: unknown): string[] {
+  if (!localAgentDiscovery || typeof localAgentDiscovery !== 'object') return [];
+  const we = (localAgentDiscovery as { workspaceEnv?: unknown }).workspaceEnv;
+  if (!Array.isArray(we)) return [];
+  const out: string[] = [];
+  for (const entry of we) {
+    const keys = (entry as { keys?: unknown } | null)?.keys;
+    if (Array.isArray(keys)) {
+      for (const k of keys) if (typeof k === 'string') out.push(k);
+    }
+  }
+  return out;
+}
+
 function SystemsBlock({
   systems,
   verdict,
   oauthScopeVerification,
+  localAgentDiscovery,
 }: {
   systems: SystemAssessment[];
   verdict?: VerdictSnapshot;
   // AAP-126 (S10): threaded down so each row's "Verified?" glyph reads real
   // per-system OAuth introspection evidence.
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  // T3 (D3): the filesystem scan output, for the 🔑 "found in .env" status.
+  localAgentDiscovery?: unknown;
 }) {
   if (!systems || systems.length === 0) return null;
+  const envKeys = envKeysFromDiscovery(localAgentDiscovery);
   return (
     <section
       style={{
@@ -1370,6 +1455,7 @@ function SystemsBlock({
               system={s}
               verdict={verdict}
               oauthScopeVerification={oauthScopeVerification}
+              envKeys={envKeys}
             />
           ))}
         </tbody>
@@ -1394,6 +1480,9 @@ function SystemsBlock({
           <span style={{ color: '#c2410c', fontWeight: 600 }}>⚠</span> Scope discrepancy
         </span>
         <span>
+          <span style={{ color: '#2563eb', fontWeight: 600 }}>🔑</span> Found in .env
+        </span>
+        <span>
           <span style={{ color: '#a1a1aa', fontWeight: 600 }}>—</span> No deterministic verification
         </span>
       </div>
@@ -1405,10 +1494,13 @@ function SystemRow({
   system,
   verdict,
   oauthScopeVerification,
+  envKeys,
 }: {
   system: SystemAssessment;
   verdict?: VerdictSnapshot;
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  // T3 (D3): env variable names from the `.env` scan, for the 🔑 status.
+  envKeys?: readonly string[];
 }) {
   // Screenshot helper — `?expandSystem=<systemId>` pre-expands that row.
   // Used by the headless Chrome capture script. Lives on the client only.
@@ -1442,7 +1534,7 @@ function SystemRow({
   // (not finding-text overmatch). ✓ only when this system's own declared scope
   // was deterministically confirmed; ⚠ on a scope discrepancy; "—" when there
   // is no deterministic verification for it.
-  const verification = systemVerificationStatus(system, oauthScopeVerification);
+  const verification = systemVerificationStatus(system, oauthScopeVerification, envKeys ?? []);
   const verifiedGlyph = verification.glyph;
   const verifiedColor = verification.color;
   const verifiedTitle = verification.title;
@@ -3499,6 +3591,7 @@ export default function MinimalReportView({
         systems={reportJson.systems || []}
         verdict={reportJson.verdict}
         oauthScopeVerification={reportJson.oauthScopeVerification}
+        localAgentDiscovery={reportJson.localAgentDiscovery}
       />
       <CredentialsBlock discovery={reportJson.localAgentDiscovery} />
       <FindingsBlock
