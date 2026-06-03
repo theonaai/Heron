@@ -340,7 +340,9 @@ describe('runForwardedOAuthScopeVerification — diff → SourceVerification', (
     expect(verdictFor('aiuc-1', 'A003.3')).toBe('verified');
     expect(verdictFor('aiuc-1', 'A003.4')).toBe('verified');
     expect(verdictFor('aiuc-1', 'B006')).toBe('verified');
-    expect(verdictFor('gdpr', 'Art. 25')).toBe('verified');
+    // AAP-135 (B9): the GDPR data-minimisation scope-diff control is wired
+    // under its true citation Art. 5(1)(c) (was mislabelled Art. 25).
+    expect(verdictFor('gdpr', 'Art. 5(1)(c)')).toBe('verified');
   });
 
   it('an introspection-error record comes back unverified (NOT a clean verified)', async () => {

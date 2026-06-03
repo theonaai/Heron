@@ -27,7 +27,7 @@
  *   eu-ai-act:Article-14  → write-risk: eu-ai-act / Art. 14(4)(d)
  *   eu-ai-act:Article-12  → regulatory-flags: eu-ai-act / Art. 12
  *   gdpr:Article-22       → decisions-about-people: gdpr / Art. 22
- *   gdpr:Article-5        → excessive-access: gdpr / Art. 25 (data minimisation analogue)
+ *   gdpr:Article-5        → excessive-access: gdpr / Art. 5(1)(c) (data minimisation)
  *   nist-ai-rmf:MEASURE   → risk-score: nist-ai-rmf / MEASURE 1.1
  *   nist-ai-rmf:MANAGE    → risk-score: nist-ai-rmf / MANAGE 1.2
  *
@@ -302,11 +302,11 @@ export const ROUTER_DETECTOR_ADAPTERS: ReadonlyArray<{
   {
     findingType: 'excessive-access',
     frameworkId: 'gdpr',
-    controlId: 'Art. 25',
+    controlId: 'Art. 5(1)(c)',
     detector: makeAdapter({
       findingType: 'excessive-access',
       frameworkId: 'gdpr',
-      controlId: 'Art. 25',
+      controlId: 'Art. 5(1)(c)',
       surface: 'actual',
       detector: detectGDPR_Article5,
     }),

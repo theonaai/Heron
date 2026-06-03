@@ -96,14 +96,17 @@ export const BUCKET_BY_CONTROL: Record<
 
   // ── GDPR ─────────────────────────────────────────────────────────────────
   // spec §GDPR: VERIFIABLE (8) = Art 25, Art 5(1)(c), Art 22, Art 6, Art 35,
-  // Art 33, Art 32, Art 28. Of those, all wired ones (25/22/6/35/33/32/28 —
-  // 5(1)(c) is not wired) are verifiable. Art 5(1)(b) purpose limitation is a
-  // genuine agent self-report (SELF-ATTESTED 7).
+  // Art 33, Art 32, Art 28. AAP-135 (B9): the data-minimisation scope-diff
+  // control is wired under its true citation Art 5(1)(c) (it was mislabelled
+  // Art 25 — the detector checks scope minimisation = Art 5(1)(c), not the
+  // data-protection-by-design mechanism of Art 25). So the wired verifiable set
+  // is 5(1)(c)/22/6/35/33/32/28. Art 5(1)(b) purpose limitation is a genuine
+  // agent self-report (SELF-ATTESTED 7).
   'gdpr': {
     'Art. 5(1)(b)': 'self-attested', // purpose limitation self-report (Q1/Q4)
     'Art. 6': 'verifiable', // lawful basis — sensitive-PII credential detector (FAIL)
     'Art. 22': 'verifiable', // automated decision-making — decision-class scopes + approval chain
-    'Art. 25': 'verifiable', // data-protection-by-design — A003 scope diff
+    'Art. 5(1)(c)': 'verifiable', // data minimisation — A003 scope diff (detectGDPR_Article5)
     'Art. 28': 'verifiable', // processor/DPA — third-party-SaaS credential detector (PARTIAL)
     'Art. 32': 'verifiable', // security — .env secret-pattern detector (PARTIAL)
     'Art. 33': 'verifiable', // breach notification — sensitive-PII detector (FAIL)

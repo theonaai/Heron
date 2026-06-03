@@ -40,7 +40,7 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
       c('iso-42001', 'A.9.2', 'Internal audit of AI management system.'),
       c('eu-ai-act', 'Art. 9(2)(a)', 'Risk management — identification and analysis (high-risk baseline reference).'),
       c('eu-ai-act', 'Art. 15(4-5)', 'Accuracy and robustness — resilience to misuse (baseline reference).'),
-      c('gdpr', 'Art. 25', 'Data protection by design and by default.'),
+      c('gdpr', 'Art. 5(1)(c)', 'Data minimisation — scopes bounded to what the stated purpose requires.'),
       // ── AIUC-1 (Q2-2026) ──
       c('aiuc-1', 'A003.3', 'Agent has its own non-human identity separate from the invoking user.'),
       c('aiuc-1', 'A003.4', 'Agent scopes bounded by least-privilege for its stated task.'),

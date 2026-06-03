@@ -253,7 +253,10 @@ export function detectAIUC1_A003(sig: VerificationSignals): FrameworkControl {
       controlId: 'A003',
       controlName: A003_NAME,
       verdict: 'verified',
-      rationale: 'No extra broad-read scopes detected against the declared baseline.',
+      // AAP-135 (B12): describe the absence of scope DRIFT, not "access is
+      // minimal / fine" — the latter read as a contradiction with the SLF-001
+      // broad-OAuth finding nested under this row.
+      rationale: 'Granted scopes match what the agent declared — no scope drift.',
       evidenceRefs: [{ kind: 'declared', ref: 'declared scopes match actual within broad-read class' }],
       severity: 'info',
     };
@@ -306,7 +309,10 @@ export function detectAIUC1_B006(sig: VerificationSignals): FrameworkControl {
     controlId: 'B006',
     controlName: B006_NAME,
     verdict: 'verified',
-    rationale: 'No extra write/send/delete-class scopes detected beyond the declared baseline.',
+    // AAP-135 (B12): describe the absence of action-scope DRIFT, not "no
+    // unauthorised actions are possible" — keep it parallel with A003's
+    // verified rationale.
+    rationale: 'Granted action scopes match what the agent declared — no scope drift.',
     evidenceRefs: [{ kind: 'declared', ref: 'no extra action scopes' }],
     severity: 'info',
   };
@@ -759,7 +765,12 @@ export function detectGDPR_Article22(sig: VerificationSignals): FrameworkControl
 
 // ─── Detector: GDPR Article 5 — Data Minimisation ─────────────────────────
 
-const ARTICLE_5_NAME = 'Data Minimisation (Article 5(1)(c))';
+// AAP-135 (B9): the displayed control number is now Art. 5(1)(c) (the citation
+// the detector actually checks — scope data minimisation), set in
+// router-adapter.ts. Drop the parenthetical article number from the NAME so the
+// row no longer cites two articles ("Art. 5(1)(c)  Data Minimisation (Article
+// 5(1)(c))" -> "Art. 5(1)(c)  Data Minimisation").
+const ARTICLE_5_NAME = 'Data Minimisation';
 
 export function detectGDPR_Article5(sig: VerificationSignals): FrameworkControl {
   // Same surface as A003 but re-framed for GDPR.
@@ -769,10 +780,15 @@ export function detectGDPR_Article5(sig: VerificationSignals): FrameworkControl 
     controlId: 'Article 5',
     controlName: ARTICLE_5_NAME,
     verdict: a003.verdict,
+    // AAP-135 (B12): the verified branch is about the ABSENCE of scope drift
+    // (declared == actual), not "data minimisation is satisfied / access is
+    // fine". The old wording read as a contradiction with the SLF-001 "broad
+    // OAuth exceeds workflow" finding nested under this same row. Reword to
+    // make the drift framing explicit and drop the "satisfied" claim.
     rationale: a003.verdict === 'fail'
       ? `Extra broad-read scopes violate GDPR Article 5(1)(c) data minimisation: ${a003.rationale}`
       : a003.verdict === 'verified'
-        ? 'No extra broad-read scopes detected; data minimisation satisfied at the scope level.'
+        ? 'Granted scopes match the declared baseline — no scope drift.'
         : a003.rationale,
     evidenceRefs: a003.evidenceRefs,
     severity: a003.severity,
