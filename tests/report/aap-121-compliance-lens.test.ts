@@ -465,20 +465,20 @@ describe('AAP-121 lens — markdown render', () => {
     expect(md).toContain('self-attested');
   });
 
-  it('per-framework headline is STATIC coverage (C of ~N) + per-audit breakdown + out-of-scope', () => {
+  it('per-framework headline is "{A} of {C} covered · {N−C} out of scope · {N} in framework"', () => {
     const md = renderStructuredCompliance(lensCompliance());
-    // AAP-128 (S12): the HEADLINE is the static capability C, not the per-audit
-    // active count. EU AI Act C = 5 of ~104 covered; the per-audit breakdown
-    // (0 verified · 0 fail · 1 partial · 2 self-attested) stays as secondary
-    // detail; out-of-scope is the static 104 - 5 = 99.
-    expect(md).toContain('**5 of ~104 covered**');
-    expect(md).toMatch(/EU AI Act[\s\S]*0 verified · 0 fail · 1 partial · 2 self-attested/);
-    expect(md).toMatch(/EU AI Act[\s\S]*99 out of scope/);
-    // GDPR C = 8 of ~95 covered; breakdown 1 verified · 1 fail · 1 partial · 1
-    // self-attested; out-of-scope 95 - 8 = 87.
-    expect(md).toContain('**8 of ~95 covered**');
-    expect(md).toMatch(/GDPR[\s\S]*1 verified · 1 fail · 1 partial · 1 self-attested/);
-    expect(md).toMatch(/GDPR[\s\S]*87 out of scope/);
+    // S13: the headline is "{A} of {C} covered · {N−C} out of scope · {N} in
+    // framework". A = distinct controls surfaced this audit; C = static
+    // capability; no `~` prefix; no per-verdict breakdown.
+    // EU AI Act: A = 3 (Art. 6(2)+Annex III verifiable + Art. 5 + Art. 50(1)
+    // self-attested controls), C = 5, oos = 99, N = 104.
+    expect(md).toContain('**3 of 5 covered** · 99 out of scope · 104 in framework');
+    // GDPR: A = 4 (Art. 32 verified + Art. 6 fail + Art. 25 partial + Art.
+    // 5(1)(b) self-attested), C = 8, oos = 87, N = 95.
+    expect(md).toContain('**4 of 8 covered** · 87 out of scope · 95 in framework');
+    // The verbose per-verdict breakdown and the `~` prefix are GONE.
+    expect(md).not.toMatch(/\d+ verified · \d+ fail · \d+ partial · \d+ self-attested/);
+    expect(md).not.toContain('of ~');
   });
 
   it('lists ONLY active controls — out-of-scope controls never appear as a row', () => {
@@ -510,8 +510,9 @@ describe('AAP-121 lens — markdown render', () => {
     const md = renderStructuredCompliance(lensCompliance());
     // The old dashboard special-case wording must not leak into the markdown.
     expect(md).not.toContain('signals (prose only)');
-    // EU AI Act gets the same static-coverage header line as every framework.
-    expect(md).toMatch(/#### EU AI Act\n\n\*\*\d+ of ~104 covered\*\*/);
+    // EU AI Act gets the same "{A} of {C} covered · … · {N} in framework"
+    // header line as every framework.
+    expect(md).toMatch(/#### EU AI Act\n\n\*\*\d+ of 5 covered\*\* · \d+ out of scope · 104 in framework/);
   });
 
   it('no active controls at all → still renders all five cards with static C-of-N coverage', () => {
@@ -533,17 +534,19 @@ describe('AAP-121 lens — markdown render', () => {
     expect(md).toContain('### Compliance Lens');
     // No empty-state escape hatch anymore.
     expect(md).not.toContain('No active controls from current signals');
-    // All five cards present with their static coverage headline.
+    // All five cards present. With nothing firing, A = 0 (no controls
+    // surfaced); the headline is "0 of {C} covered · {N−C} out of scope · {N}
+    // in framework".
     expect(md).toContain('#### EU AI Act');
-    expect(md).toContain('**5 of ~104 covered**');
+    expect(md).toContain('**0 of 5 covered** · 99 out of scope · 104 in framework');
     expect(md).toContain('#### GDPR');
-    expect(md).toContain('**8 of ~95 covered**');
+    expect(md).toContain('**0 of 8 covered** · 87 out of scope · 95 in framework');
     expect(md).toContain('#### ISO/IEC 42001');
-    expect(md).toContain('**2 of ~38 covered**');
+    expect(md).toContain('**0 of 2 covered** · 36 out of scope · 38 in framework');
     expect(md).toContain('#### AIUC-1');
-    expect(md).toContain('**13 of ~50 covered**');
+    expect(md).toContain('**0 of 13 covered** · 37 out of scope · 50 in framework');
     expect(md).toContain('#### NIST AI RMF');
-    expect(md).toContain('**4 of ~72 covered**');
+    expect(md).toContain('**0 of 4 covered** · 68 out of scope · 72 in framework');
   });
 
   // ─── FIX 1: all five framework cards render, even 0-active ones ────────────
@@ -566,18 +569,16 @@ describe('AAP-121 lens — markdown render', () => {
       md.indexOf('### Compliance Lens'),
       md.indexOf('### Applicability Summary'),
     );
-    // AAP-128 (S12): NIST AI RMF has 0 active controls THIS audit, but its
-    // static capability is C = 4 of ~72 covered (68 out of scope); no rows.
+    // S13: NIST AI RMF has 0 active controls THIS audit (A = 0), but its static
+    // capability is C = 4 of ~72 (68 out of scope); no rows.
     const nistBlock = lensSection.slice(lensSection.indexOf('#### NIST AI RMF'));
-    expect(nistBlock).toContain('**4 of ~72 covered**');
-    expect(nistBlock).toContain('68 out of scope');
+    expect(nistBlock).toContain('**0 of 4 covered** · 68 out of scope · 72 in framework');
     expect(nistBlock).toContain('No active controls for this framework');
-    // ISO/IEC 42001: static C = 2 of ~38 covered (36 out of scope).
+    // ISO/IEC 42001: A = 0, C = 2, 36 out of scope, N = 38.
     const isoBlock = lensSection.slice(
       lensSection.indexOf('#### ISO/IEC 42001'),
       lensSection.indexOf('#### AIUC-1'),
     );
-    expect(isoBlock).toContain('**2 of ~38 covered**');
-    expect(isoBlock).toContain('36 out of scope');
+    expect(isoBlock).toContain('**0 of 2 covered** · 36 out of scope · 38 in framework');
   });
 });

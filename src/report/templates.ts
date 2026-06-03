@@ -14,10 +14,12 @@ import {
 } from './control-results-projection.js';
 import {
   allLensFrameworks,
+  composeFrameworkLensRows,
   frameworkLens,
   slfFindingsForFramework,
   type FrameworkLens,
   type LensControl,
+  type LensFindingRef,
 } from './compliance-lens.js';
 import { isProvided, UNKNOWN_PLACEHOLDER } from '../util/provided.js';
 import {
@@ -2356,80 +2358,67 @@ function renderLensVerdictBadge(verdict: LensControl['verdict']): string {
  * this block no longer needs the card-rendering context (`compliance` /
  * `slfRiskById` / `slfState`) that the AAP-123/S7 full-card path used.
  */
+/**
+ * S13 — one compact nested self-attested-finding reference under a control row:
+ * `↳ CODE Title ↗`, linked to the FULL card in the GLOBAL "Self-Attested
+ * Findings" stream via its heading anchor. `code` + `title` are the only fields
+ * read; the full card (severity / description / mitigation) is never duplicated
+ * here.
+ */
+function renderLensFindingRef(ref: LensFindingRef): string {
+  // The global card heading is `#### {code} — {title}` (renderFindingCard); its
+  // anchor must match what a markdown renderer slugs from that heading.
+  const anchor = findingCardAnchor({ code: ref.code, title: ref.title });
+  return `    - ↳ [\`${escapeText(ref.code)}\`](#${anchor}) ${escapeText(ref.title)} ↗`;
+}
+
 function renderFrameworkLensBlock(
   lens: FrameworkLens,
-  // AAP-127 (S11) — the coded findings attributed to this framework; each
-  // becomes a compact `[code](#anchor) title` reference to its full card in the
-  // global Self-Attested stream. `code` + `title` are the only fields read.
+  // S13 — the coded SLF findings attributed to this framework; each NESTS under
+  // the control it anchors to (or, in the fallback, as a standalone compact row
+  // at the end). `code` + `title` are the only fields read; each links to its
+  // full card in the global Self-Attested stream.
   slfFindings: readonly CodedVerdictFinding[] = [],
 ): string {
   const name = LENS_FRAMEWORK_NAMES[lens.frameworkId] ?? lens.frameworkId;
   const { counts } = lens;
 
-  // State-based header: verified / fail / partial / self-attested. `unverified`
-  // verifiable controls (evidence absent) fold in with partial in the header
-  // copy so the reader sees one "needs evidence" figure, but they still list
-  // individually below with their own badge.
-  const headerParts: string[] = [];
-  headerParts.push(`${counts.verified} verified`);
-  headerParts.push(`${counts.fail} fail`);
-  const partialish = counts.partial + counts.unverified;
-  headerParts.push(`${partialish} partial`);
-  headerParts.push(`${counts.selfAttested} self-attested`);
-  // AAP-123 (S7) — `counts.selfAttested` is self-attested CONTROLS (Lane A,
-  // prose flags); it does NOT count the self-attested FINDINGS (Lane B) listed
-  // below. Add a distinct findings figure so the header is consistent with what
-  // the card actually shows. The two lanes stay separate by design (a control
-  // and a finding are different objects in this model). Shown only when present.
-  if (slfFindings.length > 0) {
-    headerParts.push(
-      `${slfFindings.length} self-attested finding${slfFindings.length === 1 ? '' : 's'}`,
-    );
-  }
+  // S13 — compose the render model: nest each finding under its anchored control
+  // (synthesising a `self-attested` control row when the anchor did not
+  // independently activate), fallback orphans to standalone rows.
+  const composed = composeFrameworkLensRows(lens, slfFindings);
 
-  // AAP-128 (S12) — the headline is STATIC capability coverage: `C of ~N
-  // covered`, where C is the catalog count of this framework's controls Heron
-  // can address (verifiable + self-attested) and N is the published universe.
-  // C is identical every audit; out-of-scope is N − C (also static). The
-  // per-audit verdict breakdown (verified / fail / partial / self-attested,
-  // assembled in `headerParts`) is KEPT as secondary detail in parentheses so
-  // the reader still sees what fired THIS audit — but it no longer drives the
-  // headline figure (which used to be the per-audit `activeShown`).
+  // S13 — the header is `{A} of {C} covered · {N−C} out of scope · {N} in
+  // framework`. A = distinct controls surfaced as rows this audit (activated +
+  // finding-anchored), C = static capability coverage (catalog-derived,
+  // identical every audit), N = published universe. The verbose per-verdict
+  // breakdown and the `~` prefix are gone (spec points 2 + 3); per-control
+  // verdicts show on each row's badge.
   let out = `#### ${name}\n\n`;
-  out += `**${counts.covered} of ~${counts.publishedControlCount} covered** `;
-  out += `(${headerParts.join(' · ')}) · ${counts.outOfScope} out of scope\n\n`;
+  out +=
+    `**${composed.surfaced} of ${counts.covered} covered** · ` +
+    `${counts.outOfScope} out of scope · ${counts.publishedControlCount} in framework\n\n`;
 
-  if (lens.controls.length === 0) {
+  if (composed.rows.length === 0 && composed.orphanFindings.length === 0) {
     out += `_No active controls for this framework._\n\n`;
-  } else {
-    // Active controls, already ordered by the shared projection.
-    for (const ctrl of lens.controls) {
-      const nameSuffix = ctrl.controlName ? ` — ${escapeText(ctrl.controlName)}` : '';
-      out += `- \`${ctrl.controlId}\` ${renderLensVerdictBadge(ctrl.verdict)}${nameSuffix}\n`;
-    }
-    out += `\n`;
+    return out;
   }
 
-  // AAP-127 (S11) — self-attested findings attributed to this framework, AFTER
-  // the control rows. These are the SAME findings the GLOBAL "Self-Attested
-  // Findings" stream lists in FULL (code / severity / formula / description /
-  // mitigation); that global stream is unchanged. Here each is a COMPACT
-  // ONE-LINE REFERENCE — finding code + title only, linked to the full card in
-  // the global stream via its heading anchor. No severity / description /
-  // mitigation is duplicated under the framework; the reader follows the link
-  // for the full card. (Replaces the AAP-123/S7 full-card duplication.)
-  //
-  // These references are self-attested FINDINGS (the agent's interview answers),
-  // a distinct object from the self-attested CONTROL rows above (prose-flag
-  // controls). The label below and the control-row badges keep the two clearly
-  // separate, and the header counts each separately (see `headerParts`).
-  if (slfFindings.length > 0) {
-    out += `_Self-attested findings (agent self-report, does not move posture — full detail in the [Self-Attested Findings](#self-attested-findings) stream):_\n\n`;
-    for (const f of slfFindings) {
-      out += `- [\`${escapeText(f.code)}\`](#${findingCardAnchor(f)}) ${escapeText(f.title)}\n`;
-    }
-    out += `\n`;
+  // Control rows, each followed by its nested self-attested findings.
+  for (const row of composed.rows) {
+    const { control } = row;
+    const nameSuffix = control.controlName ? ` — ${escapeText(control.controlName)}` : '';
+    out += `- \`${control.controlId}\` ${renderLensVerdictBadge(control.verdict)}${nameSuffix}\n`;
+    for (const ref of row.findings) out += `${renderLensFindingRef(ref)}\n`;
   }
+
+  // FALLBACK — findings whose anchor could not be resolved to a control render
+  // as standalone compact rows at the end (never dropped, spec point 1).
+  for (const ref of composed.orphanFindings) {
+    const anchor = findingCardAnchor({ code: ref.code, title: ref.title });
+    out += `- ↳ [\`${escapeText(ref.code)}\`](#${anchor}) ${escapeText(ref.title)} ↗\n`;
+  }
+  out += `\n`;
 
   return out;
 }
@@ -2466,25 +2455,33 @@ function renderComplianceLens(
   // 0-active framework must still show its card (matches `allLensFrameworks`).
 
   let out = `### Compliance Lens\n\n`;
-  // One-line legend (scope point 4): some controls can earn a clean verified,
-  // others only ever warn (the deterministic-flag set), and self-attested ones
-  // are the agent's own answers.
-  out +=
-    `_Some controls can earn a clean **verified**; others only ever **warn** ` +
-    `(the deterministic-flag set), and **self-attested** controls are the agent's ` +
-    `own answers, not deterministic verdicts. Out-of-scope controls need a ` +
-    `corporate artifact or an external probe Heron can't reach in an interview._\n\n`;
+  // S13 — NO top-of-lens aggregate line (spec point 4). Per-framework cards
+  // only; the single legend lives ONCE at the BOTTOM (below).
 
   for (const frameworkId of allLensFrameworks()) {
     // AAP-122 — the SLF findings whose finding-type maps to this framework
     // (deterministically, via CONTROL_MAPPINGS). Empty for findings with no
-    // findingType, so those stay global-only. AAP-127 (S11) — rendered as
-    // compact references, not full cards.
+    // findingType, so those stay global-only. S13 — nested under their anchored
+    // control, as compact references into the global stream.
     out += renderFrameworkLensBlock(
       frameworkLens(frameworkId, controlResults, allFlags),
       slfFindingsForFramework(frameworkId, slfFindings),
     );
   }
+
+  // S13 — the single legend, ONCE at the bottom (spec points 4 + 5). Explains
+  // verified / warn / self-attested controls, the nested self-attested findings
+  // (agent self-report, does not move posture — full detail in the global
+  // Self-Attested Findings stream), and what out-of-scope means. The verbose
+  // per-framework blurbs are gone; this is the only place the explanation lives.
+  out +=
+    `_Some controls can earn a clean **verified**; others only ever **warn** ` +
+    `(the deterministic-flag set), and **self-attested** controls are the agent's ` +
+    `own answers, not deterministic verdicts. Findings nested under a control ` +
+    `(↳) are self-reported (full detail in the [Self-Attested Findings](#self-attested-findings) ` +
+    `stream) and do not move posture. Out-of-scope controls need a corporate ` +
+    `artifact or an external probe Heron can't reach in an interview._\n\n`;
+
   return out;
 }
 

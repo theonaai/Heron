@@ -43,8 +43,8 @@ import type {
 } from '@/src/report/types';
 import {
   allLensFrameworks,
+  composeFrameworkLensRows,
   frameworkLens,
-  lensFrameworks,
   slfFindingsForFramework,
   type FrameworkLens,
 } from '@/src/report/compliance-lens';
@@ -2854,25 +2854,6 @@ function ComplianceBlock({
   // longer vanishes (e.g. ISO 42001 / NIST AI RMF have 0 self-attested by
   // design, so they would disappear from a real audit otherwise).
   const lenses = allLensFrameworks().map((fwId) => frameworkLens(fwId, controlResults, flags));
-  // The honest "how many frameworks did we actually say something about" count
-  // backs the collapsed-header "N frameworks addressed" figure — it stays tied
-  // to frameworks with at least one active control, NOT the rendered card count.
-  const addressedCount = lensFrameworks(controlResults, flags).length;
-  // State-based roll-up for the collapsed header — summed across all framework
-  // cards. No "prose only" special case: every framework is one typed path now.
-  const rollup = lenses.reduce(
-    (acc, l) => ({
-      verified: acc.verified + l.counts.verified,
-      fail: acc.fail + l.counts.fail,
-      partial: acc.partial + l.counts.partial + l.counts.unverified,
-      selfAttested: acc.selfAttested + l.counts.selfAttested,
-      outOfScope: acc.outOfScope + l.counts.outOfScope,
-    }),
-    { verified: 0, fail: 0, partial: 0, selfAttested: 0, outOfScope: 0 },
-  );
-  // Whether any framework surfaced an active control — gates the honest-empty
-  // copy. (`lenses` is now always all five, so it can't be the empty signal.)
-  const hasAny = addressedCount > 0;
 
   return (
     <section
@@ -2885,53 +2866,29 @@ function ComplianceBlock({
       }}
       aria-label="Compliance lens"
     >
-      <div
-        style={{
-          display: 'flex',
-          width: '100%',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <span>
-          <span
-            style={{
-              fontSize: 11,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              color: '#71717a',
-              fontWeight: 600,
-              marginRight: 10,
-            }}
-          >
-            Compliance lens
-          </span>
-          <span style={{ fontSize: 13, color: '#18181b' }}>
-            {addressedCount} framework{addressedCount === 1 ? '' : 's'} addressed
-            {hasAny && (
-              <>
-                {' · '}
-                {rollup.verified} verified
-                {' · '}
-                {rollup.selfAttested} self-attested
-                {' · '}
-                {rollup.outOfScope} out of scope
-              </>
-            )}
-          </span>
+      {/* S13 — NO top-of-lens aggregate (spec point 4). Just the section label;
+          all numbers are per-framework on each card. The single legend lives
+          ONCE at the bottom. */}
+      <div>
+        <span
+          style={{
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: '#71717a',
+            fontWeight: 600,
+          }}
+        >
+          Compliance lens
         </span>
       </div>
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
-          {/* AAP-121 (S5): per-framework lens cards. On expand, ONLY active
-              controls are listed (verified -> partial -> self-attested);
-              cards expand independently. AAP-128 (S12): the card headline is
-              STATIC capability coverage "C of ~N covered · (N−C) out of scope"
-              (identical every audit); the per-audit verdict breakdown stays as
-              secondary detail. AAP-127 (S11) FIX 2: ALL FIVE frameworks ALWAYS
-              render — the old all-or-nothing `hasAny` gate (which showed "No
-              active controls from current signals" when nothing fired) is
-              removed, because each card's static coverage summary is meaningful
-              regardless of per-audit signals. */}
+          {/* S13: per-framework lens cards. On expand, controls are listed
+              (verified -> partial -> self-attested) with self-attested FINDINGS
+              nested under their anchored control. Cards expand independently.
+              The headline is "{A} of {C} covered · {N−C} out of scope · {N} in
+              framework" (no per-verdict breakdown, no `~` prefix). ALL FIVE
+              frameworks always render. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {lenses.map((lens) => (
               <FrameworkCard
@@ -2943,12 +2900,15 @@ function ComplianceBlock({
               />
             ))}
           </div>
-          <p style={{ marginTop: 14, fontSize: 11.5, color: '#71717a', lineHeight: 1.6 }}>
+          {/* S13 — the single legend, ONCE at the bottom (spec points 4 + 5). */}
+          <p style={{ marginTop: 14, fontSize: 12.5, color: '#71717a', lineHeight: 1.6 }}>
             Some controls can earn a clean <strong>verified</strong>; others only ever{' '}
             <strong>warn</strong> (the deterministic-flag set), and{' '}
             <strong>self-attested</strong> controls are the agent&apos;s own answers, not
-            deterministic verdicts. Out-of-scope controls need a corporate artifact or an
-            external probe Heron can&apos;t reach in an interview, so they are a count only.
+            deterministic verdicts. Findings nested under a control (↳) are self-reported
+            (full detail in the global Self-Attested Findings stream) and do not move posture.
+            Out-of-scope controls need a corporate artifact or an external probe Heron
+            can&apos;t reach in an interview, so they are a count only.
           </p>
         </div>
     </section>
@@ -2995,11 +2955,14 @@ export function FrameworkCard({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const { counts, controls } = lens;
-  // `partial` in the header folds in `unverified` verifiable controls (evidence
-  // absent) so the reader sees one "needs evidence" figure; both still list
-  // individually below with their own verdict badge.
-  const partialish = counts.partial + counts.unverified;
+  const { counts } = lens;
+  // S13 — compose the render model: each self-attested FINDING nests under the
+  // control it anchors to for this framework (synthesising a `self-attested`
+  // control row when the anchor did not independently activate); findings with
+  // no resolvable anchor fall back to standalone rows. `surfaced` is `A` — the
+  // distinct controls shown as rows this audit, the headline numerator.
+  const composed = composeFrameworkLensRows(lens, slfFindings);
+  const isEmpty = composed.rows.length === 0 && composed.orphanFindings.length === 0;
 
   return (
     <div
@@ -3029,102 +2992,93 @@ export function FrameworkCard({
           <span style={{ fontSize: 13, fontWeight: 600, color: '#18181b' }}>
             {FRAMEWORK_LABELS[lens.frameworkId] || lens.frameworkId}
           </span>
-          {/* AAP-128 (S12): STATIC capability coverage "C of ~N covered" —
-              `counts.covered` is catalog-derived and identical every audit, so
-              this figure never moves with which controls fired (contrast the
-              per-audit verdict breakdown to the right). */}
-          <span style={{ fontSize: 11, color: '#a1a1aa' }}>
-            {counts.covered} of ~{counts.publishedControlCount} covered
-          </span>
         </span>
+        {/* S13 — the header line: "{A} of {C} covered · {N−C} out of scope · {N}
+            in framework". A = `composed.surfaced` (distinct controls shown as
+            rows this audit), C = `counts.covered` (static catalog capability),
+            N = `counts.publishedControlCount`. No per-verdict breakdown (badges
+            on each row show that), no `~` prefix (exact integers). */}
         <span style={{ fontSize: 11.5, color: '#52525b' }}>
-          {counts.verified} verified · {counts.fail} fail · {partialish} partial ·{' '}
-          {counts.selfAttested} self-attested
-          {/* AAP-123 (S7) — the header used to show ONLY `counts.selfAttested`,
-              which is self-attested CONTROLS (Lane A, prose flags). It ignored
-              the self-attested FINDINGS (Lane B) now shown in the sub-list, so
-              the header undercounted what the card actually rendered. Keep the
-              two lanes DISTINCT (a control and a finding are different objects in
-              this codebase) and add an explicit findings figure so the header is
-              consistent with the body. Shown only when the framework has any. */}
-          {slfFindings.length > 0 && (
-            <>
-              {' · '}
-              {slfFindings.length} self-attested finding{slfFindings.length === 1 ? '' : 's'}
-            </>
-          )}
-          <span style={{ marginLeft: 6, color: '#a1a1aa' }}>
-            · {counts.outOfScope} out of scope
+          {composed.surfaced} of {counts.covered} covered
+          <span style={{ color: '#a1a1aa' }}>
+            {' · '}
+            {counts.outOfScope} out of scope · {counts.publishedControlCount} in framework
           </span>
         </span>
       </button>
       {expanded && (
         <div style={{ padding: '6px 14px 12px', borderTop: '1px solid #e5e7eb' }}>
-          {controls.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#71717a', margin: '4px 0 0' }}>
+          {isEmpty ? (
+            <p style={{ fontSize: 13, color: '#71717a', margin: '4px 0 0' }}>
               No active controls for this framework.
             </p>
           ) : (
             <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {controls.map((c, i) => (
-                <ControlRow key={c.controlId + '-' + i} control={c} />
+              {/* S13 — each control row, with any self-attested FINDINGS nested
+                  directly under it as compact `↳ CODE Title ↗` references into
+                  the global Self-Attested Findings stream. A control synthesised
+                  ONLY because a finding anchors to it renders with the
+                  `self-attested` verdict badge. */}
+              {composed.rows.map((row, i) => (
+                <ControlRow
+                  key={row.control.controlId + '-' + i}
+                  control={row.control}
+                  findings={row.findings}
+                />
+              ))}
+              {/* FALLBACK — findings whose anchor could not be resolved render as
+                  standalone compact rows at the end (never dropped). */}
+              {composed.orphanFindings.map((f) => (
+                <li key={f.id} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
+                  <FindingRef finding={f} />
+                </li>
               ))}
             </ul>
           )}
-          {/* AAP-127 (S11) — self-attested findings attributed to this
-              framework, after the control rows. The SAME findings are listed in
-              FULL (code / title / severity / description / mitigation) in the
-              global "Self-attested findings" stream (FindingsBlock), which is
-              unchanged. Here each is a COMPACT one-line REFERENCE — code + title
-              only — that links/scrolls to its full card in that global stream
-              (`#finding-<code>`), instead of duplicating the whole card. The
-              violet heading + caption keep it unmistakably labelled self-report
-              ("does not move posture"); these are self-attested FINDINGS, a
-              distinct object from the self-attested CONTROL rows above. */}
-          {slfFindings.length > 0 && (
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #e5e7eb' }}>
-              <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 600, marginBottom: 4 }}>
-                Self-attested findings
-              </div>
-              <p style={{ margin: '0 0 8px', fontSize: 11, color: '#a1a1aa', lineHeight: 1.5 }}>
-                Agent self-report, does not move posture. Full detail in the global Self-attested findings stream.
-              </p>
-              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {slfFindings.map((f) => (
-                  <li key={f.id} style={{ fontSize: 12, lineHeight: 1.5 }}>
-                    <a
-                      href={`#${findingAnchorId(f.code)}`}
-                      style={{ color: '#6d28d9', textDecoration: 'none' }}
-                    >
-                      <span
-                        className="mono"
-                        style={{
-                          display: 'inline-block',
-                          padding: '1px 6px',
-                          marginRight: 8,
-                          background: '#f5f3ff',
-                          color: '#6d28d9',
-                          border: '1px solid #ddd6fe',
-                          borderRadius: 4,
-                          fontSize: 11,
-                        }}
-                      >
-                        {f.code}
-                      </span>
-                      <span style={{ color: '#3f3f46' }}>{f.title}</span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <p style={{ marginTop: 8, fontSize: 11, color: '#a1a1aa', margin: '8px 0 0' }}>
-            {counts.outOfScope} more out of scope — needs a corporate artifact or an external
-            probe Heron can&apos;t reach in an interview.
-          </p>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * S13 — a compact one-line reference to a self-attested FINDING: `↳ CODE Title
+ * ↗`, linking to the FULL card in the GLOBAL "Self-Attested Findings" stream
+ * (`#finding-<code>`). The full card (severity / description / mitigation) is
+ * never duplicated here; this only points to it.
+ */
+function FindingRef({ finding }: { finding: { id: string; code: string; title: string } }) {
+  return (
+    <a
+      href={`#${findingAnchorId(finding.code)}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'baseline',
+        gap: 6,
+        fontSize: 12.5,
+        lineHeight: 1.5,
+        color: '#6d28d9',
+        textDecoration: 'none',
+      }}
+    >
+      <span aria-hidden style={{ color: '#a1a1aa' }}>↳</span>
+      <span
+        className="mono"
+        style={{
+          display: 'inline-block',
+          padding: '1px 6px',
+          background: '#f5f3ff',
+          color: '#6d28d9',
+          border: '1px solid #ddd6fe',
+          borderRadius: 4,
+          fontSize: 11,
+        }}
+      >
+        {finding.code}
+      </span>
+      <span style={{ color: '#3f3f46' }}>{finding.title}</span>
+      <span aria-hidden style={{ color: '#a1a1aa' }}>↗</span>
+    </a>
   );
 }
 
@@ -3168,7 +3122,15 @@ type ControlRowControl = Omit<ControlResult, 'verdict'> & {
   verdict: ControlResult['verdict'] | 'self-attested';
 };
 
-export function ControlRow({ control }: { control: ControlRowControl }) {
+export function ControlRow({
+  control,
+  findings = [],
+}: {
+  control: ControlRowControl;
+  // S13 — self-attested FINDINGS nested under this control, rendered as compact
+  // `↳ CODE Title ↗` references below the row's description/evidence.
+  findings?: readonly { id: string; code: string; title: string }[];
+}) {
   const verdictPalette =
     control.verdict === 'verified'
       ? { bg: '#f0fdf4', ink: '#15803d' }
@@ -3222,21 +3184,27 @@ export function ControlRow({ control }: { control: ControlRowControl }) {
         borderBottom: '1px solid #f1f5f9',
       }}
     >
+      {/* S13 readability — the control id stays a fixed narrow column, but the
+          DESCRIPTION (controlName) takes the full remaining width (`1fr`) so it
+          no longer wraps into a cramped column, and the badges sit at the right.
+          The verbose rationale renders full-width below (no `62ch` cap). The
+          severity badge is hidden for `self-attested` rows (agent self-reports
+          carry no deterministic severity). */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(110px, max-content) 1fr max-content max-content',
-          gap: 10,
-          alignItems: 'center',
+          gridTemplateColumns: 'minmax(96px, max-content) 1fr max-content max-content',
+          gap: 12,
+          alignItems: 'baseline',
         }}
       >
         <span
           className="mono"
-          style={{ fontSize: 11.5, color: '#3f3f46', whiteSpace: 'nowrap' }}
+          style={{ fontSize: 12, color: '#3f3f46', whiteSpace: 'nowrap' }}
         >
           {control.controlId}
         </span>
-        <span style={{ fontSize: 12, color: '#52525b', lineHeight: 1.4 }}>
+        <span style={{ fontSize: 13, color: '#3f3f46', lineHeight: 1.5 }}>
           {control.controlName || ''}
         </span>
         <span
@@ -3250,34 +3218,39 @@ export function ControlRow({ control }: { control: ControlRowControl }) {
             background: verdictPalette.bg,
             color: verdictPalette.ink,
             whiteSpace: 'nowrap',
+            alignSelf: 'center',
           }}
         >
           {control.verdict}
         </span>
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: '0.04em',
-            padding: '2px 7px',
-            borderRadius: 3,
-            background: sevPalette.bg,
-            color: sevPalette.ink,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {control.severity}
-        </span>
+        {control.verdict === 'self-attested' ? (
+          <span />
+        ) : (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              padding: '2px 7px',
+              borderRadius: 3,
+              background: sevPalette.bg,
+              color: sevPalette.ink,
+              whiteSpace: 'nowrap',
+              alignSelf: 'center',
+            }}
+          >
+            {control.severity}
+          </span>
+        )}
       </div>
       {rationale && (
         <p
           style={{
             margin: 0,
-            fontSize: 11.5,
-            color: '#71717a',
-            lineHeight: 1.5,
-            maxWidth: '62ch',
+            fontSize: 13,
+            color: '#52525b',
+            lineHeight: 1.6,
           }}
         >
           {rationale}
@@ -3297,6 +3270,15 @@ export function ControlRow({ control }: { control: ControlRowControl }) {
           Evidence: {refsShown.join(', ')}
           {refsExtra > 0 && ` +${refsExtra} more`}
         </p>
+      )}
+      {/* S13 — self-attested FINDINGS nested under this control: compact
+          `↳ CODE Title ↗` references into the global Self-Attested stream. */}
+      {findings.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+          {findings.map((f) => (
+            <FindingRef key={f.id} finding={f} />
+          ))}
+        </div>
       )}
     </li>
   );

@@ -347,6 +347,162 @@ export function slfFindingsForFramework<T extends SlfLensFinding>(
   return out;
 }
 
+// ─── Finding → anchored control resolution (S13) ──────────────────────────────
+
+/**
+ * S13 — the control a self-attested FINDING is ANCHORED to for a given
+ * framework. This is the SAME deterministic table the global finding card's
+ * "Anchored to: <framework> <article>" line is built from (`getFrameworkBasis`
+ * in templates.ts reads the prose flag's `controlIds[0]`, which is itself
+ * seeded from `CONTROL_MAPPINGS`): the finding's `findingType` maps — via
+ * `CONTROL_MAPPINGS` — to one or more controls per framework, and the anchor is
+ * the FIRST of those, preferring a control whose catalog bucket is active
+ * (`verifiable`/`self-attested`) so the finding nests under a control the lens
+ * will actually render as a row.
+ *
+ * Returns `undefined` when the finding type maps to no control in this
+ * framework (the caller then renders the finding as a standalone compact row —
+ * the FALLBACK in the redesign spec).
+ */
+export function anchorControlForFinding(
+  frameworkId: FrameworkId,
+  findingType: FindingType,
+): { controlId: string; controlName?: string; bucket: ComplianceBucket } | undefined {
+  const mapping = CONTROL_MAPPINGS[findingType];
+  if (!mapping) return undefined;
+  const inFramework = mapping.controls.filter((c) => c.frameworkId === frameworkId);
+  if (inFramework.length === 0) return undefined;
+
+  // Prefer the first control whose catalog bucket is ACTIVE so the finding
+  // nests under a renderable row; otherwise fall back to the first mapped
+  // control (still anchored honestly, even if it is itself out of scope).
+  const resolve = (controlId: string) => findControlAcrossFindings(frameworkId, controlId);
+  let chosen = inFramework.find((c) => {
+    const entry = resolve(c.controlId);
+    return entry !== undefined && ACTIVE_BUCKETS.has(entry.bucket);
+  });
+  if (!chosen) chosen = inFramework[0];
+  if (!chosen) return undefined;
+
+  const entry = resolve(chosen.controlId);
+  const out: { controlId: string; controlName?: string; bucket: ComplianceBucket } = {
+    controlId: chosen.controlId,
+    bucket: entry?.bucket ?? 'self-attested',
+  };
+  const name = entry?.controlName ?? chosen.note;
+  if (name !== undefined) out.controlName = name;
+  return out;
+}
+
+// ─── Composed framework rows: findings nested under their anchor control (S13) ─
+
+/**
+ * S13 — one compact reference to a self-attested FINDING, nested under the
+ * control it anchors to (or standalone in the fallback path). Carries only the
+ * fields a renderer needs to draw a one-line `CODE  Title  ↗` reference that
+ * links to the FULL card in the global Self-Attested Findings stream.
+ */
+export interface LensFindingRef {
+  /** Stable finding id (React key). */
+  id: string;
+  /** Vijil-style finding code, e.g. `SLF-001`. */
+  code: string;
+  /** Human-readable finding title. */
+  title: string;
+}
+
+/**
+ * S13 — a control row plus the self-attested findings nested under it. The
+ * control is rendered with its verdict badge; each nested finding is a compact
+ * reference into the global stream. `syntheticSelfAttested` is true when the
+ * control did NOT independently activate this audit and exists ONLY because a
+ * finding anchors to it — the renderer shows it with the `self-attested`
+ * verdict in that case (spec point 1).
+ */
+export interface LensControlRow {
+  control: LensControl;
+  findings: LensFindingRef[];
+}
+
+/**
+ * S13 — the fully composed render model for ONE framework card: the ordered
+ * control rows (each with any nested findings) plus any findings whose anchor
+ * could not be resolved to a renderable control (FALLBACK — rendered as
+ * standalone compact rows at the end). `surfaced` is the redesign's `A`: the
+ * count of DISTINCT controls actually shown as rows this audit (activated +
+ * finding-anchored), which is the headline numerator `{A} of {C} covered`.
+ */
+export interface FrameworkLensRows {
+  rows: LensControlRow[];
+  /** FALLBACK findings with no resolvable anchor control — standalone rows. */
+  orphanFindings: LensFindingRef[];
+  /** `A` — distinct controls surfaced as rows this audit. */
+  surfaced: number;
+}
+
+/** The finding shape `composeFrameworkLensRows` reads — code + title + the
+ *  attribution fields. Both the dashboard's `CodedVerdictFinding` and the
+ *  markdown path satisfy it structurally. */
+export interface ComposableFinding extends SlfLensFinding {
+  code: string;
+}
+
+/**
+ * S13 — compose the per-framework render model: nest each self-attested finding
+ * under the control it ANCHORS to for this framework, synthesising a
+ * `self-attested` control row when the anchor control did not independently
+ * activate this audit. Findings whose anchor cannot be resolved to a control
+ * fall back to `orphanFindings`. Pure; shared by BOTH renderers so the two
+ * surfaces stay identical.
+ *
+ * `findings` should already be the framework-scoped set
+ * (`slfFindingsForFramework(frameworkId, …)`).
+ */
+export function composeFrameworkLensRows<T extends ComposableFinding>(
+  lens: FrameworkLens,
+  findings: readonly T[],
+): FrameworkLensRows {
+  const { frameworkId } = lens;
+  // Start from the activated controls, preserving the projection's order.
+  const rows: LensControlRow[] = lens.controls.map((control) => ({ control, findings: [] }));
+  const rowByControlId = new Map<string, LensControlRow>();
+  for (const row of rows) rowByControlId.set(row.control.controlId, row);
+
+  const orphanFindings: LensFindingRef[] = [];
+
+  for (const f of findings) {
+    const ref: LensFindingRef = { id: f.id, code: f.code, title: f.title };
+    const anchor =
+      f.findingType !== undefined ? anchorControlForFinding(frameworkId, f.findingType) : undefined;
+    if (!anchor) {
+      orphanFindings.push(ref);
+      continue;
+    }
+    let row = rowByControlId.get(anchor.controlId);
+    if (!row) {
+      // The anchor control did not independently activate this audit — it
+      // exists ONLY because this finding anchors to it. Synthesise a row with
+      // the `self-attested` verdict (spec point 1).
+      const synthetic: LensControl = {
+        frameworkId,
+        controlId: anchor.controlId,
+        bucket: anchor.bucket,
+        verdict: 'self-attested',
+        severity: 'info',
+        ...(anchor.controlName !== undefined ? { controlName: anchor.controlName } : {}),
+      };
+      row = { control: synthetic, findings: [] };
+      rowByControlId.set(anchor.controlId, row);
+      rows.push(row);
+    }
+    row.findings.push(ref);
+  }
+
+  // `A` — distinct controls surfaced as rows (activated + finding-anchored).
+  const surfaced = rows.length;
+  return { rows, orphanFindings, surfaced };
+}
+
 // ─── Verifiable control extraction from controlResults ───────────────────────
 
 /**
