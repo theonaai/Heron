@@ -64,7 +64,10 @@ describe('MinimalReportView compliance ControlRow rationale (AAP-105 A7)', () =>
     const html = render(a44);
     expect(html).toContain('A.4.4');
     expect(html).toContain('Tooling resources');
-    expect(html).toContain('partial');
+    // AAP-130 (B2): the `partial` verdict badge now reads "Needs review" (the
+    // shared display label). The verdict VALUE stays `partial`.
+    expect(html).toContain('Needs review');
+    expect(html).not.toContain('>partial<');
     expect(html).toContain('info');
   });
 

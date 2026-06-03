@@ -17,6 +17,7 @@ import {
   composeFrameworkLensRows,
   frameworkLens,
   slfFindingsForFramework,
+  verdictDisplayLabel,
   type FrameworkLens,
   type LensControl,
   type LensFindingRef,
@@ -2919,15 +2920,19 @@ function isGapResult(r: ControlResult): boolean {
  * mixes ✅ / ⚠️ so we stay consistent).
  *
  *   - `fail`           → ❌ fail
- *   - `partial`        → ⚠️ partial
+ *   - `partial`        → ⚠️ Needs review   (AAP-130 / B2 — was "partial")
  *   - `unverified`     → ❓ unverified
  *   - `verified`       → ✅ verified
  *   - `not-applicable` → ➖ n/a
+ *
+ * AAP-130 (B2): the `partial` display string is the shared `verdictDisplayLabel`
+ * ("Needs review"), so the markdown badge and the dashboard `ControlRow` badge
+ * read identically. The verdict VALUE stays `partial`.
  */
 function renderVerdictBadge(verdict: ControlResult['verdict']): string {
   switch (verdict) {
     case 'fail': return '❌ fail';
-    case 'partial': return '⚠️ partial';
+    case 'partial': return `⚠️ ${verdictDisplayLabel('partial')}`;
     case 'unverified': return '❓ unverified';
     case 'verified': return '✅ verified';
     case 'not-applicable': return '➖ n/a';

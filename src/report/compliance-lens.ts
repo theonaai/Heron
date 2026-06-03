@@ -17,7 +17,9 @@
  *      Out-of-scope (`oos-operator-artifact` + `oos-not-verifiable`) is a COUNT
  *      only — no list. All five frameworks use this one typed path; there is no
  *      "prose only" special case for the EU AI Act.
- *   3. Order on expand: verified -> partial -> self-attested.
+ *   3. Order on expand (AAP-130 / B3): by SEVERITY first (most urgent at the
+ *      top), tiebroken by verdict (fail -> partial -> unverified ->
+ *      self-attested -> verified -> not-applicable).
  *   4. The out-of-scope figure is honest about the PUBLISHED universe, not just
  *      the handful of wired oos controls: it is
  *      `framework.publishedControlCount - (active controls shown)`, so the
@@ -184,11 +186,12 @@ export interface FrameworkLens {
   frameworkId: FrameworkId;
   counts: FrameworkLensCounts;
   /**
-   * Active controls in render order: verified -> partial -> unverified ->
-   * self-attested -> fail. (Fail sinks below the clean/clarification states so
-   * the reader scans the "what's proven" controls first; within a verdict
-   * group, original order is preserved.) Out-of-scope controls are NOT here —
-   * they are a count only.
+   * Active controls in render order (AAP-130 / B3): by SEVERITY first (most
+   * urgent at the top: critical -> high -> medium -> low -> info), tiebroken by
+   * verdict (fail -> partial -> unverified -> self-attested -> verified ->
+   * not-applicable) within a severity. So a FAIL/HIGH row and a high-severity
+   * partial rise above the INFO-level verified / self-attested / not-applicable
+   * rows. Out-of-scope controls are NOT here — they are a count only.
    */
   controls: LensControl[];
 }
@@ -196,23 +199,88 @@ export interface FrameworkLens {
 // ─── Ordering ────────────────────────────────────────────────────────────────
 
 /**
- * Render order on expand. The ticket pins "verified -> partial ->
- * self-attested"; we slot the two remaining active states around that spine:
- * `unverified` (a verifiable control with no evidence yet) sits with
- * `partial`, and `fail` sinks last so the proven/needs-clarification controls
- * read first. Lower number = earlier.
+ * AAP-130 (B3) — render order is by SEVERITY first, most urgent at the top, so
+ * the worst items (a FAIL/HIGH row, a high-severity partial) rise above the
+ * INFO-level clean/self-attested rows. Lower number = earlier (rendered higher).
+ *
+ * Self-attested controls carry the sentinel `info` severity (they are agent
+ * claims, not deterministic verdicts), so they sink with the other INFO rows —
+ * which is why a high-severity partial now reads above a self-attested row,
+ * the inversion B3 was filed for.
  */
-const VERDICT_ORDER: Record<LensControl['verdict'], number> = {
-  verified: 0,
+const SEVERITY_ORDER: Record<LensControl['severity'], number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+function severityRank(s: LensControl['severity']): number {
+  return SEVERITY_ORDER[s] ?? 99;
+}
+
+/**
+ * AAP-130 (B3) — tiebreak WITHIN the same severity, in this exact order:
+ * `fail -> partial -> unverified -> self-attested -> verified -> not-applicable`.
+ * So two rows at the same severity surface the failing one first, and a clean
+ * `verified` sinks below the states that still need attention. Lower = earlier.
+ */
+const VERDICT_TIEBREAK_ORDER: Record<LensControl['verdict'], number> = {
+  fail: 0,
   partial: 1,
   unverified: 2,
   'self-attested': 3,
-  fail: 4,
+  verified: 4,
   'not-applicable': 5,
 };
 
-function verdictRank(v: LensControl['verdict']): number {
-  return VERDICT_ORDER[v] ?? 99;
+function verdictTiebreakRank(v: LensControl['verdict']): number {
+  return VERDICT_TIEBREAK_ORDER[v] ?? 99;
+}
+
+/**
+ * AAP-130 (B3) — the lens row comparator: SEVERITY primary (most urgent first),
+ * VERDICT the tiebreak within a severity. Applied to the final assembled active
+ * control list so a FAIL/HIGH row and a high-severity partial both rise to the
+ * top of the framework card, while verified / self-attested / not-applicable
+ * (info) sink. Stable: equal-severity-and-verdict rows keep their input order.
+ */
+export function compareLensControls(a: LensControl, b: LensControl): number {
+  const bySeverity = severityRank(a.severity) - severityRank(b.severity);
+  if (bySeverity !== 0) return bySeverity;
+  return verdictTiebreakRank(a.verdict) - verdictTiebreakRank(b.verdict);
+}
+
+// ─── Verdict display labels (AAP-130 / B2) ───────────────────────────────────
+
+/**
+ * AAP-130 (B2) — the SHARED human-facing display label for a lens verdict
+ * VALUE. Both surfaces (markdown `renderVerdictBadge` and the dashboard
+ * `ControlRow` badge) read this one map so the badge wording cannot drift.
+ *
+ * Only `partial` is relabelled: the underlying verdict VALUE stays `partial`
+ * everywhere (counts, routing, tests), but the badge a reviewer reads says
+ * "Needs review" — "Partial" was vague client-facing wording (Ilya, 2026-06-03).
+ * Every other verdict displays its own word; this map is the single place the
+ * `partial -> "Needs review"` rename lives, so the two surfaces stay identical.
+ */
+const VERDICT_DISPLAY_LABEL: Record<LensControl['verdict'], string> = {
+  verified: 'verified',
+  partial: 'Needs review',
+  unverified: 'unverified',
+  fail: 'fail',
+  'self-attested': 'self-attested',
+  'not-applicable': 'not-applicable',
+};
+
+/**
+ * AAP-130 (B2) — the display string for a verdict VALUE. Returns "Needs review"
+ * for `partial`; the verdict word itself for everything else. The verdict value
+ * passed in is never mutated — this is display-only.
+ */
+export function verdictDisplayLabel(verdict: LensControl['verdict']): string {
+  return VERDICT_DISPLAY_LABEL[verdict] ?? verdict;
 }
 
 // ─── Self-attested control extraction from prose flags ───────────────────────
@@ -572,9 +640,11 @@ export function frameworkLens(
     (c) => !resultControlIds.has(c.controlId),
   );
 
-  const controls = [...fromResults, ...fromFlags].sort(
-    (a, b) => verdictRank(a.verdict) - verdictRank(b.verdict),
-  );
+  // AAP-130 (B3): sort the final assembled active control list by SEVERITY
+  // first (most urgent at the top), tiebroken by verdict, replacing the old
+  // VERDICT_ORDER-only sort. `composeFrameworkLensRows` preserves this order
+  // when it builds the rendered rows, so both surfaces inherit it.
+  const controls = [...fromResults, ...fromFlags].sort(compareLensControls);
 
   let verified = 0;
   let fail = 0;

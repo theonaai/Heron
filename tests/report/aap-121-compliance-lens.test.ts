@@ -35,6 +35,7 @@ import {
   lensFrameworks,
   selfAttestedControlsForFramework,
   staticCoverageForFramework,
+  verdictDisplayLabel,
 } from '../../src/report/compliance-lens.js';
 import { FINDING_TYPES } from '../../src/compliance/types.js';
 import type { FindingType } from '../../src/compliance/types.js';
@@ -208,10 +209,13 @@ describe('AAP-121/128 lens — out-of-scope is published-universe honest (static
   });
 });
 
-// ─── 4. Order on expand: verified -> partial -> self-attested ────────────────
+// ─── 4. Order on expand: severity-primary, verdict tiebreak (AAP-130 / B3) ────
 
-describe('AAP-121 lens — order on expand', () => {
-  it('orders verified before partial before self-attested', () => {
+describe('AAP-130 lens — order on expand (severity-primary)', () => {
+  it('within one severity, tiebreaks fail -> partial -> ... -> verified', () => {
+    // All three default to `medium` severity, so the verdict TIEBREAK decides:
+    // partial (1) before verified (4). Self-attested rows carry `info` severity
+    // (sentinel), so they sink below the medium rows regardless of verdict.
     const results: ControlResult[] = [
       result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'partial', bucket: 'verifiable' }),
       result({ frameworkId: 'gdpr', controlId: 'Art. 32', verdict: 'verified', bucket: 'verifiable' }),
@@ -219,17 +223,62 @@ describe('AAP-121 lens — order on expand', () => {
     const flags = [selfAttestedFlag({ frameworkId: 'gdpr', controlIds: ['Art. 5(1)(b)'] })];
     const lens = frameworkLens('gdpr', results, flags);
     const verdicts = lens.controls.map((c) => c.verdict);
-    // verified first, then partial, then self-attested.
-    expect(verdicts).toEqual(['verified', 'partial', 'self-attested']);
+    // medium partial, then medium verified, then info self-attested.
+    expect(verdicts).toEqual(['partial', 'verified', 'self-attested']);
   });
 
-  it('fail sinks below the clean/clarification controls', () => {
+  it('fail rises above verified at the same severity (worst-first)', () => {
     const results: ControlResult[] = [
       result({ frameworkId: 'gdpr', controlId: 'Art. 6', verdict: 'fail', bucket: 'verifiable' }),
       result({ frameworkId: 'gdpr', controlId: 'Art. 32', verdict: 'verified', bucket: 'verifiable' }),
     ];
     const lens = frameworkLens('gdpr', results, []);
-    expect(lens.controls.map((c) => c.verdict)).toEqual(['verified', 'fail']);
+    expect(lens.controls.map((c) => c.verdict)).toEqual(['fail', 'verified']);
+  });
+
+  it('severity is the PRIMARY key: a HIGH row outranks a MEDIUM row of any verdict', () => {
+    // A high-severity partial must render ABOVE a medium-severity fail — severity
+    // dominates the verdict tiebreak. This is the B3 inversion: urgent first.
+    const results: ControlResult[] = [
+      result({ frameworkId: 'gdpr', controlId: 'Art. 6', verdict: 'fail', bucket: 'verifiable', severity: 'medium' }),
+      result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'partial', bucket: 'verifiable', severity: 'high' }),
+    ];
+    const lens = frameworkLens('gdpr', results, []);
+    expect(lens.controls.map((c) => c.controlId)).toEqual(['Art. 25', 'Art. 6']);
+  });
+
+  it('a HIGH-severity partial and a FAIL both rise above an INFO verified/self-attested row', () => {
+    const results: ControlResult[] = [
+      result({ frameworkId: 'gdpr', controlId: 'Art. 32', verdict: 'verified', bucket: 'verifiable', severity: 'info' }),
+      result({ frameworkId: 'gdpr', controlId: 'Art. 6', verdict: 'fail', bucket: 'verifiable', severity: 'high' }),
+      result({ frameworkId: 'gdpr', controlId: 'Art. 25', verdict: 'partial', bucket: 'verifiable', severity: 'high' }),
+    ];
+    const flags = [selfAttestedFlag({ frameworkId: 'gdpr', controlIds: ['Art. 5(1)(b)'] })];
+    const lens = frameworkLens('gdpr', results, flags);
+    // High fail, then high partial (verdict tiebreak at HIGH). Then the two INFO
+    // rows: within info, self-attested (tiebreak 3) sorts above verified (4).
+    expect(lens.controls.map((c) => c.controlId)).toEqual([
+      'Art. 6',
+      'Art. 25',
+      'Art. 5(1)(b)',
+      'Art. 32',
+    ]);
+  });
+});
+
+// ─── 4b. Verdict display label (AAP-130 / B2) ────────────────────────────────
+
+describe('AAP-130 verdictDisplayLabel — "partial" reads "Needs review"', () => {
+  it('relabels only `partial` to "Needs review"; the value stays `partial`', () => {
+    expect(verdictDisplayLabel('partial')).toBe('Needs review');
+  });
+
+  it('every other verdict displays its own word unchanged', () => {
+    expect(verdictDisplayLabel('verified')).toBe('verified');
+    expect(verdictDisplayLabel('fail')).toBe('fail');
+    expect(verdictDisplayLabel('unverified')).toBe('unverified');
+    expect(verdictDisplayLabel('self-attested')).toBe('self-attested');
+    expect(verdictDisplayLabel('not-applicable')).toBe('not-applicable');
   });
 });
 
@@ -652,17 +701,30 @@ describe('AAP-121 lens — markdown render', () => {
     expect(lensSection).not.toContain('`Art. 11`');
   });
 
-  it('orders active controls verified -> partial -> self-attested -> fail', () => {
+  it('AAP-130 (B3): orders by severity, tiebroken by verdict — fail -> partial -> verified -> self-attested', () => {
+    // All four GDPR rows default to `medium` severity except the self-attested
+    // Art. 5(1)(b), which carries the `info` sentinel. So the three medium rows
+    // sort by the verdict tiebreak (fail -> partial -> verified) and the info
+    // self-attested row sinks last.
     const md = renderStructuredCompliance(lensCompliance());
     const gdprBlock = md.slice(md.indexOf('#### GDPR'));
-    const verifiedIdx = gdprBlock.indexOf('`Art. 32`');
-    const partialIdx = gdprBlock.indexOf('`Art. 25`');
-    const selfIdx = gdprBlock.indexOf('`Art. 5(1)(b)`');
     const failIdx = gdprBlock.indexOf('`Art. 6`');
-    expect(verifiedIdx).toBeGreaterThanOrEqual(0);
-    expect(verifiedIdx).toBeLessThan(partialIdx);
-    expect(partialIdx).toBeLessThan(selfIdx);
-    expect(selfIdx).toBeLessThan(failIdx);
+    const partialIdx = gdprBlock.indexOf('`Art. 25`');
+    const verifiedIdx = gdprBlock.indexOf('`Art. 32`');
+    const selfIdx = gdprBlock.indexOf('`Art. 5(1)(b)`');
+    expect(failIdx).toBeGreaterThanOrEqual(0);
+    expect(failIdx).toBeLessThan(partialIdx);
+    expect(partialIdx).toBeLessThan(verifiedIdx);
+    expect(verifiedIdx).toBeLessThan(selfIdx);
+  });
+
+  it('AAP-130 (B2): the partial control badge reads "Needs review", not "partial"', () => {
+    const md = renderStructuredCompliance(lensCompliance());
+    const gdprBlock = md.slice(md.indexOf('#### GDPR'));
+    // Art. 25 is the `partial` control; its badge must say "Needs review".
+    const art25Line = gdprBlock.split('\n').find((l) => l.includes('`Art. 25`')) ?? '';
+    expect(art25Line).toContain('Needs review');
+    expect(art25Line).not.toContain('⚠️ partial');
   });
 
   it('renders the EU AI Act card the same way as the others (no "prose only" special case)', () => {
