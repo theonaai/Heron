@@ -353,7 +353,12 @@ function makeEnvSecretDetector(
     }
     if (matches.length === 0) return null;
 
-    const findingType: FindingType = 'sensitive-data';
+    // AAP-132 (B4): plaintext `.env` secrets are a credential-hygiene /
+    // security-of-processing gap, NOT personal-data processing. Type the
+    // finding `credential-exposure` so it maps to GDPR Art. 32 ONLY and no
+    // longer pulls in the `sensitive-data` data-protection controls
+    // (EU Art 50(1), GDPR Art 6, AIUC A001).
+    const findingType: FindingType = 'credential-exposure';
     const out: ControlResult = {
       stableKey: stableKeyFor({ findingType, frameworkId, controlId }),
       findingType,
@@ -516,8 +521,12 @@ export const DISCOVERY_DETECTOR_ADAPTERS: ReadonlyArray<DiscoveryAdapterRow> = [
   // `*_SECRET`, `*_PASSWORD`) sitting in plaintext .env files inside a
   // project workspace. GDPR Art. 32 (security of processing) is the
   // canonical landing.
+  //
+  // AAP-132 (B4): typed `credential-exposure` (SECURITY), not `sensitive-data`.
+  // It maps to GDPR Art. 32 ONLY (control-mappings.ts), so the secrets finding
+  // no longer pulls in EU Art 50(1) / GDPR Art 6 / AIUC A001.
   {
-    findingType: 'sensitive-data',
+    findingType: 'credential-exposure',
     frameworkId: 'gdpr',
     controlId: 'Art. 32',
     detector: makeEnvSecretDetector(

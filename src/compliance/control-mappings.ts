@@ -109,6 +109,28 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
     ],
   },
 
+  // AAP-132 (B4): the plaintext-secrets / inactive-credentials finding
+  // (renders as SLF-002, "...increase operational exposure") is a credential-
+  // hygiene / operational-SECURITY issue, NOT personal-data processing. Routing
+  // it through `sensitive-data` dragged in controls that do not fit a secrets-
+  // storage gap — EU Art 50(1) transparency, GDPR Art 6 lawful basis, AIUC
+  // A001 input-data policy. It belongs to security-of-processing instead.
+  //
+  // Decision (Ilya, 2026-06-03): map ONLY to GDPR Art. 32. Art. 32 already
+  // fires deterministically on the `.env` secret-pattern scan
+  // (makeEnvSecretDetector in detectors/discovery-detectors.ts), so the finding
+  // nests under that already-firing row. AIUC B-series / ISO security controls
+  // are deliberately DEFERRED (not added here).
+  'credential-exposure': {
+    findingType: 'credential-exposure',
+    category: 'privacy',
+    summary:
+      'Agent stores credential material in plaintext or retains inactive credentials — a security-of-processing gap (credential hygiene), not personal-data processing.',
+    controls: [
+      c('gdpr', 'Art. 32', 'Security of processing — encrypt or move credentials out of plaintext storage.'),
+    ],
+  },
+
   'scope-creep': {
     findingType: 'scope-creep',
     category: 'consumer-protection',

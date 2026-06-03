@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { CONTROL_MAPPINGS } from '../../src/compliance/control-mappings.js';
 import { mapFindings } from '../../src/compliance/mapper.js';
 import type { DiscoveryResult } from '../../src/discovery/types.js';
 
@@ -329,6 +330,87 @@ describe('AAP-105 D4 — env secret-pattern detector (GDPR Art. 32)', () => {
       (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 32',
     );
     expect(art32).toBeUndefined();
+  });
+});
+
+// ─── AAP-132 — plaintext-secrets finding is SECURITY, not sensitive-data ────
+//
+// The `.env` secret-pattern finding (SLF-002, "...increase operational
+// exposure") is a credential-hygiene / security-of-processing issue, NOT
+// personal-data processing. It must be typed `credential-exposure` and map to
+// GDPR Art. 32 ONLY — never EU Art 50(1) / GDPR Art 6 / AIUC A001.
+describe('AAP-132 — plaintext secrets typed credential-exposure → GDPR Art. 32 only', () => {
+  it('the Art. 32 env-secret ControlResult is typed credential-exposure, not sensitive-data', () => {
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('SLACK_BOT_TOKEN') },
+    });
+    const art32 = out.controlResults.find(
+      (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 32',
+    );
+    expect(art32).toBeDefined();
+    expect(art32!.findingType).toBe('credential-exposure');
+  });
+
+  it('a pure secret-pattern key (no PII, no processor) lights ONLY credential-exposure Art. 32', () => {
+    // APP_SECRET matches the secret-pattern (`_SECRET`) but is NOT a
+    // sensitive-PII key and NOT a third-party processor key, so the only
+    // ControlResult it should light is GDPR Art. 32 under credential-exposure
+    // — nothing under sensitive-data, and no processor controls.
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('APP_SECRET') },
+    });
+    const sensitive = out.controlResults.filter(
+      (r) => r.findingType === 'sensitive-data',
+    );
+    expect(sensitive).toEqual([]);
+    const ids = out.controlResults.map((r) => `${r.findingType}:${r.frameworkId}:${r.controlId}`);
+    expect(ids).toEqual(['credential-exposure:gdpr:Art. 32']);
+  });
+
+  it('credential-exposure maps to GDPR Art. 32 ONLY — not EU Art 50(1) / GDPR Art 6 / AIUC A001', () => {
+    const mapping = CONTROL_MAPPINGS['credential-exposure'];
+    expect(mapping).toBeDefined();
+    const pairs = mapping.controls.map((c) => `${c.frameworkId}:${c.controlId}`);
+    expect(pairs).toEqual(['gdpr:Art. 32']);
+    // Explicitly assert the controls the old sensitive-data routing dragged in
+    // are gone from this finding's mapping.
+    expect(pairs).not.toContain('eu-ai-act:Art. 50(1)');
+    expect(pairs).not.toContain('gdpr:Art. 6');
+    expect(pairs).not.toContain('aiuc-1:A001');
+  });
+
+  it('the sensitive-data mapping is unchanged — still activates Art 50(1), GDPR Art 6, AIUC A001', () => {
+    // Regression guard: AAP-132 only moves the secrets finding OFF
+    // sensitive-data; genuine personal-data findings must still pull the
+    // full data-protection control set.
+    const sd = CONTROL_MAPPINGS['sensitive-data'].controls.map(
+      (c) => `${c.frameworkId}:${c.controlId}`,
+    );
+    expect(sd).toContain('eu-ai-act:Art. 50(1)');
+    expect(sd).toContain('gdpr:Art. 6');
+    expect(sd).toContain('aiuc-1:A001');
+  });
+
+  it('a genuine sensitive-PII key still activates the sensitive-data controls', () => {
+    // STRIPE_SECRET_KEY is a sensitive-PII / financial key — the sensitive-data
+    // detectors must still fire (GDPR Art 6 / 33 / 35 + AIUC A006), proving the
+    // sensitive-data path is intact after the credential-exposure split.
+    const out = mapFindings({
+      declared: { systems: [], transcript: [] },
+      actual: { discovery: discoveryWithEnvKey('STRIPE_SECRET_KEY') },
+    });
+    const sensitiveIds = out.controlResults
+      .filter((r) => r.findingType === 'sensitive-data')
+      .map((r) => `${r.frameworkId}:${r.controlId}`);
+    expect(sensitiveIds).toContain('gdpr:Art. 6');
+    expect(sensitiveIds).toContain('aiuc-1:A006');
+    // And the same key's Art. 32 row is the credential-exposure one.
+    const art32 = out.controlResults.find(
+      (r) => r.frameworkId === 'gdpr' && r.controlId === 'Art. 32',
+    );
+    expect(art32!.findingType).toBe('credential-exposure');
   });
 });
 

@@ -2251,6 +2251,8 @@ const GAP_LABELS: Record<string, string> = {
   'excessive-access': 'Excessive permissions',
   'write-risk': 'Write operation risks',
   'sensitive-data': 'Data handling',
+  // AAP-132: SECURITY finding type for plaintext / inactive credentials.
+  'credential-exposure': 'Credential hygiene',
   'scope-creep': 'Scope exceeds purpose',
   'decisions-about-people': 'Automated decision-making',
   'regulatory-flags': 'Regulatory concerns',
@@ -2610,6 +2612,11 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
         return `Agent processes ${dataSensitivities.join(', ')} data across ${systemNames || 'connected systems'}. Ensure lawful basis under GDPR Art. 6, data minimization (Art. 5(1)(c)), and breach-readiness (Art. 33).`;
       }
       return 'Agent processes personal data. Ensure lawful basis, data minimization, and breach-readiness.';
+
+    case 'credential-exposure':
+      // AAP-132: plaintext / inactive credential hygiene — security of
+      // processing (GDPR Art. 32), NOT personal-data processing.
+      return 'Credential material is stored in plaintext or inactive credentials are retained. Encrypt or move secrets to a manager and retire unused credentials (GDPR Art. 32 — security of processing).';
 
     case 'scope-creep':
       return `Requested scopes on ${systemNames || 'one or more systems'} exceed what is needed for the stated purpose. Review purpose-limitation (GDPR Art. 5(1)(b)) and change-management process.`;

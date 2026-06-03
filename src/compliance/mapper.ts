@@ -529,6 +529,9 @@ const FINDING_TO_ANNEX_III: Record<FindingType, string[]> = {
   // Other finding types do not gate Annex III controls.
   'excessive-access': [],
   'write-risk': [],
+  // AAP-132: credential-exposure maps only to GDPR Art. 32 (no EU AI Act
+  // controls), so it gates no Annex III category.
+  'credential-exposure': [],
   'scope-creep': [],
   'risk-score': [],
   // Note: keep this Record exhaustive so a new FindingType triggers a
@@ -1087,6 +1090,15 @@ function describeFinding(
       };
     }
 
+    case 'credential-exposure':
+      // AAP-132: credential hygiene / security of processing (GDPR Art. 32).
+      // Emitted only by the typed `.env` secret-pattern detector, never the
+      // prose engine — this case exists to keep the switch exhaustive.
+      return {
+        severity: 'warning',
+        description: `Credential material is stored in plaintext or inactive credentials are retained. Activates ${framework.name} controls (${ids}). Move secrets to a manager and retire unused credentials.`,
+      };
+
     case 'write-risk': {
       const sev: FlagSeverity =
         signals.hasIrreversibleWrites || signals.hasOrgBlastWithWrites
@@ -1161,6 +1173,11 @@ function isFindingActive(
       return signals.hasWriteOps;
     case 'sensitive-data':
       return signals.hasPII || signals.hasHealth;
+    case 'credential-exposure':
+      // AAP-132: typed-detector-only finding (the `.env` secret-pattern scan
+      // in detectors/discovery-detectors.ts). The prose engine has no signal
+      // for credential hygiene, so it never independently raises this finding.
+      return false;
     case 'scope-creep':
       return signals.hasScopeCreep || signals.hasExcessivePerms;
     case 'regulatory-flags':
