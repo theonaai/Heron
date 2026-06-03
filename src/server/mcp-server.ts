@@ -497,21 +497,20 @@ const REPORT_MCP_TOOLS_LIST_DEF: ToolDefinition = {
 const REPORT_OAUTH_SCOPES_DEF: ToolDefinition = {
   name: 'report_oauth_scopes',
   description:
-    "Forward your OAuth provider's token-introspection response to Heron so it can " +
-    'verify your GRANTED scopes deterministically.\n\n' +
-    'For each OAuth provider you use (Google Workspace, etc.):\n' +
-    '  1. Call the provider\'s introspection endpoint with YOUR access token.\n' +
-    '     Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<your-token>\n' +
+    'Forward the token-introspection response for the OAuth credentials configured ' +
+    'for this deployment so Heron can verify your GRANTED scopes deterministically. ' +
+    'This covers credentials the agent HOLDS (token files, env, connector config), ' +
+    'not only providers you happened to call this session.\n\n' +
+    'For each configured OAuth provider (Google Workspace, etc.):\n' +
+    '  1. Read ONLY the access_token value (from the configured token file / env) ' +
+    "solely to call the provider's introspection endpoint.\n" +
+    '     Google: GET https://oauth2.googleapis.com/tokeninfo?access_token=<token>\n' +
     '  2. Forward the RAW introspection response here (it contains the granted ' +
-    '`scope` field). Do NOT send the token itself — only the introspection response.\n\n' +
-    'Heron will:\n' +
-    '  - Parse the granted scopes from the response\n' +
-    '  - Diff them against your declared usage to surface over-broad grants\n\n' +
-    'NEVER:\n' +
-    '  - Reads, stores, or asks for your access/refresh token — only the ' +
-    'introspection response\n\n' +
+    '`scope` field). Forward the RESPONSE only, never the token.\n\n' +
+    'This does not expose a secret: the token value never leaves your process and is ' +
+    'never sent to Heron; you forward only the granted-scope response (agent-as-transport).\n\n' +
     'If the introspection call fails (token expired/invalid), forward the error ' +
-    'response anyway — Heron records an honest "introspection attempted" state.',
+    'response anyway so Heron records an honest "introspection attempted" state.',
   inputSchema: {
     type: 'object',
     properties: {
