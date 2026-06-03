@@ -307,10 +307,12 @@ describe('AAP-121 lens — EU AI Act parity', () => {
     expect(lens.counts.partial).toBe(1);
     expect(lens.counts.selfAttested).toBe(2);
     expect(lens.counts.activeShown).toBe(3);
-    // AAP-128 (S12): coverage is static C = 5 (not the 3 active this audit);
-    // out-of-scope is the static 104 - 5 = 99.
-    expect(lens.counts.covered).toBe(5);
-    expect(lens.counts.outOfScope).toBe(99);
+    // AAP-128 (S12): coverage is static C (not the 3 active this audit).
+    // AAP-133: Art 14(4)(d) moved verifiable → oos-operator-artifact, so the
+    // EU AI Act active-bucket capability C drops 5 → 4; out-of-scope is the
+    // static 104 - 4 = 100.
+    expect(lens.counts.covered).toBe(4);
+    expect(lens.counts.outOfScope).toBe(100);
   });
 
   it('lensFrameworks lists a framework only when it has active controls, mandatory-first', () => {
@@ -374,7 +376,10 @@ describe('AAP-128 (S12) — coverage C is STATIC (same regardless of what fired)
   it('staticCoverageForFramework matches the catalog active-bucket count per framework', () => {
     // The capability set: catalog controls bucketed verifiable OR self-attested.
     // Sanity values verified against control-buckets.ts.
-    expect(staticCoverageForFramework('eu-ai-act')).toBe(5);
+    // AAP-133: EU AI Act active-bucket C is 4 (Art 14(4)(d) moved to
+    // oos-operator-artifact): Art 6(2)+Annex III verifiable + Art 12 verifiable
+    // + Art 5 + Art 50(1) self-attested.
+    expect(staticCoverageForFramework('eu-ai-act')).toBe(4);
     expect(staticCoverageForFramework('gdpr')).toBe(8);
     expect(staticCoverageForFramework('aiuc-1')).toBe(13);
     expect(staticCoverageForFramework('iso-42001')).toBe(2);
@@ -460,8 +465,8 @@ describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)
   });
 
   it('an oos-only mapped finding orphans even when other controls fired', () => {
-    // EU AI Act: Art. 14(4)(d) fires as a verifiable controlResult (its active
-    // row). A finding whose type maps ONLY to out-of-scope EU controls (
+    // EU AI Act: Art. 6(2) + Annex III fires as a verifiable controlResult (its
+    // active row). A finding whose type maps ONLY to out-of-scope EU controls (
     // excessive-access → Art. 9(2)(a) oos-operator-artifact + Art. 15(4-5)
     // oos-not-verifiable) must NOT anchor to anything — anchorControlForFinding
     // returns undefined (no active fallback) — so it orphans and never
@@ -471,10 +476,10 @@ describe('AAP-121 lens — composeFrameworkLensRows surfaced (A) ≤ covered (C)
       [
         result({
           frameworkId: 'eu-ai-act',
-          controlId: 'Art. 14(4)(d)',
+          controlId: 'Art. 6(2) + Annex III',
           verdict: 'partial',
           bucket: 'verifiable',
-          findingType: 'write-risk',
+          findingType: 'decisions-about-people',
         }),
       ],
       [],
@@ -624,8 +629,9 @@ describe('AAP-121 lens — markdown render', () => {
     // framework". A = distinct controls surfaced this audit; C = static
     // capability; no `~` prefix; no per-verdict breakdown.
     // EU AI Act: A = 3 (Art. 6(2)+Annex III verifiable + Art. 5 + Art. 50(1)
-    // self-attested controls), C = 5, oos = 99, N = 104.
-    expect(md).toContain('**3 of 5 covered** · 99 out of scope · 104 in framework');
+    // self-attested controls). AAP-133: Art 14(4)(d) moved out of verifiable,
+    // so C = 4, oos = 100, N = 104.
+    expect(md).toContain('**3 of 4 covered** · 100 out of scope · 104 in framework');
     // GDPR: A = 4 (Art. 32 verified + Art. 6 fail + Art. 25 partial + Art.
     // 5(1)(b) self-attested), C = 8, oos = 87, N = 95.
     expect(md).toContain('**4 of 8 covered** · 87 out of scope · 95 in framework');
@@ -665,7 +671,7 @@ describe('AAP-121 lens — markdown render', () => {
     expect(md).not.toContain('signals (prose only)');
     // EU AI Act gets the same "{A} of {C} covered · … · {N} in framework"
     // header line as every framework.
-    expect(md).toMatch(/#### EU AI Act\n\n\*\*\d+ of 5 covered\*\* · \d+ out of scope · 104 in framework/);
+    expect(md).toMatch(/#### EU AI Act\n\n\*\*\d+ of 4 covered\*\* · \d+ out of scope · 104 in framework/);
   });
 
   it('no active controls at all → still renders all five cards with static C-of-N coverage', () => {
@@ -691,7 +697,8 @@ describe('AAP-121 lens — markdown render', () => {
     // surfaced); the headline is "0 of {C} covered · {N−C} out of scope · {N}
     // in framework".
     expect(md).toContain('#### EU AI Act');
-    expect(md).toContain('**0 of 5 covered** · 99 out of scope · 104 in framework');
+    // AAP-133: Art 14(4)(d) moved out of verifiable → EU AI Act C = 4, oos = 100.
+    expect(md).toContain('**0 of 4 covered** · 100 out of scope · 104 in framework');
     expect(md).toContain('#### GDPR');
     expect(md).toContain('**0 of 8 covered** · 87 out of scope · 95 in framework');
     expect(md).toContain('#### ISO/IEC 42001');

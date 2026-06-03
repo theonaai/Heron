@@ -63,7 +63,9 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
       c('iso-42001', 'A.6.2.4', 'Controls for AI system operational changes.'),
       c('iso-42001', 'A.6.2.8', 'Logging and monitoring of AI system actions.'),
       c('iso-42001', 'A.5.3', 'Roles and responsibilities for AI operations.'),
-      c('eu-ai-act', 'Art. 14(4)(d)', 'Human oversight — override/stop function (baseline).'),
+      // AAP-133 (B7): Art 14 is HIGH-RISK-ONLY (Ch III §2). Gate to Annex III
+      // so it renders not-applicable on a non-high-risk agent instead of FAIL.
+      c('eu-ai-act', 'Art. 14(4)(d)', 'Human oversight — override/stop function.', { annexIII: true }),
       c('eu-ai-act', 'Art. 9(6)-(7)', 'Risk management testing before deployment (baseline reference).'),
       // ── AIUC-1 (Q2-2026) ──
       c('aiuc-1', 'B006', 'Unauthorized agent actions blocked at the tool/effect boundary.'),
@@ -145,7 +147,10 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
       // for a follow-on commit — the catalog row alone makes the article
       // visible in the framework accordion.
       c('eu-ai-act', 'Art. 5', 'Prohibited practices — subliminal manipulation, exploitation, social scoring, real-time biometric ID in public spaces (baseline).'),
-      c('eu-ai-act', 'Art. 12', 'Record-keeping for regulated contexts (baseline).'),
+      // AAP-133 (B7): Art 12 is HIGH-RISK-ONLY (Ch III §2) — it has no
+      // baseline-for-all tier in the law. The prior ungated "baseline"
+      // Art. 12 row was dropped; the Annex-III-gated Art. 12 row below is
+      // the only one, so it renders not-applicable on a non-high-risk agent.
       // ── EU AI Act Annex III (high-risk regulated domains) ──
       c('eu-ai-act', 'Art. 6(2) + Annex III', 'High-risk classification — regulated sector reference.', { annexIII: true }),
       c('eu-ai-act', 'Art. 43', 'Conformity assessment for high-risk systems.', { annexIII: true }),
@@ -182,10 +187,13 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
       'Agent makes or materially influences automated decisions affecting individuals (employment, credit, access, etc.).',
     controls: [
       c('iso-42001', 'A.9.3', 'Management review includes decision-impact findings.'),
-      // ── EU AI Act baseline (transparency + baseline oversight) ──
+      // ── EU AI Act baseline (transparency) ──
       c('eu-ai-act', 'Art. 50(1)', 'Transparency — inform affected persons.'),
-      c('eu-ai-act', 'Art. 14(4)(d)', 'Human oversight — baseline override/stop function.'),
       // ── EU AI Act Annex III (full high-risk obligations) ──
+      // AAP-133 (B7): Art 14 is HIGH-RISK-ONLY (Ch III §2). Gate Art 14(4)(d)
+      // to Annex III so it renders not-applicable on a non-high-risk agent
+      // instead of FAIL.
+      c('eu-ai-act', 'Art. 14(4)(d)', 'Human oversight — override/stop function.', { annexIII: true }),
       c('eu-ai-act', 'Art. 6(2) + Annex III', 'High-risk classification reference.', { annexIII: true }),
       c('eu-ai-act', 'Art. 9', 'Risk management system (high-risk).', { annexIII: true }),
       c('eu-ai-act', 'Art. 10', 'Data governance (high-risk).', { annexIII: true }),

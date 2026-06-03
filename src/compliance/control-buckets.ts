@@ -50,8 +50,13 @@ export const BUCKET_BY_CONTROL: Record<
   Record<string, ComplianceBucket>
 > = {
   // ── EU AI Act ────────────────────────────────────────────────────────────
-  // spec §EU AI Act: VERIFIABLE = Art 6(2)+Annex III, Art 14(4)(d), Art 12
-  // (the 3 deterministic detectors); SELF-ATTESTED = Art 5(1)(a-h) family +
+  // spec §EU AI Act: VERIFIABLE = Art 6(2)+Annex III (the deterministic
+  // Annex III scope/credential-diff detector). AAP-133 moved Art 12 +
+  // Art 14(4)(d) OUT of verifiable: both are high-risk-only obligations
+  // (Ch III §2) and their detectors read only the operator approval-chain
+  // artifact, so on a non-high-risk / bare agent audit they are gated to
+  // not-applicable (Art 6(2) gate) or bucketed oos-operator-artifact rather
+  // than FAILing. SELF-ATTESTED = Art 5(1)(a-h) family +
   // Art 50(1); everything in the Art 9 RMS / Art 10 data-governance / Art 11
   // TD / Art 13 IFU / Art 14 oversight bundle / Art 15 accuracy / Art 27 FRIA
   // / Art 43 conformity / Art 49 registration / Art 72 PMM spines →
@@ -71,7 +76,13 @@ export const BUCKET_BY_CONTROL: Record<
     'Art. 12': 'verifiable', // detectEUAIAct_Article12 (approval chain ≥2 entries)
     'Art. 13': 'oos-operator-artifact', // instructions-for-use artifact
     'Art. 14': 'oos-operator-artifact', // full high-risk oversight bundle (training/docs)
-    'Art. 14(4)(d)': 'verifiable', // detectEUAIAct_Article14 (approval chain). Also agent-observable; counted verifiable per spec.
+    // AAP-133 (B6): the detector behind Art. 14(4)(d) (detectEUAIAct_Article14)
+    // reads ONLY the operator approval-chain artifact — it observes no
+    // agent-side override/stop signal — so its only evidence is an operator
+    // document. Bucket it out-of-scope like the parent Art. 14, NOT a hard
+    // FAIL on a bare agent audit. (Future work: rewrite the detector to the
+    // agent-observable HITL check, then it can return to verifiable.)
+    'Art. 14(4)(d)': 'oos-operator-artifact', // operator approval-chain artifact only (AAP-133)
     'Art. 15': 'oos-operator-artifact', // accuracy/robustness IFU declaration
     'Art. 15(4-5)': 'oos-not-verifiable', // resilience (PROBE) + cybersecurity (PROBE)
     'Art. 27': 'oos-operator-artifact', // FRIA document

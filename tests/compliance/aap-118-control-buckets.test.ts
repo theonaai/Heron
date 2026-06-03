@@ -197,9 +197,13 @@ describe('AAP-118: per-framework bucket counts', () => {
   // subset of the full-universe spec table (334 rows).
   const expected: Record<FrameworkId, Record<ComplianceBucket, number>> = {
     'eu-ai-act': {
-      verifiable: 3,
+      // AAP-133: Art 14(4)(d) moved verifiable → oos-operator-artifact (its
+      // only evidence is the operator approval-chain artifact, and it is a
+      // high-risk-only obligation). So EU verifiable 3→2 and
+      // oos-operator-artifact 16→17.
+      verifiable: 2,
       'self-attested': 2,
-      'oos-operator-artifact': 16,
+      'oos-operator-artifact': 17,
       'oos-not-verifiable': 1,
     },
     gdpr: {
@@ -252,12 +256,13 @@ describe('AAP-118: per-framework bucket counts', () => {
       for (const b of COMPLIANCE_BUCKETS) tot[b] += counts[fw][b];
     }
     expect(tot).toEqual({
-      // AAP-119 (S4): MEASURE 1.1 moved verifiable → oos-operator-artifact, so
-      // the wired totals shift verifiable 25→24 and oos-operator-artifact
-      // 41→42. The distinct-control total (79) is unchanged.
-      verifiable: 24,
+      // AAP-119 (S4): MEASURE 1.1 moved verifiable → oos-operator-artifact.
+      // AAP-133: Art 14(4)(d) moved verifiable → oos-operator-artifact. Net
+      // wired totals are now verifiable 23 and oos-operator-artifact 43. The
+      // distinct-control total (79) is unchanged — both are bucket moves.
+      verifiable: 23,
       'self-attested': 8,
-      'oos-operator-artifact': 42,
+      'oos-operator-artifact': 43,
       'oos-not-verifiable': 5,
     });
     const sum = COMPLIANCE_BUCKETS.reduce((acc, b) => acc + tot[b], 0);
