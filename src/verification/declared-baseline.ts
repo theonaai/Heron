@@ -9,7 +9,7 @@
  * the agent-forwarded introspection path historically passed `declared: []`,
  * so EVERY granted OAuth scope surfaced as an `extra` diff and the verdict was
  * always FAIL / raw-exposure — never VERIFIED. A clean agent could not reach
- * VERIFIED on AIUC-1 A003.3 / A003.4 / B006 or GDPR Art 25 / Art 5(1)(c) in
+ * VERIFIED on AIUC-1 A003.4 / B006 or GDPR Art 25 / Art 5(1)(c) in
  * the dashboard flow because there was nothing on the "ought" side of the diff.
  *
  * WHERE THE DECLARED SCOPES LIVE. The interview captures the agent's declared

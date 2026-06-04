@@ -259,8 +259,8 @@ describe('AAP-108 — markdown drift vs dashboard (session 2ae330 fixture)', () 
 
     // Risk-based headline mirrors the dashboard ("6 Medium risk"), not the
     // pre-G9 "6 (Medium) · No verified findings".
-    expect(md).toContain('**Posture**: 6 Medium risk');
-    expect(md).toContain('Posture reflects deployment risk');
+    expect(md).toContain('**Risk**: 6 Medium risk');
+    expect(md).toContain('risk number reflects deployment risk');
     // Findings empty-state: discovery ran with zero discrepancies — say so,
     // do not claim the scan never ran and do not imply the agent is clean.
     expect(md).toContain('No declared-vs-actual discrepancies');
@@ -268,7 +268,7 @@ describe('AAP-108 — markdown drift vs dashboard (session 2ae330 fixture)', () 
     expect(md).not.toContain('No Verified findings');
     expect(md).not.toContain('No verified findings');
     // G9 wording must carry no em-dashes (Ilya house style + ticket).
-    const postureBlock = md.slice(md.indexOf('## Posture'), md.indexOf('## Posture') + 900);
+    const postureBlock = md.slice(md.indexOf('## Risk'), md.indexOf('## Risk') + 900);
     expect(postureBlock).not.toContain('—');
   });
 

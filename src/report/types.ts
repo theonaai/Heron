@@ -381,6 +381,15 @@ export type StructuredCompliance = CategorizedCompliance;
  */
 export const reportVerificationStatusValues = [
   'interrogation-only',
+  // AAP-143 increment 1 — in-progress marker. `start_verification` now
+  // returns immediately and runs the discovery scan + patch in a detached
+  // background task (Codex caps tool calls at 120s; the scan can exceed
+  // that). The handler persists `verification.status: 'verifying'` to
+  // report.json before kicking off the bg work, so a poller reading
+  // report.json (or the dashboard banner) sees the run is still going
+  // rather than the stale pre-run status. It settles to one of the four
+  // terminal states below when the bg task finishes.
+  'verifying',
   'verified',
   'partially-verified',
   'verification-failed',
@@ -437,6 +446,15 @@ export const verdictFindingSnapshotSchema = z.object({
    */
   findingType: z.enum(FINDING_TYPES).optional(),
   kind: z.string().optional(),
+  /**
+   * T1 / D1 — "could not verify" marker. Present (`'unverified'`) on a finding
+   * that represents a deterministic source Heron tried but could not read (a
+   * failed OAuth introspection; later, a skipped MCP enumeration). The
+   * dashboard routes these to the "Could not verify" bucket and excludes them
+   * from the verified count. Optional + absent on confirmed discrepancies, SLF
+   * findings, and legacy report.json blobs persisted before this field existed.
+   */
+  verificationOutcome: z.literal('unverified').optional(),
 });
 export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;
 

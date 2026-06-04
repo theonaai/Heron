@@ -297,7 +297,7 @@ describe('runForwardedOAuthScopeVerification — diff → SourceVerification', (
 
   it('threading the verified report into recompute lights the wedge controls', async () => {
     // The end-to-end fix: a clean forwarded grant (declared==actual, no diffs)
-    // must make the router-adapter wedge controls (AIUC-1 A003.3/A003.4/B006,
+    // must make the router-adapter wedge controls (AIUC-1 A003.4/B006,
     // GDPR Art 25) reach `verified` in the recomputed compliance. Without the
     // report threaded, those detectors short-circuit to null (0 controlResults).
     const declared: DeclaredInventory[] = [
@@ -337,7 +337,6 @@ describe('runForwardedOAuthScopeVerification — diff → SourceVerification', (
       withReport.controlResults.find(
         (r) => r.frameworkId === frameworkId && r.controlId === controlId,
       )?.verdict;
-    expect(verdictFor('aiuc-1', 'A003.3')).toBe('verified');
     expect(verdictFor('aiuc-1', 'A003.4')).toBe('verified');
     expect(verdictFor('aiuc-1', 'B006')).toBe('verified');
     // AAP-135 (B9): the GDPR data-minimisation scope-diff control is wired

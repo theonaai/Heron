@@ -225,17 +225,17 @@ describe('AAP-84 gap count invariant', () => {
     expect(counts).toEqual({ mandatory: 1, voluntary: 1 });
   });
 
-  it('dedupe by stableKey prevents double-counting paired router controls', () => {
-    // AIUC-1 A003.3 and A003.4 share `detectAIUC1_A003`; if the catalog
-    // registers both, they may emit the same stableKey twice. Dedup
-    // keeps the renderer honest.
+  it('dedupe by stableKey prevents double-counting router controls', () => {
+    // If a control ever emits the same stableKey twice (e.g. a detector wired
+    // onto a catalog entry under two paths), dedup keeps the renderer honest by
+    // collapsing duplicates.
     const sameKey = syntheticControlResult({
       findingType: 'excessive-access',
       frameworkId: 'aiuc-1',
-      controlId: 'A003.3',
+      controlId: 'A003.4',
       verdict: 'fail',
       severity: 'high',
-      stableKey: 'excessive-access:aiuc-1:A003.3',
+      stableKey: 'excessive-access:aiuc-1:A003.4',
     });
     const duplicate = { ...sameKey, rationale: 'duplicate' };
 

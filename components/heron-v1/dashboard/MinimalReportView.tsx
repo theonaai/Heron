@@ -4,7 +4,7 @@
  * G7 PROTOTYPE — Minimal Report Layout (feature branch only, not for merge).
  *
  * Side-by-side with the current ReportView. 5 blocks:
- *   1. Header (always visible) — agent name, posture indicator, sources, timestamp
+ *   1. Header (always visible) — agent name, risk indicator, sources, timestamp
  *   2. What it does (always visible, 1-2 line + Details ▸)
  *   3. Systems & access (compact table, no Property/Value)
  *   4. Findings (Verified expanded, Self-attested collapsed by count)
@@ -432,11 +432,11 @@ function hasIrreversibleWrites(system: SystemAssessment): boolean {
 // was deterministically confirmed against introspection. When in doubt we show
 // the neutral "—", never a misleading ✓.
 
-export type SystemVerificationState = 'verified' | 'discrepancy' | 'unverified';
+export type SystemVerificationState = 'verified' | 'discrepancy' | 'unverified' | 'env-credential';
 
 export interface SystemVerificationStatus {
   state: SystemVerificationState;
-  glyph: '✓' | '⚠' | '—';
+  glyph: '✓' | '⚠' | '—' | '🔑';
   /** Hex color for the glyph (green / orange / neutral grey). */
   color: string;
   /** Per-cell tooltip explaining what the glyph means. */
@@ -450,17 +450,83 @@ const NOT_VERIFIED_STATUS: SystemVerificationStatus = {
   title: 'No deterministic verification (system declares no OAuth scope, or its connector was not introspected)',
 };
 
+const ENV_CREDENTIAL_STATUS: SystemVerificationStatus = {
+  state: 'env-credential',
+  glyph: '🔑',
+  color: '#2563eb',
+  title: 'Found in .env: credential present, scope not introspectable',
+};
+
+/**
+ * T3 (D3) — deterministic, conservative brand-stem matcher linking a systemId to
+ * an env VARIABLE NAME (for example `openai` to `OPENAI_API_KEY`). Tokenizes both
+ * sides on `-`/`_`, lowercases, and matches on whole-token equality (NOT
+ * substring), so `gem` never matches `GEMINI` and `open` never matches `OPENAI`.
+ * Brand tokens of 2 chars or fewer are too generic to be a brand and never match.
+ * Mirrors the discipline of `connectorForSystemId`.
+ */
+export function systemMatchesEnvCredential(
+  systemId: string,
+  envKeys: readonly string[],
+): boolean {
+  const sysTokens = (systemId || '')
+    .toLowerCase()
+    .split(/[-_]/)
+    .filter((t) => t.length > 2);
+  if (sysTokens.length === 0 || envKeys.length === 0) return false;
+  const envTokens = new Set<string>();
+  for (const k of envKeys) {
+    if (typeof k !== 'string') continue;
+    for (const t of k.toLowerCase().split(/[-_]/)) {
+      if (t.length > 0) envTokens.add(t);
+    }
+  }
+  return sysTokens.some((t) => envTokens.has(t));
+}
+
 /** Minimal shape this helper reads off `oauthScopeVerification`. */
 type OAuthSourceLike = NonNullable<
   NonNullable<MinimalReportJson['oauthScopeVerification']>['sources']
 >[number];
 
 /**
- * Resolve the "Verified?" status for one system row from real OAuth-scope
- * introspection evidence. Pure + exported so the matching logic is unit-tested
- * directly (the project's vitest setup has no DOM).
+ * Resolve the "Verified?" status for one system row.
+ *
+ * First the deterministic OAuth-scope introspection check (`oauthOnlyStatus`).
+ * If that yields no verdict (state `unverified`), T3 (D3) applies the
+ * env-credential gate: a system that is NOT OAuth-verifiable (no connector, or it
+ * declares no OAuth scope) but whose credential was found in `.env` (matched by
+ * `systemMatchesEnvCredential`) resolves to a 🔑 status instead of a bare "—". A
+ * real OAuth ✓/⚠ is never overridden. Pure + exported for direct unit testing.
  */
 export function systemVerificationStatus(
+  system: Pick<SystemAssessment, 'systemId' | 'scopesRequested'>,
+  oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'],
+  envKeys: readonly string[] = [],
+): SystemVerificationStatus {
+  const oauth = oauthOnlyStatus(system, oauthScopeVerification);
+  if (oauth.state !== 'unverified') return oauth;
+
+  // T3 (D3) env-credential gate. Fire ONLY when the system is genuinely not
+  // OAuth-verifiable (no connector OR it declares no OAuth scope). This excludes
+  // a true OAuth system whose introspection merely failed or was partial: that
+  // stays "—" so its failure surfaces as a finding, never a misleading 🔑.
+  const declaredCount = (Array.isArray(system.scopesRequested) ? system.scopesRequested : [])
+    .filter((s) => typeof s === 'string' && s.trim().length > 0).length;
+  const notOAuthVerifiable =
+    connectorForSystemId(system.systemId || '') === undefined || declaredCount === 0;
+  if (notOAuthVerifiable && systemMatchesEnvCredential(system.systemId || '', envKeys)) {
+    return ENV_CREDENTIAL_STATUS;
+  }
+  return oauth;
+}
+
+/**
+ * The deterministic OAuth-scope introspection check (AAP-126 / S10). Returns ✓
+ * when every declared scope is confirmed, ⚠ on a scope discrepancy, "—" when
+ * there is no deterministic OAuth verification for the system.
+ */
+function oauthOnlyStatus(
   system: Pick<SystemAssessment, 'systemId' | 'scopesRequested'>,
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'],
 ): SystemVerificationStatus {
@@ -582,7 +648,7 @@ export function findingsEmptyState(
     return {
       kind: 'no-discrepancies',
       message:
-        'No declared-vs-actual discrepancies. Posture reflects deployment risk from the systems above.',
+        'No declared-vs-actual discrepancies. Reflects deployment risk from the systems above.',
     };
   }
   return {
@@ -595,7 +661,7 @@ export function findingsEmptyState(
 /**
  * AAP-107: did a deterministic discovery / verification pass actually run
  * for this session? Mirrors the header's `scanned` derivation so the
- * Findings empty-state and the posture indicator never disagree about
+ * Findings empty-state and the risk indicator never disagree about
  * whether evidence exists. True when ANY of:
  *   - the systems-risk pass scored systems (`verdict.systemsRisk.scanned`);
  *   - `verdict.status` is set and not the pure no-evidence baseline; or
@@ -862,7 +928,7 @@ function HeaderBlock({
   // a11y fallback: the popover content is visual; keep a short label so the
   // affordance still announces its purpose to a screen reader.
   const postureAriaLabel =
-    'What drives the risk posture number: either the highest-risk system or ' +
+    'What drives the risk number: either the highest-risk system or ' +
     'a verified declared-vs-actual discrepancy.';
 
   // AAP-105 A5: "Verified by X" must reflect which evidence sources
@@ -990,7 +1056,7 @@ function HeaderBlock({
               gap: 5,
             }}
           >
-            <span>Risk posture</span>
+            <span>Risk</span>
             <InfoPopover
               placement="left"
               width={280}
@@ -1312,18 +1378,55 @@ function TriggerValue({ value }: { value: string }) {
 
 // ─── Block 3: Systems & access ────────────────────────────────────────
 
+/** Flatten the env VARIABLE NAMES across every `.env` the discovery scan read. */
+function envKeysFromDiscovery(localAgentDiscovery: unknown): string[] {
+  if (!localAgentDiscovery || typeof localAgentDiscovery !== 'object') return [];
+  const we = (localAgentDiscovery as { workspaceEnv?: unknown }).workspaceEnv;
+  if (!Array.isArray(we)) return [];
+  const out: string[] = [];
+  for (const entry of we) {
+    const keys = (entry as { keys?: unknown } | null)?.keys;
+    if (Array.isArray(keys)) {
+      for (const k of keys) if (typeof k === 'string') out.push(k);
+    }
+  }
+  return out;
+}
+
+// T5 (D2): the "Verified?" column legend, shown as a styled instant-hover
+// popover (InfoPopover, placement 'left') on an ⓘ next to the header rather
+// than a native browser title. One line per glyph (glyph + meaning). The
+// flattened text is kept as the aria-label so screen readers still announce
+// the full legend. No em-dashes.
+const VERIFIED_LEGEND_GLYPHS: Array<{ glyph: string; meaning: string }> = [
+  { glyph: '✓', meaning: 'Verified: declared OAuth scopes confirmed by introspection' },
+  { glyph: '⚠', meaning: 'Discrepancy: declared scope does not match introspection' },
+  { glyph: '🔑', meaning: 'Found in .env: credential present, scope not introspectable' },
+  // This glyph mirrors the literal marker the table renders for the
+  // unverified state (NOT_VERIFIED_STATUS.glyph), so the legend maps to it.
+  { glyph: '—', meaning: 'No deterministic evidence: self-reported only' },
+];
+const VERIFIED_LEGEND_ARIA = [
+  'What each glyph means:',
+  ...VERIFIED_LEGEND_GLYPHS.map((g) => `${g.glyph} ${g.meaning}`),
+].join('\n');
+
 function SystemsBlock({
   systems,
   verdict,
   oauthScopeVerification,
+  localAgentDiscovery,
 }: {
   systems: SystemAssessment[];
   verdict?: VerdictSnapshot;
   // AAP-126 (S10): threaded down so each row's "Verified?" glyph reads real
   // per-system OAuth introspection evidence.
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  // T3 (D3): the filesystem scan output, for the 🔑 "found in .env" status.
+  localAgentDiscovery?: unknown;
 }) {
   if (!systems || systems.length === 0) return null;
+  const envKeys = envKeysFromDiscovery(localAgentDiscovery);
   return (
     <section
       style={{
@@ -1360,7 +1463,48 @@ function SystemsBlock({
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Sensitivity</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Writes</th>
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Risk</th>
-            <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>Verified?</th>
+            <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>
+              Verified?{' '}
+              <InfoPopover
+                placement="left"
+                width={300}
+                ariaLabel={VERIFIED_LEGEND_ARIA}
+                content={
+                  <>
+                    <div style={{ fontWeight: 700, color: '#1e293b', marginBottom: 6 }}>
+                      What each glyph means
+                    </div>
+                    {VERIFIED_LEGEND_GLYPHS.map((g) => (
+                      <div
+                        key={g.glyph}
+                        style={{ display: 'flex', gap: 8, marginTop: 3, alignItems: 'baseline' }}
+                      >
+                        <span
+                          aria-hidden
+                          style={{
+                            flex: '0 0 auto',
+                            width: 16,
+                            textAlign: 'center',
+                            fontWeight: 700,
+                            color: '#475569',
+                          }}
+                        >
+                          {g.glyph}
+                        </span>
+                        <span>{g.meaning}</span>
+                      </div>
+                    ))}
+                  </>
+                }
+              >
+                <span
+                  aria-hidden
+                  style={{ cursor: 'help', color: '#a1a1aa', fontWeight: 400 }}
+                >
+                  ⓘ
+                </span>
+              </InfoPopover>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1370,33 +1514,11 @@ function SystemsBlock({
               system={s}
               verdict={verdict}
               oauthScopeVerification={oauthScopeVerification}
+              envKeys={envKeys}
             />
           ))}
         </tbody>
       </table>
-      {/* AAP-126 (S10): legend so ✓ / ⚠ / — read clearly. The "Verified?"
-          column is deterministic OAuth-scope evidence, not a self-report. */}
-      <div
-        style={{
-          marginTop: 10,
-          fontSize: 11,
-          color: '#71717a',
-          lineHeight: 1.5,
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '4px 14px',
-        }}
-      >
-        <span>
-          <span style={{ color: '#15803d', fontWeight: 600 }}>✓</span> Verified against OAuth introspection
-        </span>
-        <span>
-          <span style={{ color: '#c2410c', fontWeight: 600 }}>⚠</span> Scope discrepancy
-        </span>
-        <span>
-          <span style={{ color: '#a1a1aa', fontWeight: 600 }}>—</span> No deterministic verification
-        </span>
-      </div>
     </section>
   );
 }
@@ -1405,10 +1527,13 @@ function SystemRow({
   system,
   verdict,
   oauthScopeVerification,
+  envKeys,
 }: {
   system: SystemAssessment;
   verdict?: VerdictSnapshot;
   oauthScopeVerification?: MinimalReportJson['oauthScopeVerification'];
+  // T3 (D3): env variable names from the `.env` scan, for the 🔑 status.
+  envKeys?: readonly string[];
 }) {
   // Screenshot helper — `?expandSystem=<systemId>` pre-expands that row.
   // Used by the headless Chrome capture script. Lives on the client only.
@@ -1442,7 +1567,7 @@ function SystemRow({
   // (not finding-text overmatch). ✓ only when this system's own declared scope
   // was deterministically confirmed; ⚠ on a scope discrepancy; "—" when there
   // is no deterministic verification for it.
-  const verification = systemVerificationStatus(system, oauthScopeVerification);
+  const verification = systemVerificationStatus(system, oauthScopeVerification, envKeys ?? []);
   const verifiedGlyph = verification.glyph;
   const verifiedColor = verification.color;
   const verifiedTitle = verification.title;
@@ -2412,8 +2537,18 @@ function FindingsBlock({
   const coded = assignFindingCodes(
     (verdict?.findings ?? []) as unknown as CodedVerdictFinding[],
   );
+  // T1 / D1 — three buckets, not two. A finding marked `verificationOutcome ===
+  // 'unverified'` is a deterministic source Heron TRIED but could not read (a
+  // failed OAuth introspection; later, a skipped MCP enumeration). It is NOT a
+  // confirmed discrepancy, so it must NOT count as "verified" or render under
+  // "Verified discrepancies". Route it to its own "Could not verify" bucket
+  // off the EXPLICIT marker (not the id prefix or title text). SLF is unchanged.
+  const couldNotVerify = coded
+    .filter((f) => f.evidenceSource !== 'SLF' && f.verificationOutcome === 'unverified')
+    .slice()
+    .sort((a, b) => b.severityScore - a.severityScore);
   const verified = coded
-    .filter((f) => f.evidenceSource !== 'SLF')
+    .filter((f) => f.evidenceSource !== 'SLF' && f.verificationOutcome !== 'unverified')
     .slice()
     .sort((a, b) => b.severityScore - a.severityScore);
   const selfAttested = coded
@@ -2461,7 +2596,7 @@ function FindingsBlock({
         </h3>
         <p style={{ margin: '0 0 12px', fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
           Deterministic evidence (MCP inventory, OAuth scopes, .env, plugins/skills). These drive
-          the posture indicator.
+          the risk indicator.
         </p>
         {verified.length === 0 ? (
           <p style={{ fontSize: 12.5, color: '#71717a', margin: 0, padding: '10px 12px', background: '#f8fafc', borderRadius: 6, border: '1px dashed #e5e7eb' }}>
@@ -2484,6 +2619,31 @@ function FindingsBlock({
         )}
         <HostCapabilityNote capabilities={hostCapabilities} />
       </div>
+
+      {/*
+        T1 / D1 — "Could not verify" subsection. Findings here are deterministic
+        sources Heron TRIED but could not read (failed OAuth introspection;
+        later, skipped MCP enumeration). They are NOT confirmed discrepancies
+        and are NOT in the verified count. No em-dashes in the copy (house
+        style): plain words, commas, parens only.
+      */}
+      {couldNotVerify.length > 0 && (
+        <div style={{ marginTop: 18, borderTop: '1px dashed #e5e7eb', paddingTop: 14 }}>
+          <h3 style={{ margin: '4px 0 4px', fontSize: 14, fontWeight: 600, color: '#18181b' }}>
+            Could not verify
+          </h3>
+          <p style={{ margin: '0 0 12px', fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
+            Deterministic sources Heron tried to read but could not (for example a
+            rejected or expired OAuth token). These are not confirmed discrepancies and
+            do not move the risk indicator.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {couldNotVerify.map((f) => (
+              <MinimalFindingCard key={f.code} finding={f} slfState={slfState} anchorId={findingAnchorId(f.code)} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Self-attested — collapsed by default */}
       {selfAttested.length > 0 && (
@@ -2519,7 +2679,7 @@ function FindingsBlock({
             </span>
             {!slfOpen && (
               <span style={{ fontSize: 11, color: '#71717a', fontWeight: 500 }}>
-                interview only · do not move posture
+                interview only · do not move risk
               </span>
             )}
           </button>
@@ -2604,7 +2764,7 @@ export function navigateToFinding(code: string): void {
 // no project binding: `~/.codex/config.toml` is shared by every project
 // on the box. A discovered-but-undeclared server there is the IDE's host
 // capability surface, NOT a deviation by the audited agent. So it is NOT
-// a Verified discrepancy card and does NOT move posture (it never enters
+// a Verified discrepancy card and does NOT move risk (it never enters
 // `computePosture`). We surface it here as a compact, muted, clearly-
 // informational note so a reviewer sees the host's reachable tools
 // without mistaking them for findings against this agent.
@@ -2640,7 +2800,7 @@ function HostCapabilityNote({
         IDE host capability (not bound to this agent):
       </span>{' '}
       {serverList}. Configured in the {runtimes} IDE on this host, not specific to this
-      audited agent/task — informational, not a deviation, does not move posture.
+      audited agent/task — informational, not a deviation, does not move risk.
     </div>
   );
 }
@@ -2695,10 +2855,14 @@ export function MinimalFindingCard({
   // "Show more / Show less" toggle (splitForCard at 280 chars + descExpanded
   // state). The toggle hid the part of the finding a reviewer most needs, so
   // we always render the FULL description now (toggle + state removed).
-  const mitigationItems = mitigation.includes('; ')
+  // Bullet ONLY on explicit newlines the catalog author put between steps.
+  // Never split on punctuation: a single semicolon clause in prose must stay
+  // one paragraph (a `; ` split used to wrongly fork prose like SLF-003 into a
+  // bogus second bullet). A single-line string renders verbatim below.
+  const mitigationItems = mitigation.includes('\n')
     ? mitigation
-        .split(/;\s+/)
-        .map((s) => s.replace(/\.$/, '').trim())
+        .split(/\n+/)
+        .map((s) => s.trim())
         .filter((s) => s.length > 0)
     : null;
 
@@ -2961,7 +3125,7 @@ function ComplianceBlock({
             <strong>warn</strong> (the deterministic-flag set), and{' '}
             <strong>self-attested</strong> controls are the agent&apos;s own answers, not
             deterministic verdicts. Findings nested under a control (↳) are self-reported
-            (full detail in the global Self-Attested Findings stream) and do not move posture.
+            (full detail in the global Self-Attested Findings stream) and do not move risk.
             Out-of-scope controls need a corporate artifact or an external probe Heron
             can&apos;t reach in an interview, so they are a count only.
           </p>
@@ -3464,6 +3628,7 @@ export default function MinimalReportView({
         systems={reportJson.systems || []}
         verdict={reportJson.verdict}
         oauthScopeVerification={reportJson.oauthScopeVerification}
+        localAgentDiscovery={reportJson.localAgentDiscovery}
       />
       <CredentialsBlock discovery={reportJson.localAgentDiscovery} />
       <FindingsBlock

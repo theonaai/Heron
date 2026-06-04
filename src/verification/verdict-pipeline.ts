@@ -217,6 +217,10 @@ export function buildVerdictSnapshot(verdict: Verdict): {
     // so the dashboard can attribute it to framework card(s).
     findingType?: import('../compliance/types.js').FindingType;
     kind?: string;
+    // T1 / D1 — "could not verify" marker (deterministic source tried but
+    // unreadable). Threaded into the snapshot so the dashboard routes it to the
+    // "Could not verify" bucket instead of "Verified discrepancies".
+    verificationOutcome?: 'unverified';
   }>;
   // AAP-105 (G8b) — global-scope MCP servers reclassified out of
   // `findings`. Informational, no severity, never moves posture.
@@ -248,6 +252,9 @@ export function buildVerdictSnapshot(verdict: Verdict): {
       description: f.description,
       ...(f.findingType !== undefined ? { findingType: f.findingType } : {}),
       ...(f.kind !== undefined ? { kind: f.kind } : {}),
+      ...(f.verificationOutcome !== undefined
+        ? { verificationOutcome: f.verificationOutcome }
+        : {}),
     })),
     hostCapabilities: (verdict.hostCapabilities ?? []).map((h) => ({
       serverName: h.serverName,

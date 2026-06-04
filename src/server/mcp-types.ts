@@ -365,8 +365,19 @@ export interface StartVerificationOutput {
    * `'partially-verified'` so single-source runs (e.g. discovery only,
    * no OAuth introspection) stop overclaiming the verdict as fully
    * verified.
+   *
+   * AAP-143 increment 1 added `'verifying'`. The handler now returns
+   * immediately and runs the discovery scan + report patch in a detached
+   * background task (Codex caps tool calls at 120s; the scan can exceed
+   * that). On the happy path the call returns `'verifying'`; the terminal
+   * state (`verified` / `partially-verified` / `verification-failed`)
+   * lands on report.json when the background task completes. Poll
+   * `get_report` or the session status to read the settled outcome. The
+   * synchronous early-error paths (`workspace_invalid`) still return
+   * `'verification-failed'` directly.
    */
   verification_status:
+    | 'verifying'
     | 'verified'
     | 'partially-verified'
     | 'verification-failed';

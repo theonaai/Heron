@@ -52,9 +52,8 @@
  *   - only `verified` / `not-applicable`            → "Not Triggered"
  *
  * Codex flagged "risk of double/undercount" — this module dedupes by
- * `stableKey` so a detector that fires twice for the same control (the
- * router adapter pairs A003.3 and A003.4 onto one detector function)
- * does not inflate the gap counter.
+ * `stableKey` so a detector that fires twice for the same control does not
+ * inflate the gap counter.
  */
 
 import type {
@@ -83,9 +82,8 @@ export function isGapVerdict(v: ControlResultVerdict): boolean {
 /**
  * Dedup controlResults by `stableKey`. Catalog adapters can register the
  * same detector under multiple (findingType, frameworkId, controlId)
- * triples (e.g. AIUC-1 A003.3 + A003.4 share `detectAIUC1_A003`). Two
- * detectors lighting the same stable key would double-count gaps;
- * filtering here keeps the renderer honest.
+ * triples. Two detectors lighting the same stable key would double-count
+ * gaps; filtering here keeps the renderer honest.
  */
 export function dedupeControlResults(results: readonly ControlResult[]): ControlResult[] {
   // AAP-88: categorical threshold `projection_dedup_byStableKey` documented

@@ -431,9 +431,11 @@ describe('AAP-128 (S12) — coverage C is STATIC (same regardless of what fired)
     // + Art 5 + Art 50(1) self-attested.
     // AAP-134: AIUC E004 + E015.2 moved to oos-operator-artifact (13 → 11);
     // NIST MANAGE 1.2 moved to oos-operator-artifact (4 → 3).
+    // A003.3 (separate agent identity) removed — scope detector does not verify
+    // identity — dropping AIUC verifiable 6 → 5, so active-bucket C is 11 → 10.
     expect(staticCoverageForFramework('eu-ai-act')).toBe(4);
     expect(staticCoverageForFramework('gdpr')).toBe(8);
-    expect(staticCoverageForFramework('aiuc-1')).toBe(11);
+    expect(staticCoverageForFramework('aiuc-1')).toBe(10);
     expect(staticCoverageForFramework('iso-42001')).toBe(2);
     expect(staticCoverageForFramework('nist-ai-rmf')).toBe(3);
   });
@@ -772,7 +774,10 @@ describe('AAP-121 lens — markdown render', () => {
     expect(md).toContain('**0 of 2 covered** · 36 out of scope · 38 in framework');
     expect(md).toContain('#### AIUC-1');
     // AAP-134: AIUC E004 + E015.2 moved out of active → C = 11, oos = 39.
-    expect(md).toContain('**0 of 11 covered** · 39 out of scope · 50 in framework');
+    // A003.3 (separate agent identity) removed (scope detector does not verify
+    // identity) → C = 10, oos = 40. N (in framework) is publishedControlCount,
+    // unchanged at 50.
+    expect(md).toContain('**0 of 10 covered** · 40 out of scope · 50 in framework');
     expect(md).toContain('#### NIST AI RMF');
     // AAP-134: NIST MANAGE 1.2 moved out of active → C = 3, oos = 69.
     expect(md).toContain('**0 of 3 covered** · 69 out of scope · 72 in framework');

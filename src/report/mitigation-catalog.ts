@@ -65,7 +65,7 @@ const EVIDENCE_SOURCE_HINTS: Record<EvidenceSource, string> = {
   // BR×DS×DM scoring against the supplied evidence") promised a workflow
   // that does not exist. Reframe as "this is self-attested; here is the
   // deterministic source a re-scan would read to verify it."
-  SLF: 'Self-attested — Heron has no deterministic evidence for this claim. To verify, re-run the audit with source access (MCP config, OAuth introspection, .env, or runtime) so Heron can read it directly; until then a reviewer should confirm it manually.',
+  SLF: 'Self-attested: Heron has no deterministic evidence for this claim. To verify, re-run the audit with source access (MCP config, OAuth introspection, .env, or runtime) so Heron can read it directly. Until then a reviewer should confirm it manually.',
 };
 
 /**

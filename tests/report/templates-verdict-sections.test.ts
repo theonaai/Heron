@@ -207,12 +207,12 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     };
     const md = renderMarkdownReport(report, { verdict });
     expect(md).toContain('**Verification**: Verified');
-    expect(md).toContain('## Posture');
-    expect(md).toContain('**Posture**: 9');
+    expect(md).toContain('## Risk');
+    expect(md).toContain('**Risk**: 9');
     expect(md).not.toContain('**Risk Level**:');
   });
 
-  it('AAP-103: partially-verified report still shows Posture section + amber banner', () => {
+  it('AAP-103: partially-verified report still shows Risk section + amber banner', () => {
     const verdict: Verdict = {
       status: 'partial',
       posture: 9,
@@ -232,7 +232,7 @@ describe('AAP-63 renderMarkdownReport — Surface 2 sections', () => {
     };
     const md = renderMarkdownReport(report, { verdict });
     expect(md).toContain('**Verification**: Partial');
-    expect(md).toContain('## Posture');
+    expect(md).toContain('## Risk');
     // The amber AAP-80 banner copy is still present.
     expect(md).toContain('Partially verified.');
   });

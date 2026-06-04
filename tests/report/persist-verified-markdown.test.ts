@@ -152,8 +152,8 @@ describe('persistVerifiedMarkdown — re-render after successful verification', 
     // posture indicator in its own section. The header still carries
     // the Verification field separately.
     expect(rendered).toContain('**Verification**: Partial');
-    expect(rendered).toContain('## Posture');
-    expect(rendered).toContain('**Posture**: 9');
+    expect(rendered).toContain('## Risk');
+    expect(rendered).toContain('**Risk**: 9');
     expect(rendered).not.toContain('**Risk Level**:');
     expect(rendered).not.toContain('Risk Level (Partially Verified)');
     expect(rendered).not.toContain('Risk Level (Verified)');

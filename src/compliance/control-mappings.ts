@@ -42,7 +42,6 @@ export const CONTROL_MAPPINGS: Record<FindingType, ControlMapping> = {
       c('eu-ai-act', 'Art. 15(4-5)', 'Accuracy and robustness — resilience to misuse (baseline reference).'),
       c('gdpr', 'Art. 5(1)(c)', 'Data minimisation — scopes bounded to what the stated purpose requires.'),
       // ── AIUC-1 (Q2-2026) ──
-      c('aiuc-1', 'A003.3', 'Agent has its own non-human identity separate from the invoking user.'),
       c('aiuc-1', 'A003.4', 'Agent scopes bounded by least-privilege for its stated task.'),
       c('aiuc-1', 'B007', 'User-level access privileges enforced for every agent action.'),
       c('aiuc-1', 'B008.2', 'MCP / A2A interfaces require authentication, encrypted transport, and integrity protection.', { gatedBy: ['hasMCPOrA2A'] }),

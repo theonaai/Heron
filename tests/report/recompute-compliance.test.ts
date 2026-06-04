@@ -215,7 +215,7 @@ describe('AAP-79 / AAP-86 — recomputeComplianceWithDiscovery', () => {
 //
 // Pre-fix, recomputeComplianceWithDiscovery only ever passed
 // `actual: { discovery }`. The router-adapter wedge detectors (AIUC-1
-// A003.3/A003.4/B006, GDPR Art 25/Art 22) build their signals via
+// A003.4/B006, GDPR Art 25/Art 22) build their signals via
 // `envelopeToSignals`, which reads `evidence.verificationReport` and returns
 // null without it — so a clean forwarded OAuth grant produced 0 verified wedge
 // controls. The fix adds a `verificationReport` parameter that flows through to
@@ -269,7 +269,6 @@ describe('forwarded-OAuth wedge — verificationReport threads to the detectors'
       out.controlResults.find(
         (r) => r.frameworkId === frameworkId && r.controlId === controlId,
       )?.verdict;
-    expect(verdictFor('aiuc-1', 'A003.3')).toBe('verified');
     expect(verdictFor('aiuc-1', 'A003.4')).toBe('verified');
     expect(verdictFor('aiuc-1', 'B006')).toBe('verified');
     // AAP-135 (B9): GDPR data-minimisation control is wired under Art. 5(1)(c).

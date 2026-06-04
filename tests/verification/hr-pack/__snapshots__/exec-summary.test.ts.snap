@@ -8,7 +8,7 @@ exports[`renderExecutiveSummary — HR-clean scenario > matches golden snapshot 
 **Scan Date:** 2026-05-16T11:00:00Z
 **Vertical:** HR / Recruiting
 
-## Compliance Posture
+## Compliance Summary
 
 **Overall verdict:** ✓ Clean — no critical issues detected.
 
@@ -18,7 +18,7 @@ _No critical or high-severity issues detected._
 
 ## Framework Coverage
 
-- **AIUC-1:** 6/6 controls verified
+- **AIUC-1:** 5/5 controls verified
 - **EU AI Act:** 3/3 controls verified
 - **GDPR:** 1/2 controls verified
 - **NIST AI RMF:** 2/2 controls verified
@@ -48,7 +48,7 @@ exports[`renderExecutiveSummary — HR-fail scenario > matches golden snapshot f
 **Scan Date:** 2026-05-16T11:00:00Z
 **Vertical:** HR / Recruiting
 
-## Compliance Posture
+## Compliance Summary
 
 **Overall verdict:** ⚠ Partial compliance — 2 critical issues detected.
 
@@ -61,7 +61,7 @@ exports[`renderExecutiveSummary — HR-fail scenario > matches golden snapshot f
 
 ## Framework Coverage
 
-- **AIUC-1:** 6/6 controls verified
+- **AIUC-1:** 5/5 controls verified
 - **EU AI Act:** 3/3 controls verified
 - **GDPR:** 1/2 controls verified, 1 partial
 - **NIST AI RMF:** 2/2 controls verified
@@ -94,7 +94,7 @@ exports[`renderExecutiveSummary — non-HR agent > matches golden snapshot for n
 **Scan Date:** 2026-05-16T11:00:00Z
 **Vertical:** Generic agent
 
-## Compliance Posture
+## Compliance Summary
 
 **Overall verdict:** ✓ Clean — no critical issues detected.
 
@@ -104,7 +104,7 @@ _No critical or high-severity issues detected._
 
 ## Framework Coverage
 
-- **AIUC-1:** 6/6 controls verified
+- **AIUC-1:** 5/5 controls verified
 - **EU AI Act:** 0/3 controls verified
 - **GDPR:** 1/2 controls verified
 - **NIST AI RMF:** 2/2 controls verified

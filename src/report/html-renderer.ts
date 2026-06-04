@@ -633,7 +633,7 @@ function renderExecutiveSummary(report: VerificationReport, opts: HtmlRenderOpti
     sectionHeader('01', 'Executive Summary', undefined, 'sec-exec-summary'),
     callout(calloutBody, tone),
     `<div class="exec-sub">
-  <h3>Compliance Posture</h3>
+  <h3>Compliance Summary</h3>
   <p>${renderCompliancePostureLine(score, report, opts.hrPack)}</p>
 </div>`,
     renderHeadlineFindingsBlock(headline),

@@ -67,10 +67,10 @@ describe('AAP-103 — Posture indicator', () => {
       primaryRiskSource: 'deterministic',
     };
     const md = renderMarkdownReport(baseReport(), { verdict });
-    expect(md).toContain('## Posture');
+    expect(md).toContain('## Risk');
     // AAP-108 — G9 risk-based phrasing mirrors the dashboard ("9 High risk"),
     // replacing the pre-G9 "9 (High)" parenthetical.
-    expect(md).toContain('**Posture**: 9 High risk');
+    expect(md).toContain('**Risk**: 9 High risk');
     expect(md).toContain('1 high');
   });
 
@@ -85,8 +85,8 @@ describe('AAP-103 — Posture indicator', () => {
       primaryRiskSource: 'no-evidence',
     };
     const md = renderMarkdownReport(baseReport(), { verdict });
-    expect(md).toContain('## Posture');
-    expect(md).toContain('**Posture**: No Verified findings');
+    expect(md).toContain('## Risk');
+    expect(md).toContain('**Risk**: No Verified findings');
   });
 
   it('ASCII gradient ladder wraps the marker stop in angle brackets', () => {
@@ -298,7 +298,7 @@ describe('AAP-103 — Header simplification', () => {
     // Header reads "Verified" but does not carry a categorical Risk Level.
     expect(md).toContain('**Verification**: Verified');
     expect(md).not.toContain('**Risk Level**:');
-    // Posture section is the new home for the score.
-    expect(md).toContain('## Posture');
+    // Risk section is the new home for the score.
+    expect(md).toContain('## Risk');
   });
 });

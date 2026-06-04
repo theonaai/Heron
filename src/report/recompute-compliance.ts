@@ -76,7 +76,7 @@ export interface RecomputeAnalyzerSubset {
  * `verificationReport` is the Surface 2 verification output (diff +
  * inventory + approval chain). The forwarded-OAuth path (G10) threads
  * the orchestrator's report in so the router-adapter wedge detectors
- * (AIUC-1 A003/A003.3/A003.4/B006, GDPR Art 25/Art 22) fire — those
+ * (AIUC-1 A003/A003.4/B006, GDPR Art 25/Art 22) fire — those
  * detectors read `evidence.verificationReport` and short-circuit to null
  * without it, so a clean forwarded OAuth grant never reached `verified`
  * before. When both `discovery` and `verificationReport` are absent the

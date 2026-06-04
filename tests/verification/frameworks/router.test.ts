@@ -102,12 +102,12 @@ describe('buildFrameworkMapping — end-to-end HR scenarios', () => {
     };
 
     const mapping = buildFrameworkMapping(report, { now: nowFreeze() });
-    // AAP-86: the catalog splits AIUC-1 A003 into two paired entries
-    // (A003.3 + A003.4) sharing the underlying detector, so the new
-    // pipeline emits 13 controls (vs the legacy 12). Verified-count
-    // floor unchanged.
-    expect(mapping.controls.length).toBe(13);
-    expect(mapping.summary.verifiedCount).toBeGreaterThanOrEqual(8);
+    // AAP-86: AIUC-1 A003 wires onto a single catalog entry (A003.4,
+    // least-privilege), so the pipeline emits 12 controls. A003.3 (separate
+    // agent identity) was removed because the scope detector does not verify
+    // identity. Verified-count floor unchanged.
+    expect(mapping.controls.length).toBe(12);
+    expect(mapping.summary.verifiedCount).toBeGreaterThanOrEqual(7);
     expect(mapping.summary.failCount).toBe(0);
   });
 
@@ -137,15 +137,12 @@ describe('buildFrameworkMapping — end-to-end HR scenarios', () => {
 
     const mapping = buildFrameworkMapping(report, { now: nowFreeze() });
     // AAP-86: catalog ids replace the legacy router short labels.
-    //   A003 → A003.3 + A003.4 (paired entries via the same detector)
+    //   A003 → A003.4 (the wired least-privilege entry; A003.3 separate-identity
+    //   was removed because the scope detector does not verify identity)
     //   B006, E004, E015 keep their labels.
-    // The A003 detector still emits a single verdict; both catalog
-    // entries pick it up so a broad-read failure surfaces under both.
-    const a003_3 = mapping.controls.find(c => c.controlId === 'A003.3')!;
     const a003_4 = mapping.controls.find(c => c.controlId === 'A003.4')!;
     const b006 = mapping.controls.find(c => c.controlId === 'B006')!;
     const e004 = mapping.controls.find(c => c.controlId === 'E004')!;
-    expect(a003_3.verdict).toBe('fail');
     expect(a003_4.verdict).toBe('fail');
     expect(b006.verdict).toBe('fail');
     expect(e004.verdict).toBe('fail');

@@ -56,6 +56,7 @@ import {
   type RiskScorableSystem,
   type SystemsRiskSummary,
 } from './systems-risk.js';
+import { readableScopeLabel } from './scope-labels.js';
 import type {
   SourceVerification,
   DiffEntry,
@@ -149,6 +150,21 @@ export interface VerdictFinding {
   findingType?: FindingType;
   /** Optional kind tag for legacy renderers (discovery / oauth / risk). */
   kind?: string;
+  /**
+   * T1 / D1 — explicit "could not verify" marker. Set to `'unverified'` when
+   * this finding represents a DETERMINISTIC source Heron TRIED but could not
+   * read (e.g. a failed OAuth introspection: expired/rejected token; later, a
+   * skipped MCP enumeration). Such a finding is NOT a confirmed discrepancy —
+   * the source-level verdict was `unverified` — so the renderer routes it to a
+   * separate "Could not verify" bucket instead of "Verified discrepancies",
+   * and excludes it from the "N verified" header counter. Severity stays 0, so
+   * it never moves posture either way.
+   *
+   * Absent on confirmed Verified discrepancies (MCP/OAU/ENV/PLG) and on SLF
+   * findings. The discriminator is THIS field, not the finding id or title —
+   * any future "tried but could not read" finding sets it and routes the same.
+   */
+  verificationOutcome?: 'unverified';
 }
 
 /**
@@ -361,12 +377,25 @@ function oauthDiffToVerdictFinding(
   // Pick whichever side is present so we can produce a stable target label.
   const side: ActualTool | ActualScope | DeclaredTool | DeclaredScope =
     diff.kind === 'missing' ? diff.declared : diff.actual;
+  // Raw `service:scope` (or tool name) token — kept stable for the finding id
+  // and carried into the description so the machine token stays discoverable
+  // even though the title now shows a human-readable capability name.
+  const service = (side as { service?: string }).service ?? sourceId;
+  const scope = (side as { scope?: string }).scope ?? 'scope';
   const target =
     diff.dimension === 'tool'
       ? (side as { name?: string }).name ?? 'tool'
-      : `${(side as { service?: string }).service ?? sourceId}:${
-          (side as { scope?: string }).scope ?? 'scope'
-        }`;
+      : `${service}:${scope}`;
+  // T2 / D6 — title reads as a clear capability, not a raw token, and uses no
+  // em-dash (house style). Scope diffs render the curated/​prettified label
+  // (e.g. "Gmail: send email"); tool diffs keep the tool name. `diff.kind`
+  // ('extra' / 'missing' / 'mismatch') stays visible as "Extra/Missing scope".
+  const kindLabel = `${diff.kind.charAt(0).toUpperCase()}${diff.kind.slice(1)}`;
+  const dimensionWord = diff.dimension === 'tool' ? 'tool' : 'scope';
+  const human =
+    diff.dimension === 'tool'
+      ? (side as { name?: string }).name ?? 'tool'
+      : readableScopeLabel(service, scope);
   return {
     id: `oau-${idx}-${diff.kind}-${target}`,
     band: severityBand(result.severity),
@@ -380,8 +409,8 @@ function oauthDiffToVerdictFinding(
       brA: result.components.brA,
     },
     evidenceSource: 'OAU',
-    title: `OAuth ${diff.kind} — ${target}`,
-    description: `OAuth scope ${diff.kind} from ${sourceId}`,
+    title: `${kindLabel} ${dimensionWord}: ${human}`,
+    description: `OAuth ${dimensionWord} ${diff.kind} from ${sourceId} (${target})`,
     kind: 'oauth',
   };
 }
@@ -409,9 +438,12 @@ function oauthIntrospectionFailureFinding(
     severityScore: 0,
     severityComponents: { br: 1, ds: 1, dm: 1 },
     evidenceSource: 'OAU',
-    title: `OAuth introspection failed — ${v.sourceId}`,
+    title: `OAuth introspection failed: ${v.sourceId}`,
     description: `Could not verify granted scopes for ${v.sourceId}: ${reason}. No declared-vs-actual comparison was possible for this source.`,
     kind: 'oauth',
+    // T1 / D1 — a deterministic source we tried but could not read. Route to
+    // the "Could not verify" bucket, not "Verified discrepancies".
+    verificationOutcome: 'unverified',
   };
 }
 

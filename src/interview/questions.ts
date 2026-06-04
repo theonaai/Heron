@@ -148,7 +148,9 @@ If yes, describe: what kind of decision, who is affected, and is a human involve
   // gaps (DPA, accountability owner, annual review) are surfaced in the
   // report via control notes for human reviewers, not asked of the agent.
 
-  // 11. Agent identity (NHI) — signal for A003.3 / A003.4
+  // 11. Agent identity (NHI) — signal for A003.4 (and reserved for the future
+  // A003 separate-identity detector; the A003.3 catalog control was removed for
+  // now because the scope detector does not verify identity)
   {
     id: 'agent_identity',
     category: 'access',

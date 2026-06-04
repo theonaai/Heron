@@ -130,8 +130,59 @@ describe('computeVerdict', () => {
     const verdict = computeVerdict({ oauthVerifications });
     expect(verdict.status).toBe('partial');
     expect(verdict.findings).toHaveLength(1);
-    expect(verdict.findings[0].evidenceSource).toBe('OAU');
-    expect(verdict.findings[0].title).toContain('drive.write');
+    const oauF = verdict.findings[0];
+    expect(oauF.evidenceSource).toBe('OAU');
+    // T2 / D6 — the title now reads as a human-readable capability with the
+    // diff kind visible, NOT the raw `service:scope` token, and carries no
+    // em-dash. `drive.write` is not in the curated catalog → prettified
+    // fallback ("drive write").
+    expect(oauF.title).toBe('Extra scope: drive write');
+    expect(oauF.title).not.toContain('—');
+    expect(oauF.title).not.toContain('google-workspace:drive.write');
+    // The raw token stays discoverable in the description for traceability.
+    expect(oauF.description).toContain('google-workspace:drive.write');
+  });
+
+  it('T2/D6 — OAuth scope diff renders the readable capability name in the title (catalog hit)', () => {
+    // A catalog-known scope (`gmail.send`) must title with the human-readable
+    // capability, the diff kind, and no em-dash. An unknown token (the
+    // missing `drive.someweird`) degrades to a prettified fallback.
+    const oauthVerifications: SourceVerification[] = [
+      {
+        sourceId: 'google-workspace',
+        verdict: 'discrepancy',
+        diffs: [
+          {
+            kind: 'extra',
+            dimension: 'scope',
+            source: 'oauth-scopes',
+            actual: { service: 'google-workspace', scope: 'gmail.send' },
+            severity: 'high',
+          },
+          {
+            kind: 'missing',
+            dimension: 'scope',
+            source: 'oauth-scopes',
+            declared: { service: 'google-workspace', scope: 'spreadsheets' },
+            severity: 'low',
+          },
+        ],
+      },
+    ];
+    const verdict = computeVerdict({ oauthVerifications });
+    const extra = verdict.findings.find((f) => f.id.includes('extra'))!;
+    const missing = verdict.findings.find((f) => f.id.includes('missing'))!;
+
+    // Catalog labels, kind visible, no raw token, no em-dash.
+    expect(extra.title).toBe('Extra scope: Gmail: send email');
+    expect(missing.title).toBe('Missing scope: Google Sheets');
+    for (const f of [extra, missing]) {
+      expect(f.title).not.toContain('—');
+      expect(f.title).not.toContain('google-workspace:');
+    }
+    // Raw tokens stay discoverable in the descriptions.
+    expect(extra.description).toContain('google-workspace:gmail.send');
+    expect(missing.description).toContain('google-workspace:spreadsheets');
   });
 
   it('AAP-115 — SURFACES a failed introspection as an informational finding (not silently empty)', () => {
@@ -156,6 +207,34 @@ describe('computeVerdict', () => {
     expect(f.description).toContain('invalid or expired');
     // A failed read is honest "could not verify" — posture stays 0.
     expect(verdict.posture).toBe(0);
+    // T1/D1 — the finding carries the explicit "could not verify" marker so the
+    // dashboard routes it to the "Could not verify" bucket, NOT "Verified
+    // discrepancies". The discriminator is a field on the finding, not its id.
+    expect(f.verificationOutcome).toBe('unverified');
+  });
+
+  it('T1/D1 — a genuine OAU discrepancy carries NO could-not-verify marker', () => {
+    // A real declared-vs-actual OAuth scope discrepancy is a confirmed finding.
+    // It must remain a Verified discrepancy: no `verificationOutcome` marker.
+    const oauthVerifications: SourceVerification[] = [
+      {
+        sourceId: 'oauth-scopes',
+        verdict: 'discrepancy',
+        diffs: [
+          {
+            kind: 'extra',
+            dimension: 'scope',
+            source: 'oauth-scopes',
+            actual: { service: 'google-workspace', scope: 'drive.write' },
+            severity: 'high',
+          },
+        ],
+      },
+    ];
+    const verdict = computeVerdict({ oauthVerifications });
+    const oau = verdict.findings.find((f) => f.evidenceSource === 'OAU');
+    expect(oau).toBeDefined();
+    expect(oau?.verificationOutcome).toBeUndefined();
   });
 
   it('stamps interview-derived risks with evidenceSource = SLF', () => {
@@ -249,7 +328,7 @@ describe('computeVerdict', () => {
       severityScore: 9,
       severityComponents: { br: 3, ds: 3, dm: 1.0, brW: 3, brR: 3, brA: 3 },
       evidenceSource: 'OAU',
-      title: 'OAuth extra — drive.write',
+      title: 'Extra scope: Google Drive: full access',
       description: 'agent has drive.write scope, not declared',
     };
     const slfCriticalFinding: VerdictFinding = {

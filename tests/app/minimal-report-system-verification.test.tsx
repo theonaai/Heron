@@ -35,6 +35,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import MinimalReportView, {
   systemVerificationStatus,
+  systemMatchesEnvCredential,
 } from '@/components/heron-v1/dashboard/MinimalReportView';
 
 // A minimal system row (only the two fields the helper reads).
@@ -206,6 +207,151 @@ describe('systemVerificationStatus (AAP-126)', () => {
   });
 });
 
+// ── T3 (D3): 🔑 "Found in .env" — env-credential brand-stem matcher ───────
+//
+// Systems whose credential lives in `.env` (API key / bot token, no OAuth scope
+// to introspect) deserve better than a bare "—". `systemMatchesEnvCredential`
+// is the deterministic, conservative brand-stem matcher that links a systemId to
+// an env VARIABLE NAME (e.g. `openai` ↔ `OPENAI_API_KEY`). It tokenizes the
+// systemId on `-`/`_` and checks whether any env key name contains a matching
+// brand token (case-insensitive), mirroring `connectorForSystemId`'s discipline.
+
+describe('systemMatchesEnvCredential (T3) — brand-stem matcher', () => {
+  const keys = [
+    'OPENAI_API_KEY',
+    'OPENAI_MODEL',
+    'GOOGLE_API_KEY',
+    'GEMINI_MODEL',
+    'GAMMA_API_KEY',
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_CHAT_ID',
+    'LMS_API_KEY',
+  ];
+
+  it('openai ↔ OPENAI_API_KEY', () => {
+    expect(systemMatchesEnvCredential('openai', keys)).toBe(true);
+  });
+
+  it('telegram-bot ↔ TELEGRAM_BOT_TOKEN (token-split systemId)', () => {
+    expect(systemMatchesEnvCredential('telegram-bot', keys)).toBe(true);
+  });
+
+  it('gamma ↔ GAMMA_API_KEY', () => {
+    expect(systemMatchesEnvCredential('gamma', keys)).toBe(true);
+  });
+
+  it('google-gemini ↔ GOOGLE_API_KEY (google token matches)', () => {
+    expect(systemMatchesEnvCredential('google-gemini', keys)).toBe(true);
+  });
+
+  it('google-gemini ↔ GEMINI_MODEL (gemini token matches even without google key)', () => {
+    expect(systemMatchesEnvCredential('google-gemini', ['GEMINI_MODEL'])).toBe(true);
+  });
+
+  it('DOCUMENTED MISS: wellkid is backed by LMS_API_KEY — env name carries no brand, so no match', () => {
+    // Best-effort behavior: the matcher cannot link `wellkid` to `LMS_API_KEY`
+    // because the env name carries no "wellkid" brand token. `wellkid` stays "—".
+    expect(systemMatchesEnvCredential('wellkid', keys)).toBe(false);
+  });
+
+  it('conservative: no random-substring matches', () => {
+    // A short stem must be a real TOKEN match, not a substring of a larger word.
+    // `gem` must not match `GEMINI_MODEL`; `lms` is a real token in `LMS_API_KEY`.
+    expect(systemMatchesEnvCredential('gem', keys)).toBe(false);
+    expect(systemMatchesEnvCredential('open', keys)).toBe(false);
+    // very short tokens (<= 2 chars) never match — too generic to be a brand.
+    expect(systemMatchesEnvCredential('ai', keys)).toBe(false);
+  });
+
+  it('empty / blank systemId and empty keys -> false', () => {
+    expect(systemMatchesEnvCredential('', keys)).toBe(false);
+    expect(systemMatchesEnvCredential('   ', keys)).toBe(false);
+    expect(systemMatchesEnvCredential('openai', [])).toBe(false);
+  });
+});
+
+// ── T3 (D3): gated 🔑 in systemVerificationStatus ─────────────────────────
+//
+// 🔑 shows ONLY when ALL of: (a) the system is NOT OAuth-verifiable (no
+// connector, OR maps to a connector but declares no OAuth scope), and (b) a
+// `.env` key matches per the matcher. A real OAuth verdict (✓/⚠) always wins.
+
+describe('systemVerificationStatus 🔑 env-credential branch (T3)', () => {
+  const envKeys = ['OPENAI_API_KEY', 'GAMMA_API_KEY', 'TELEGRAM_BOT_TOKEN', 'GOOGLE_API_KEY', 'GEMINI_MODEL', 'LMS_API_KEY'];
+
+  it('telegram-bot (no connector) + TELEGRAM_BOT_TOKEN -> 🔑', () => {
+    const r = systemVerificationStatus(sys('telegram-bot', ['getMe', 'sendMessage']), undefined, envKeys);
+    expect(r.state).toBe('env-credential');
+    expect(r.glyph).toBe('🔑');
+    expect(r.color).toBe('#2563eb');
+    expect(r.title.toLowerCase()).toContain('found in .env');
+  });
+
+  it('gamma (no connector) + GAMMA_API_KEY -> 🔑', () => {
+    const r = systemVerificationStatus(sys('gamma', []), undefined, envKeys);
+    expect(r.glyph).toBe('🔑');
+  });
+
+  it('google-gemini (maps to google-workspace by prefix BUT empty scopesRequested) + GOOGLE_API_KEY -> 🔑', () => {
+    // google-gemini is the deliberate include: it maps to the google-workspace
+    // connector by prefix yet declares NO OAuth scope, so it is not introspectable
+    // and falls through to the env-credential path.
+    const r = systemVerificationStatus(sys('google-gemini', []), {
+      sources: [
+        { connector: 'google-workspace', verdict: 'discrepancy', actualScopes: [{ service: 'google-workspace', scope: 'spreadsheets' }], diffs: [] },
+      ],
+    }, envKeys);
+    expect(r.glyph).toBe('🔑');
+  });
+
+  it('google-sheets WITH declared scopes is an OAuth system — NEVER 🔑 even if a google env key exists', () => {
+    // (a) excludes google-sheets: it maps to google-workspace AND declares a real
+    // scope. A failed/partial introspection keeps it "—", never 🔑.
+    const r = systemVerificationStatus(
+      sys('google-sheets', ['https://www.googleapis.com/auth/spreadsheets']),
+      { sources: [{ connector: 'google-workspace', verdict: 'verified', actualScopes: [], diffs: [] }] },
+      envKeys,
+    );
+    expect(r.glyph).toBe('—');
+    expect(r.glyph).not.toBe('🔑');
+  });
+
+  it('a real OAuth ✓ is never overridden by 🔑', () => {
+    // google-sheets confirmed by introspection -> ✓ stays ✓ (OAuth path wins).
+    const r = systemVerificationStatus(
+      sys('google-sheets', ['https://www.googleapis.com/auth/spreadsheets']),
+      { sources: [{ connector: 'google-workspace', verdict: 'verified', actualScopes: [{ service: 'google-workspace', scope: 'spreadsheets' }], diffs: [] }] },
+      envKeys,
+    );
+    expect(r.glyph).toBe('✓');
+  });
+
+  it('a real OAuth ⚠ is never overridden by 🔑', () => {
+    const r = systemVerificationStatus(
+      sys('google-sheets', ['spreadsheets']),
+      { sources: [{ connector: 'google-workspace', verdict: 'discrepancy', actualScopes: [], diffs: [{ kind: 'missing', service: 'google-workspace', scope: 'spreadsheets' }] }] },
+      envKeys,
+    );
+    expect(r.glyph).toBe('⚠');
+  });
+
+  it('DOCUMENTED MISS: wellkid (no connector, empty scopes) + LMS_API_KEY -> stays "—" (matcher cannot link)', () => {
+    const r = systemVerificationStatus(sys('wellkid', []), undefined, envKeys);
+    expect(r.glyph).toBe('—');
+  });
+
+  it('no env keys passed -> behaves exactly as before (telegram-bot -> "—")', () => {
+    expect(systemVerificationStatus(sys('telegram-bot', ['sendMessage']), undefined).glyph).toBe('—');
+    expect(systemVerificationStatus(sys('telegram-bot', ['sendMessage']), undefined, []).glyph).toBe('—');
+  });
+
+  it('env key present but no brand match -> "—" (no row, no false 🔑)', () => {
+    // a non-OAuth system with no matching env key stays "—".
+    const r = systemVerificationStatus(sys('notion', []), undefined, envKeys);
+    expect(r.glyph).toBe('—');
+  });
+});
+
 // ── Integration: rendered systems table + legend (static markup) ─────────
 //
 // A google-sheets system that declares `spreadsheets`, plus a gemini-shaped
@@ -238,7 +384,32 @@ const report = {
       frequencyAndVolume: '',
       writeOperations: [],
     },
+    {
+      systemId: 'telegram-bot',
+      scopesRequested: ['getMe', 'sendMessage'],
+      scopesNeeded: [],
+      scopesDelta: [],
+      dataSensitivity: 'None.',
+      blastRadius: 'single-user',
+      frequencyAndVolume: '',
+      writeOperations: [],
+    },
   ],
+  // T3: env-credential evidence — telegram-bot's bot token lives in `.env`, so it
+  // resolves to 🔑 ("Found in .env"); google-gemini matches GOOGLE_API_KEY too.
+  localAgentDiscovery: {
+    agents: [],
+    findings: [],
+    scannedAt: '2026-06-02T00:00:00.000Z',
+    scannedPaths: ['/ws'],
+    workspaceEnv: [
+      {
+        path: '/ws/.env',
+        workspace: '/ws',
+        keys: ['GOOGLE_API_KEY', 'GEMINI_MODEL', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'],
+      },
+    ],
+  },
   oauthScopeVerification: {
     capturedAt: '2026-06-02T00:00:00.000Z',
     sources: [
@@ -268,16 +439,22 @@ function render(reportJson: unknown): string {
   );
 }
 
-describe('MinimalReportView "Verified?" wiring + legend (AAP-126)', () => {
-  it('renders both glyphs and the three-state legend', () => {
+describe('MinimalReportView "Verified?" wiring + legend hint (AAP-126 / T5)', () => {
+  it('T5: the legend lives in an ⓘ hover/focus hint, not a strip under the table', () => {
     const html = render(report);
-    // Both glyphs present in the rendered table.
-    expect(html).toContain('⚠');
-    expect(html).toContain('—');
-    // Legend explains each state.
-    expect(html).toContain('Verified against OAuth introspection');
-    expect(html).toContain('Scope discrepancy');
-    expect(html).toContain('No deterministic verification');
+    // The ⓘ affordance + the hint text (covers every glyph meaning).
+    expect(html).toContain('ⓘ');
+    expect(html).toContain('What each glyph means');
+    expect(html).toContain('Found in .env: credential present, scope not introspectable');
+    expect(html).toContain('No deterministic evidence: self-reported only');
+    // The old bottom-strip copy is gone.
+    expect(html).not.toContain('No deterministic verification (system declares no OAuth scope');
+  });
+
+  it('renders the per-row glyphs (⚠ discrepancy, 🔑 env-credential) in the table', () => {
+    const html = render(report);
+    expect(html).toContain('⚠'); // google-sheets: declared scope in an extra diff
+    expect(html).toContain('🔑'); // telegram-bot + google-gemini: credential in .env
   });
 
   it('does not render the old finding-touch tooltip copy', () => {

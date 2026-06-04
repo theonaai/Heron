@@ -86,10 +86,11 @@ describe('typed-evidence detector adapter — key lookup', () => {
     expect(getDetectorForStableKey('does:not:exist')).toBeUndefined();
   });
 
-  it('covers the 13 catalog entries the router was responsible for', () => {
-    // Router had 12 detectors. The adapter row count is 13 because
-    // AIUC-1 A003 maps to TWO paired catalog entries (A003.3 +
-    // A003.4) — both least-privilege facets.
-    expect(ROUTER_DETECTOR_ADAPTERS.length).toBe(13);
+  it('covers the 12 catalog entries the router was responsible for', () => {
+    // Router had 12 detectors, and the adapter now has one row per detector:
+    // AIUC-1 A003 maps to a single catalog entry (A003.4, least-privilege).
+    // A003.3 (separate agent identity) was removed because the scope detector
+    // does not verify identity.
+    expect(ROUTER_DETECTOR_ADAPTERS.length).toBe(12);
   });
 });

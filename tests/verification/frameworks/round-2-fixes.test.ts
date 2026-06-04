@@ -489,8 +489,10 @@ describe('LOW-2: hasScopeInventory tautology cleanup', () => {
       }],
     };
     const mapping = buildFrameworkMapping(report);
-    // AAP-86: catalog id `A003.3` (first of the paired A003 entries).
-    const a003 = mapping.controls.find((c) => c.controlId === 'A003.3')!;
+    // AAP-86: catalog id `A003.4` (the wired A003 least-privilege entry; A003.3
+    // separate-identity was removed because the scope detector does not verify
+    // identity).
+    const a003 = mapping.controls.find((c) => c.controlId === 'A003.4')!;
     // With declared scopes present and a real (if empty) inventory,
     // A003 should be VERIFIED — there are no extra broad-read scopes
     // because there are no actual scopes at all. The previous tautology

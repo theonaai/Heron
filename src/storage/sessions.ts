@@ -464,6 +464,13 @@ function mapReportVerificationToMeta(status: unknown): VerificationStatus | unde
   if (status === 'partially-verified') return 'partial';
   if (status === 'interrogation-only') return 'unverified';
   if (status === 'verification-failed') return 'unverified';
+  // AAP-143 increment 1 — `'verifying'` is an in-progress report-level
+  // marker with no meta-level equivalent (the meta enum is terminal:
+  // unverified/partial/verified). Returning undefined leaves
+  // `meta.verificationStatus` at its prior value while the background
+  // verification runs; it settles when the bg task patches a terminal
+  // report status.
+  if (status === 'verifying') return undefined;
   return undefined;
 }
 

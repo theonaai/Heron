@@ -80,6 +80,7 @@ import {
   updateSessionMeta,
   writeReport,
   writeAnalysisFailure,
+  type AuditSessionDetail,
   type AuditSessionStatus,
   type ReportedMcpToolsRecord,
 } from '../storage/sessions.js';
@@ -94,7 +95,7 @@ import {
 import { runDiscovery } from '../discovery/index.js';
 // AAP-105 (G8a) — runtime enums (JSON schema + Zod) derive from the
 // declarative registry, the single source of truth, not hand-copied lists.
-import { RUNTIME_IDS } from '../discovery/registry.js';
+import { RUNTIME_IDS, type DiscoveredRuntime } from '../discovery/registry.js';
 import { diffAgainstTranscript } from '../discovery/diff.js';
 import {
   overlayAgentReportedToolEnumerations,
@@ -1767,296 +1768,84 @@ export class HeronMCPServer {
       }
     }
 
-    // From here on we trust the runtime permission prompt's approval.
-    // The dashboard `~/.heron/discovery-consent.json` store is intentionally
-    // bypassed — AAP-78 RFC §"Design decisions locked" item 11 makes the
-    // runtime prompt the trust authority. The store still gates the
-    // `POST /api/discovery/scan` browser-facing path; nothing here writes
-    // to it, so we do not pollute the operator's consent decisions with
-    // tool-invocation grants.
-    const hintsForReader = additionalHints.filter((h) => h !== workspaceRoot);
-    const enableMcpToolEnumeration =
-      process.env.HERON_DISCOVERY_MCP_TOOLS_DISABLE !== '1';
-
-    let scrubbed: DiscoveryResult;
-    try {
-      const result = await runDiscovery({
-        runtime,
-        workspaceDir: workspaceRoot,
-        workspaceHints: hintsForReader,
-        enableMcpToolEnumeration,
-      });
-
-      // AAP-82 Blocker 1 (Codex post-review): merge agent-forwarded
-      // `tools/list` records into the freshly discovered agents BEFORE
-      // secretlintScrub so the overlay goes through the same redaction
-      // pass as connector-sourced enumerations. The dashboard scan route
-      // does the same; the helper keeps the two paths byte-identical.
-      const reportedRecords = await listReportedMcpTools(sessionId);
-      const overlayed = overlayAgentReportedToolEnumerations(
-        result.agents,
-        reportedRecords.map((r) => ({
-          serverName: r.serverName,
-          enumeration: r.enumeration,
-        })),
-      );
-      const overlayWarnings = overlayed.unmatched.length > 0
-        ? [
-            `agent-reported tools/list referenced servers not present in discovery: ${overlayed.unmatched.join(', ')}`,
-          ]
-        : [];
-
-      const scrubbedAgents = await secretlintScrub(result.agents);
-      const scrubbedWorkspaceEnv = result.workspaceEnv
-        ? await secretlintScrub(result.workspaceEnv)
-        : undefined;
-      // AAP-105 (G8c) — pass the scrubbed workspace env (variable NAMES
-      // only) so the MISSING pass can recognise REST/OAuth integrations
-      // that are NOT MCP servers (e.g. Google Drive via GOOGLE_* keys)
-      // and suppress the false MISSING the MCP-only view produced.
-      const findings = diffAgainstTranscript(
-        scrubbedAgents,
-        session.transcript,
-        scrubbedWorkspaceEnv ?? [],
-      );
-      const mergedWarnings = [
-        ...(result.warnings ?? []),
-        ...overlayWarnings,
-      ];
-      scrubbed = {
-        ...result,
-        agents: scrubbedAgents,
-        findings,
-        ...(scrubbedWorkspaceEnv !== undefined
-          ? { workspaceEnv: scrubbedWorkspaceEnv }
-          : {}),
-        ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const summary = `Discovery scan failed: ${message}`;
-      await persistVerificationFailure(sessionId, summary);
-      publishSessionEvent(sessionId, { type: 'error', message: summary });
-      return {
-        ok: true,
-        value: {
-          session_id: sessionId,
-          verification_status: 'verification-failed',
-          summary,
-          high_severity_findings: 0,
-          total_findings: 0,
-          completed_at: new Date().toISOString(),
-          error: { reason: 'scan_error', message },
-        },
-      };
-    }
-
-    // G10 — replay agent-forwarded OAuth introspection into the scope
-    // diff. The agent called its OAuth provider's introspection endpoint
-    // with its OWN token (Google: tokeninfo) and forwarded Heron the raw
-    // response via `report_oauth_scopes`; Heron parsed + persisted the
-    // granted scopes per provider. Here we run the SAME `runVerification`
-    // orchestrator the dashboard L4 path uses, but the source is the
-    // in-memory forwarded inventory — Heron never holds the token. This
-    // makes OAuth-based systems (Google Sheets/Drive/Docs) verifiable
-    // from the MCP path, not just the dashboard. Empty when the agent
-    // forwarded nothing (the OAuth section stays absent / "N/A").
-    const forwardedOAuthRecords = await listReportedOAuthScopes(sessionId);
-    // AAP-115 (S1) — build the declared baseline from the agent's
-    // interview-captured Q2 `systems_enum` / Q3 `scopes_current` answers
-    // (already parsed by the analyzer into `report.json.systems[]`),
-    // re-keyed onto the providers the agent forwarded introspection for.
-    // Without this the forwarded path passed `declared: []` and every
-    // granted scope read as an `extra` diff → always FAIL. With it, a
-    // clean agent reaches VERIFIED on the wedge controls.
-    const forwardedReportJson = (session.reportJson as AuditReport | undefined) ?? null;
-    const forwardedDeclaredSystems = forwardedReportJson?.systems;
-    const forwardedDeclaredBaseline = forwardedOAuthRecords.length > 0
-      ? buildDeclaredBaselineForConnectors({
-          systems: Array.isArray(forwardedDeclaredSystems)
-            ? forwardedDeclaredSystems
-            : undefined,
-          connectors: forwardedOAuthRecords.map(
-            (r) => r.provider as ForwardedOAuthProvider,
-          ),
-        })
-      : undefined;
-    const forwardedDeclared: DeclaredInventory[] = forwardedDeclaredBaseline
-      ? [forwardedDeclaredBaseline]
-      : [];
-    const oauthForward = forwardedOAuthRecords.length > 0
-      ? await runForwardedOAuthScopeVerification({
-          records: forwardedOAuthRecords.map((r): ForwardedOAuthRecord => ({
-            provider: r.provider as ForwardedOAuthProvider,
-            introspection: r.introspection,
-          })),
-          declared: forwardedDeclared,
-          agentLabel: sessionId,
-        })
-      : { verifications: [], section: null, report: null };
-
-    // Re-compute Stage 3 framework mapping with the fresh evidence. This
-    // is the load-bearing part of AAP-79 — pre-AAP-79 the mapper ran
-    // once at analyzer time and never again. A transcript that never
-    // mentioned PII could leave the report missing GDPR Art 5(1)(c)
-    // controls even when discovery found `STRIPE_SECRET_KEY` in an
-    // env file. `recomputeComplianceWithDiscovery` synthesises a
-    // virtual evidence row from the discovery payload and re-runs the
-    // mapper against the augmented transcript.
-    const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
-    const transcriptAsQA: QAPair[] = session.transcript.map((t) => ({
-      category: t.category as QAPair['category'],
-      question: t.question,
-      answer: t.answer,
-    }));
-    const completedAt = new Date().toISOString();
-
-    // AAP-80 — compute the verdict BEFORE patching `report.json` so the
-    // `verification.status` we persist reflects the real Surface 2
-    // outcome (verified vs partially-verified vs failed) instead of a
-    // hardcoded `'verified'`. We pass `reportJson` (the pre-patch
-    // snapshot) plus `discoveryOverride: scrubbed` so the verdict
-    // factors in the fresh scan without racing patchReportJson's
-    // fsync.
+    // AAP-143 increment 1 — async return.
     //
-    // G10 — `oauthVerificationsOverride` is now wired from the
-    // agent-forwarded introspection. When the agent forwarded scopes, the
-    // verdict factors deterministic OAuth diffs (granted-vs-declared) into
-    // posture as OAU findings — turning the self-attested SLF "broad OAuth
-    // permissions" claim into a Verified OAU finding. Absent when the
-    // agent forwarded nothing.
-    const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
-      reportJson,
-      transcript: session.transcript,
-      discoveryOverride: scrubbed,
-    };
-    if (oauthForward.verifications.length > 0) {
-      verdictArgs.oauthVerificationsOverride = oauthForward.verifications;
-    }
-    const verdict = computeVerdictFromArtifacts(verdictArgs);
-    const verificationStatus: ReportVerificationStatus =
-      reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
-
-    const reportPatch: Record<string, unknown> = {
-      localAgentDiscovery: scrubbed,
+    // The earlier implementation ran the discovery scan + every step
+    // after it (forwarded-OAuth replay, verdict, recompute compliance,
+    // patchReportAndMeta, re-render markdown) SYNCHRONOUSLY inside this
+    // one tool call. Codex's MCP tool-call client timeout is a hard 120s
+    // (not configurable). The 2026-06-04 live run (session
+    // `sess-20260604-015645-4b358d`) exceeded that: the client aborted
+    // the call, the report patch was never written, and
+    // `verificationStatus` stayed `unverified` with no
+    // `oauthScopeVerification` / `localAgentDiscovery`.
+    //
+    // The fix mirrors AAP-66's async `submit_answer`: persist a
+    // `'verifying'` marker, kick the heavy work off as a fire-and-forget
+    // background task with a fresh AbortController that outlives the tool
+    // call, and return immediately with `verification_status:
+    // 'verifying'`. Clients poll `get_report` or watch the dashboard SSE
+    // stream for the settled outcome. MCP sessions are long-lived; only
+    // tool **calls** are bounded by the client timer.
+    //
+    // Persist the in-progress marker to report.json BEFORE kicking off
+    // the bg work so a poller (or the dashboard banner) reading
+    // report.json between the return and the bg task's completion sees
+    // the run is still going, not a stale pre-run status. `patchReportJson`
+    // is the same single-field write `persistVerificationFailure` uses.
+    await patchReportJson(sessionId, {
       verification: {
-        status: verificationStatus,
-        updatedAt: completedAt,
+        status: 'verifying' as ReportVerificationStatus,
+        updatedAt: new Date().toISOString(),
       },
-      // AAP-103 — persist the verdict snapshot (posture + postureBand
-      // + findings) onto report.json so the dashboard's ReportView can
-      // render the gradient indicator + Vijil-style cards directly
-      // without recomputing the verdict client-side.
-      verdict: buildVerdictSnapshot(verdict),
-    };
-    // G10 — persist the OAuth scope verification section so the dashboard
-    // renderer + the header "Verified by … OAuth" line reflect the
-    // forwarded introspection (was always "OAuth N/A" on the MCP path).
-    if (oauthForward.section) {
-      reportPatch.oauthScopeVerification = oauthForward.section;
-    }
-    if (reportJson && Array.isArray(reportJson.systems)) {
-      const analyzerSubset = {
-        systems: reportJson.systems,
-        ...(reportJson.makesDecisionsAboutPeople !== undefined
-          ? { makesDecisionsAboutPeople: reportJson.makesDecisionsAboutPeople }
-          : {}),
-        ...(reportJson.decisionMakingDetails !== undefined
-          ? { decisionMakingDetails: reportJson.decisionMakingDetails }
-          : {}),
-      };
-      const compliance = recomputeComplianceWithDiscovery({
-        analyzer: analyzerSubset,
-        transcript: transcriptAsQA,
-        discovery: scrubbed,
-        // G10 — thread the forwarded-OAuth verification report so the
-        // router-adapter wedge detectors (AIUC-1 A003/A003.3/A003.4/B006,
-        // GDPR Art 25/Art 22) fire. They read `evidence.verificationReport`
-        // and short-circuit to null without it — so a clean forwarded grant
-        // (declared==actual, no diffs) never reached `verified` before.
-        ...(oauthForward.report ? { verificationReport: oauthForward.report } : {}),
-      });
-      reportPatch.compliance = compliance;
-      // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
-      reportPatch.regulatoryCompliance = compliance;
-    }
-    // AAP-105 A2 — atomic write of report.json + meta verdict fields.
-    // Replaces the prior `patchReportJson` + `persistVerdict` pair so
-    // a reader landing between the two renames cannot see report.json
-    // already flipped to `partially-verified` while meta still reads
-    // `unverified`. The combined helper keeps the same fields on each
-    // side; commit ordering is report.json first (canonical), meta
-    // second.
-    const merged = await patchReportAndMeta(sessionId, {
-      reportPatch,
-      metaPatch: buildVerdictMetaPatch(verdict),
     });
 
-    // Re-render the markdown report so the on-disk artefact matches the
-    // refreshed compliance + verified banner. Failure to re-render is
-    // non-fatal: the JSON is canonical, the markdown is downloadable.
-    // Shared with the dashboard scan route via
-    // `persistVerifiedMarkdown` so both code paths produce byte-identical
-    // .md output for the same merged report.
-    // G10 — when the agent forwarded OAuth introspection, surface a
-    // per-provider status row in the markdown "Verification Status"
-    // table (mirrors the dashboard L4 path). `ran` for any forward that
-    // produced a result (incl. honest introspection-error — the
-    // verdict already reflects whether it verified); the per-source
-    // verdict in the section carries the detail.
-    const oauthIntrospectionStatus =
-      oauthForward.section && oauthForward.section.sources.length > 0
-        ? oauthForward.section.sources.map((s) => ({
-            provider: s.connector,
-            status:
-              s.verdict === 'unverified' ? ('failed' as const) : ('ran' as const),
-          }))
-        : undefined;
+    // AAP-143 — ctx.signal belongs to the parent tool call. The MCP SDK
+    // aborts it the moment this handler returns, which would cascade into
+    // the pending scan. Use a fresh AbortController that outlives the
+    // tool call. (We do not thread it into runDiscovery's contract today,
+    // but we keep one here as documentation and a hook for a future
+    // shutdown path that wants to abort in-flight verifications.)
+    const bgController = new AbortController();
+    void bgController; // intentionally retained for future cancellation
 
-    await persistVerifiedMarkdown({
-      sessionId,
-      merged,
-      verdict,
-      discoveryFindings: scrubbed.findings ?? [],
-      ...(oauthIntrospectionStatus !== undefined ? { oauthIntrospectionStatus } : {}),
-    });
+    // Best-effort fire-and-forget. `void` so we don't accidentally await.
+    void (async (): Promise<void> => {
+      try {
+        await runVerificationAndPatch(sessionId, {
+          runtime,
+          workspaceRoot: workspaceRoot as string,
+          session,
+          additionalHints,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const summary = `Verification failed: ${message}`;
+        // Mirror submit_answer's catch: persist a terminal failure marker
+        // and surface to the dashboard via SSE so a poller sees the run
+        // stopped rather than hanging on 'verifying'.
+        try {
+          await persistVerificationFailure(sessionId, summary);
+        } catch {
+          // Best-effort — report.json might already be broken.
+        }
+        publishSessionEvent(sessionId, { type: 'error', message: summary });
+      }
+    })();
 
-    publishSessionEvent(sessionId, {
-      type: 'status-change',
-      status: 'complete',
-      ...(verdict.primaryRiskLevel ? { riskLevel: verdict.primaryRiskLevel } : {}),
-    });
-
-    const totalFindings = scrubbed.findings?.length ?? 0;
-    const highSeverity = (scrubbed.findings ?? []).filter((f) => f.severity === 'HIGH').length;
-    // AAP-80 — surface the actual status (and a verdict-aware summary
-    // prefix) instead of hardcoding 'verified' / "Verification
-    // complete.". The MCP client uses the response shape to decide
-    // whether to nudge the operator to wire additional Surface 2
-    // sources (the `partially-verified` case) before signing off.
-    const statusLabel: Record<
-      'verified' | 'partially-verified' | 'verification-failed',
-      string
-    > = {
-      verified: 'Verification complete.',
-      'partially-verified':
-        'Partially verified — one or more Surface 2 sources did not run cleanly.',
-      'verification-failed':
-        'Verification failed — Surface 2 did not produce a usable verdict.',
-    };
-    const responseStatus =
-      verificationStatus === 'interrogation-only' ? 'verification-failed' : verificationStatus;
-    const summary = `${statusLabel[responseStatus]} ${totalFindings} discovery findings; ${highSeverity} HIGH severity.`;
-
+    // Return immediately. Status is 'verifying' — the client polls
+    // get_report or watches the dashboard SSE stream for the settled
+    // verdict (verified / partially-verified / verification-failed).
     return {
       ok: true,
       value: {
         session_id: sessionId,
-        verification_status: responseStatus,
-        summary,
-        high_severity_findings: highSeverity,
-        total_findings: totalFindings,
-        completed_at: completedAt,
+        verification_status: 'verifying',
+        summary:
+          'Verification started; poll get_report or the session status for the result.',
+        high_severity_findings: 0,
+        total_findings: 0,
+        completed_at: new Date().toISOString(),
       },
     };
   }
@@ -2632,6 +2421,294 @@ async function persistVerificationFailure(
       updatedAt: new Date().toISOString(),
     },
   });
+}
+
+/**
+ * AAP-143 increment 1 — the heavy `start_verification` body, extracted so
+ * it can run as a detached background task (the handler kicks it off
+ * fire-and-forget after persisting the `'verifying'` marker) AND be
+ * unit-tested directly without driving the whole tool call.
+ *
+ * Runs the discovery scan, scrubs it, replays any agent-forwarded OAuth
+ * introspection, computes the Surface-2 verdict, recomputes Stage 3
+ * compliance, atomically patches report.json + meta, and re-renders the
+ * markdown. On completion `report.json.verification.status` holds the
+ * settled terminal state (verified / partially-verified /
+ * verification-failed) — same artefacts the old synchronous path produced.
+ *
+ * `workspaceRoot` is the already-resolved + directory-checked path (the
+ * handler does that synchronously before kicking this off). `session` is
+ * the snapshot read at call time. `additionalHints` are the merged
+ * session + ctx workspace hints used to scope MCP-tool enumeration.
+ *
+ * On a discovery-scan failure this persists a `verification-failed`
+ * marker and publishes an `error` SSE event, then returns the settled
+ * status — it does NOT throw, so the discovery failure is handled the
+ * same way the old synchronous path handled it. Unexpected throws from
+ * later steps propagate to the caller's catch (the bg IIFE), which
+ * persists the failure marker.
+ */
+export async function runVerificationAndPatch(
+  sessionId: string,
+  deps: {
+    runtime: DiscoveredRuntime;
+    workspaceRoot: string;
+    session: AuditSessionDetail;
+    additionalHints: string[];
+  },
+): Promise<{ verificationStatus: ReportVerificationStatus }> {
+  const { runtime, workspaceRoot, session, additionalHints } = deps;
+
+  // From here on we trust the runtime permission prompt's approval.
+  // The dashboard `~/.heron/discovery-consent.json` store is intentionally
+  // bypassed — AAP-78 RFC §"Design decisions locked" item 11 makes the
+  // runtime prompt the trust authority. The store still gates the
+  // `POST /api/discovery/scan` browser-facing path; nothing here writes
+  // to it, so we do not pollute the operator's consent decisions with
+  // tool-invocation grants.
+  const hintsForReader = additionalHints.filter((h) => h !== workspaceRoot);
+  const enableMcpToolEnumeration =
+    process.env.HERON_DISCOVERY_MCP_TOOLS_DISABLE !== '1';
+
+  let scrubbed: DiscoveryResult;
+  try {
+    const result = await runDiscovery({
+      runtime,
+      workspaceDir: workspaceRoot,
+      workspaceHints: hintsForReader,
+      enableMcpToolEnumeration,
+    });
+
+    // AAP-82 Blocker 1 (Codex post-review): merge agent-forwarded
+    // `tools/list` records into the freshly discovered agents BEFORE
+    // secretlintScrub so the overlay goes through the same redaction
+    // pass as connector-sourced enumerations. The dashboard scan route
+    // does the same; the helper keeps the two paths byte-identical.
+    const reportedRecords = await listReportedMcpTools(sessionId);
+    const overlayed = overlayAgentReportedToolEnumerations(
+      result.agents,
+      reportedRecords.map((r) => ({
+        serverName: r.serverName,
+        enumeration: r.enumeration,
+      })),
+    );
+    const overlayWarnings = overlayed.unmatched.length > 0
+      ? [
+          `agent-reported tools/list referenced servers not present in discovery: ${overlayed.unmatched.join(', ')}`,
+        ]
+      : [];
+
+    const scrubbedAgents = await secretlintScrub(result.agents);
+    const scrubbedWorkspaceEnv = result.workspaceEnv
+      ? await secretlintScrub(result.workspaceEnv)
+      : undefined;
+    // AAP-105 (G8c) — pass the scrubbed workspace env (variable NAMES
+    // only) so the MISSING pass can recognise REST/OAuth integrations
+    // that are NOT MCP servers (e.g. Google Drive via GOOGLE_* keys)
+    // and suppress the false MISSING the MCP-only view produced.
+    const findings = diffAgainstTranscript(
+      scrubbedAgents,
+      session.transcript,
+      scrubbedWorkspaceEnv ?? [],
+    );
+    const mergedWarnings = [
+      ...(result.warnings ?? []),
+      ...overlayWarnings,
+    ];
+    scrubbed = {
+      ...result,
+      agents: scrubbedAgents,
+      findings,
+      ...(scrubbedWorkspaceEnv !== undefined
+        ? { workspaceEnv: scrubbedWorkspaceEnv }
+        : {}),
+      ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const summary = `Discovery scan failed: ${message}`;
+    await persistVerificationFailure(sessionId, summary);
+    publishSessionEvent(sessionId, { type: 'error', message: summary });
+    return { verificationStatus: 'verification-failed' };
+  }
+
+  // G10 — replay agent-forwarded OAuth introspection into the scope
+  // diff. The agent called its OAuth provider's introspection endpoint
+  // with its OWN token (Google: tokeninfo) and forwarded Heron the raw
+  // response via `report_oauth_scopes`; Heron parsed + persisted the
+  // granted scopes per provider. Here we run the SAME `runVerification`
+  // orchestrator the dashboard L4 path uses, but the source is the
+  // in-memory forwarded inventory — Heron never holds the token. This
+  // makes OAuth-based systems (Google Sheets/Drive/Docs) verifiable
+  // from the MCP path, not just the dashboard. Empty when the agent
+  // forwarded nothing (the OAuth section stays absent / "N/A").
+  const forwardedOAuthRecords = await listReportedOAuthScopes(sessionId);
+  // AAP-115 (S1) — build the declared baseline from the agent's
+  // interview-captured Q2 `systems_enum` / Q3 `scopes_current` answers
+  // (already parsed by the analyzer into `report.json.systems[]`),
+  // re-keyed onto the providers the agent forwarded introspection for.
+  // Without this the forwarded path passed `declared: []` and every
+  // granted scope read as an `extra` diff → always FAIL. With it, a
+  // clean agent reaches VERIFIED on the wedge controls.
+  const forwardedReportJson = (session.reportJson as AuditReport | undefined) ?? null;
+  const forwardedDeclaredSystems = forwardedReportJson?.systems;
+  const forwardedDeclaredBaseline = forwardedOAuthRecords.length > 0
+    ? buildDeclaredBaselineForConnectors({
+        systems: Array.isArray(forwardedDeclaredSystems)
+          ? forwardedDeclaredSystems
+          : undefined,
+        connectors: forwardedOAuthRecords.map(
+          (r) => r.provider as ForwardedOAuthProvider,
+        ),
+      })
+    : undefined;
+  const forwardedDeclared: DeclaredInventory[] = forwardedDeclaredBaseline
+    ? [forwardedDeclaredBaseline]
+    : [];
+  const oauthForward = forwardedOAuthRecords.length > 0
+    ? await runForwardedOAuthScopeVerification({
+        records: forwardedOAuthRecords.map((r): ForwardedOAuthRecord => ({
+          provider: r.provider as ForwardedOAuthProvider,
+          introspection: r.introspection,
+        })),
+        declared: forwardedDeclared,
+        agentLabel: sessionId,
+      })
+    : { verifications: [], section: null, report: null };
+
+  // Re-compute Stage 3 framework mapping with the fresh evidence. This
+  // is the load-bearing part of AAP-79 — pre-AAP-79 the mapper ran
+  // once at analyzer time and never again. A transcript that never
+  // mentioned PII could leave the report missing GDPR Art 5(1)(c)
+  // controls even when discovery found `STRIPE_SECRET_KEY` in an
+  // env file. `recomputeComplianceWithDiscovery` synthesises a
+  // virtual evidence row from the discovery payload and re-runs the
+  // mapper against the augmented transcript.
+  const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
+  const transcriptAsQA: QAPair[] = session.transcript.map((t) => ({
+    category: t.category as QAPair['category'],
+    question: t.question,
+    answer: t.answer,
+  }));
+  const completedAt = new Date().toISOString();
+
+  // AAP-80 — compute the verdict BEFORE patching `report.json` so the
+  // `verification.status` we persist reflects the real Surface 2
+  // outcome (verified vs partially-verified vs failed) instead of a
+  // hardcoded `'verified'`. We pass `reportJson` (the pre-patch
+  // snapshot) plus `discoveryOverride: scrubbed` so the verdict
+  // factors in the fresh scan without racing patchReportJson's
+  // fsync.
+  //
+  // G10 — `oauthVerificationsOverride` is now wired from the
+  // agent-forwarded introspection. When the agent forwarded scopes, the
+  // verdict factors deterministic OAuth diffs (granted-vs-declared) into
+  // posture as OAU findings — turning the self-attested SLF "broad OAuth
+  // permissions" claim into a Verified OAU finding. Absent when the
+  // agent forwarded nothing.
+  const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
+    reportJson,
+    transcript: session.transcript,
+    discoveryOverride: scrubbed,
+  };
+  if (oauthForward.verifications.length > 0) {
+    verdictArgs.oauthVerificationsOverride = oauthForward.verifications;
+  }
+  const verdict = computeVerdictFromArtifacts(verdictArgs);
+  const verificationStatus: ReportVerificationStatus =
+    reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
+
+  const reportPatch: Record<string, unknown> = {
+    localAgentDiscovery: scrubbed,
+    verification: {
+      status: verificationStatus,
+      updatedAt: completedAt,
+    },
+    // AAP-103 — persist the verdict snapshot (posture + postureBand
+    // + findings) onto report.json so the dashboard's ReportView can
+    // render the gradient indicator + Vijil-style cards directly
+    // without recomputing the verdict client-side.
+    verdict: buildVerdictSnapshot(verdict),
+  };
+  // G10 — persist the OAuth scope verification section so the dashboard
+  // renderer + the header "Verified by … OAuth" line reflect the
+  // forwarded introspection (was always "OAuth N/A" on the MCP path).
+  if (oauthForward.section) {
+    reportPatch.oauthScopeVerification = oauthForward.section;
+  }
+  if (reportJson && Array.isArray(reportJson.systems)) {
+    const analyzerSubset = {
+      systems: reportJson.systems,
+      ...(reportJson.makesDecisionsAboutPeople !== undefined
+        ? { makesDecisionsAboutPeople: reportJson.makesDecisionsAboutPeople }
+        : {}),
+      ...(reportJson.decisionMakingDetails !== undefined
+        ? { decisionMakingDetails: reportJson.decisionMakingDetails }
+        : {}),
+    };
+    const compliance = recomputeComplianceWithDiscovery({
+      analyzer: analyzerSubset,
+      transcript: transcriptAsQA,
+      discovery: scrubbed,
+      // G10 — thread the forwarded-OAuth verification report so the
+      // router-adapter wedge detectors (AIUC-1 A003/A003.4/B006,
+      // GDPR Art 25/Art 22) fire. They read `evidence.verificationReport`
+      // and short-circuit to null without it — so a clean forwarded grant
+      // (declared==actual, no diffs) never reached `verified` before.
+      ...(oauthForward.report ? { verificationReport: oauthForward.report } : {}),
+    });
+    reportPatch.compliance = compliance;
+    // AAP-69 alias — dashboard ReportView reads `regulatoryCompliance`.
+    reportPatch.regulatoryCompliance = compliance;
+  }
+  // AAP-105 A2 — atomic write of report.json + meta verdict fields.
+  // Replaces the prior `patchReportJson` + `persistVerdict` pair so
+  // a reader landing between the two renames cannot see report.json
+  // already flipped to `partially-verified` while meta still reads
+  // `unverified`. The combined helper keeps the same fields on each
+  // side; commit ordering is report.json first (canonical), meta
+  // second.
+  const merged = await patchReportAndMeta(sessionId, {
+    reportPatch,
+    metaPatch: buildVerdictMetaPatch(verdict),
+  });
+
+  // Re-render the markdown report so the on-disk artefact matches the
+  // refreshed compliance + verified banner. Failure to re-render is
+  // non-fatal: the JSON is canonical, the markdown is downloadable.
+  // Shared with the dashboard scan route via
+  // `persistVerifiedMarkdown` so both code paths produce byte-identical
+  // .md output for the same merged report.
+  // G10 — when the agent forwarded OAuth introspection, surface a
+  // per-provider status row in the markdown "Verification Status"
+  // table (mirrors the dashboard L4 path). `ran` for any forward that
+  // produced a result (incl. honest introspection-error — the
+  // verdict already reflects whether it verified); the per-source
+  // verdict in the section carries the detail.
+  const oauthIntrospectionStatus =
+    oauthForward.section && oauthForward.section.sources.length > 0
+      ? oauthForward.section.sources.map((s) => ({
+          provider: s.connector,
+          status:
+            s.verdict === 'unverified' ? ('failed' as const) : ('ran' as const),
+        }))
+      : undefined;
+
+  await persistVerifiedMarkdown({
+    sessionId,
+    merged,
+    verdict,
+    discoveryFindings: scrubbed.findings ?? [],
+    ...(oauthIntrospectionStatus !== undefined ? { oauthIntrospectionStatus } : {}),
+  });
+
+  publishSessionEvent(sessionId, {
+    type: 'status-change',
+    status: 'complete',
+    ...(verdict.primaryRiskLevel ? { riskLevel: verdict.primaryRiskLevel } : {}),
+  });
+
+  return { verificationStatus };
 }
 
 void buildStartVerificationHint;

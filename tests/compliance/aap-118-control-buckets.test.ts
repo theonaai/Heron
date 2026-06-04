@@ -147,10 +147,12 @@ describe('AAP-118 honest move: phantom AIUC-1 sub-ids are not verifiable', () =>
 
   it('the wired AIUC-1 verifiable set is exactly the real deterministic-detector controls', () => {
     // Spec's real AIUC-1 verifiable set was A003, A003.3, A003.4, B006, D003,
-    // A006, A001, E004, E015.2. A003 bare is not wired (only the A003.3/.4
-    // least-privilege pair is). AAP-134 moved E004 + E015.2 OUT (approval-chain-
-    // only, no agent-observable evidence → oos-operator-artifact), so the WIRED
-    // verifiable set is now 6 — and contains no phantom sub-id.
+    // A006, A001, E004, E015.2. A003 bare is not wired (only the A003.4
+    // least-privilege control is). AAP-134 moved E004 + E015.2 OUT (approval-
+    // chain-only, no agent-observable evidence → oos-operator-artifact), and
+    // A003.3 (separate agent identity) was collapsed/removed because the scope
+    // detector does not verify identity, so the WIRED verifiable set is now 5 —
+    // and contains no phantom sub-id.
     const aiucVerifiable = new Set(
       CONTROL_CATALOG.filter(
         (e) => e.frameworkId === 'aiuc-1' && e.bucket === 'verifiable',
@@ -158,7 +160,6 @@ describe('AAP-118 honest move: phantom AIUC-1 sub-ids are not verifiable', () =>
     );
     expect([...aiucVerifiable].sort()).toEqual([
       'A001',
-      'A003.3',
       'A003.4',
       'A006',
       'B006',
@@ -198,7 +199,7 @@ describe('AAP-118: per-framework bucket counts', () => {
   }
 
   // Wired slice of the spec's authoritative per-control lists. These are the
-  // honest counts for what Heron actually wires (79 distinct controls), the
+  // honest counts for what Heron actually wires (78 distinct controls), the
   // subset of the full-universe spec table (334 rows).
   const expected: Record<FrameworkId, Record<ComplianceBucket, number>> = {
     'eu-ai-act': {
@@ -226,8 +227,10 @@ describe('AAP-118: per-framework bucket counts', () => {
     'aiuc-1': {
       // AAP-134: E004 + E015.2 moved verifiable → oos-operator-artifact
       // (approval-chain-only, no agent-observable evidence). So AIUC verifiable
-      // 8→6 and oos-operator-artifact 1→3.
-      verifiable: 6,
+      // 8→6 and oos-operator-artifact 1→3. A003.3 (separate agent identity) was
+      // then collapsed/removed entirely (scope detector does not verify
+      // identity), dropping AIUC verifiable 6→5.
+      verifiable: 5,
       'self-attested': 5,
       'oos-operator-artifact': 3,
       'oos-not-verifiable': 2,
@@ -256,7 +259,7 @@ describe('AAP-118: per-framework bucket counts', () => {
     });
   }
 
-  it('totals across all five frameworks (wired set = 79 distinct controls)', () => {
+  it('totals across all five frameworks (wired set = 78 distinct controls)', () => {
     const tot: Record<ComplianceBucket, number> = {
       verifiable: 0,
       'self-attested': 0,
@@ -270,16 +273,17 @@ describe('AAP-118: per-framework bucket counts', () => {
       // AAP-119 (S4): MEASURE 1.1 moved verifiable → oos-operator-artifact.
       // AAP-133: Art 14(4)(d) moved verifiable → oos-operator-artifact.
       // AAP-134: AIUC E004 + E015.2 and NIST MANAGE 1.2 (3 approval-chain-only
-      // controls) moved verifiable → oos-operator-artifact. Net wired totals
-      // are now verifiable 20 and oos-operator-artifact 46. The distinct-control
-      // total (79) is unchanged — all are bucket moves.
-      verifiable: 20,
+      // controls) moved verifiable → oos-operator-artifact. Those were bucket
+      // moves (distinct total unchanged). A003.3 (separate agent identity) was
+      // then REMOVED entirely (scope detector does not verify identity), which
+      // both drops verifiable 20→19 and drops the distinct-control total 79→78.
+      verifiable: 19,
       'self-attested': 8,
       'oos-operator-artifact': 46,
       'oos-not-verifiable': 5,
     });
     const sum = COMPLIANCE_BUCKETS.reduce((acc, b) => acc + tot[b], 0);
-    expect(sum).toBe(79);
+    expect(sum).toBe(78);
   });
 });
 

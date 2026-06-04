@@ -18,7 +18,7 @@
  *      plural per the actual source count.
  *   6. Executive Summary mirrors the DPO-readable evidence-pack
  *      structure that already lives in
- *      `src/verification/hr-pack/exec-summary.ts`: Compliance Posture,
+ *      `src/verification/hr-pack/exec-summary.ts`: Compliance Summary,
  *      Headline Findings, Framework Coverage, Recommended Actions,
  *      Approval Trail subsections.
  *   7. Cover meta is a definition list (<dl class="cover-meta">) — 3
@@ -166,7 +166,7 @@ describe('renderVerificationReportHtml — editorial polish: cover', () => {
       generatedAt: '2026-05-17T09:22:55.856Z',
     });
     // Scope the assertion to the cover <section>, not the whole body —
-    // the Compliance Posture subsection further down legitimately uses
+    // the Compliance Summary subsection further down legitimately uses
     // the phrase "Overall verdict:" as prose. The cover badge should
     // be a single big word.
     const coverMatch = html.match(/<section class="cover">([\s\S]*?)<\/section>/);
@@ -239,7 +239,7 @@ describe('renderVerificationReportHtml — editorial polish: pluralization', () 
 });
 
 describe('renderVerificationReportHtml — editorial polish: executive summary structure', () => {
-  it('Section 01 contains Compliance Posture, Headline Findings, Framework Coverage, Recommended Actions subsections', () => {
+  it('Section 01 contains Compliance Summary, Headline Findings, Framework Coverage, Recommended Actions subsections', () => {
     const report = makeReport({
       frameworkMapping: makeMapping([
         ctrl({ verdict: 'verified', controlId: 'A001', framework: 'aiuc-1' }),
@@ -252,7 +252,7 @@ describe('renderVerificationReportHtml — editorial polish: executive summary s
       evaluationId: 'eval-1',
       generatedAt: '2026-05-17T09:22:55.856Z',
     });
-    expect(html).toContain('<h3>Compliance Posture</h3>');
+    expect(html).toContain('<h3>Compliance Summary</h3>');
     expect(html).toContain('<h3>Headline Findings</h3>');
     expect(html).toContain('<h3>Framework Coverage</h3>');
     expect(html).toContain('<h3>Recommended Actions</h3>');
@@ -368,7 +368,7 @@ describe('renderVerificationReportHtml — editorial polish: executive summary s
     expect(html).toMatch(/EU AI Act[^<]*<\/strong>[^<]*0\/1/);
   });
 
-  it('Compliance Posture line names the verdict', () => {
+  it('Compliance Summary line names the verdict', () => {
     const report = makeReport({
       frameworkMapping: makeMapping([
         ctrl({ verdict: 'fail', controlId: 'A1', severity: 'critical' }),
@@ -381,7 +381,7 @@ describe('renderVerificationReportHtml — editorial polish: executive summary s
       generatedAt: '2026-05-17T09:22:55.856Z',
     });
     // Posture body explicitly mentions FAILED + the critical count
-    const postureMatch = html.match(/<h3>Compliance Posture<\/h3>[\s\S]*?<\/div>/);
+    const postureMatch = html.match(/<h3>Compliance Summary<\/h3>[\s\S]*?<\/div>/);
     expect(postureMatch).toBeTruthy();
     expect(postureMatch![0]).toContain('FAILED');
     expect(postureMatch![0]).toContain('1 critical');

@@ -126,18 +126,17 @@ describe('control catalog representation', () => {
     }
   });
 
-  it('Phase 2 wires a typed detector onto the AIUC-1 A003 catalog entries', () => {
+  it('Phase 2 wires a typed detector onto the AIUC-1 A003 catalog entry', () => {
     // The router covered AIUC-1 A003 with a single detector; the catalog
-    // has both A003.3 and A003.4 as paired least-privilege entries.
-    // Both should get the same adapter wired in.
-    for (const controlId of ['A003.3', 'A003.4']) {
-      const entry = findCatalogEntry({
-        findingType: 'excessive-access',
-        frameworkId: 'aiuc-1',
-        controlId,
-      });
-      expect(entry?.deterministicDetector).toBeTypeOf('function');
-    }
+    // wires it onto A003.4 (least-privilege scopes). A003.3 (separate agent
+    // identity) was removed because the scope detector does not verify
+    // identity.
+    const entry = findCatalogEntry({
+      findingType: 'excessive-access',
+      frameworkId: 'aiuc-1',
+      controlId: 'A003.4',
+    });
+    expect(entry?.deterministicDetector).toBeTypeOf('function');
   });
 
   it('Phase 2 wires GDPR Article 22 + 5(1)(c) detectors onto the catalog', () => {

@@ -111,8 +111,9 @@ describe('AIUC-1 registration (AAP-44)', () => {
         }
       }
     }
-    // 16 controls total across 4 finding-types
-    expect(aiuc1Controls.length).toBe(16);
+    // 15 controls total across 4 finding-types (A003.3 separate-identity was
+    // removed because the scope detector does not verify identity)
+    expect(aiuc1Controls.length).toBe(15);
 
     // All 6 AIUC-1 domains represented (A, B, C, D, E, F)
     const domains = new Set<string>();
@@ -670,8 +671,9 @@ describe('AIUC-1 per-control gating (AAP-44)', () => {
     expect(aiuc1Ids).toContain('A001');
     expect(aiuc1Ids).toContain('A002');
     expect(aiuc1Ids).toContain('A006');
-    // excessive-access (no MCP): A003.3, A003.4, B007 present; B008.2 gated
-    expect(aiuc1Ids).toContain('A003.3');
+    // excessive-access (no MCP): A003.4, B007 present; B008.2 gated.
+    // A003.3 (separate agent identity) was removed — scope detector does not
+    // verify identity.
     expect(aiuc1Ids).toContain('A003.4');
     expect(aiuc1Ids).toContain('B007');
     // write-risk (no sub-agents): B006, D003, F001 present; E015.2 gated
@@ -680,7 +682,7 @@ describe('AIUC-1 per-control gating (AAP-44)', () => {
     expect(aiuc1Ids).toContain('F001');
   });
 
-  it('With all 3 triggers, all 16 AIUC-1 controls appear', () => {
+  it('With all 3 triggers, all 15 AIUC-1 controls appear', () => {
     const r = mapFindingsToRiskCategories({
       systems: [baseSystem()],
       transcript: tx([
@@ -698,13 +700,13 @@ describe('AIUC-1 per-control gating (AAP-44)', () => {
     );
     const expected = [
       'A001', 'A002', 'A005', 'A006',
-      'A003.3', 'A003.4', 'B007', 'B008.2',
+      'A003.4', 'B007', 'B008.2',
       'B006', 'D003', 'E015.2', 'F001',
       'C007', 'C009', 'E004', 'E016',
     ];
     for (const id of expected) {
       expect(aiuc1Ids, `missing AIUC-1 control ${id}`).toContain(id);
     }
-    expect(aiuc1Ids.size).toBe(16);
+    expect(aiuc1Ids.size).toBe(15);
   });
 });
