@@ -1,16 +1,13 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { GitCompare, Loader2, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 import {
   type AnalysisErrorRecord,
   type AuditSessionDetail,
-  fetchVersionDiff,
-  type VersionDiff,
 } from '@/lib/api';
 import TranscriptView from './TranscriptView';
 import MinimalReportView from './MinimalReportView';
-import DiffView from './DiffView';
 import DiscoveryConsentDialog from './DiscoveryConsentDialog';
 import { useSessions } from './DashboardChrome';
 
@@ -28,7 +25,7 @@ interface StatusChangePayload {
 const POLL_INTERVAL_MS = 3000;
 
 // ────────────────────────────────────────────────────────────────
-// Session detail view — Report / Transcript / Compare tabs.
+// Session detail view — Report / Transcript tabs.
 //
 // OSS strips:
 //   • Share button + per-email grants (no sharing in OSS)
@@ -39,11 +36,16 @@ const POLL_INTERVAL_MS = 3000;
 // What remains:
 //   • Download .md
 //   • View report / transcript
-//   • Compare versions (gated on fetchVersionDiff returning non-null —
-//     OSS stub returns null until #33-C+ wires the diff API)
+//
+// The compare / version-diff surface (the "View diff" button + the
+// "Compare" tab) was cut from this view for the demo build. The diff
+// engine is intentionally kept dormant, not deleted: the
+// /api/audit/sessions/:id/diff route, DiffView, diffMarkdown, and
+// fetchVersionDiff all still exist. Re-mounting the tab is a small
+// UI-only change when the dashboard re-review use case returns.
 // ────────────────────────────────────────────────────────────────
 
-type Tab = 'report' | 'transcript' | 'diff';
+type Tab = 'report' | 'transcript';
 
 // ────────────────────────────────────────────────────────────────
 // AAP-92 — auto-flip the active tab to "report" when an in-flight
@@ -215,8 +217,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   // infinite polling on a complete + verified session).
   const shouldPoll = isLive || verificationPending;
   const [tab, setTab] = useState<Tab>(hasReport ? 'report' : 'transcript');
-  const [diff, setDiff] = useState<VersionDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // AAP-92 — once the user clicks any tab, never auto-flip again. Kept
   // in a ref so writing to it from a tab click doesn't trigger a render
@@ -381,29 +381,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
       pollRef.current = null;
     };
   }, [liveSession.id, shouldPoll]);
-
-  useEffect(() => {
-    if (!isComplete) return;
-    let cancelled = false;
-    fetchVersionDiff(liveSession.id).then((d) => {
-      if (!cancelled) setDiff(d);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [liveSession.id, isComplete]);
-
-  const handleViewDiff = async () => {
-    if (diff) {
-      handleTabClick('diff');
-      return;
-    }
-    setDiffLoading(true);
-    const d = await fetchVersionDiff(liveSession.id);
-    setDiff(d);
-    setDiffLoading(false);
-    if (d) handleTabClick('diff');
-  };
 
   const handleDownload = () => {
     if (!liveSession.report) return;
@@ -617,26 +594,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
                 Download .md
               </button>
             )}
-
-            {diff && (
-              <button
-                type="button"
-                className="btn"
-                onClick={handleViewDiff}
-                disabled={diffLoading}
-                title="View the auto-detected diff"
-              >
-                {diffLoading ? (
-                  <Loader2
-                    style={{ width: 13, height: 13 }}
-                    className="animate-spin"
-                  />
-                ) : (
-                  <GitCompare style={{ width: 13, height: 13 }} />
-                )}
-                View diff
-              </button>
-            )}
           </div>
         )}
       </div>
@@ -658,15 +615,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
         >
           Transcript ({liveSession.transcript.length})
         </button>
-        {diff && (
-          <button
-            type="button"
-            className={`tab ${tab === 'diff' ? 'active' : ''}`}
-            onClick={() => handleTabClick('diff')}
-          >
-            Compare
-          </button>
-        )}
       </div>
 
       <div className="body">
@@ -752,27 +700,6 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
               runtimeAgentName={effectiveAgentName}
             />
           </>
-        ) : tab === 'diff' && diff ? (
-          isAnalysisFailed ? (
-            // AAP-56: a failed-analysis session has no AuditReport to diff
-            // against. Render a guard rather than crashing inside DiffView.
-            <div
-              style={{
-                margin: '12px 0',
-                padding: '14px 18px',
-                background: '#fef2f2',
-                border: '1px solid #fecaca',
-                borderRadius: 6,
-                fontSize: 13,
-                color: '#7f1d1d',
-              }}
-            >
-              <strong style={{ fontWeight: 700 }}>Cannot compare</strong>: one session
-              failed analysis. Re-run the audit before attempting a comparison.
-            </div>
-          ) : (
-            <DiffView diff={diff} />
-          )
         ) : (
           <TranscriptView
             transcript={liveSession.transcript}
