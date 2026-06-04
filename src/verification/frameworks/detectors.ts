@@ -256,7 +256,7 @@ export function detectAIUC1_A003(sig: VerificationSignals): FrameworkControl {
       // AAP-135 (B12): describe the absence of scope DRIFT, not "access is
       // minimal / fine" — the latter read as a contradiction with the SLF-001
       // broad-OAuth finding nested under this row.
-      rationale: 'Granted scopes match what the agent declared — no scope drift.',
+      rationale: 'Granted scopes match what the agent declared, no scope drift.',
       evidenceRefs: [{ kind: 'declared', ref: 'declared scopes match actual within broad-read class' }],
       severity: 'info',
     };
@@ -312,7 +312,7 @@ export function detectAIUC1_B006(sig: VerificationSignals): FrameworkControl {
     // AAP-135 (B12): describe the absence of action-scope DRIFT, not "no
     // unauthorised actions are possible" — keep it parallel with A003's
     // verified rationale.
-    rationale: 'Granted action scopes match what the agent declared — no scope drift.',
+    rationale: 'Granted action scopes match what the agent declared, no scope drift.',
     evidenceRefs: [{ kind: 'declared', ref: 'no extra action scopes' }],
     severity: 'info',
   };

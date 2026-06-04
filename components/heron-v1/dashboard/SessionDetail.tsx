@@ -520,7 +520,7 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
   const primaryTooltip =
     primaryRiskSource === 'deterministic'
       ? postureBand
-        ? 'Posture is the BR×DS×DM high-water-mark over Verified findings (FIPS 199). Self-attested findings do not move it.'
+        ? 'Risk is the BR×DS×DM high-water-mark over Verified findings (FIPS 199). Self-attested findings do not move it.'
         : 'Risk derived from deterministic evidence (filesystem discovery / OAuth introspection).'
       : 'No deterministic evidence yet — run discovery from below to verify the agent against actual config files.';
 
@@ -574,12 +574,13 @@ export default function SessionDetail({ session }: { session: AuditSessionDetail
                     title={primaryTooltip}
                     style={{ fontWeight: 600 }}
                   >
-                    {/* AAP-104 B1 — when `postureBand` is the source the
-                        label reads as "low posture" / "high posture"
-                        etc., matching the in-report gradient label. */}
+                    {/* AAP-104 B1 — the label always reads "<level> risk"
+                        (e.g. "low risk" / "high risk"), matching the
+                        in-report gradient label. The team dropped the word
+                        "posture" from user-facing copy. */}
                     {deterministicRaw
-                      ? `${deterministicRaw} ${postureBand ? 'posture' : 'risk'}`
-                      : 'no posture'}
+                      ? `${deterministicRaw} risk`
+                      : 'not assessed'}
                   </span>
                 )
               )}

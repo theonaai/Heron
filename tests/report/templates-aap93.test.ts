@@ -508,8 +508,8 @@ describe('AAP-93 M5 — superseded by AAP-103 posture indicator', () => {
     const md = renderMarkdownReport(report, { verdict });
     expect(md).toContain('**Verification**: Partial');
     // Posture indicator section renders below the header.
-    expect(md).toContain('## Posture');
-    expect(md).toContain('**Posture**: 9');
+    expect(md).toContain('## Risk');
+    expect(md).toContain('**Risk**: 9');
     // The old categorical "Risk Level" line is gone.
     expect(md).not.toContain('**Risk Level**:');
     expect(md).not.toContain('Risk Level (Partially Verified)');

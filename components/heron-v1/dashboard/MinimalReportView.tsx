@@ -4,7 +4,7 @@
  * G7 PROTOTYPE — Minimal Report Layout (feature branch only, not for merge).
  *
  * Side-by-side with the current ReportView. 5 blocks:
- *   1. Header (always visible) — agent name, posture indicator, sources, timestamp
+ *   1. Header (always visible) — agent name, risk indicator, sources, timestamp
  *   2. What it does (always visible, 1-2 line + Details ▸)
  *   3. Systems & access (compact table, no Property/Value)
  *   4. Findings (Verified expanded, Self-attested collapsed by count)
@@ -648,7 +648,7 @@ export function findingsEmptyState(
     return {
       kind: 'no-discrepancies',
       message:
-        'No declared-vs-actual discrepancies. Posture reflects deployment risk from the systems above.',
+        'No declared-vs-actual discrepancies. Reflects deployment risk from the systems above.',
     };
   }
   return {
@@ -661,7 +661,7 @@ export function findingsEmptyState(
 /**
  * AAP-107: did a deterministic discovery / verification pass actually run
  * for this session? Mirrors the header's `scanned` derivation so the
- * Findings empty-state and the posture indicator never disagree about
+ * Findings empty-state and the risk indicator never disagree about
  * whether evidence exists. True when ANY of:
  *   - the systems-risk pass scored systems (`verdict.systemsRisk.scanned`);
  *   - `verdict.status` is set and not the pure no-evidence baseline; or
@@ -928,7 +928,7 @@ function HeaderBlock({
   // a11y fallback: the popover content is visual; keep a short label so the
   // affordance still announces its purpose to a screen reader.
   const postureAriaLabel =
-    'What drives the risk posture number: either the highest-risk system or ' +
+    'What drives the risk number: either the highest-risk system or ' +
     'a verified declared-vs-actual discrepancy.';
 
   // AAP-105 A5: "Verified by X" must reflect which evidence sources
@@ -1056,7 +1056,7 @@ function HeaderBlock({
               gap: 5,
             }}
           >
-            <span>Risk posture</span>
+            <span>Risk</span>
             <InfoPopover
               placement="left"
               width={280}
@@ -1393,15 +1393,22 @@ function envKeysFromDiscovery(localAgentDiscovery: unknown): string[] {
   return out;
 }
 
-// T5 (D2): the "Verified?" column legend, shown as a hover/focus hint on an ⓘ
-// next to the header rather than a strip under the table. Plain text (native
-// title), no em-dashes.
-const VERIFIED_LEGEND_HINT = [
+// T5 (D2): the "Verified?" column legend, shown as a styled instant-hover
+// popover (InfoPopover, placement 'left') on an ⓘ next to the header rather
+// than a native browser title. One line per glyph (glyph + meaning). The
+// flattened text is kept as the aria-label so screen readers still announce
+// the full legend. No em-dashes.
+const VERIFIED_LEGEND_GLYPHS: Array<{ glyph: string; meaning: string }> = [
+  { glyph: '✓', meaning: 'Verified: declared OAuth scopes confirmed by introspection' },
+  { glyph: '⚠', meaning: 'Discrepancy: declared scope does not match introspection' },
+  { glyph: '🔑', meaning: 'Found in .env: credential present, scope not introspectable' },
+  // This glyph mirrors the literal marker the table renders for the
+  // unverified state (NOT_VERIFIED_STATUS.glyph), so the legend maps to it.
+  { glyph: '—', meaning: 'No deterministic evidence: self-reported only' },
+];
+const VERIFIED_LEGEND_ARIA = [
   'What each glyph means:',
-  '✓ Verified: declared OAuth scopes confirmed by introspection',
-  '⚠ Discrepancy: declared scope does not match introspection',
-  '🔑 Found in .env: credential present, scope not introspectable',
-  '— No deterministic evidence: self-reported only',
+  ...VERIFIED_LEGEND_GLYPHS.map((g) => `${g.glyph} ${g.meaning}`),
 ].join('\n');
 
 function SystemsBlock({
@@ -1458,15 +1465,45 @@ function SystemsBlock({
             <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500 }}>Risk</th>
             <th style={{ padding: '8px 0 8px 8px', borderBottom: '1px solid #e5e7eb', fontWeight: 500, textAlign: 'center' }}>
               Verified?{' '}
-              <span
-                tabIndex={0}
-                role="img"
-                aria-label={VERIFIED_LEGEND_HINT}
-                title={VERIFIED_LEGEND_HINT}
-                style={{ cursor: 'help', color: '#a1a1aa', fontWeight: 400 }}
+              <InfoPopover
+                placement="left"
+                width={300}
+                ariaLabel={VERIFIED_LEGEND_ARIA}
+                content={
+                  <>
+                    <div style={{ fontWeight: 700, color: '#1e293b', marginBottom: 6 }}>
+                      What each glyph means
+                    </div>
+                    {VERIFIED_LEGEND_GLYPHS.map((g) => (
+                      <div
+                        key={g.glyph}
+                        style={{ display: 'flex', gap: 8, marginTop: 3, alignItems: 'baseline' }}
+                      >
+                        <span
+                          aria-hidden
+                          style={{
+                            flex: '0 0 auto',
+                            width: 16,
+                            textAlign: 'center',
+                            fontWeight: 700,
+                            color: '#475569',
+                          }}
+                        >
+                          {g.glyph}
+                        </span>
+                        <span>{g.meaning}</span>
+                      </div>
+                    ))}
+                  </>
+                }
               >
-                ⓘ
-              </span>
+                <span
+                  aria-hidden
+                  style={{ cursor: 'help', color: '#a1a1aa', fontWeight: 400 }}
+                >
+                  ⓘ
+                </span>
+              </InfoPopover>
             </th>
           </tr>
         </thead>
@@ -2559,7 +2596,7 @@ function FindingsBlock({
         </h3>
         <p style={{ margin: '0 0 12px', fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
           Deterministic evidence (MCP inventory, OAuth scopes, .env, plugins/skills). These drive
-          the posture indicator.
+          the risk indicator.
         </p>
         {verified.length === 0 ? (
           <p style={{ fontSize: 12.5, color: '#71717a', margin: 0, padding: '10px 12px', background: '#f8fafc', borderRadius: 6, border: '1px dashed #e5e7eb' }}>
@@ -2598,7 +2635,7 @@ function FindingsBlock({
           <p style={{ margin: '0 0 12px', fontSize: 12, color: '#71717a', lineHeight: 1.55 }}>
             Deterministic sources Heron tried to read but could not (for example a
             rejected or expired OAuth token). These are not confirmed discrepancies and
-            do not move the posture indicator.
+            do not move the risk indicator.
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {couldNotVerify.map((f) => (
@@ -2642,7 +2679,7 @@ function FindingsBlock({
             </span>
             {!slfOpen && (
               <span style={{ fontSize: 11, color: '#71717a', fontWeight: 500 }}>
-                interview only · do not move posture
+                interview only · do not move risk
               </span>
             )}
           </button>
@@ -2727,7 +2764,7 @@ export function navigateToFinding(code: string): void {
 // no project binding: `~/.codex/config.toml` is shared by every project
 // on the box. A discovered-but-undeclared server there is the IDE's host
 // capability surface, NOT a deviation by the audited agent. So it is NOT
-// a Verified discrepancy card and does NOT move posture (it never enters
+// a Verified discrepancy card and does NOT move risk (it never enters
 // `computePosture`). We surface it here as a compact, muted, clearly-
 // informational note so a reviewer sees the host's reachable tools
 // without mistaking them for findings against this agent.
@@ -2763,7 +2800,7 @@ function HostCapabilityNote({
         IDE host capability (not bound to this agent):
       </span>{' '}
       {serverList}. Configured in the {runtimes} IDE on this host, not specific to this
-      audited agent/task — informational, not a deviation, does not move posture.
+      audited agent/task — informational, not a deviation, does not move risk.
     </div>
   );
 }
@@ -2818,10 +2855,14 @@ export function MinimalFindingCard({
   // "Show more / Show less" toggle (splitForCard at 280 chars + descExpanded
   // state). The toggle hid the part of the finding a reviewer most needs, so
   // we always render the FULL description now (toggle + state removed).
-  const mitigationItems = mitigation.includes('; ')
+  // Bullet ONLY on explicit newlines the catalog author put between steps.
+  // Never split on punctuation: a single semicolon clause in prose must stay
+  // one paragraph (a `; ` split used to wrongly fork prose like SLF-003 into a
+  // bogus second bullet). A single-line string renders verbatim below.
+  const mitigationItems = mitigation.includes('\n')
     ? mitigation
-        .split(/;\s+/)
-        .map((s) => s.replace(/\.$/, '').trim())
+        .split(/\n+/)
+        .map((s) => s.trim())
         .filter((s) => s.length > 0)
     : null;
 
@@ -3084,7 +3125,7 @@ function ComplianceBlock({
             <strong>warn</strong> (the deterministic-flag set), and{' '}
             <strong>self-attested</strong> controls are the agent&apos;s own answers, not
             deterministic verdicts. Findings nested under a control (↳) are self-reported
-            (full detail in the global Self-Attested Findings stream) and do not move posture.
+            (full detail in the global Self-Attested Findings stream) and do not move risk.
             Out-of-scope controls need a corporate artifact or an external probe Heron
             can&apos;t reach in an interview, so they are a count only.
           </p>

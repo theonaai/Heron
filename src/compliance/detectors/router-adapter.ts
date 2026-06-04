@@ -71,6 +71,47 @@ import type {
 } from './types.js';
 import type { FindingType, FrameworkId } from '../types.js';
 
+// ─── Per-control display overrides (AAP-136) ───────────────────────────────
+//
+// A003.3 and A003.4 BOTH route to `detectAIUC1_A003`, and B006 routes to
+// `detectAIUC1_B006`. The detector hands back a single controlName ("Limit
+// Data Access" / "Unauthorized Actions") and a single verified rationale
+// ("Granted scopes match what the agent declared, no scope drift"). That made
+// A003.3 and A003.4 render as byte-identical rows. These overrides give each
+// catalog entry a DISTINCT, accurate display name + verified rationale that
+// reflects the specific control's intent, WITHOUT changing what the detector
+// actually evaluates.
+//
+// HONESTY NOTE (flagged for human review): the AIUC-1 catalog wires A003.3
+// ("agent has its own non-human identity separate from the invoking user") to
+// `detectAIUC1_A003`, which ONLY checks OAuth scope drift. It does NOT prove a
+// separate machine identity. The A003.3 verified rationale below therefore does
+// NOT claim identity is verified; it states what was actually checked (scope
+// drift) and explicitly says the separate-identity property is not yet
+// deterministically verified. A003.4 (least-privilege scopes) and B006 (no
+// undeclared write/action capability) ARE accurately covered by the scope-diff
+// detectors, so their rationales describe scope drift directly.
+const CONTROL_NAME_OVERRIDE: Record<string, string> = {
+  'A003.3': 'Separate Agent Identity',
+  'A003.4': 'Least-Privilege Scopes',
+  // B006 keeps the detector's "Unauthorized Actions" name; listed for clarity.
+};
+
+// Verified-branch rationale per controlId. Only applied when the detector
+// returns `verified` (fail / unverified rationales from the detector are
+// already control-specific and stay untouched).
+const VERIFIED_RATIONALE_OVERRIDE: Record<string, string> = {
+  // MIS-MAP, honest copy: the detector verified scope drift, not identity.
+  'A003.3':
+    'Granted scopes match what the agent declared, no scope drift. Note: this control asks for a separate non-human agent identity, which Heron does not verify deterministically yet, so treat the separate-identity claim as self-attested.',
+  // Accurate: scope-drift / least-privilege is exactly what A003 checks.
+  'A003.4':
+    'Least-privilege upheld: granted scopes stay within the declared baseline for the stated task, with no broad-read scope drift.',
+  // Accurate: B006 checks no extra action-class (write) scope beyond declared.
+  B006:
+    'No undeclared write or action capability: granted action scopes match the declared baseline, with no action-scope drift beyond the agent\'s stated mandate.',
+};
+
 // ─── Verdict / severity passthrough ────────────────────────────────────────
 
 /**
@@ -133,6 +174,15 @@ function makeAdapter(args: {
     const signals = envelopeToSignals(evidence);
     if (!signals) return null;
     const out = args.detector(signals);
+    // AAP-136: per-control display overrides so paired controls that share a
+    // detector (A003.3 / A003.4, B006) render distinct, accurate copy. The
+    // override only replaces the VERIFIED rationale; fail / unverified
+    // rationales from the detector are already control-specific.
+    const controlName = CONTROL_NAME_OVERRIDE[args.controlId] ?? out.controlName;
+    const rationale =
+      out.verdict === 'verified' && VERIFIED_RATIONALE_OVERRIDE[args.controlId]
+        ? VERIFIED_RATIONALE_OVERRIDE[args.controlId]!
+        : out.rationale;
     const result: ControlResult = {
       stableKey: stableKeyFor({
         findingType: args.findingType,
@@ -144,12 +194,12 @@ function makeAdapter(args: {
       // AAP-111: denormalised owning-framework join field (== frameworkId).
       framework: args.frameworkId,
       controlId: args.controlId,
-      controlName: out.controlName,
+      controlName,
       path: 'typed',
       surface: args.surface,
       verdict: mapVerdict(out.verdict),
       severity: mapSeverity(out.severity),
-      rationale: out.rationale,
+      rationale,
       evidenceRefs: out.evidenceRefs.map((r) => ({ kind: r.kind, ref: r.ref })),
     };
     return result;

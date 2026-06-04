@@ -495,17 +495,17 @@ function renderPostureSection(verdict: Verdict | undefined): string {
   // FIPS 199 high-water-mark rule. Do NOT imply the agent is clean or that
   // discovery has not run. NO em-dashes.
   const anchorNote =
-    'Posture reflects deployment risk across the declared systems (blast radius and data sensitivity), aggregated with any verified declared-vs-actual discrepancy via the FIPS 199 high-water-mark rule (max severity, not average). Self-attested findings render below but do not move the gradient.';
+    'This risk number reflects deployment risk across the declared systems (blast radius and data sensitivity), aggregated with any verified declared-vs-actual discrepancy via the FIPS 199 high-water-mark rule (max severity, not average). Self-attested findings render below but do not move the gradient.';
 
   const lines = [
-    '## Posture',
+    '## Risk',
     '',
-    `**Posture**: ${postureText}  ·  ${countsLine}`,
+    `**Risk**: ${postureText}  ·  ${countsLine}`,
     '',
     '```',
     `Severity gradient (1 = lowest, 13.5 = highest):`,
     `  ${ladder}`,
-    `  ^---- Posture marker`,
+    `  ^---- Risk marker`,
     '```',
     '',
     `_${anchorNote}_`,
@@ -1769,7 +1769,7 @@ function findingsEmptyStateLine(
   const systemsRiskNonZero =
     (verdict.posture ?? 0) > 0 || (verdict.systemsRisk?.systems?.length ?? 0) > 0;
   if (systemsRiskNonZero) {
-    return 'No declared-vs-actual discrepancies. Posture reflects deployment risk from the systems above.';
+    return 'No declared-vs-actual discrepancies. Reflects deployment risk from the systems above.';
   }
   return 'No declared-vs-actual discrepancies found in the deterministic evidence.';
 }
@@ -1852,7 +1852,7 @@ function renderFindingsCards(
   lines.push('### Verified Findings');
   lines.push('');
   lines.push(
-    '_Deterministic evidence: MCP server inventory, OAuth scope introspection, workspace .env scans, plugin / skill / auth credentials. These drive the posture indicator above._',
+    '_Deterministic evidence: MCP server inventory, OAuth scope introspection, workspace .env scans, plugin / skill / auth credentials. These drive the risk indicator above._',
   );
   lines.push('');
   if (verified.length === 0) {
@@ -1888,7 +1888,7 @@ function renderFindingsCards(
   lines.push('### Self-Attested Findings');
   lines.push('');
   lines.push(
-    '_These findings are derived from the agent\'s interview answers only. They appear here for transparency but do not move the posture indicator above. Treat each as a working hypothesis until matched to deterministic evidence._',
+    '_These findings are derived from the agent\'s interview answers only. They appear here for transparency but do not move the risk indicator above. Treat each as a working hypothesis until matched to deterministic evidence._',
   );
   lines.push('');
   if (selfAttested.length === 0) {
@@ -2499,7 +2499,7 @@ function renderComplianceLens(
     `(the deterministic-flag set), and **self-attested** controls are the agent's ` +
     `own answers, not deterministic verdicts. Findings nested under a control ` +
     `(↳) are self-reported (full detail in the [Self-Attested Findings](#self-attested-findings) ` +
-    `stream) and do not move posture. Out-of-scope controls need a corporate ` +
+    `stream) and do not move the risk indicator. Out-of-scope controls need a corporate ` +
     `artifact or an external probe Heron can't reach in an interview._\n\n`;
 
   return out;

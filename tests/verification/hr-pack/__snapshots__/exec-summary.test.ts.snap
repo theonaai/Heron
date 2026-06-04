@@ -8,7 +8,7 @@ exports[`renderExecutiveSummary — HR-clean scenario > matches golden snapshot 
 **Scan Date:** 2026-05-16T11:00:00Z
 **Vertical:** HR / Recruiting
 
-## Compliance Posture
+## Compliance Summary
 
 **Overall verdict:** ✓ Clean — no critical issues detected.
 
@@ -48,7 +48,7 @@ exports[`renderExecutiveSummary — HR-fail scenario > matches golden snapshot f
 **Scan Date:** 2026-05-16T11:00:00Z
 **Vertical:** HR / Recruiting
 
-## Compliance Posture
+## Compliance Summary
 
 **Overall verdict:** ⚠ Partial compliance — 2 critical issues detected.
 
@@ -94,7 +94,7 @@ exports[`renderExecutiveSummary — non-HR agent > matches golden snapshot for n
 **Scan Date:** 2026-05-16T11:00:00Z
 **Vertical:** Generic agent
 
-## Compliance Posture
+## Compliance Summary
 
 **Overall verdict:** ✓ Clean — no critical issues detected.
 

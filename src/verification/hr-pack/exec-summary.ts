@@ -9,7 +9,7 @@
  * Layout (Markdown):
  *   # Executive Summary
  *   **Agent:** ...   **Owner:** ...   **Scan Date:** ...   **Vertical:** ...
- *   ## Compliance Posture
+ *   ## Compliance Summary
  *   ## Headline Findings
  *   ## Framework Coverage
  *   ## Recommended Actions
@@ -322,7 +322,7 @@ export function renderExecutiveSummary(
   out.push(`**Scan Date:** ${scanDate}`);
   out.push(`**Vertical:** ${vertical}`);
   out.push('');
-  out.push('## Compliance Posture');
+  out.push('## Compliance Summary');
   out.push('');
   out.push(renderCompliancePosture(hr, report));
   out.push('');
