@@ -77,7 +77,7 @@ describe('runVerification — framework mapping is NOT attached automatically (H
     expect(report.frameworkMapping).toBeUndefined();
   });
 
-  it('caller can run buildFrameworkMapping on the returned report and get the 13-control rollout', async () => {
+  it('caller can run buildFrameworkMapping on the returned report and get the 12-control rollout', async () => {
     const report = await runVerification({
       declared: [{ source: 'interview', capturedAt: 't', scopes: [{ service: 'jira', scope: 'tickets:read' }] }],
       sources: [{
@@ -90,9 +90,11 @@ describe('runVerification — framework mapping is NOT attached automatically (H
       agentLabel: 'test',
     });
     const mapping = buildFrameworkMapping(report);
-    // AAP-86: catalog splits AIUC-1 A003 into A003.3 + A003.4 — total
-    // 13 entries (12 detectors, A003 lights both paired catalog rows).
-    expect(mapping.controls.length).toBe(13);
+    // AAP-86: AIUC-1 A003 wires onto a single catalog entry (A003.4,
+    // least-privilege) — total 12 entries (12 detectors, one row each). A003.3
+    // (separate agent identity) was removed because the scope detector does not
+    // verify identity.
+    expect(mapping.controls.length).toBe(12);
   });
 
   it('isFrameworkMappingDisabled reflects HERON_FRAMEWORK_MAPPING_DISABLED env', () => {

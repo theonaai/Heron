@@ -18,7 +18,7 @@
  * detectors through this adapter via `mapFindings`.
  *
  * Mapping (router.ts identity → catalog (findingType, frameworkId, controlId)):
- *   aiuc-1:A003        → excessive-access: aiuc-1 / A003.3 + A003.4
+ *   aiuc-1:A003        → excessive-access: aiuc-1 / A003.4
  *   aiuc-1:B006        → write-risk:        aiuc-1 / B006
  *   aiuc-1:D003        → write-risk:        aiuc-1 / D003
  *   aiuc-1:E004        → decisions-about-people: aiuc-1 / E004
@@ -73,26 +73,22 @@ import type { FindingType, FrameworkId } from '../types.js';
 
 // ─── Per-control display overrides (AAP-136) ───────────────────────────────
 //
-// A003.3 and A003.4 BOTH route to `detectAIUC1_A003`, and B006 routes to
-// `detectAIUC1_B006`. The detector hands back a single controlName ("Limit
-// Data Access" / "Unauthorized Actions") and a single verified rationale
-// ("Granted scopes match what the agent declared, no scope drift"). That made
-// A003.3 and A003.4 render as byte-identical rows. These overrides give each
+// A003.4 routes to `detectAIUC1_A003`, and B006 routes to `detectAIUC1_B006`.
+// The detector hands back a single controlName ("Limit Data Access" /
+// "Unauthorized Actions") and a single verified rationale ("Granted scopes
+// match what the agent declared, no scope drift"). These overrides give each
 // catalog entry a DISTINCT, accurate display name + verified rationale that
 // reflects the specific control's intent, WITHOUT changing what the detector
 // actually evaluates.
 //
-// HONESTY NOTE (flagged for human review): the AIUC-1 catalog wires A003.3
-// ("agent has its own non-human identity separate from the invoking user") to
-// `detectAIUC1_A003`, which ONLY checks OAuth scope drift. It does NOT prove a
-// separate machine identity. The A003.3 verified rationale below therefore does
-// NOT claim identity is verified; it states what was actually checked (scope
-// drift) and explicitly says the separate-identity property is not yet
-// deterministically verified. A003.4 (least-privilege scopes) and B006 (no
-// undeclared write/action capability) ARE accurately covered by the scope-diff
-// detectors, so their rationales describe scope drift directly.
+// A003.3 (separate agent identity) was collapsed/removed for now: the scope
+// detector does not verify identity, so marking it "verified" overclaimed. A
+// real identity detector — using the OAuth `azp`/client_id and any
+// service-account credential signal — is tracked as a follow-up. A003.4
+// (least-privilege scopes) and B006 (no undeclared write/action capability) ARE
+// accurately covered by the scope-diff detectors, so their rationales describe
+// scope drift directly.
 const CONTROL_NAME_OVERRIDE: Record<string, string> = {
-  'A003.3': 'Separate Agent Identity',
   'A003.4': 'Least-Privilege Scopes',
   // B006 keeps the detector's "Unauthorized Actions" name; listed for clarity.
 };
@@ -101,9 +97,6 @@ const CONTROL_NAME_OVERRIDE: Record<string, string> = {
 // returns `verified` (fail / unverified rationales from the detector are
 // already control-specific and stay untouched).
 const VERIFIED_RATIONALE_OVERRIDE: Record<string, string> = {
-  // MIS-MAP, honest copy: the detector verified scope drift, not identity.
-  'A003.3':
-    'Granted scopes match what the agent declared, no scope drift. Note: this control asks for a separate non-human agent identity, which Heron does not verify deterministically yet, so treat the separate-identity claim as self-attested.',
   // Accurate: scope-drift / least-privilege is exactly what A003 checks.
   'A003.4':
     'Least-privilege upheld: granted scopes stay within the declared baseline for the stated task, with no broad-read scope drift.',
@@ -174,10 +167,10 @@ function makeAdapter(args: {
     const signals = envelopeToSignals(evidence);
     if (!signals) return null;
     const out = args.detector(signals);
-    // AAP-136: per-control display overrides so paired controls that share a
-    // detector (A003.3 / A003.4, B006) render distinct, accurate copy. The
-    // override only replaces the VERIFIED rationale; fail / unverified
-    // rationales from the detector are already control-specific.
+    // AAP-136: per-control display overrides so controls that share a detector
+    // (A003.4, B006) render distinct, accurate copy. The override only replaces
+    // the VERIFIED rationale; fail / unverified rationales from the detector are
+    // already control-specific.
     const controlName = CONTROL_NAME_OVERRIDE[args.controlId] ?? out.controlName;
     const rationale =
       out.verdict === 'verified' && VERIFIED_RATIONALE_OVERRIDE[args.controlId]
@@ -214,11 +207,10 @@ function makeAdapter(args: {
  * reads from. Order mirrors the original detector-table order so any
  * downstream snapshot that depended on order survives.
  *
- * Some framework detectors light multiple catalog entries (A003 fires
- * for both excessive-access:aiuc-1:A003.3 and excessive-access:aiuc-1:A003.4
- * — they're paired least-privilege controls). We register one adapter
- * per (framework detector, catalog entry) pair so the verdict
- * propagates to every applicable entry.
+ * `detectAIUC1_A003` now lights a single catalog entry
+ * (excessive-access:aiuc-1:A003.4, least-privilege scopes). A003.3 (separate
+ * agent identity) was collapsed/removed because the scope detector does not
+ * verify identity; a real identity detector is tracked as a follow-up.
  */
 export const ROUTER_DETECTOR_ADAPTERS: ReadonlyArray<{
   findingType: FindingType;
@@ -227,18 +219,6 @@ export const ROUTER_DETECTOR_ADAPTERS: ReadonlyArray<{
   detector: TypedDetector;
 }> = [
   // ── AIUC-1 ──
-  {
-    findingType: 'excessive-access',
-    frameworkId: 'aiuc-1',
-    controlId: 'A003.3',
-    detector: makeAdapter({
-      findingType: 'excessive-access',
-      frameworkId: 'aiuc-1',
-      controlId: 'A003.3',
-      surface: 'actual',
-      detector: detectAIUC1_A003,
-    }),
-  },
   {
     findingType: 'excessive-access',
     frameworkId: 'aiuc-1',

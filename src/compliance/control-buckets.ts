@@ -11,8 +11,8 @@
  *   The spec's summary table buckets the FULL published control universe
  *   (EU AI Act 133 + GDPR 101 + AIUC-1 65 + ISO 42001 19 + NIST 16 = 334
  *   rows → verifiable ~24 / self-attested ~35 / oos-operator-artifact ~226 /
- *   oos-not-verifiable ~49). Heron only WIRES ~79 distinct (framework,
- *   control) pairs today; the other ~255 rows have no `CONTROL_MAPPINGS`
+ *   oos-not-verifiable ~49). Heron only WIRES ~78 distinct (framework,
+ *   control) pairs today; the other ~256 rows have no `CONTROL_MAPPINGS`
  *   entry and no detector, so they never reach a report. This map therefore
  *   covers the wired set, and the per-framework counts here are the wired
  *   slice of the spec's lists (every wired control keeps the exact bucket the
@@ -30,9 +30,11 @@
  *   2. The 4 phantom AIUC-1 sub-IDs (`A003.1`, `D003.1`, `D003.3`, `D003.4`)
  *      are NOT in `CONTROL_MAPPINGS` and have no detector, so they are not
  *      wired and cannot be `verifiable`. The wired AIUC-1 verifiable set is
- *      A001, A003.3, A003.4, A006, B006, D003 (A003 bare is not wired; only the
- *      A003.3/.4 least-privilege pair is). AAP-134 moved E004 + E015.2 OUT of
- *      verifiable to oos-operator-artifact (approval-chain-only, no
+ *      A001, A003.4, A006, B006, D003 (A003 bare is not wired; only the A003.4
+ *      least-privilege control is). A003.3 (separate agent identity) was
+ *      collapsed/removed: the scope detector does not verify identity, so a real
+ *      identity detector is tracked as a follow-up. AAP-134 moved E004 + E015.2
+ *      OUT of verifiable to oos-operator-artifact (approval-chain-only, no
  *      agent-observable evidence).
  *
  * Bucket is a property of the CONTROL, not of a (findingType, control)
@@ -114,8 +116,9 @@ export const BUCKET_BY_CONTROL: Record<
   },
 
   // ── AIUC-1 ────────────────────────────────────────────────────────────────
-  // spec §AIUC-1: VERIFIABLE (wired) = A003.3, A003.4, B006, D003, A006, A001
-  // (A003 bare not wired). SELF-ATTESTED (agent-observable) = A005 (Q12),
+  // spec §AIUC-1: VERIFIABLE (wired) = A003.4, B006, D003, A006, A001
+  // (A003 bare not wired; A003.3 removed — identity not detector-verified).
+  // SELF-ATTESTED (agent-observable) = A005 (Q12),
   // B008.2 (Q14), C007 (Q10), C009 (Q10), E016 (Q10). OPERATOR-ARTIFACT = A002
   // (output-data policy) + E004 + E015.2 (AAP-134: approval-chain-only, no
   // agent-observable evidence — see below). NOT-VERIFIABLE = B007 (CODE), F001
@@ -124,7 +127,6 @@ export const BUCKET_BY_CONTROL: Record<
   'aiuc-1': {
     'A001': 'verifiable', // input data policy — processor detector (PARTIAL)
     'A002': 'oos-operator-artifact', // output data policy (corporate doc the agent can't see)
-    'A003.3': 'verifiable', // agent identity — scope diff (A003 family)
     'A003.4': 'verifiable', // scoped permissions — scope diff (A003 family)
     'A005': 'self-attested', // cross-customer isolation — Q12 self-report (proof is PROBE)
     'A006': 'verifiable', // PII leakage — sensitive-PII credential detector (FAIL)

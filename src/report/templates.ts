@@ -2773,9 +2773,9 @@ function renderedFindingTypesFromControlResults(
  * framework into a single severity.
  *
  * This is the load-bearing renderer migration described in the AAP-84
- * ticket: an auditor who sees `AIUC-1 (A003.3 fail, A003.4 verified)`
- * gets strictly more information than the prior `AIUC-1 (A003.3,
- * A003.4)` flat citation list.
+ * ticket: an auditor who sees `AIUC-1 (A003.4 verified, B006 fail)`
+ * gets strictly more information than the prior `AIUC-1 (A003.4, B006)`
+ * flat citation list.
  */
 function controlResults_renderSections(
   results: ControlResult[],

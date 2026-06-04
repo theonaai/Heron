@@ -158,10 +158,10 @@ describe('Template — EU AI Act single-entry with classification scope', () => 
 
 describe('Template — AIUC-1 (AAP-44)', () => {
   const aiuc1Flag = {
-    framework: 'AIUC-1 — A003.3, A003.4',
+    framework: 'AIUC-1 — A003.4',
     severity: 'warning' as const,
-    description: 'Agent holds permissions beyond stated need. Activates AIUC-1 controls (A003.3, A003.4). Narrow scopes to the minimum required.',
-    controlIds: ['A003.3', 'A003.4'],
+    description: 'Agent holds permissions beyond stated need. Activates AIUC-1 control A003.4. Narrow scopes to the minimum required.',
+    controlIds: ['A003.4'],
     category: 'privacy' as const,
     tier: 'voluntary' as const,
     mandatoryIn: [] as string[],

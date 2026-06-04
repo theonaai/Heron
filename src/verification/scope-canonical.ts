@@ -21,7 +21,7 @@
  * AND a `missing` (full-URL declared not in actual). On the live audit session
  * sess-20260602-094153-62e963 this produced 6 spurious OAU findings across
  * `spreadsheets` / `documents` / `drive`, which held the verifiable wedge
- * (AIUC-1 A003.3 / A003.4, GDPR Art 25) at `partial` instead of `verified`.
+ * (AIUC-1 A003.4, GDPR Art 25) at `partial` instead of `verified`.
  *
  * THE FIX. Canonicalize the scope token to ONE form on BOTH sides before the
  * `service\x00scope` comparison. The canonical form is the SHORT token: strip
