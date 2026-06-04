@@ -34,8 +34,47 @@ import {
   updateSessionMeta,
   writeReport,
 } from '../../src/storage/sessions.js';
+import {
+  subscribeSessionEvents,
+  type SessionEvent,
+} from '../../src/storage/session-events.js';
 
 const noopDiffer: ReportDiffer = { async diff() { return ''; } };
+
+/**
+ * AAP-143 increment 1 — `start_verification` returns `'verifying'`
+ * immediately and patches report.json from a detached background task.
+ * Tests that read the persisted patch must wait for the bg task to
+ * publish its `status-change=complete` event first.
+ */
+function waitForComplete(sessionId: string, timeoutMs = 5000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const isComplete = (e: SessionEvent): boolean =>
+      e.type === 'status-change' && e.status === 'complete';
+    const seen: SessionEvent[] = [];
+    const unsubscribe = subscribeSessionEvents(sessionId, (event) => {
+      seen.push(event);
+      if (isComplete(event)) {
+        unsubscribe();
+        resolve();
+      }
+    });
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (seen.some(isComplete)) {
+        clearInterval(interval);
+        unsubscribe();
+        resolve();
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        clearInterval(interval);
+        unsubscribe();
+        reject(new Error(`Timed out waiting for status-change=complete on ${sessionId}`));
+      }
+    }, 5);
+  });
+}
 
 function makeCtx(): RequestContext {
   return {
@@ -130,6 +169,9 @@ describe('G10 — start_verification with agent-forwarded OAuth scopes', () => {
       expect(forward.value.scope_count).toBe(2);
 
       // 2. Run verification — discovery + the forwarded OAuth replay.
+      //    AAP-143 — subscribe BEFORE invoking so the bg task's completion
+      //    event is never missed; the call returns 'verifying' immediately.
+      const completed = waitForComplete(id);
       const r = await server.invoke(
         'start_verification',
         { session_id: id, runtime: 'codex', workspace_hint: workspace },
@@ -137,9 +179,12 @@ describe('G10 — start_verification with agent-forwarded OAuth scopes', () => {
       );
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      // A Surface 2 source ran + produced a discrepancy ⇒ partial (not
-      // verified — the broad grant is an EXTRA).
-      expect(['partially-verified', 'verified']).toContain(r.value.verification_status);
+      expect(r.value.verification_status).toBe('verifying');
+
+      // Wait for the background task to land the OAuth patch (a Surface 2
+      // source ran + produced a discrepancy ⇒ partial, since the broad
+      // grant is an EXTRA). The settled status is read off report.json.
+      await completed;
 
       const after = await getSession(id);
       const reportJson = after!.reportJson as {
@@ -208,12 +253,19 @@ describe('G10 — start_verification with agent-forwarded OAuth scopes', () => {
       if (!forward.ok) return;
       expect(forward.value.state).toBe('introspection-error');
 
+      // AAP-143 — subscribe before invoking; the call returns 'verifying'
+      // and the OAuth patch lands from the background task.
+      const completed = waitForComplete(id);
       const r = await server.invoke(
         'start_verification',
         { session_id: id, runtime: 'codex', workspace_hint: workspace },
         makeCtx(),
       );
       expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.verification_status).toBe('verifying');
+      }
+      await completed;
 
       const after = await getSession(id);
       const reportJson = after!.reportJson as {

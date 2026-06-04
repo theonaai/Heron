@@ -162,8 +162,11 @@ export function isVerificationPending(input: {
     return false;
   }
   // complete + (no verification field yet | 'unverified' |
-  // 'interrogation-only') → the verdict writer has not landed a terminal
-  // status yet. Keep polling for it.
+  // 'interrogation-only' | 'verifying') → the verdict writer has not
+  // landed a terminal status yet. AAP-143 increment 1 added 'verifying'
+  // as the in-progress marker the async start_verification handler
+  // persists before its background scan; it is non-terminal, so the
+  // poller keeps polling until a terminal status lands.
   return true;
 }
 

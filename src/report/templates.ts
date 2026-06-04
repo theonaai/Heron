@@ -1363,6 +1363,7 @@ function renderVerificationStatusSection(
   context: RenderMarkdownReportContext,
   reportVerificationStatus?:
     | 'interrogation-only'
+    | 'verifying'
     | 'partially-verified'
     | 'verified'
     | 'verification-failed',
@@ -1393,9 +1394,26 @@ function renderVerificationStatusSection(
   const persistedFailed =
     reportVerificationStatus === 'verification-failed' &&
     verdictStatus === undefined;
+  // AAP-143 increment 1 — `'verifying'` is the transient in-progress
+  // marker the async `start_verification` handler persists before kicking
+  // off the background scan. A re-render that lands during that window
+  // must NOT fall through to the UNVERIFIED stub (which claims sources
+  // "have not run yet") — that contradicts the in-flight run. Surface a
+  // dedicated in-progress stub instead. The bg task re-renders with a
+  // terminal status when it finishes.
+  const persistedVerifying =
+    reportVerificationStatus === 'verifying' && verdictStatus === undefined;
   const status = verdictStatus ?? persistedFallback ?? 'unverified';
   const lines: string[] = ['## Verification Status', ''];
-  if (persistedFailed) {
+  if (persistedVerifying) {
+    lines.push(
+      '**Verification status:** _IN PROGRESS: deterministic verification is running._',
+    );
+    lines.push('');
+    lines.push(
+      'Verification was started and is running in the background. Poll `get_report` or the session status for the settled verdict. The findings below remain based on the interview only until verification completes.',
+    );
+  } else if (persistedFailed) {
     lines.push(
       '**Verification status:** _FAILED — verification was attempted but did not complete cleanly._',
     );

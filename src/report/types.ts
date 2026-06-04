@@ -381,6 +381,15 @@ export type StructuredCompliance = CategorizedCompliance;
  */
 export const reportVerificationStatusValues = [
   'interrogation-only',
+  // AAP-143 increment 1 — in-progress marker. `start_verification` now
+  // returns immediately and runs the discovery scan + patch in a detached
+  // background task (Codex caps tool calls at 120s; the scan can exceed
+  // that). The handler persists `verification.status: 'verifying'` to
+  // report.json before kicking off the bg work, so a poller reading
+  // report.json (or the dashboard banner) sees the run is still going
+  // rather than the stale pre-run status. It settles to one of the four
+  // terminal states below when the bg task finishes.
+  'verifying',
   'verified',
   'partially-verified',
   'verification-failed',

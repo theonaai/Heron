@@ -40,6 +40,10 @@ import {
   writeAnalysisFailure,
   writeReport,
 } from '../../src/storage/sessions.js';
+import {
+  subscribeSessionEvents,
+  type SessionEvent,
+} from '../../src/storage/session-events.js';
 
 const noopDiffer: ReportDiffer = { async diff() { return ''; } };
 
@@ -54,6 +58,57 @@ function makeCtx(): RequestContext {
 
 function makeServer(): HeronMCPServer {
   return new HeronMCPServer({ differ: noopDiffer });
+}
+
+/**
+ * AAP-143 increment 1 — `start_verification` returns immediately with
+ * `'verifying'` and patches report.json from a detached background task.
+ * Tests that assert the persisted patch must wait for the bg task to
+ * finish. Subscribe to the session event bus and resolve when a predicate
+ * matches (mirrors `submit-answer-async.test.ts`). Auto-disposes.
+ */
+function captureEvents(sessionId: string): {
+  events: SessionEvent[];
+  waitFor: (
+    predicate: (e: SessionEvent) => boolean,
+    timeoutMs?: number,
+  ) => Promise<SessionEvent>;
+  dispose: () => void;
+} {
+  const events: SessionEvent[] = [];
+  const unsubscribe = subscribeSessionEvents(sessionId, (event) => {
+    events.push(event);
+  });
+  return {
+    events,
+    waitFor: (predicate, timeoutMs = 5000) =>
+      new Promise<SessionEvent>((resolve, reject) => {
+        const existing = events.find(predicate);
+        if (existing) {
+          resolve(existing);
+          return;
+        }
+        const start = Date.now();
+        const interval = setInterval(() => {
+          const hit = events.find(predicate);
+          if (hit) {
+            clearInterval(interval);
+            resolve(hit);
+            return;
+          }
+          if (Date.now() - start > timeoutMs) {
+            clearInterval(interval);
+            reject(
+              new Error(
+                `Timed out after ${timeoutMs}ms waiting for an event. ` +
+                  `Captured so far: ${JSON.stringify(events)}`,
+              ),
+            );
+          }
+        }, 5);
+      }),
+    dispose: unsubscribe,
+  };
 }
 
 describe('HeronMCPServer.start_verification — input + state validation', () => {
@@ -220,8 +275,16 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
     //
     // AAP-80 — discovery-only runs now produce a `partial` verdict, which
     // maps to `'partially-verified'` on the report-level field (not
-    // `'verified'`). The MCP response, the persisted verification field,
-    // and the header label all move together.
+    // `'verified'`). The persisted verification field + header label move
+    // together.
+    //
+    // AAP-143 increment 1 — `start_verification` now returns immediately
+    // with `'verifying'` and patches report.json from a detached
+    // background task. The immediate response is asserted as `'verifying'`;
+    // the persisted `'partially-verified'` outcome + re-rendered .md are
+    // read AFTER the background task publishes its `status-change=complete`
+    // SSE event (the bg task runs the discovery scan + patch, then
+    // publishes that event last).
     const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap79-success-home-'));
     const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
     process.env.HERON_DISCOVERY_HOME = fakeHome;
@@ -269,6 +332,7 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
         '_UNVERIFIED — Surface 2 deterministic sources have not run yet._\n';
       await writeReport(id, { markdown: stubMd, json: minimalReport });
 
+      const cap = captureEvents(id);
       const r = await server.invoke(
         'start_verification',
         { session_id: id, runtime: 'codex', workspace_hint: workspace },
@@ -277,14 +341,24 @@ describe('HeronMCPServer.start_verification — input + state validation', () =>
 
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      // AAP-80 — discovery-only runs yield a partial verdict ⇒
-      // 'partially-verified' on the report-level field + the MCP response.
-      expect(r.value.verification_status).toBe('partially-verified');
+      // AAP-143 — the call returns immediately with 'verifying'. The
+      // terminal status lands on report.json from the background task.
+      expect(r.value.verification_status).toBe('verifying');
+
+      // Wait for the background task to finish (it publishes
+      // status-change=complete as its last step after the patch).
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        5000,
+      );
+      cap.dispose();
 
       const after = await getSession(id);
       const verif = (after!.reportJson as {
         verification?: { status?: string };
       }).verification;
+      // AAP-80 — discovery-only runs yield a partial verdict ⇒
+      // 'partially-verified' on the persisted report-level field.
       expect(verif?.status).toBe('partially-verified');
 
       // Read report.md off the live sessions dir. The pre-AAP-80
@@ -457,13 +531,26 @@ describe('HeronMCPServer.start_verification — agent-reported tools overlay (AA
       };
       await writeReport(id, { markdown: '# stub', json: minimalReport });
 
-      // Step 3 — start_verification.
+      // Step 3 — start_verification. AAP-143 — returns 'verifying'
+      // immediately; the overlay patch lands from the background task.
+      const cap = captureEvents(id);
       const r = await server.invoke(
         'start_verification',
         { session_id: id, runtime: 'codex', workspace_hint: workspace },
         makeCtx(),
       );
       expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.verification_status).toBe('verifying');
+      }
+
+      // Wait for the background task to land the patch (publishes
+      // status-change=complete as its last step).
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        5000,
+      );
+      cap.dispose();
 
       // Step 4 — assert the persisted report.json reflects the overlay.
       const after = await getSession(id);
@@ -520,6 +607,186 @@ describe('HeronMCPServer.start_verification — agent-reported tools overlay (AA
       // one of the legacy bands the storage field allows.
       expect(['low', 'medium', 'high', 'critical']).toContain(persistedRiskLevel);
       expect(persistedRiskLevel).not.toBe('unverified');
+    } finally {
+      if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+      else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('start_verification — async return + extractable patch (AAP-143)', () => {
+  let tmpDir: string;
+  const origEnv = process.env.HERON_SESSIONS_DIR;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-aap143-async-'));
+    process.env.HERON_SESSIONS_DIR = tmpDir;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.HERON_SESSIONS_DIR;
+    else process.env.HERON_SESSIONS_DIR = origEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Seed a status=complete session with a minimal renderable report.json
+  // so the handler passes the gate + workspace resolution and reaches the
+  // async fork. Returns the session id.
+  async function seedCompleteSession(agentName: string): Promise<string> {
+    const { id } = await createSession({ agentName, mode: 'tool-call' });
+    await updateSessionMeta(id, { status: 'complete' });
+    await writeReport(id, {
+      markdown: '# stub',
+      json: {
+        summary: 's',
+        agentPurpose: 'p',
+        systems: [],
+        risks: [],
+        recommendations: [],
+        overallRiskLevel: 'low',
+        transcript: [],
+        metadata: {
+          date: '2026-06-04',
+          target: 'agent',
+          interviewDuration: 1,
+          questionsAsked: 0,
+        },
+      },
+    });
+    return id;
+  }
+
+  it('Test 1 — handleStartVerification returns verification_status=verifying WITHOUT waiting for the scan (patch not yet written)', async () => {
+    // Point discovery at a fixture $HOME so the bg scan would eventually
+    // run, but assert the tool call returns 'verifying' and that
+    // report.json still reads 'verifying' (NOT a terminal status)
+    // immediately after the call — proving the patch had not been written
+    // when the handler returned. If the handler still ran synchronously
+    // (the AAP-143 bug), the immediate return would carry a terminal
+    // status and report.json would already be patched.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap143-home-'));
+    const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-workspace-'));
+    try {
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(
+        join(fakeHome, '.codex/config.toml'),
+        '[mcp_servers.slack]\n' +
+          'url = "https://slack-mcp.example.com"\n' +
+          '[mcp_servers.slack.env]\n' +
+          'SLACK_BOT_TOKEN = "xoxb-aap143-DO-NOT-LEAK"\n',
+      );
+
+      const server = makeServer();
+      const id = await seedCompleteSession('aap143-async');
+
+      const t0 = Date.now();
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      const elapsed = Date.now() - t0;
+
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // The immediate return is the in-progress marker, never a terminal
+      // status.
+      expect(r.value.verification_status).toBe('verifying');
+      expect(r.value.high_severity_findings).toBe(0);
+      expect(r.value.total_findings).toBe(0);
+      expect(r.value.summary).toMatch(/poll get_report/i);
+      // Generous bound — the synchronous (buggy) path ran a full discovery
+      // scan + recompute before returning; the async path returns after a
+      // single small report.json patch.
+      expect(elapsed).toBeLessThan(2000);
+
+      // Read report.json straight off disk. The handler persisted the
+      // 'verifying' marker synchronously before forking; the terminal
+      // patch is still pending in the background, so the on-disk status
+      // must be 'verifying', not a terminal value.
+      const after = await getSession(id);
+      const verif = (after!.reportJson as {
+        verification?: { status?: string };
+        localAgentDiscovery?: unknown;
+      });
+      expect(verif.verification?.status).toBe('verifying');
+      // The patch the bg task writes (localAgentDiscovery) is NOT present
+      // yet.
+      expect(verif.localAgentDiscovery).toBeUndefined();
+    } finally {
+      if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+      else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('Test 2 — runVerificationAndPatch run to completion patches report.json with localAgentDiscovery + verdict + a settled verification status', async () => {
+    // Drives the extracted heavy body directly (no tool-call timer in the
+    // way). This is the same work the old synchronous start_verification
+    // produced; we assert the artefacts land on report.json.
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap143-direct-home-'));
+    const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-direct-ws-'));
+    try {
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(
+        join(fakeHome, '.codex/config.toml'),
+        '[mcp_servers.slack]\n' +
+          'url = "https://slack-mcp.example.com"\n' +
+          '[mcp_servers.slack.env]\n' +
+          'SLACK_BOT_TOKEN = "xoxb-aap143-direct-DO-NOT-LEAK"\n',
+      );
+
+      const id = await seedCompleteSession('aap143-direct');
+      const session = await getSession(id);
+      expect(session).not.toBeNull();
+
+      const { runVerificationAndPatch } = await import(
+        '../../src/server/mcp-server.js'
+      );
+      const result = await runVerificationAndPatch(id, {
+        runtime: 'codex',
+        workspaceRoot: workspace,
+        session: session!,
+        additionalHints: [],
+      });
+
+      // A settled (terminal) status, never 'verifying'/'interrogation-only'.
+      expect([
+        'verified',
+        'partially-verified',
+        'verification-failed',
+      ]).toContain(result.verificationStatus);
+      // Discovery-only run yields a partial verdict.
+      expect(result.verificationStatus).toBe('partially-verified');
+
+      // report.json carries the discovery payload, verdict snapshot, and
+      // the settled verification status — same artefacts the old
+      // synchronous path produced.
+      const after = await getSession(id);
+      const blob = after!.reportJson as {
+        verification?: { status?: string };
+        localAgentDiscovery?: unknown;
+        verdict?: unknown;
+      };
+      expect(blob.verification?.status).toBe('partially-verified');
+      expect(blob.localAgentDiscovery).toBeDefined();
+      expect(blob.verdict).toBeDefined();
+
+      // The re-rendered markdown does not leak the scrubbed secret.
+      const { readFileSync } = await import('node:fs');
+      const { getSessionsDir } = await import('../../src/storage/sessions.js');
+      const renderedMd = readFileSync(
+        join(getSessionsDir(), id, 'report.md'),
+        'utf8',
+      );
+      expect(renderedMd).not.toContain('xoxb-aap143-direct-DO-NOT-LEAK');
+      expect(renderedMd).toContain('## Verification Status');
     } finally {
       if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
       else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
