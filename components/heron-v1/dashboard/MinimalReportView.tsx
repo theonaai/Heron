@@ -41,9 +41,6 @@ import type {
   ReportSeverityBand,
   VerdictSnapshot,
 } from '@/src/report/types';
-// AAP-149 — the SLF -> deterministic-evidence cross-ref shape (type-only import,
-// fully erased at compile time, so no node-only edge enters the client bundle).
-import type { SlfEvidenceCrossRef } from '@/src/verification/verdict';
 import {
   allLensFrameworks,
   composeFrameworkLensRows,
@@ -2810,34 +2807,6 @@ function HostCapabilityNote({
 
 // ─── Inline finding card — minimal version (one component, used for both buckets) ───
 
-/**
- * AAP-149 — short chip label for a SLF finding's deterministic-evidence
- * cross-ref / verification path. Returns null when neither is present (the card
- * renders no chip, exactly as before). The finding stays self-attested; the chip
- * only states that Heron confirmed the underlying FACT this session, so the card
- * does not read as a bare unverified claim.
- */
-function crossRefBadgeLabel(
-  crossRef: SlfEvidenceCrossRef | undefined,
-  verificationPath: 'operator-artifact' | undefined,
-): string | null {
-  if (crossRef?.kind === 'oauth-verified') {
-    const scopes = crossRef.scopes.length > 0 ? crossRef.scopes.join(', ') : 'the granted scopes';
-    return `Fact confirmed this session: Heron verified ${scopes} scope via OAuth introspection`;
-  }
-  if (crossRef?.kind === 'env-secrets') {
-    const sys =
-      crossRef.credentialSystemsCount && crossRef.credentialSystemsCount > 0
-        ? ` across ${crossRef.credentialSystemsCount} system${crossRef.credentialSystemsCount === 1 ? '' : 's'}`
-        : '';
-    return `Fact confirmed this session: Heron detected ${crossRef.envKeyCount} credential${crossRef.envKeyCount === 1 ? '' : 's'} in .env${sys}`;
-  }
-  if (verificationPath === 'operator-artifact') {
-    return 'Verifiable only via operator-supplied artifact (governance, not agent-observable)';
-  }
-  return null;
-}
-
 export function MinimalFindingCard({
   finding,
   slfState,
@@ -2880,28 +2849,7 @@ export function MinimalFindingCard({
       ? getSlfMitigationHint({ title: finding.title, description: finding.description }, slfState)
       : getMitigationHint({ evidenceSource: finding.evidenceSource });
   const analyzerNotes = (finding as { analyzerNotes?: string }).analyzerNotes;
-  // AAP-149 — for an SLF finding whose underlying fact Heron confirmed this
-  // session, the reconciliation rewrote the mitigation to OPEN with what was
-  // confirmed ("Heron verified you hold documents/drive/spreadsheets scopes" /
-  // "Heron detected N secrets in .env"). It is the most accurate copy, so it
-  // wins over both the analyzer's own notes and the generic SLF hint.
-  const reconciledMitigation = (finding as { reconciledMitigation?: string }).reconciledMitigation;
-  const mitigation =
-    reconciledMitigation && reconciledMitigation.length > 0
-      ? reconciledMitigation
-      : analyzerNotes && analyzerNotes.length > 0
-        ? analyzerNotes
-        : fallbackHint;
-
-  // AAP-149 — the deterministic-evidence cross-ref / verification path the
-  // reconciliation attached to a SLF finding. When present, the card shows a
-  // "Confirmed by Heron this session" (or "Verifiable only via operator
-  // artifact") chip so the self-attested finding does NOT read as a bare
-  // unverified claim. The finding stays SLF and never moves posture - this is a
-  // provenance note on the claim, not a re-bucket.
-  const crossRef = (finding as { evidenceCrossRef?: SlfEvidenceCrossRef }).evidenceCrossRef;
-  const verificationPath = (finding as { verificationPath?: 'operator-artifact' }).verificationPath;
-  const crossRefLabel = crossRefBadgeLabel(crossRef, verificationPath);
+  const mitigation = analyzerNotes && analyzerNotes.length > 0 ? analyzerNotes : fallbackHint;
 
   // AAP-107 round 2 item 4: the description used to collapse behind a
   // "Show more / Show less" toggle (splitForCard at 280 chars + descExpanded
@@ -3014,29 +2962,6 @@ export function MinimalFindingCard({
         <p style={{ margin: '4px 0 8px', fontSize: 14, lineHeight: 1.6, color: '#3f3f46' }}>
           {finding.description}
         </p>
-      )}
-      {/* AAP-149 — cross-ref chip: a SLF finding whose underlying fact Heron
-          confirmed this session (verified OAuth scope / .env secret detection)
-          shows a teal "fact confirmed" chip; a governance finding with no
-          agent-observable evidence shows an amber "operator artifact" chip. The
-          finding stays self-attested and never moves posture - this only states
-          that the FACT is grounded, so the card is not a bare unverified claim. */}
-      {crossRefLabel && (
-        <div
-          style={{
-            margin: '0 0 8px',
-            padding: '6px 9px',
-            background: verificationPath === 'operator-artifact' ? '#fffbeb' : '#f0fdfa',
-            border: `1px solid ${verificationPath === 'operator-artifact' ? '#fde68a' : '#99f6e4'}`,
-            borderRadius: 5,
-            fontSize: 11.5,
-            lineHeight: 1.45,
-            color: verificationPath === 'operator-artifact' ? '#92400e' : '#0f766e',
-            fontWeight: 500,
-          }}
-        >
-          {crossRefLabel}
-        </div>
       )}
       <div
         style={{

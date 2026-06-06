@@ -1651,31 +1651,16 @@ function renderFindingCard(
   // .env already read -> rotate) instead of the generic evidence-source SLF
   // line that drifted from the dashboard. Non-SLF findings keep the existing
   // findingType > evidenceSource lookup.
-  // AAP-149 — when the reconciliation linked this SLF finding to confirmed
-  // deterministic evidence (or marked its operator-artifact verification path),
-  // it rewrote the mitigation to open with what Heron actually confirmed this
-  // session. That copy is the most accurate, so it wins over the state-aware
-  // hint. The finding stays self-attested; this is only the remediation text.
-  const reconciledMitigation = (finding as { reconciledMitigation?: string }).reconciledMitigation;
   const mitigationHint =
-    reconciledMitigation && reconciledMitigation.length > 0
-      ? reconciledMitigation
-      : finding.evidenceSource === 'SLF'
-        ? getSlfMitigationHint(
-            { title: finding.title, description: finding.description },
-            slfState,
-          )
-        : getMitigationHint({
-            ...(findingType ? { findingType } : {}),
-            evidenceSource: finding.evidenceSource,
-          });
-
-  // AAP-149 — the deterministic-evidence cross-ref / verification path line for
-  // a SLF finding whose underlying fact Heron confirmed this session (or which
-  // is verifiable only via an operator artifact). Surfaced as an italic
-  // "Fact confirmed this session: ..." line under the header so the markdown,
-  // like the dashboard, does not read the finding as a bare unverified claim.
-  const crossRefLine = renderCrossRefLine(finding);
+    finding.evidenceSource === 'SLF'
+      ? getSlfMitigationHint(
+          { title: finding.title, description: finding.description },
+          slfState,
+        )
+      : getMitigationHint({
+          ...(findingType ? { findingType } : {}),
+          evidenceSource: finding.evidenceSource,
+        });
 
   // Use a blockquote-style green callout in markdown (`>`). The HTML
   // renderer + dashboard map to a proper green-tinted box.
@@ -1688,11 +1673,6 @@ function renderFindingCard(
   lines.push('');
   lines.push(escapeText(finding.description));
   lines.push('');
-  // AAP-149 — the SLF -> deterministic-evidence cross-ref line, when present.
-  if (crossRefLine) {
-    lines.push(crossRefLine);
-    lines.push('');
-  }
   if (implications.length > 0) {
     lines.push('**Implications**');
     lines.push('');
@@ -1703,35 +1683,6 @@ function renderFindingCard(
   lines.push('> **Mitigations**');
   lines.push(`> - ${escapeText(mitigationHint)}`);
   return lines.join('\n');
-}
-
-/**
- * AAP-149 — render the SLF -> deterministic-evidence cross-ref line for a
- * finding card. Returns '' when the finding has no cross-ref / verification path
- * (the card renders no line, exactly as before). Mirrors the dashboard's
- * `crossRefBadgeLabel` chip so the two surfaces stay in lockstep. The finding
- * stays self-attested; this only states that Heron confirmed the underlying
- * FACT this session, so the markdown card is not a bare unverified claim.
- */
-function renderCrossRefLine(finding: CodedVerdictFinding): string {
-  const crossRef = (finding as { evidenceCrossRef?: import('../verification/verdict.js').SlfEvidenceCrossRef })
-    .evidenceCrossRef;
-  const verificationPath = (finding as { verificationPath?: 'operator-artifact' }).verificationPath;
-  if (crossRef?.kind === 'oauth-verified') {
-    const scopes = crossRef.scopes.length > 0 ? crossRef.scopes.join(', ') : 'the granted scopes';
-    return `_Fact confirmed this session: Heron verified ${escapeText(scopes)} scope via OAuth introspection._`;
-  }
-  if (crossRef?.kind === 'env-secrets') {
-    const sys =
-      crossRef.credentialSystemsCount && crossRef.credentialSystemsCount > 0
-        ? ` across ${crossRef.credentialSystemsCount} system${crossRef.credentialSystemsCount === 1 ? '' : 's'}`
-        : '';
-    return `_Fact confirmed this session: Heron detected ${crossRef.envKeyCount} credential${crossRef.envKeyCount === 1 ? '' : 's'} in .env${escapeText(sys)}._`;
-  }
-  if (verificationPath === 'operator-artifact') {
-    return '_Verifiable only via operator-supplied artifact (governance, not agent-observable)._';
-  }
-  return '';
 }
 
 /**
