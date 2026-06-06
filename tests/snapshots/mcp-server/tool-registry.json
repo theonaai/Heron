@@ -44,7 +44,7 @@
       "properties": {
         "session_id": {
           "type": "string",
-          "description": "The session id returned by a prior start_audit_session call. Must reference a session whose interview has completed (status complete). Sessions in analysis_failed are rejected: re-run start_audit_session first."
+          "description": "The session id returned by a prior start_audit_session call. Call this as soon as the interview finishes - you do not need to wait for analysis to complete (a session still analyzing is accepted; the deterministic scan runs in parallel and merges once the report is ready). Sessions in analysis_failed are rejected: re-run start_audit_session first."
         },
         "runtime": {
           "type": "string",
