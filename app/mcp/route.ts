@@ -31,13 +31,43 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 // One transport per MCP session. Cleared when the SDK fires onsessionclosed.
-const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
+//
+// AAP-145 — survive `next dev` HMR. This is process state, and `next dev` (the
+// live-audit setup) rebuilds the route module on any recompile / HMR. If this
+// state lived as a plain module-level binding, each rebuild would start empty:
+//   - A persistent client's existing `mcp-session-id` would no longer be in the
+//     new Map, so the SDK's validateSession returns 404 "Session not found" -
+//     the "previous MCP session no longer accepted" the live Codex audits saw.
+//   - A request in flight at the reload instant would be orphaned: its response
+//     promise lived on the detached old module and never resolved, so the
+//     client waited its full hard timeout (Codex: 120s), while a fresh raw-HTTP
+//     call hit the rebuilt module and answered in seconds - exactly the
+//     asymmetry the audits reported.
+// This was never event-loop starvation (the analyze/verify CPU work was already
+// moved off the tool-call critical path by AAP-66 / AAP-143; the remaining sync
+// stages run in tens of ms - see tests/server/mcp-eventloop-starvation.test.ts)
+// and never a production bug (a built server does not HMR). The fix: stash the
+// session map + sampling-deps on globalThis so they OUTLIVE an HMR rebuild.
+// Sessions now survive recompiles. (A request caught at the exact reload
+// instant can still be orphaned - a narrow window - but it no longer takes the
+// whole session down.) A built server (`next start`) is still the cleanest way
+// to run a live audit, but `next dev` is now robust to HMR.
+const globalForMcp = globalThis as typeof globalThis & {
+  __heronMcpTransports?: Map<string, WebStandardStreamableHTTPServerTransport>;
+  __heronSamplingDepsPromise?: ReturnType<typeof buildSamplingDeps> | null;
+};
 
-// One sampling-deps promise per process. We pay the LLM-client setup once.
-let samplingDepsPromise: ReturnType<typeof buildSamplingDeps> | null = null;
+const transports: Map<string, WebStandardStreamableHTTPServerTransport> =
+  globalForMcp.__heronMcpTransports ??
+  (globalForMcp.__heronMcpTransports = new Map());
+
+// One sampling-deps promise per process (stashed on globalThis so it survives
+// HMR). We pay the LLM-client setup once.
 function getSamplingDeps(): ReturnType<typeof buildSamplingDeps> {
-  if (!samplingDepsPromise) samplingDepsPromise = buildSamplingDeps();
-  return samplingDepsPromise;
+  if (!globalForMcp.__heronSamplingDepsPromise) {
+    globalForMcp.__heronSamplingDepsPromise = buildSamplingDeps();
+  }
+  return globalForMcp.__heronSamplingDepsPromise;
 }
 
 const stubDiffer: ReportDiffer = {
