@@ -92,6 +92,10 @@ import {
   persistVerdict,
   reportVerificationStatusFromVerdict,
 } from '../verification/verdict-pipeline.js';
+// AAP-149 — reconcile SLF findings with the deterministic evidence (verified
+// OAuth scopes, .env secret detection) Phase B produces, so a self-attested
+// finding whose underlying fact Heron already confirmed cross-links to it.
+import { reconcileSlfWithEvidence } from '../verification/slf-evidence-reconciliation.js';
 import { runDiscovery } from '../discovery/index.js';
 // AAP-105 (G8a) — runtime enums (JSON schema + Zod) derive from the
 // declarative registry, the single source of truth, not hand-copied lists.
@@ -2722,6 +2726,50 @@ export async function runVerificationAndPatch(
   const verdict = computeVerdictFromArtifacts(verdictArgs);
   const verificationStatus: ReportVerificationStatus =
     reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
+
+  // AAP-149 — reconcile the self-attested (SLF) findings with the deterministic
+  // evidence this Phase B merge just produced. The analyzer minted SLF findings
+  // from the interview; the OAuth introspection (`oauthForward.section`) and the
+  // .env secret scan (`scrubbed.workspaceEnv`) ran separately and were never
+  // linked back. So an SLF finding restating a risk whose underlying FACT Heron
+  // already confirmed (a broad OAuth scope introspection verified; plaintext
+  // secrets the .env scan detected) rendered as a bare unverified claim with a
+  // generic mitigation. `reconcileSlfWithEvidence` cross-links each SLF finding
+  // to that evidence DETERMINISTICALLY by `findingType` (not title matching) and
+  // rewrites its mitigation to open with what Heron confirmed. The findings STAY
+  // SLF (evidenceSource unchanged, posture untouched) - this is a cross-ref, not
+  // a re-bucket. Runs here so the enriched findings bake into report.json via
+  // `buildVerdictSnapshot` below.
+  //
+  // `envCredentialSystemsCount`: how many declared systems carry the ".env"
+  // credential glyph (AAP-140). The token matcher mirrors the dashboard's
+  // `systemMatchesEnvCredential` (MinimalReportView.tsx) - kept inline here to
+  // avoid pulling the `'use client'` component into the backend bundler graph.
+  const reconcileEnvKeys: string[] = (scrubbed.workspaceEnv ?? []).flatMap(
+    (f) => f.keys ?? [],
+  );
+  const reconcileEnvTokens = new Set<string>();
+  for (const k of reconcileEnvKeys) {
+    for (const t of k.toLowerCase().split(/[-_]/)) {
+      if (t.length > 0) reconcileEnvTokens.add(t);
+    }
+  }
+  const reconcileCredentialSystemsCount = Array.isArray(reportJson?.systems)
+    ? reportJson.systems.filter((s) => {
+        const sysTokens = (s.systemId || '')
+          .toLowerCase()
+          .split(/[-_]/)
+          .filter((t) => t.length > 2);
+        return sysTokens.some((t) => reconcileEnvTokens.has(t));
+      }).length
+    : 0;
+  verdict.findings = reconcileSlfWithEvidence(verdict.findings, {
+    ...(oauthForward.section ? { oauthScopeVerification: oauthForward.section } : {}),
+    workspaceEnv: scrubbed.workspaceEnv ?? [],
+    ...(reconcileCredentialSystemsCount > 0
+      ? { envCredentialSystemsCount: reconcileCredentialSystemsCount }
+      : {}),
+  });
 
   const reportPatch: Record<string, unknown> = {
     localAgentDiscovery: scrubbed,
