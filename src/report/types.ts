@@ -455,6 +455,43 @@ export const verdictFindingSnapshotSchema = z.object({
    * findings, and legacy report.json blobs persisted before this field existed.
    */
   verificationOutcome: z.literal('unverified').optional(),
+  /**
+   * AAP-149 — cross-link from a Self-Attested (SLF) finding to the deterministic
+   * evidence that confirms its underlying FACT this session (verified OAuth
+   * scope, or .env secret detection). The finding STAYS SLF: this is a cross-ref
+   * so it does not render as a bare unverified claim, NOT a re-bucket to
+   * verified. Keyed deterministically off `findingType` (not title matching).
+   * Absent on Verified findings, governance SLF findings (those carry
+   * `verificationPath` instead), and legacy report.json blobs.
+   */
+  evidenceCrossRef: z
+    .union([
+      z.object({
+        kind: z.literal('oauth-verified'),
+        connectors: z.array(z.string()),
+        scopes: z.array(z.string()),
+      }),
+      z.object({
+        kind: z.literal('env-secrets'),
+        envKeyCount: z.number(),
+        credentialSystemsCount: z.number().optional(),
+      }),
+    ])
+    .optional(),
+  /**
+   * AAP-149 — for SLF findings whose findingType has NO agent-observable
+   * deterministic evidence (governance / formal sign-off), the verification PATH
+   * (operator-supplied artifact) instead of an evidence link. Drives the
+   * verify-framing in the render.
+   */
+  verificationPath: z.literal('operator-artifact').optional(),
+  /**
+   * AAP-149 — the reconciled SLF mitigation, opening with what Heron actually
+   * confirmed this session. The renderers prefer this over `analyzerNotes` and
+   * the generic SLF hint for SLF findings. Absent when no reconciliation
+   * applied (the finding falls back to the existing hint path, unchanged).
+   */
+  reconciledMitigation: z.string().optional(),
 });
 export type VerdictFindingSnapshot = z.infer<typeof verdictFindingSnapshotSchema>;
 

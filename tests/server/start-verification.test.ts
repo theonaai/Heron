@@ -795,3 +795,264 @@ describe('start_verification — async return + extractable patch (AAP-143)', ()
     }
   });
 });
+
+describe('start_verification — accept during analyzing + deferred merge (AAP-143 increment 2)', () => {
+  let tmpDir: string;
+  const origEnv = process.env.HERON_SESSIONS_DIR;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-'));
+    process.env.HERON_SESSIONS_DIR = tmpDir;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.HERON_SESSIONS_DIR;
+    else process.env.HERON_SESSIONS_DIR = origEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // A status=analyzing session has a complete transcript but NO report.json
+  // yet (the analyzer is still running). This is the state a live Codex
+  // audit is in when it makes its first start_verification call right after
+  // the interview. Returns the session id.
+  async function seedAnalyzingSession(agentName: string): Promise<string> {
+    const { id } = await createSession({ agentName, mode: 'tool-call' });
+    // updateSessionMeta is the only way to land the session in 'analyzing'
+    // without writing report.json (writeReport flips to 'complete').
+    await updateSessionMeta(id, { status: 'analyzing' });
+    return id;
+  }
+
+  // Minimal renderable report.json the analyzer would have produced. Writing
+  // it via writeReport flips status to 'complete' (the merge gate).
+  function minimalReport() {
+    return {
+      summary: 'Slack reminder agent.',
+      agentPurpose: 'Slack reminders',
+      systems: [],
+      risks: [],
+      recommendations: [],
+      overallRiskLevel: 'low',
+      transcript: [],
+      metadata: {
+        date: '2026-06-06',
+        target: 'slack-bot',
+        interviewDuration: 1,
+        questionsAsked: 0,
+      },
+    };
+  }
+
+  function seedFakeHome(): { fakeHome: string; restore: () => void } {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-home-'));
+    const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.codex/config.toml'),
+      '[mcp_servers.slack]\n' +
+        'url = "https://slack-mcp.example.com"\n' +
+        '[mcp_servers.slack.env]\n' +
+        'SLACK_BOT_TOKEN = "xoxb-incr2-DO-NOT-LEAK"\n',
+    );
+    return {
+      fakeHome,
+      restore: () => {
+        if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+        else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+        rmSync(fakeHome, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('accepts start_verification while status=analyzing (NO interview_not_complete rejection)', async () => {
+    // The core increment 2 change: a live audit calling start_verification
+    // right after the interview must NOT be rejected just because the
+    // analyzer is still running. The call is accepted and returns the
+    // in-progress 'verifying' marker.
+    const home = seedFakeHome();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-ws-'));
+    try {
+      const server = makeServer();
+      const id = await seedAnalyzingSession('aap143-incr2-accept');
+
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.verification_status).toBe('verifying');
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the deterministic scan during analyzing, then defers the merge until report.json exists', async () => {
+    // Phase A (discovery scan + forwarded-OAuth replay) runs immediately and
+    // does not need report.json. Phase B (merge: recompute compliance +
+    // verdict + patch report.json + markdown) waits for the analyzer to
+    // produce report.json. We simulate the analyzer landing report.json a
+    // beat after the call, then assert the merge applies and report.json
+    // carries localAgentDiscovery + verdict + a settled status.
+    const home = seedFakeHome();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-ws2-'));
+    try {
+      const server = makeServer();
+      const id = await seedAnalyzingSession('aap143-incr2-defer');
+
+      const cap = captureEvents(id);
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.verification_status).toBe('verifying');
+
+      // Simulate the analyzer finishing: write report.json + flip to
+      // 'complete' (exactly what writeReport does in the submit_answer bg
+      // task). This unblocks the deferred merge in the verification bg task.
+      await writeReport(id, { markdown: '# stub', json: minimalReport() });
+
+      // The verification bg task observes the completion, runs the merge,
+      // and publishes status-change=complete as its last step.
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap.dispose();
+
+      const after = await getSession(id);
+      const blob = after!.reportJson as {
+        verification?: { status?: string };
+        localAgentDiscovery?: unknown;
+        verdict?: unknown;
+      };
+      // Merge applied: discovery payload + verdict patched in, status
+      // settled to a terminal verification state.
+      expect(blob.localAgentDiscovery).toBeDefined();
+      expect(blob.verdict).toBeDefined();
+      expect(blob.verification?.status).toBe('partially-verified');
+
+      // The re-rendered markdown reflects the merge and does not leak the
+      // scrubbed secret.
+      const { readFileSync } = await import('node:fs');
+      const { getSessionsDir } = await import('../../src/storage/sessions.js');
+      const renderedMd = readFileSync(
+        join(getSessionsDir(), id, 'report.md'),
+        'utf8',
+      );
+      expect(renderedMd).not.toContain('xoxb-incr2-DO-NOT-LEAK');
+      expect(renderedMd).toContain('## Verification Status');
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('aborts the merge gracefully when analysis settles to analysis_failed while waiting', async () => {
+    // If the analyzer fails while the verification bg task is waiting for
+    // report.json, there will never be a report to merge. The task must not
+    // hang or throw; it persists a verification-failed marker (the existing
+    // failure path) and surfaces it.
+    const home = seedFakeHome();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-ws3-'));
+    try {
+      const server = makeServer();
+      const id = await seedAnalyzingSession('aap143-incr2-failwait');
+
+      const cap = captureEvents(id);
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.verification_status).toBe('verifying');
+
+      // Simulate the analyzer failing: writeAnalysisFailure flips status to
+      // 'analysis_failed' and leaves report.json absent.
+      await writeAnalysisFailure(
+        id,
+        {
+          reason: 'parse_failure',
+          message: 'Analyzer rejected the LLM blob.',
+          attemptCount: 1,
+          occurredAt: '2026-06-06T00:00:00.000Z',
+        },
+        '# Analysis failed',
+      );
+
+      // The verification bg task observes the terminal failure, aborts the
+      // merge, persists verification-failed, and publishes an error event.
+      await cap.waitFor((e) => e.type === 'error', 8000);
+      cap.dispose();
+
+      const after = await getSession(id);
+      // Storage invariant preserved: status stays analysis_failed. The
+      // verification-failed marker, if persisted, must be the failed state
+      // (never a positive verified status).
+      expect(after!.status).toBe('analysis_failed');
+      const verif = (after!.reportJson as
+        | { verification?: { status?: string } }
+        | undefined);
+      if (verif?.verification?.status !== undefined) {
+        expect(verif.verification.status).toBe('verification-failed');
+      }
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('already-complete path is unchanged: merge applies immediately', async () => {
+    // Regression guard for the common case today. When report.json already
+    // exists at call time (status=complete), the merge must apply without
+    // waiting, exactly as before increment 2.
+    const home = seedFakeHome();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-ws4-'));
+    try {
+      const server = makeServer();
+      const { id } = await createSession({
+        agentName: 'aap143-incr2-complete',
+        mode: 'tool-call',
+      });
+      await updateSessionMeta(id, { status: 'complete' });
+      await writeReport(id, { markdown: '# stub', json: minimalReport() });
+
+      const cap = captureEvents(id);
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.verification_status).toBe('verifying');
+
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap.dispose();
+
+      const after = await getSession(id);
+      const blob = after!.reportJson as {
+        verification?: { status?: string };
+        localAgentDiscovery?: unknown;
+        verdict?: unknown;
+      };
+      expect(blob.localAgentDiscovery).toBeDefined();
+      expect(blob.verdict).toBeDefined();
+      expect(blob.verification?.status).toBe('partially-verified');
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});

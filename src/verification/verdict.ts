@@ -165,7 +165,72 @@ export interface VerdictFinding {
    * any future "tried but could not read" finding sets it and routes the same.
    */
   verificationOutcome?: 'unverified';
+  /**
+   * AAP-149 — cross-link from a Self-Attested (SLF) finding to the
+   * DETERMINISTIC evidence that confirms its underlying FACT this session.
+   *
+   * The finding STAYS SLF (evidenceSource unchanged, never moves posture, never
+   * counted as "verified"): Heron's honesty model depends on that. But when the
+   * deterministic layer ALREADY confirmed the fact the self-report restates (a
+   * broad OAuth scope that introspection verified; plaintext secrets the .env
+   * scan detected), the finding should not read as a bare unverified claim. The
+   * cross-ref is set by `reconcileSlfWithEvidence`, keyed off the closed
+   * `findingType` (NOT free-text title matching), and surfaced in the SLF card
+   * render. Absent on Verified findings, on SLF findings whose findingType has
+   * no agent-observable deterministic evidence (governance / regulatory-flags),
+   * and on legacy report.json blobs.
+   */
+  evidenceCrossRef?: SlfEvidenceCrossRef;
+  /**
+   * AAP-149 — for SLF findings whose `findingType` has NO agent-observable
+   * deterministic evidence (e.g. governance / formal sign-off), the verification
+   * PATH instead of an evidence link. `'operator-artifact'` means the claim can
+   * only be verified by an operator-supplied artifact (attestation / policy
+   * doc), not by anything Heron can read from the agent. Drives the
+   * verify-framing in the mitigation + render. Absent otherwise.
+   */
+  verificationPath?: 'operator-artifact';
+  /**
+   * AAP-149 — the reconciled SLF mitigation. When the reconciliation links a
+   * finding to confirmed evidence (or marks its verification path), it rewrites
+   * the mitigation to OPEN with what Heron actually confirmed this session
+   * ("Heron verified you hold documents/drive/spreadsheets scopes" / "Heron
+   * detected N secrets in .env"), then risk + remediation; for governance it
+   * names the operator-artifact verification path. The renderers prefer this
+   * over `analyzerNotes` and the generic `getSlfMitigationHint` fallback for SLF
+   * findings. Absent when no reconciliation applied (the finding then falls back
+   * to the existing hint path, unchanged).
+   */
+  reconciledMitigation?: string;
 }
+
+/**
+ * AAP-149 — the deterministic evidence a Self-Attested finding's underlying
+ * FACT was confirmed by this session. Discriminated by `kind`:
+ *
+ *   - `'oauth-verified'` — one or more OAuth connectors whose introspection
+ *     verdict came back `verified` (the broad scope the self-report described
+ *     IS the granted, verified scope). Carries the connector list + the verified
+ *     service-level scopes so the render/mitigation can name them.
+ *   - `'env-secrets'` — the deterministic `.env` secret scan detected plaintext
+ *     credential KEY NAMES (never values). Carries the key count + how many
+ *     declared systems carry the credential glyph.
+ */
+export type SlfEvidenceCrossRef =
+  | {
+      kind: 'oauth-verified';
+      /** Connector identifiers whose introspection verdict was `verified`. */
+      connectors: string[];
+      /** Verified service-level scopes (e.g. documents / drive / spreadsheets). */
+      scopes: string[];
+    }
+  | {
+      kind: 'env-secrets';
+      /** Count of plaintext credential KEY NAMES the .env scan detected. */
+      envKeyCount: number;
+      /** Count of declared systems flagged as carrying a `.env` credential. */
+      credentialSystemsCount?: number;
+    };
 
 /**
  * AAP-105 (G8b) — a discovered MCP server reclassified OUT of the

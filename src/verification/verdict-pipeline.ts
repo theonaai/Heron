@@ -221,6 +221,12 @@ export function buildVerdictSnapshot(verdict: Verdict): {
     // unreadable). Threaded into the snapshot so the dashboard routes it to the
     // "Could not verify" bucket instead of "Verified discrepancies".
     verificationOutcome?: 'unverified';
+    // AAP-149 — SLF -> deterministic-evidence cross-ref + verification path +
+    // reconciled mitigation. Threaded into the snapshot so the dashboard +
+    // markdown render the confirmed-fact framing instead of a bare SLF claim.
+    evidenceCrossRef?: import('./verdict.js').SlfEvidenceCrossRef;
+    verificationPath?: 'operator-artifact';
+    reconciledMitigation?: string;
   }>;
   // AAP-105 (G8b) — global-scope MCP servers reclassified out of
   // `findings`. Informational, no severity, never moves posture.
@@ -254,6 +260,18 @@ export function buildVerdictSnapshot(verdict: Verdict): {
       ...(f.kind !== undefined ? { kind: f.kind } : {}),
       ...(f.verificationOutcome !== undefined
         ? { verificationOutcome: f.verificationOutcome }
+        : {}),
+      // AAP-149 — carry the SLF reconciliation fields into the persisted
+      // snapshot. Spread so each is omitted (not set to undefined) when absent,
+      // matching the existing optional-field pattern above.
+      ...(f.evidenceCrossRef !== undefined
+        ? { evidenceCrossRef: f.evidenceCrossRef }
+        : {}),
+      ...(f.verificationPath !== undefined
+        ? { verificationPath: f.verificationPath }
+        : {}),
+      ...(f.reconciledMitigation !== undefined
+        ? { reconciledMitigation: f.reconciledMitigation }
         : {}),
     })),
     hostCapabilities: (verdict.hostCapabilities ?? []).map((h) => ({

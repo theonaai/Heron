@@ -225,6 +225,109 @@ describe('G10 — start_verification with agent-forwarded OAuth scopes', () => {
     }
   });
 
+  // AAP-149 — end-to-end proof that Phase B reconciles the SLF findings with the
+  // deterministic evidence it just produced. An SLF excessive-access finding
+  // restating "broad Google OAuth" gets cross-linked to the VERIFIED OAuth scope
+  // (declared == granted, so the OAuth verdict is `verified`). The SLF finding
+  // STAYS SLF (does not move posture), but it carries the `evidenceCrossRef` +
+  // the rewritten mitigation, baked into report.json.
+  it('AAP-149 — verified OAuth scope reconciles into the SLF excessive-access finding (stays SLF, gains a cross-ref)', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap149-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap149-ws-'));
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    try {
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(join(fakeHome, '.codex/config.toml'), '# no mcp servers\n');
+
+      const server = makeServer();
+      const { id } = await createSession({ agentName: 'aap149-e2e', mode: 'tool-call' });
+      await updateSessionMeta(id, { status: 'complete' });
+      // Report with a Google system declaring EXACTLY drive + spreadsheets (so
+      // the forwarded broad grant verifies clean, no diffs), plus a SLF
+      // excessive-access risk restating the broad-OAuth claim.
+      await writeReport(id, {
+        markdown: STUB_MD,
+        json: {
+          ...MINIMAL_REPORT,
+          systems: [
+            {
+              systemId: 'google-workspace',
+              scopesRequested: [
+                'https://www.googleapis.com/auth/drive',
+                'https://www.googleapis.com/auth/spreadsheets',
+              ],
+              // Full system row so the compliance recompute (mapper.ts) reads
+              // the array fields it expects; the real analyzer emits these via
+              // systemAssessmentSchema defaults.
+              scopesNeeded: [],
+              scopesDelta: [],
+              dataSensitivity: '',
+              blastRadius: 'single-user',
+              frequencyAndVolume: '',
+              writeOperations: [],
+            },
+          ],
+          risks: [
+            {
+              severity: 'high',
+              title: 'Broad Google OAuth access enables large-scale unintended writes',
+              description: 'OAuth user credentials with spreadsheets and full Drive scope.',
+              findingType: 'excessive-access',
+            },
+          ],
+        },
+      });
+
+      const forward = await server.invoke(
+        'report_oauth_scopes',
+        { session_id: id, provider: 'google-workspace', raw_response: FORWARDED_TOKENINFO_BROAD },
+        makeCtx(),
+      );
+      expect(forward.ok).toBe(true);
+      if (!forward.ok) return;
+
+      const completed = waitForComplete(id);
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      await completed;
+
+      const after = await getSession(id);
+      const reportJson = after!.reportJson as {
+        verdict?: {
+          findings?: Array<{
+            evidenceSource: string;
+            findingType?: string;
+            evidenceCrossRef?: { kind: string; connectors?: string[]; scopes?: string[] };
+            reconciledMitigation?: string;
+            severityScore: number;
+          }>;
+        };
+        oauthScopeVerification?: { sources?: Array<{ verdict: string }> };
+      };
+
+      // The OAuth source verified clean (declared == granted).
+      expect(reportJson.oauthScopeVerification?.sources?.[0]?.verdict).toBe('verified');
+
+      // The SLF excessive-access finding is present, stays SLF, and now carries
+      // the deterministic-evidence cross-ref + the reconciled mitigation.
+      const slf = (reportJson.verdict?.findings ?? []).find(
+        (f) => f.evidenceSource === 'SLF' && f.findingType === 'excessive-access',
+      );
+      expect(slf).toBeDefined();
+      expect(slf?.evidenceSource).toBe('SLF');
+      expect(slf?.evidenceCrossRef?.kind).toBe('oauth-verified');
+      expect(slf?.evidenceCrossRef?.connectors).toContain('google-workspace');
+      expect(slf?.reconciledMitigation).toMatch(/Heron verified/i);
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('forwarded expired token → honest unverified OAuth section, not a silent N/A or false verified', async () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'heron-g10-home-exp-'));
     const workspace = mkdtempSync(join(tmpdir(), 'heron-g10-ws-exp-'));

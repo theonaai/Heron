@@ -92,6 +92,10 @@ import {
   persistVerdict,
   reportVerificationStatusFromVerdict,
 } from '../verification/verdict-pipeline.js';
+// AAP-149 — reconcile SLF findings with the deterministic evidence (verified
+// OAuth scopes, .env secret detection) Phase B produces, so a self-attested
+// finding whose underlying fact Heron already confirmed cross-links to it.
+import { reconcileSlfWithEvidence } from '../verification/slf-evidence-reconciliation.js';
 import { runDiscovery } from '../discovery/index.js';
 // AAP-105 (G8a) — runtime enums (JSON schema + Zod) derive from the
 // declarative registry, the single source of truth, not hand-copied lists.
@@ -416,9 +420,11 @@ const START_VERIFICATION_DEF: ToolDefinition = {
       session_id: {
         type: 'string',
         description:
-          'The session id returned by a prior start_audit_session call. Must reference ' +
-          'a session whose interview has completed (status complete). Sessions in ' +
-          'analysis_failed are rejected: re-run start_audit_session first.',
+          'The session id returned by a prior start_audit_session call. Call this as ' +
+          'soon as the interview finishes - you do not need to wait for analysis to ' +
+          'complete (a session still analyzing is accepted; the deterministic scan runs ' +
+          'in parallel and merges once the report is ready). Sessions in analysis_failed ' +
+          'are rejected: re-run start_audit_session first.',
       },
       runtime: {
         type: 'string',
@@ -1693,27 +1699,36 @@ export class HeronMCPServer {
       };
     }
 
-    // Interview must have run to completion before verification. The
-    // analyzer's report.json is what `recomputeComplianceWithDiscovery`
-    // patches; there is no useful work to do for a session that hasn't
-    // produced one yet.
+    // AAP-143 increment 2 — accept verification right after the interview.
     //
-    // `analysis_failed` is rejected explicitly. `writeAnalysisFailure`
-    // intentionally does NOT write report.json (the absence is what tells
-    // the dashboard "no analysis to render"), so a partial patch from
-    // this handler would violate that invariant. The SSE event a
-    // successful run publishes also has no truthful meaning for a session
-    // that never produced an AuditReport; the dashboard would flip
-    // optimistically to 'complete' and then revert on the next read.
-    if (session.status !== 'complete') {
+    // The interview is the post-interview consent point: the agent calls
+    // start_verification the moment the planner is exhausted, while the
+    // analyzer is still running (status 'analyzing'). The earlier hard gate
+    // (status !== 'complete') rejected that first call, forcing the agent
+    // into a poll-and-retry loop until analysis finished. We now accept both
+    // 'complete' (analysis already done) and 'analyzing' (analysis in
+    // progress). The deterministic scan (Phase A) runs immediately for both;
+    // the merge (Phase B) is deferred inside runVerificationAndPatch until
+    // report.json exists - see that function for the split.
+    //
+    // We keep rejecting:
+    //   - 'analysis_failed' / 'error': no report.json will ever come.
+    //     `writeAnalysisFailure` intentionally does NOT write report.json
+    //     (the absence is what tells the dashboard "no analysis to render"),
+    //     so there is nothing to merge into and a partial patch would
+    //     violate that invariant.
+    //   - 'awaiting_answer' / 'interviewing': the interview has not finished,
+    //     so there is no completed transcript and verification is premature.
+    const acceptableStatuses: AuditSessionStatus[] = ['complete', 'analyzing'];
+    if (!acceptableStatuses.includes(session.status)) {
       const cause =
-        session.status === 'analysis_failed'
+        session.status === 'analysis_failed' || session.status === 'error'
           ? 'analysis_failed'
           : 'interview_not_complete';
       const message =
-        session.status === 'analysis_failed'
-          ? `Session ${sessionId} ended in analysis_failed; verification has no report.json to patch. Re-run start_audit_session before calling start_verification.`
-          : `Session ${sessionId} is still in status '${session.status}'. Wait for the interview to finish (status complete) before calling start_verification.`;
+        session.status === 'analysis_failed' || session.status === 'error'
+          ? `Session ${sessionId} ended in ${session.status}; verification has no report.json to patch. Re-run start_audit_session before calling start_verification.`
+          : `Session ${sessionId} is still in status '${session.status}'. Wait for the interview to finish before calling start_verification.`;
       return {
         ok: false,
         error: {
@@ -1793,12 +1808,23 @@ export class HeronMCPServer {
     // report.json between the return and the bg task's completion sees
     // the run is still going, not a stale pre-run status. `patchReportJson`
     // is the same single-field write `persistVerificationFailure` uses.
-    await patchReportJson(sessionId, {
-      verification: {
-        status: 'verifying' as ReportVerificationStatus,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+    //
+    // AAP-143 increment 2 — only stamp the marker when report.json already
+    // exists (status 'complete'). For an 'analyzing' session there is no
+    // report.json yet; writing the marker now would materialise a partial
+    // report.json (just the verification field) that the analyzer's
+    // `writeReport` overwrites a beat later, and that getSession would
+    // briefly surface as a present-but-empty report. Defer the marker to
+    // Phase B for the analyzing path - the merge stamps the settled status
+    // onto the analyzed report.json directly.
+    if (session.status === 'complete') {
+      await patchReportJson(sessionId, {
+        verification: {
+          status: 'verifying' as ReportVerificationStatus,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
 
     // AAP-143 — ctx.signal belongs to the parent tool call. The MCP SDK
     // aborts it the moment this handler returns, which would cascade into
@@ -2424,6 +2450,53 @@ async function persistVerificationFailure(
 }
 
 /**
+ * AAP-143 increment 2 — bounded wait for the analyzer to produce
+ * report.json.
+ *
+ * `start_verification` is now accepted while the session is still
+ * `'analyzing'` (the analyzer runs in its own background task, kicked off
+ * by the final `submit_answer`). The deterministic scan (Phase A of
+ * `runVerificationAndPatch`) does not need report.json and runs in parallel
+ * with analysis, but the merge (Phase B) does. This poller blocks Phase B
+ * until the analyzer settles.
+ *
+ * Returns the fresh `complete` session (with `reportJson` populated) on
+ * success. Returns `null` if analysis settles to a terminal failure
+ * (`analysis_failed` / `error`) - there will never be a report.json to
+ * merge, so the caller aborts the merge and records a verification failure.
+ *
+ * The wait is bounded so a stuck analyzer cannot leave the verification bg
+ * task hanging forever. On timeout it returns `null`; the caller treats a
+ * timeout the same as a terminal failure (no report to merge).
+ *
+ * `getSession(sessionId).status` is the polled source of truth - the
+ * analyzer's `writeReport` flips it to `'complete'` (with report.json on
+ * disk) and `writeAnalysisFailure` / the catch flip it to
+ * `'analysis_failed'` / `'error'`.
+ */
+async function waitForAnalyzedReport(
+  sessionId: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<AuditSessionDetail | null> {
+  const timeoutMs = opts.timeoutMs ?? 600_000; // 10 min - analysis is the
+  // slow path; the deterministic scan already finished by the time we wait.
+  const pollMs = opts.pollMs ?? 250;
+  const start = Date.now();
+  for (;;) {
+    const fresh = await getSession(sessionId);
+    if (!fresh) return null;
+    if (fresh.status === 'complete' && fresh.reportJson !== undefined) {
+      return fresh;
+    }
+    if (fresh.status === 'analysis_failed' || fresh.status === 'error') {
+      return null;
+    }
+    if (Date.now() - start > timeoutMs) return null;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/**
  * AAP-143 increment 1 — the heavy `start_verification` body, extracted so
  * it can run as a detached background task (the handler kicks it off
  * fire-and-forget after persisting the `'verifying'` marker) AND be
@@ -2532,6 +2605,42 @@ export async function runVerificationAndPatch(
     return { verificationStatus: 'verification-failed' };
   }
 
+  // ─── Phase A complete: deterministic scan done ──────────────────────
+  //
+  // AAP-143 increment 2 — everything above (discovery scan + scrub) is the
+  // deterministic Phase A. It runs immediately, in parallel with analysis,
+  // and does NOT need report.json. Everything below is Phase B (the merge):
+  // forwarded-OAuth replay, verdict, recompute compliance, patch report.json
+  // + meta, re-render markdown. Phase B reads the analyzed report.json
+  // (declared baseline for the OAuth scope diff, systems[] for compliance),
+  // so it must wait until the analyzer has produced one.
+  //
+  // The call may have arrived while the session was still 'analyzing'. If
+  // the snapshot we were handed has no reportJson, block on the analyzer
+  // here. If analysis was already 'complete' at call time, the snapshot
+  // carries reportJson and this is a no-op (the common path - unchanged).
+  let mergeSession = session;
+  if (mergeSession.reportJson === undefined) {
+    const settled = await waitForAnalyzedReport(sessionId);
+    if (!settled) {
+      // Analysis settled to a terminal failure (analysis_failed / error) or
+      // never produced report.json within the bound. There is nothing to
+      // merge into - record a graceful verification failure and stop. The
+      // deterministic scan results are not persisted because report.json
+      // (the merge target) does not exist; this mirrors the analysis_failed
+      // rejection the synchronous gate used to apply up front.
+      const summary =
+        `Verification could not merge: analysis did not produce a report.json for ${sessionId} ` +
+        `(analyzer failed or timed out).`;
+      await persistVerificationFailure(sessionId, summary);
+      publishSessionEvent(sessionId, { type: 'error', message: summary });
+      return { verificationStatus: 'verification-failed' };
+    }
+    mergeSession = settled;
+  }
+
+  // ─── Phase B: merge the scan into the analyzed report ────────────────
+
   // G10 — replay agent-forwarded OAuth introspection into the scope
   // diff. The agent called its OAuth provider's introspection endpoint
   // with its OWN token (Google: tokeninfo) and forwarded Heron the raw
@@ -2550,7 +2659,7 @@ export async function runVerificationAndPatch(
   // Without this the forwarded path passed `declared: []` and every
   // granted scope read as an `extra` diff → always FAIL. With it, a
   // clean agent reaches VERIFIED on the wedge controls.
-  const forwardedReportJson = (session.reportJson as AuditReport | undefined) ?? null;
+  const forwardedReportJson = (mergeSession.reportJson as AuditReport | undefined) ?? null;
   const forwardedDeclaredSystems = forwardedReportJson?.systems;
   const forwardedDeclaredBaseline = forwardedOAuthRecords.length > 0
     ? buildDeclaredBaselineForConnectors({
@@ -2584,8 +2693,8 @@ export async function runVerificationAndPatch(
   // env file. `recomputeComplianceWithDiscovery` synthesises a
   // virtual evidence row from the discovery payload and re-runs the
   // mapper against the augmented transcript.
-  const reportJson = (session.reportJson as AuditReport | undefined) ?? null;
-  const transcriptAsQA: QAPair[] = session.transcript.map((t) => ({
+  const reportJson = (mergeSession.reportJson as AuditReport | undefined) ?? null;
+  const transcriptAsQA: QAPair[] = mergeSession.transcript.map((t) => ({
     category: t.category as QAPair['category'],
     question: t.question,
     answer: t.answer,
@@ -2608,7 +2717,7 @@ export async function runVerificationAndPatch(
   // agent forwarded nothing.
   const verdictArgs: Parameters<typeof computeVerdictFromArtifacts>[0] = {
     reportJson,
-    transcript: session.transcript,
+    transcript: mergeSession.transcript,
     discoveryOverride: scrubbed,
   };
   if (oauthForward.verifications.length > 0) {
@@ -2617,6 +2726,50 @@ export async function runVerificationAndPatch(
   const verdict = computeVerdictFromArtifacts(verdictArgs);
   const verificationStatus: ReportVerificationStatus =
     reportVerificationStatusFromVerdict(verdict, { surface2Attempted: true });
+
+  // AAP-149 — reconcile the self-attested (SLF) findings with the deterministic
+  // evidence this Phase B merge just produced. The analyzer minted SLF findings
+  // from the interview; the OAuth introspection (`oauthForward.section`) and the
+  // .env secret scan (`scrubbed.workspaceEnv`) ran separately and were never
+  // linked back. So an SLF finding restating a risk whose underlying FACT Heron
+  // already confirmed (a broad OAuth scope introspection verified; plaintext
+  // secrets the .env scan detected) rendered as a bare unverified claim with a
+  // generic mitigation. `reconcileSlfWithEvidence` cross-links each SLF finding
+  // to that evidence DETERMINISTICALLY by `findingType` (not title matching) and
+  // rewrites its mitigation to open with what Heron confirmed. The findings STAY
+  // SLF (evidenceSource unchanged, posture untouched) - this is a cross-ref, not
+  // a re-bucket. Runs here so the enriched findings bake into report.json via
+  // `buildVerdictSnapshot` below.
+  //
+  // `envCredentialSystemsCount`: how many declared systems carry the ".env"
+  // credential glyph (AAP-140). The token matcher mirrors the dashboard's
+  // `systemMatchesEnvCredential` (MinimalReportView.tsx) - kept inline here to
+  // avoid pulling the `'use client'` component into the backend bundler graph.
+  const reconcileEnvKeys: string[] = (scrubbed.workspaceEnv ?? []).flatMap(
+    (f) => f.keys ?? [],
+  );
+  const reconcileEnvTokens = new Set<string>();
+  for (const k of reconcileEnvKeys) {
+    for (const t of k.toLowerCase().split(/[-_]/)) {
+      if (t.length > 0) reconcileEnvTokens.add(t);
+    }
+  }
+  const reconcileCredentialSystemsCount = Array.isArray(reportJson?.systems)
+    ? reportJson.systems.filter((s) => {
+        const sysTokens = (s.systemId || '')
+          .toLowerCase()
+          .split(/[-_]/)
+          .filter((t) => t.length > 2);
+        return sysTokens.some((t) => reconcileEnvTokens.has(t));
+      }).length
+    : 0;
+  verdict.findings = reconcileSlfWithEvidence(verdict.findings, {
+    ...(oauthForward.section ? { oauthScopeVerification: oauthForward.section } : {}),
+    workspaceEnv: scrubbed.workspaceEnv ?? [],
+    ...(reconcileCredentialSystemsCount > 0
+      ? { envCredentialSystemsCount: reconcileCredentialSystemsCount }
+      : {}),
+  });
 
   const reportPatch: Record<string, unknown> = {
     localAgentDiscovery: scrubbed,
