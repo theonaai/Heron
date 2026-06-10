@@ -177,20 +177,63 @@ function diffScopes(
   }
 
   for (const [k, d] of declaredByKey) {
-    if (!actualByKey.has(k)) {
-      out.push({
-        kind: 'missing',
-        dimension: 'scope',
-        source: actual.source,
-        declared: cloneScope(d),
-        severity: SEVERITY_MISSING,
-      });
-    }
+    if (actualByKey.has(k)) continue;
+    // AAP-156 — a declared `.readonly` scope is SATISFIED (no MISSING) when the
+    // actual set holds the FULL scope it is a strict subset of. Skip the diff
+    // when that full variant is present. Direction matters: an actual readonly
+    // scope never satisfies a declared full scope (handled by the suffix-only
+    // rule below — only declared readonly tokens have a full satisfier).
+    if (readonlyDeclarationSatisfied(d, actualByKey)) continue;
+    out.push({
+      kind: 'missing',
+      dimension: 'scope',
+      source: actual.source,
+      declared: cloneScope(d),
+      severity: SEVERITY_MISSING,
+    });
   }
 
   // Scopes have no secondary detail to mismatch on; identical service+scope
   // means an identical claim. Future iterations can add things like
   // requested-vs-granted but they would land on a richer type.
+}
+
+/** Canonical readonly suffix on a Google scope token (e.g. `spreadsheets.readonly`). */
+const READONLY_SUFFIX = '.readonly';
+
+/**
+ * AAP-156 — scope-hierarchy-aware satisfaction for the MISSING direction.
+ *
+ * A declared scope `s` whose canonical token ends in `.readonly` is SATISFIED
+ * when the actual set already holds the FULL scope `t` for the SAME service such
+ * that `canonical(t) + ".readonly" === canonical(s)`. A full scope is a strict
+ * superset of its own readonly variant, so the declared read access is already
+ * covered and there is nothing missing.
+ *
+ * Deterministic SUFFIX rule ONLY — no other hierarchy is inferred (`drive.file`,
+ * `gmail.modify`, etc. are never expanded without a curated table, which we do
+ * not add). The check runs on the CANONICAL token so both the bare
+ * (`spreadsheets.readonly`) and full-URL
+ * (`https://www.googleapis.com/auth/spreadsheets.readonly`) spellings behave
+ * identically — `actualByKey` is already keyed on the canonical token via
+ * `scopeKey`. Direction is one-way: the satisfier key is built by STRIPPING
+ * `.readonly` from a declared readonly token, so an actual readonly scope can
+ * never satisfy a declared full scope.
+ */
+function readonlyDeclarationSatisfied(
+  declared: DeclaredScope,
+  actualByKey: ReadonlyMap<string, ActualScope>,
+): boolean {
+  const canonicalDeclared = canonicalizeScopeToken(declared.scope);
+  if (!canonicalDeclared.endsWith(READONLY_SUFFIX)) return false;
+  const fullToken = canonicalDeclared.slice(
+    0,
+    canonicalDeclared.length - READONLY_SUFFIX.length,
+  );
+  if (fullToken.length === 0) return false;
+  // The actual map is keyed on canonical tokens; build the satisfier key the
+  // same way so a full-URL actual scope matches the stripped declared token.
+  return actualByKey.has(`${declared.service}\x00${fullToken}`);
 }
 
 function scopeKey(s: { service: string; scope: string }): string {
