@@ -364,3 +364,68 @@ describe('reconcileSlfWithEvidence — subject-scoped OAuth cross-ref (AAP-149 f
     expect(out.evidenceCrossRef?.envKeyCount).toBe(12);
   });
 });
+
+// ── Title-only subject matching + scope-label preference (live follow-up) ─
+//
+// Live evidence sess-20260610-052016-df8d8c: a "No application-level tenant
+// isolation" finding (typed scope-creep by the analyzer) mentioned Google
+// Drive/Sheets only in its DESCRIPTION and wrongly drew the verified-OAuth
+// cross-ref; and the cross-ref copy read "google-workspace scope on
+// google-workspace" because the current parser shape puts the connector name
+// in `service` and the service word in `scope`.
+describe('OAuth cross-ref attaches by TITLE only, with specific scope labels', () => {
+  it('a finding that mentions the connector only in its description gets NO cross-ref', () => {
+    const tenantIsolation = slfFinding({
+      id: 'slf-tenant-isolation',
+      findingType: 'scope-creep',
+      title: 'No application-level tenant isolation for reuse across customers',
+      description:
+        'If reused for multiple customers, isolation would depend on configuration and on Google Drive/Sheets permissions rather than an application-level boundary.',
+    });
+    const [out] = reconcileSlfWithEvidence([tenantIsolation], {
+      oauthScopeVerification,
+    });
+    expect(out.evidenceCrossRef).toBeUndefined();
+    expect(out.reconciledMitigation).toBeUndefined();
+    expect(out).toEqual(tenantIsolation);
+  });
+
+  it('a finding whose TITLE names the connector still gets the cross-ref', () => {
+    const [out] = reconcileSlfWithEvidence([excessiveAccessFinding], {
+      oauthScopeVerification,
+    });
+    expect(out.evidenceCrossRef?.kind).toBe('oauth-verified');
+  });
+
+  it('scope labels prefer the specific value over the connector-name service field', () => {
+    // Current forwarded-introspection parser shape: service = connector name,
+    // scope = the service word. The copy must list documents/drive, not
+    // repeat "google-workspace".
+    const currentShape = {
+      capturedAt: '2026-06-10T05:20:16.000Z',
+      sources: [
+        {
+          connector: 'google-workspace' as const,
+          verdict: 'verified' as const,
+          actualScopes: [
+            { service: 'google-workspace', scope: 'documents' },
+            { service: 'google-workspace', scope: 'drive' },
+          ],
+          diffs: [],
+        },
+      ],
+    };
+    const finding = slfFinding({
+      id: 'slf-google-title',
+      findingType: 'excessive-access',
+      title: 'Broad Google Workspace OAuth grants',
+      description: 'Full write access via OAuth user credentials.',
+    });
+    const [out] = reconcileSlfWithEvidence([finding], {
+      oauthScopeVerification: currentShape,
+    });
+    expect(out.evidenceCrossRef?.scopes).toEqual(['documents', 'drive']);
+    expect(out.evidenceCrossRef?.scopes).not.toContain('google-workspace');
+    expect(out.reconciledMitigation).toMatch(/documents/);
+  });
+});

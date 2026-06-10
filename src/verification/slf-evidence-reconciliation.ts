@@ -192,9 +192,20 @@ function collectVerifiedOAuth(
     if (!s.connector) continue;
     const scopeSet = new Set<string>();
     for (const a of s.actualScopes ?? []) {
-      // Prefer the short service identifier (documents / drive / spreadsheets);
-      // fall back to the raw scope string when no service was provided.
-      const label = a.service || a.scope;
+      // Prefer the most SPECIFIC label. Parser output varies: older shape put
+      // the service word in `service` (documents) and the raw scope string in
+      // `scope`; the current forwarded-introspection shape puts the CONNECTOR
+      // name in `service` (google-workspace) and the service word in `scope`
+      // (documents). A label equal to the connector id is useless in the
+      // "Heron verified <scopes> scope" copy ("google-workspace scope on
+      // google-workspace"), so pick the first candidate that is not just the
+      // connector name; fall back to whatever exists.
+      const candidates = [a.service, a.scope].filter(
+        (c): c is string => typeof c === 'string' && c.length > 0,
+      );
+      const label =
+        candidates.find((c) => c.toLowerCase() !== s.connector!.toLowerCase()) ??
+        candidates[0];
       if (label) scopeSet.add(label);
     }
     const scopes = [...scopeSet];
@@ -219,16 +230,36 @@ function findingTextTokens(f: VerdictFinding): Set<string> {
 }
 
 /**
+ * Lowercase word tokens (len > 1) of a finding's TITLE only. The OAuth
+ * cross-ref attach uses the title, not the description: the title states the
+ * finding's CLAIM, while the description carries context that often name-drops
+ * connectors the claim is not about. Live evidence
+ * (sess-20260610-052016-df8d8c): a "No application-level tenant isolation"
+ * finding mentioned Google Drive/Sheets in its description and wrongly drew
+ * the "Fact confirmed this session" OAuth line; its title names no connector,
+ * so title-only matching keeps it honestly un-cross-referenced.
+ */
+function findingTitleTokens(f: VerdictFinding): Set<string> {
+  const out = new Set<string>();
+  for (const t of f.title.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (t.length > 1) out.add(t);
+  }
+  return out;
+}
+
+/**
  * Subset of verified connectors whose brand-stem tokens appear in the finding's
- * own text. Empty when the finding names no verified connector. This is what
- * scopes the cross-ref to the finding's subject: a Slack finding never matches
- * a verified `google-workspace` source, so it gets no false cross-ref.
+ * TITLE. Empty when the title names no verified connector. This is what scopes
+ * the cross-ref to the finding's subject: a Slack finding never matches a
+ * verified `google-workspace` source, and a governance finding that merely
+ * mentions Google in its description gets no cross-ref either (false negative
+ * preferred over overclaim).
  */
 function connectorsNamedBy(
   finding: VerdictFinding,
   verified: VerifiedConnector[],
 ): VerifiedOAuth | null {
-  const words = findingTextTokens(finding);
+  const words = findingTitleTokens(finding);
   const connectors: string[] = [];
   const scopeSet = new Set<string>();
   for (const vc of verified) {
