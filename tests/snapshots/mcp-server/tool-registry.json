@@ -56,7 +56,7 @@
         },
         "workspace_hint": {
           "type": "string",
-          "description": "Optional absolute workspace path the verification scan should target. When omitted, Heron uses the workspace path the MCP client advertised at session start, falling back to the server process cwd."
+          "description": "Optional absolute workspace path the verification scan should target. When omitted, Heron uses the workspace path the MCP client advertised at session start (or on this turn). If none can be resolved, the call returns verification_status=workspace-hint-required and runs no scan — re-call with this set to the absolute path of the audited workspace."
         }
       },
       "required": [
