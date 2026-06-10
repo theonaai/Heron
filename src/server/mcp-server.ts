@@ -124,7 +124,7 @@ import { persistVerifiedMarkdown } from '../report/persist-verified-markdown.js'
 import type { DiscoveryResult } from '../discovery/types.js';
 
 const SERVER_NAME = 'heron';
-const SERVER_VERSION = '0.4.0';
+const SERVER_VERSION = '0.5.0';
 
 /**
  * AAP-143 increment 2 follow-up — in-flight verification guard, keyed by
