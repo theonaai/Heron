@@ -37,6 +37,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { extractProjectName, type TranscriptEntryLike } from '../report/agent-name.js';
+import type { ReportVerificationStatus } from '../report/types.js';
 
 /**
  * Persisted session lifecycle states.
@@ -106,6 +107,21 @@ export type VerificationStatus = 'unverified' | 'partial' | 'verified';
 /** Risk-level vocabulary shared with the verdict module + report renderer. */
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 
+/**
+ * AAP-143 increment 2 follow-up — durable verification-failure marker.
+ *
+ * Held on meta (not only on report.json) so it survives the analyzer's
+ * `writeReport`, which does a FULL overwrite of report.json. The failure
+ * path can fire while the session is still `analyzing` and report.json does
+ * not exist yet; recording the reason here lets `writeReport` re-stamp the
+ * `verification-failed` marker onto the report.json the analyzer produces a
+ * beat later, in ANY ordering, instead of having the marker silently erased.
+ */
+export interface VerificationFailureRecord {
+  reason: string;
+  occurredAt: string;
+}
+
 export interface AuditSession {
   id: string;
   status: AuditSessionStatus;
@@ -164,6 +180,15 @@ export interface AuditSession {
    * UI consumers can render reason + last error + occurredAt.
    */
   analysisError?: AnalysisErrorRecord | null;
+  /**
+   * AAP-143 increment 2 follow-up — durable verification-failure marker.
+   * Set when discovery (or the deferred merge) fails. Survives the
+   * analyzer's report.json overwrite so the failure is never silently lost
+   * when analysis finishes after the failure was recorded. Cleared when a
+   * verification settles to a non-failed outcome. Absent/undefined when no
+   * verification failure is on record.
+   */
+  verificationFailure?: VerificationFailureRecord | null;
 }
 
 export interface TranscriptEntry {
@@ -583,6 +608,36 @@ export async function getSession(id: string): Promise<AuditSessionDetail | null>
     detail.verificationStatus = mappedFromReport;
   }
 
+  // AAP-143 increment 2 follow-up — overlay the durable verification-failure
+  // marker onto the read path. The marker lives on meta so it survives the
+  // analyzer's report.json overwrite. `writeReport` re-stamps it onto
+  // report.json on the write path; this read-path overlay covers the window
+  // before the next writeReport (e.g. the failure was recorded while status
+  // is still `analyzing` and report.json does not exist yet) so a poller
+  // never reads a complete/unverified report that hides the failure. We only
+  // overlay when report.json does not already carry the failed marker (the
+  // write path may have already stamped it).
+  if (meta.verificationFailure) {
+    detail.verificationFailure = meta.verificationFailure;
+    if (reportVerificationStatus !== 'verification-failed' && reportJson !== null) {
+      const base =
+        typeof reportJson === 'object' && !Array.isArray(reportJson)
+          ? (reportJson as Record<string, unknown>)
+          : {};
+      detail.reportJson = {
+        ...base,
+        verification: {
+          status: 'verification-failed' as ReportVerificationStatus,
+          reason: meta.verificationFailure.reason,
+          updatedAt: meta.verificationFailure.occurredAt,
+        },
+      };
+    }
+    // The overlaid report-level status is terminal `unverified` at the meta
+    // tier (see mapReportVerificationToMeta) — keep meta consistent.
+    detail.verificationStatus = 'unverified';
+  }
+
   return detail;
 }
 
@@ -716,7 +771,29 @@ export async function writeReport(
   const dir = await ensureSessionsDir();
   await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
   await atomicWriteFile(join(dir, id, 'report.md'), payload.markdown);
-  await atomicWriteFile(join(dir, id, 'report.json'), JSON.stringify(payload.json, null, 2));
+  // AAP-143 increment 2 follow-up — re-apply any durable verification-failure
+  // marker onto the report.json we are about to write. The analyzer's
+  // `writeReport` does a FULL overwrite; without this, a failure recorded
+  // while the session was `analyzing` (before report.json existed) would be
+  // silently erased the moment analysis lands. Re-stamping makes the marker
+  // survive in ANY ordering. A successful verification settle clears the meta
+  // record first (see `patchReportAndMeta`), so this never overwrites a real
+  // verified/partially-verified status.
+  const jsonToWrite =
+    meta.verificationFailure &&
+    payload.json &&
+    typeof payload.json === 'object' &&
+    !Array.isArray(payload.json)
+      ? {
+          ...(payload.json as Record<string, unknown>),
+          verification: {
+            status: 'verification-failed' as ReportVerificationStatus,
+            reason: meta.verificationFailure.reason,
+            updatedAt: meta.verificationFailure.occurredAt,
+          },
+        }
+      : payload.json;
+  await atomicWriteFile(join(dir, id, 'report.json'), JSON.stringify(jsonToWrite, null, 2));
   // #26 A1 — stamp the extracted display name onto meta the moment the
   // report lands, so the overview / sidebar (which read meta-only) show the
   // same Q1-derived name as the report card. Only set it when extraction
@@ -808,6 +885,70 @@ export async function patchReportJson(
 }
 
 /**
+ * AAP-143 increment 2 follow-up — record a durable verification-failure
+ * marker.
+ *
+ * Writes the failure reason onto meta (so it survives the analyzer's full
+ * `writeReport` overwrite of report.json — see `writeReport`'s re-stamp), and
+ * — only when report.json already exists — patches the report-level
+ * `verification` field too so a poller reading report.json sees the failure
+ * immediately.
+ *
+ * Critically, this does NOT materialize a partial report.json when one does
+ * not exist yet. The AAP-143 increment 2 invariant is "no partial report.json
+ * before analysis lands"; the previous failure path violated it by calling
+ * `patchReportJson` (which treats a missing report.json as `{}` and writes a
+ * file containing only the failure marker). When report.json is absent, the
+ * meta marker alone carries the failure; `writeReport` re-applies it the
+ * moment the analyzer produces report.json.
+ */
+export async function recordVerificationFailure(
+  id: string,
+  reason: string,
+): Promise<void> {
+  assertValidId(id);
+  const meta = await readMeta(id);
+  if (!meta) throw new Error(`Session not found: ${id}`);
+  const truncated = reason.length > 400 ? reason.slice(0, 400) : reason;
+  const occurredAt = nowIso();
+  const dir = await ensureSessionsDir();
+  await mkdir(join(dir, id), { recursive: true, mode: DIR_MODE });
+  const reportPath = join(dir, id, 'report.json');
+
+  // Patch report.json with the marker ONLY when it already exists — never
+  // materialize a partial report.json before analysis has produced one.
+  let reportExists = false;
+  try {
+    const raw = await readFile(reportPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const merged = {
+        ...(parsed as Record<string, unknown>),
+        verification: {
+          status: 'verification-failed' as ReportVerificationStatus,
+          reason: truncated,
+          updatedAt: occurredAt,
+        },
+      };
+      await atomicWriteFile(reportPath, JSON.stringify(merged, null, 2));
+      reportExists = true;
+    }
+  } catch {
+    // ENOENT or malformed — report.json not present (status still analyzing,
+    // or never written). The meta marker below carries the failure; do not
+    // create a partial report.json here.
+  }
+  void reportExists;
+
+  const next: StoredMeta = {
+    ...meta,
+    verificationFailure: { reason: truncated, occurredAt },
+    updatedAt: occurredAt,
+  };
+  await writeMeta(id, next);
+}
+
+/**
  * AAP-105 A2 — atomic "patch report.json + update meta verdict fields"
  * helper. Replaces the prior pattern of calling `patchReportJson` and
  * then `persistVerdict` back-to-back, which left an observable race
@@ -867,6 +1008,15 @@ export async function patchReportAndMeta(
     if (val !== undefined) {
       (next as unknown as Record<string, unknown>)[key] = val;
     }
+  }
+  // AAP-143 increment 2 follow-up — a fresh non-failed verification settle
+  // supersedes any prior durable failure marker. Clear it so `writeReport` /
+  // the read overlay never re-stamp `verification-failed` over a real
+  // verified / partially-verified status. Only a verdict that is NOT itself a
+  // failure clears it.
+  const mergedVerificationStatus = (merged.verification as { status?: unknown } | undefined)?.status;
+  if (mergedVerificationStatus !== 'verification-failed') {
+    next.verificationFailure = null;
   }
   next.updatedAt = nowIso();
   await writeMeta(id, next);

@@ -1056,3 +1056,291 @@ describe('start_verification — accept during analyzing + deferred merge (AAP-1
     }
   });
 });
+
+describe('start_verification — idempotency guard + durable failure marker (AAP-143 increment 2 follow-up)', () => {
+  let tmpDir: string;
+  const origEnv = process.env.HERON_SESSIONS_DIR;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-guard-'));
+    process.env.HERON_SESSIONS_DIR = tmpDir;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.HERON_SESSIONS_DIR;
+    else process.env.HERON_SESSIONS_DIR = origEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function minimalReport() {
+    return {
+      summary: 'Slack reminder agent.',
+      agentPurpose: 'Slack reminders',
+      systems: [],
+      risks: [],
+      recommendations: [],
+      overallRiskLevel: 'low',
+      transcript: [],
+      metadata: {
+        date: '2026-06-10',
+        target: 'slack-bot',
+        interviewDuration: 1,
+        questionsAsked: 0,
+      },
+    };
+  }
+
+  function seedFakeHome(): { fakeHome: string; restore: () => void } {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap143-incr2-guard-home-'));
+    const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.codex/config.toml'),
+      '[mcp_servers.slack]\n' +
+        'url = "https://slack-mcp.example.com"\n' +
+        '[mcp_servers.slack.env]\n' +
+        'SLACK_BOT_TOKEN = "xoxb-guard-DO-NOT-LEAK"\n',
+    );
+    return {
+      fakeHome,
+      restore: () => {
+        if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+        else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+        rmSync(fakeHome, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('Bug 1 — a second start_verification while the first is in flight is a calm no-op: exactly one merge runs', async () => {
+    // Two start_verification calls fire back-to-back against the same session
+    // while the first is still in flight. The in-flight guard must let exactly
+    // ONE background task run the discovery scan + merge; the second call
+    // returns the calm 'verifying' in-progress response (no error). We prove
+    // "exactly one merge" via a filesystem effect: report.md is re-rendered
+    // once and the merged report.json carries a single settled verdict.
+    const home = seedFakeHome();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-guard-ws1-'));
+    try {
+      const server = makeServer();
+      const { id } = await createSession({
+        agentName: 'aap143-guard-double',
+        mode: 'tool-call',
+      });
+      await updateSessionMeta(id, { status: 'complete' });
+      await writeReport(id, { markdown: '# stub', json: minimalReport() });
+
+      const cap = captureEvents(id);
+
+      // Fire both calls synchronously (no await between) so the second lands
+      // while the first's bg task is still in flight.
+      const p1 = server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      const p2 = server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      const [r1, r2] = await Promise.all([p1, p2]);
+
+      // Both calls return the calm in-progress response — neither errors.
+      expect(r1.ok).toBe(true);
+      expect(r2.ok).toBe(true);
+      if (!r1.ok || !r2.ok) return;
+      expect(r1.value.verification_status).toBe('verifying');
+      expect(r2.value.verification_status).toBe('verifying');
+      // Exactly one of the two responses is the "already in progress" no-op.
+      const summaries = [r1.value.summary, r2.value.summary];
+      const alreadyInProgress = summaries.filter((s) =>
+        /already in progress/i.test(s),
+      );
+      expect(alreadyInProgress).toHaveLength(1);
+
+      // Exactly one bg task runs the merge → one status-change=complete event.
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      // Give any erroneous second task a chance to also publish; then assert
+      // there was only one completion.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const completions = cap.events.filter(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+      );
+      expect(completions).toHaveLength(1);
+      cap.dispose();
+
+      const after = await getSession(id);
+      const blob = after!.reportJson as {
+        verification?: { status?: string };
+        localAgentDiscovery?: unknown;
+      };
+      expect(blob.localAgentDiscovery).toBeDefined();
+      expect(blob.verification?.status).toBe('partially-verified');
+
+      // A third call AFTER the run settled is allowed (re-verify-after-settle):
+      // the in-flight slot was cleared in the bg task's finally.
+      const cap2 = captureEvents(id);
+      const r3 = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      expect(r3.value.verification_status).toBe('verifying');
+      expect(r3.value.summary).not.toMatch(/already in progress/i);
+      await cap2.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap2.dispose();
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('Bug 2 — failure recorded during analyzing (no report.json) survives the analyzer writeReport overwrite', async () => {
+    // Ordering: verification fails while status=analyzing and report.json is
+    // ABSENT. The failure must be recorded WITHOUT materializing a partial
+    // report.json at that moment (incr2 invariant). Then the analyzer's
+    // writeReport lands a full report.json — the failure marker must NOT be
+    // silently erased: the final report.json + session detail still surface
+    // verification-failed.
+    const { recordVerificationFailure, getSessionsDir } = await import(
+      '../../src/storage/sessions.js'
+    );
+    const { readFileSync, existsSync } = await import('node:fs');
+
+    const { id } = await createSession({
+      agentName: 'aap143-guard-failwrite',
+      mode: 'tool-call',
+    });
+    await updateSessionMeta(id, { status: 'analyzing' });
+
+    const reportJsonPath = join(getSessionsDir(), id, 'report.json');
+    // Precondition: no report.json yet (analyzer still running).
+    expect(existsSync(reportJsonPath)).toBe(false);
+
+    // Phase A fails while analyzing, report.json absent.
+    await recordVerificationFailure(id, 'Discovery scan failed: boom');
+
+    // INVARIANT 1 — no partial report.json materialized at this moment.
+    expect(existsSync(reportJsonPath)).toBe(false);
+
+    // The failure is durable on the session detail even with no report.json.
+    const midway = await getSession(id);
+    expect(midway!.verificationFailure?.reason).toMatch(/boom/);
+
+    // Now the analyzer finishes: writeReport does a FULL report.json overwrite.
+    await writeReport(id, { markdown: '# analyzed', json: minimalReport() });
+
+    // INVARIANT 2 — the marker survived the overwrite on disk.
+    const onDisk = JSON.parse(readFileSync(reportJsonPath, 'utf8')) as {
+      verification?: { status?: string; reason?: string };
+      summary?: string;
+    };
+    // The analyzer payload is present (full report) AND the failure marker is
+    // re-stamped — not silently lost.
+    expect(onDisk.summary).toBe('Slack reminder agent.');
+    expect(onDisk.verification?.status).toBe('verification-failed');
+    expect(onDisk.verification?.reason).toMatch(/boom/);
+
+    // INVARIANT 3 — the session detail read path surfaces verification-failed.
+    const after = await getSession(id);
+    expect(after!.status).toBe('complete');
+    const verif = (after!.reportJson as {
+      verification?: { status?: string; reason?: string };
+    }).verification;
+    expect(verif?.status).toBe('verification-failed');
+    expect(verif?.reason).toMatch(/boom/);
+    expect(after!.verificationFailure?.reason).toMatch(/boom/);
+  });
+
+  it('Bug 2 reverse ordering — failure recorded AFTER report.json exists still survives a later analyzer re-write', async () => {
+    // Belt-and-suspenders for the other ordering: report.json already exists
+    // when the failure is recorded (so the marker lands on report.json too),
+    // and a later writeReport (e.g. a re-analysis) must not erase it either.
+    const { recordVerificationFailure, getSessionsDir } = await import(
+      '../../src/storage/sessions.js'
+    );
+    const { readFileSync } = await import('node:fs');
+
+    const { id } = await createSession({
+      agentName: 'aap143-guard-reverse',
+      mode: 'tool-call',
+    });
+    await updateSessionMeta(id, { status: 'complete' });
+    await writeReport(id, { markdown: '# stub', json: minimalReport() });
+
+    await recordVerificationFailure(id, 'Discovery scan failed: kaboom');
+
+    // Recorded on report.json immediately because it already existed.
+    const reportJsonPath = join(getSessionsDir(), id, 'report.json');
+    const firstPass = JSON.parse(readFileSync(reportJsonPath, 'utf8')) as {
+      verification?: { status?: string };
+    };
+    expect(firstPass.verification?.status).toBe('verification-failed');
+
+    // A later analyzer writeReport overwrite must re-stamp the marker.
+    await writeReport(id, { markdown: '# re-analyzed', json: minimalReport() });
+    const after = await getSession(id);
+    const verif = (after!.reportJson as {
+      verification?: { status?: string; reason?: string };
+    }).verification;
+    expect(verif?.status).toBe('verification-failed');
+    expect(verif?.reason).toMatch(/kaboom/);
+  });
+
+  it('a successful verification settle clears a stale failure marker (no re-stamp over verified)', async () => {
+    // Once a verification settles to a non-failed status via patchReportAndMeta,
+    // the durable failure record is cleared so a subsequent writeReport does
+    // NOT re-stamp verification-failed over the real verdict.
+    const home = seedFakeHome();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap143-guard-ws2-'));
+    try {
+      const { recordVerificationFailure } = await import(
+        '../../src/storage/sessions.js'
+      );
+      const server = makeServer();
+      const { id } = await createSession({
+        agentName: 'aap143-guard-clear',
+        mode: 'tool-call',
+      });
+      await updateSessionMeta(id, { status: 'complete' });
+      await writeReport(id, { markdown: '# stub', json: minimalReport() });
+
+      // Seed a stale failure marker, then run a successful verification.
+      await recordVerificationFailure(id, 'Stale earlier failure');
+
+      const cap = captureEvents(id);
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap.dispose();
+
+      const after = await getSession(id);
+      // The successful merge cleared the stale failure record.
+      expect(after!.verificationFailure ?? null).toBeNull();
+      const verif = (after!.reportJson as {
+        verification?: { status?: string };
+      }).verification;
+      // Settled to the real verdict, NOT clobbered back to failed.
+      expect(verif?.status).toBe('partially-verified');
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
