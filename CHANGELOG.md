@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-10
+
+The report rework + deterministic-verification release. Everything that shipped on `main` between 2026-04-25 and 2026-06-10; the report, the verification engine, and the interview are substantially different products than 0.4.0.
+
+### The report, rebuilt
+
+- **Minimal risk-focused report** replaces the long-form layout: header (risk + what it does), Systems & Access table, Credentials & Secrets, Findings, Compliance Lens. One screen, reviewer-ordered.
+- **Risk replaces "posture" and verdicts.** Severity = Blast Radius x Data Sensitivity x Decision-Making weight per finding, anchored to AWS Well-Architected / GDPR Art. 9 + NIST SP 800-122 / EU AI Act Annex III; the report-level risk is a FIPS-199-style high-water mark over VERIFIED findings only. APPROVE/DENY verdict tables, threshold matrices, and the word "posture" are gone.
+- **Honesty vocabulary end to end:** verified discrepancies drive risk; failed verification lands in an explicit "Could not verify" bucket (never counted verified); self-attested findings render in full, labeled, and never move the risk score; where a deterministic read confirms the fact behind a self-attested finding, the card cross-references that evidence (subject-scoped, title-matched: no overclaiming).
+- Systems table: per-system Verified? glyphs (introspection-confirmed / discrepancy / found-in-.env / no evidence) with a header legend; readable OAuth capability names; per-system severity column.
+
+### Deterministic verification
+
+- **Agent-forwarded OAuth introspection.** The agent introspects its own token against the provider and forwards only the response; Heron never sees the secret. Includes scope-form canonicalization, a scope-hierarchy-aware diff (a held full scope satisfies its declared `.readonly` variant), declared-baseline reliability fixes, and a refresh-once instruction for expired tokens.
+- **Agent-executed MCP `tools/list` forwarding** for HTTP MCP servers: declared tools diffed against what the server actually exposes.
+- **Per-runtime, per-workspace scoping** behind a declarative runtime registry (Claude Code + Codex): Heron audits this agent in this workspace; IDE host-wide capability is informational, not a deviation.
+- **Verification flow hardening:** `start_verification` is async (immune to client tool-call timeouts), accepted during analysis (deterministic scan runs in parallel, merge waits for the analyzed report), idempotent under concurrent calls, records failures durably, and refuses to scan without a resolvable workspace instead of silently falling back to Heron's own checkout.
+
+### Compliance lens
+
+- Five frameworks (EU AI Act, GDPR, ISO/IEC 42001, AIUC-1, NIST AI RMF) with deterministic-first control activation, per-framework coverage counts, honest buckets (verified / needs review / self-attested / out of scope), high-risk-only EU articles gated on classification, and approval-chain-only controls moved out of scope.
+
+### Interview
+
+- Tool-call interview path (Codex CLI / desktop) alongside MCP sampling; 17 core questions; per-question and session-level gap-topic follow-up caps (a recorded gap is not re-asked in new phrasings); premise grounding (follow-ups only reference what the agent actually said); deployment-task-focused Q01.
+
+### Security hardening
+
+- Agent-controlled strings escaped across the Markdown export; the secret scrub fails closed (`[REDACTED:scrub-error]`, never raw passthrough); interview transcript fenced as untrusted data in the analysis prompt; uniform same-origin guard on all state-changing dashboard routes; MCP session-rejection responses now tell the client how to recover (re-initialize and retry).
+
+### Docs
+
+- README rewritten to the current product with a scroll-through GIF of the live demo report; the deep CLI verification reference moved to `docs/cli-verification.md`.
+
+Test suite: 2,194 -> ~2,750.
+
 ## [0.4.0] - 2026-04-25
 
 First npm release since `0.2.3` (2026-03). Bundles four feature additions

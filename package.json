@@ -1,6 +1,6 @@
 {
   "name": "heron-ai",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Open-source agent interrogator — audit what your AI agents do, need, and access",
   "type": "module",
   "bin": {
