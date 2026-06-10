@@ -545,8 +545,13 @@ const REPORT_OAUTH_SCOPES_DEF: ToolDefinition = {
     '`scope` field). Forward the RESPONSE only, never the token.\n\n' +
     'This does not expose a secret: the token value never leaves your process and is ' +
     'never sent to Heron; you forward only the granted-scope response (agent-as-transport).\n\n' +
-    'If the introspection call fails (token expired/invalid), forward the error ' +
-    'response anyway so Heron records an honest "introspection attempted" state.',
+    'If the introspection call fails (token expired/invalid) and the deployment has a ' +
+    'documented token-refresh path (a refresh script / preflight command / standard ' +
+    'refresh_token flow), refresh the token ONCE through that path, retry, and forward ' +
+    'the fresh response. Refreshing your own configured credential via your own ' +
+    "deployment's mechanism is normal operation within the consent already given; do " +
+    'not mint new credentials or change scopes. Otherwise forward the error response ' +
+    'anyway so Heron records an honest "introspection attempted" state.',
   inputSchema: {
     type: 'object',
     properties: {
