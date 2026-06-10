@@ -12,6 +12,7 @@ import {
   parseJsonBody,
   validateSessionId,
 } from '@/lib/api/audit-sessions';
+import { isSameOriginRequest } from '@/src/server/csrf';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,9 @@ export async function GET(_request: Request, ctx: RouteContext): Promise<Respons
 }
 
 export async function PATCH(request: Request, ctx: RouteContext): Promise<Response> {
+  if (!isSameOriginRequest(request)) {
+    return errorResponse(403, 'cross-origin request refused', 'csrf');
+  }
   const { id } = await ctx.params;
   const idCheck = validateSessionId(id);
   if (!idCheck.ok) return idCheck.response;
@@ -45,7 +49,10 @@ export async function PATCH(request: Request, ctx: RouteContext): Promise<Respon
   return jsonResponse(detail);
 }
 
-export async function DELETE(_request: Request, ctx: RouteContext): Promise<Response> {
+export async function DELETE(request: Request, ctx: RouteContext): Promise<Response> {
+  if (!isSameOriginRequest(request)) {
+    return errorResponse(403, 'cross-origin request refused', 'csrf');
+  }
   const { id } = await ctx.params;
   const idCheck = validateSessionId(id);
   if (!idCheck.ok) return idCheck.response;

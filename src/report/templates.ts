@@ -938,11 +938,15 @@ function renderSummary(
     methodology = `\n\n> **Risk methodology** anchored to ${names.length} frameworks: ${fwList}. Mapping version: \`${c.mappingVersion}\`.`;
   }
 
+  // `report.summary` is analyzer LLM prose derived from the audited agent's
+  // answers; escape structural injection (HTML / link-image syntax / pipes)
+  // the same way the finding cards escape `finding.description`. `escapeText`
+  // preserves newlines so the paragraph structure of the summary survives.
   return `## Executive Summary
 
 ${dashboard}${methodology}
 
-${report.summary}`;
+${escapeText(report.summary)}`;
 }
 
 // ─── Agent Profile ───────────────────────────────────────────────────────────
@@ -1170,9 +1174,12 @@ function renderSystemCard(
   }
 
   // Optional descriptive paragraph above the table — italicised body text.
+  // `systemDescription` is agent-supplied prose rendered outside the
+  // `escapeCell` table path, so escape it here to keep HTML / link-image
+  // syntax inert in the shared report.
   const descriptionLine =
     sys.systemDescription && sys.systemDescription.trim().length > 0
-      ? `\n\n_${sys.systemDescription.trim()}_\n`
+      ? `\n\n_${escapeText(sys.systemDescription.trim())}_\n`
       : '';
 
   // Build the main Property | Value table.
@@ -1281,7 +1288,11 @@ function renderFindings(risks: Risk[], compliance?: StructuredCompliance): strin
     const findingType = inferFindingType(r);
     const basis = findingType ? getFrameworkBasis(findingType, compliance) : '—';
     const remediation = r.mitigation ?? '—';
-    return `| ${id} | ${r.severity.toUpperCase()} | ${basis} | ${r.title} | ${r.description} | ${remediation} |`;
+    // `title` / `description` / `mitigation` are agent-influenced LLM prose;
+    // route through `escapeCell` so pipes can't break the table and HTML /
+    // link syntax can't render. `basis` is framework-catalog copy (static),
+    // but cell-escaping it is harmless and keeps the row uniform.
+    return `| ${id} | ${r.severity.toUpperCase()} | ${escapeCell(basis)} | ${escapeCell(r.title)} | ${escapeCell(r.description)} | ${escapeCell(remediation)} |`;
   };
 
   const tableHeader = `| ID | Severity | Framework Basis | Finding | Description | Recommendation |
@@ -2207,13 +2218,19 @@ function renderVerdict(
       '\n\n' +
       allRecs
         .map(r => {
+          // `recommendations[]` is analyzer LLM prose (agent-influenced);
+          // both the derived title and the body are escaped before they hit
+          // the markdown blockquote so HTML / link-image syntax can't render.
+          // The de-dup comparisons run on the RAW strings (pre-escape) so the
+          // prefix/equality logic is unaffected.
           const title = recommendationTitle(r);
           const trimmed = r.trim();
+          const titleSafe = escapeText(title);
           // Strip the title prefix from the body if it's the same span
           // (avoid "Foo. Foo. ..." duplication when title IS the body).
           const sameTitle = title === trimmed || title === `${trimmed}.`;
           if (sameTitle) {
-            return `> **${title}**`;
+            return `> **${titleSafe}**`;
           }
           // AAP-93 polish: when the title is a prefix of the body
           // (e.g. title "Reduce tool surface to declared scope." +
@@ -2224,9 +2241,9 @@ function renderVerdict(
           const lowerBody = trimmed.toLowerCase();
           if (lowerBody.startsWith(lowerTitle)) {
             const rest = trimmed.slice(title.length).trimStart();
-            return rest.length > 0 ? `> **${title}** ${rest}` : `> **${title}**`;
+            return rest.length > 0 ? `> **${titleSafe}** ${escapeText(rest)}` : `> **${titleSafe}**`;
           }
-          return `> **${title}** ${trimmed}`;
+          return `> **${titleSafe}** ${escapeText(trimmed)}`;
         })
         .join('\n>\n');
   }
@@ -2253,16 +2270,19 @@ function renderVerdict(
 
   if (excessiveBySystem.size > 0 || missingBySystem.size > 0) {
     body += '\n\n**Permissions delta**:\n';
+    // `system` is the schema-constrained kebab-case systemId (no injection
+    // chars possible). `scopes` are agent-supplied permission tokens, so each
+    // is escaped before joining into the bullet.
     if (excessiveBySystem.size > 0) {
       body += '\n*Excessive (can be revoked):*\n';
       for (const [system, scopes] of excessiveBySystem) {
-        body += `- **${system}**: ${scopes.join('; ')}\n`;
+        body += `- **${system}**: ${scopes.map(escapeText).join('; ')}\n`;
       }
     }
     if (missingBySystem.size > 0) {
       body += '\n*Minimum needed:*\n';
       for (const [system, scopes] of missingBySystem) {
-        body += `- **${system}**: ${scopes.join('; ')}\n`;
+        body += `- **${system}**: ${scopes.map(escapeText).join('; ')}\n`;
       }
     }
   }
@@ -2275,8 +2295,16 @@ ${body}`;
 // ─── Transcript ──────────────────────────────────────────────────────────────
 
 function renderTranscript(transcript: QAPair[]): string {
+  // The audited agent supplies `question` / `answer`; `category` is a
+  // constrained enum but is escaped too for symmetry. Route every cell
+  // through `escapeText` so a hostile answer (`<img onerror>`,
+  // `[x](javascript:...)`, pipes) cannot inject into the shared report.md.
+  // Mirrors the already-escaped transcript render in `renderAnalysisFailedReport`.
   const items = transcript
-    .map((qa, i) => `### Q${i + 1} [${qa.category}]\n\n**Q:** ${qa.question}\n\n**A:** ${qa.answer}`)
+    .map(
+      (qa, i) =>
+        `### Q${i + 1} [${escapeText(qa.category)}]\n\n**Q:** ${escapeText(qa.question)}\n\n**A:** ${escapeText(qa.answer)}`,
+    )
     .join('\n\n');
 
   return `## Interview Transcript
@@ -2644,9 +2672,15 @@ ${voluntaryRows.join('\n')}`;
  * Falls back to generic text if no specific context available.
  */
 function buildGapDescription(findingType: string, report?: AuditReport): string {
+  // This builds a prose gap description: static framework copy (must NOT be
+  // escaped) interleaved with agent-supplied fragments (scope tokens, write
+  // operation/target, data sensitivity, decision details). The agent
+  // fragments are escaped at the point of interpolation below so the static
+  // GDPR / EU-AI-Act sentences stay readable while injection chars are inert.
+  // `systemId` is the schema-constrained kebab-case id (no injection chars).
   const systems = report?.systems?.filter(isBusinessSystem) ?? [];
   const systemNames = systems.map(s => s.systemId).join(', ');
-  const excessiveScopes = systems.flatMap(s => s.scopesDelta?.map(d => `${s.systemId}: ${d}`) ?? []);
+  const excessiveScopes = systems.flatMap(s => s.scopesDelta?.map(d => `${s.systemId}: ${escapeText(d)}`) ?? []);
   // AAP-108 (defect 5) — the "on N system(s)" count must reflect only the
   // systems that ACTUALLY carry an excessive scope (a non-empty
   // `scopesDelta`), not the total business-system count. Pre-fix this used
@@ -2655,9 +2689,9 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
   const systemsWithExcessive = systems.filter(
     s => (s.scopesDelta ?? []).some(isProvided),
   ).length;
-  const writes = systems.flatMap(s => s.writeOperations?.map(w => `${w.operation} → ${w.target}`) ?? []);
+  const writes = systems.flatMap(s => s.writeOperations?.map(w => `${escapeText(w.operation)} → ${escapeText(w.target)}`) ?? []);
   const hasIrreversible = systems.some(s => s.writeOperations?.some(w => !w.reversible));
-  const dataSensitivities = [...new Set(systems.map(s => s.dataSensitivity).filter(Boolean))];
+  const dataSensitivities = [...new Set(systems.map(s => s.dataSensitivity).filter(Boolean))].map(escapeText);
   const decisionDetails = report?.decisionMakingDetails ?? '';
 
   switch (findingType) {
@@ -2690,7 +2724,7 @@ function buildGapDescription(findingType: string, report?: AuditReport): string 
 
     case 'decisions-about-people':
       if (decisionDetails) {
-        return `Agent makes or influences automated decisions affecting individuals: "${decisionDetails.slice(0, 150)}". Requires human oversight, contestability, transparency, and data-subject rights (GDPR Art. 22).`;
+        return `Agent makes or influences automated decisions affecting individuals: "${escapeText(decisionDetails.slice(0, 150))}". Requires human oversight, contestability, transparency, and data-subject rights (GDPR Art. 22).`;
       }
       return 'Agent makes or influences automated decisions affecting individuals. Requires human oversight, contestability, transparency, and data-subject rights.';
 

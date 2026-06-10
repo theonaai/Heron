@@ -72,6 +72,7 @@ import {
   mergeWorkspaceHints,
   patchReportAndMeta,
   patchReportJson,
+  recordVerificationFailure,
   ReportedMcpToolsPerSessionCapExceeded,
   saveReportedMcpToolsList,
   saveReportedOAuthScopes,
@@ -124,6 +125,34 @@ import type { DiscoveryResult } from '../discovery/types.js';
 
 const SERVER_NAME = 'heron';
 const SERVER_VERSION = '0.4.0';
+
+/**
+ * AAP-143 increment 2 follow-up — in-flight verification guard, keyed by
+ * session id.
+ *
+ * `start_verification` kicks `runVerificationAndPatch` off fire-and-forget.
+ * Without a guard a second call (an agent that called during `analyzing` then
+ * retries after `complete`, or a polling client that retries on a slow
+ * response) launches a SECOND concurrent discovery scan + OAuth replay; both
+ * reach `patchReportAndMeta` with last-write-wins, and interleaved OAuth
+ * replay could mix verdicts. The handler checks-and-sets this synchronously
+ * (no await between check and set) so two racing calls cannot both pass, and
+ * the background task clears it in a `finally`.
+ *
+ * Module-level (not instance-level) on purpose: `buildMcpServer()` returns a
+ * fresh server per request, so two racing `invoke` calls run against
+ * different instances; only process-wide state dedupes them.
+ *
+ * Deliberately NOT stashed on `globalThis` for HMR survival (unlike the
+ * transport map / sampling-deps in `app/mcp/route.ts`). That stash exists for
+ * state whose loss across a `next dev` recompile is a correctness bug (a
+ * dropped transport orphans a live session). This set only guards against
+ * concurrent duplicate calls within a single verification's lifetime (seconds).
+ * An HMR rebuild already tears down in-flight requests, so a dropped guard has
+ * no live duplicate to dedupe; the worst case is one redundant scan right after
+ * a recompile, never a production bug (a built server does not HMR).
+ */
+const verificationsInFlight = new Set<string>();
 
 // ─── Public dependency contracts ──────────────────────────────────────────
 
@@ -516,8 +545,13 @@ const REPORT_OAUTH_SCOPES_DEF: ToolDefinition = {
     '`scope` field). Forward the RESPONSE only, never the token.\n\n' +
     'This does not expose a secret: the token value never leaves your process and is ' +
     'never sent to Heron; you forward only the granted-scope response (agent-as-transport).\n\n' +
-    'If the introspection call fails (token expired/invalid), forward the error ' +
-    'response anyway so Heron records an honest "introspection attempted" state.',
+    'If the introspection call fails (token expired/invalid) and the deployment has a ' +
+    'documented token-refresh path (a refresh script / preflight command / standard ' +
+    'refresh_token flow), refresh the token ONCE through that path, retry, and forward ' +
+    'the fresh response. Refreshing your own configured credential via your own ' +
+    "deployment's mechanism is normal operation within the consent already given; do " +
+    'not mint new credentials or change scopes. Otherwise forward the error response ' +
+    'anyway so Heron records an honest "introspection attempted" state.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1809,6 +1843,37 @@ export class HeronMCPServer {
     // the run is still going, not a stale pre-run status. `patchReportJson`
     // is the same single-field write `persistVerificationFailure` uses.
     //
+    // AAP-143 increment 2 follow-up — idempotency / in-flight guard.
+    //
+    // A second start_verification call (an agent that called during
+    // `analyzing` then retries after `complete`, or a polling client that
+    // retries on a slow response) would otherwise launch a SECOND concurrent
+    // discovery scan + OAuth replay; both reach `patchReportAndMeta` with
+    // last-write-wins, and interleaved OAuth replay could mix verdicts. The
+    // check-and-set below is SYNCHRONOUS (no await between the `.has` check
+    // and the `.add`), so two racing calls cannot both pass. The slot is
+    // cleared in the background task's `finally` (success AND failure).
+    //
+    // A duplicate call is a calm no-op for the agent, NOT an error: we return
+    // the same in-progress 'verifying' shape the first call returned, with a
+    // hint to poll. A sequential re-verification after the previous run fully
+    // settles passes cleanly because the slot is already cleared.
+    if (verificationsInFlight.has(sessionId)) {
+      return {
+        ok: true,
+        value: {
+          session_id: sessionId,
+          verification_status: 'verifying',
+          summary:
+            'Verification already in progress for this session; poll get_report or the session status for the result.',
+          high_severity_findings: 0,
+          total_findings: 0,
+          completed_at: new Date().toISOString(),
+        },
+      };
+    }
+    verificationsInFlight.add(sessionId);
+
     // AAP-143 increment 2 — only stamp the marker when report.json already
     // exists (status 'complete'). For an 'analyzing' session there is no
     // report.json yet; writing the marker now would materialise a partial
@@ -1856,6 +1921,12 @@ export class HeronMCPServer {
           // Best-effort — report.json might already be broken.
         }
         publishSessionEvent(sessionId, { type: 'error', message: summary });
+      } finally {
+        // AAP-143 increment 2 follow-up — release the in-flight slot on BOTH
+        // the success and failure paths so a sequential re-verification after
+        // this run settles is allowed (the concurrent-duplicate case is what
+        // the guard blocks, not re-verify-after-settle).
+        verificationsInFlight.delete(sessionId);
       }
     })();
 
@@ -2430,23 +2501,25 @@ async function verifyExistingDirectory(path: string): Promise<string | null> {
 }
 
 /**
- * Persist the report-level `verification-failed` marker without
- * touching the analyzer output. Used by the `start_verification` handler
- * when discovery cannot run (bad workspace, scan error). The session
- * stays in its prior `status` — only the `verification` field flips.
+ * Persist the verification-failed marker durably. Used by the
+ * `start_verification` handler when discovery cannot run (bad workspace,
+ * scan error) or the deferred merge cannot complete. The session stays in
+ * its prior `status` — only the verification marker flips.
+ *
+ * AAP-143 increment 2 follow-up — delegates to `recordVerificationFailure`,
+ * which writes the marker onto meta (durable against the analyzer's
+ * report.json overwrite) and patches report.json ONLY when it already
+ * exists. The previous implementation wrote the marker straight onto
+ * report.json via `patchReportJson`, which (a) materialised a PARTIAL
+ * report.json when the session was still `analyzing` (violating the incr2
+ * "no partial report.json before analysis lands" invariant) and (b) was
+ * silently clobbered by the analyzer's later `writeReport` full overwrite.
  */
 async function persistVerificationFailure(
   sessionId: string,
   reason: string,
 ): Promise<void> {
-  const truncated = reason.length > 400 ? reason.slice(0, 400) : reason;
-  await patchReportJson(sessionId, {
-    verification: {
-      status: 'verification-failed' as ReportVerificationStatus,
-      reason: truncated,
-      updatedAt: new Date().toISOString(),
-    },
-  });
+  await recordVerificationFailure(sessionId, reason);
 }
 
 /**
@@ -2754,20 +2827,39 @@ export async function runVerificationAndPatch(
       if (t.length > 0) reconcileEnvTokens.add(t);
     }
   }
-  const reconcileCredentialSystemsCount = Array.isArray(reportJson?.systems)
-    ? reportJson.systems.filter((s) => {
-        const sysTokens = (s.systemId || '')
-          .toLowerCase()
-          .split(/[-_]/)
-          .filter((t) => t.length > 2);
-        return sysTokens.some((t) => reconcileEnvTokens.has(t));
-      }).length
-    : 0;
+  const reconcileDeclaredSystemIds: string[] = Array.isArray(reportJson?.systems)
+    ? reportJson.systems
+        .map((s) => (typeof s.systemId === 'string' ? s.systemId : ''))
+        .filter((id) => id.length > 0)
+    : [];
+  // The declared systems whose brand-stem tokens intersect the .env key tokens
+  // carry the ".env" credential glyph (AAP-140). The subset id list is threaded
+  // so `reconcileSlfWithEvidence` can SUBJECT-SCOPE the .env cross-ref: a finding
+  // that names a specific declared system NOT in this set does not claim the
+  // global .env fact against it.
+  const reconcileEnvCredentialSystemIds: string[] = Array.isArray(reportJson?.systems)
+    ? reportJson.systems
+        .filter((s) => {
+          const sysTokens = (s.systemId || '')
+            .toLowerCase()
+            .split(/[-_]/)
+            .filter((t) => t.length > 2);
+          return sysTokens.some((t) => reconcileEnvTokens.has(t));
+        })
+        .map((s) => (typeof s.systemId === 'string' ? s.systemId : ''))
+        .filter((id) => id.length > 0)
+    : [];
   verdict.findings = reconcileSlfWithEvidence(verdict.findings, {
     ...(oauthForward.section ? { oauthScopeVerification: oauthForward.section } : {}),
     workspaceEnv: scrubbed.workspaceEnv ?? [],
-    ...(reconcileCredentialSystemsCount > 0
-      ? { envCredentialSystemsCount: reconcileCredentialSystemsCount }
+    ...(reconcileEnvCredentialSystemIds.length > 0
+      ? {
+          envCredentialSystemsCount: reconcileEnvCredentialSystemIds.length,
+          envCredentialSystemIds: reconcileEnvCredentialSystemIds,
+        }
+      : {}),
+    ...(reconcileDeclaredSystemIds.length > 0
+      ? { declaredSystemIds: reconcileDeclaredSystemIds }
       : {}),
   });
 

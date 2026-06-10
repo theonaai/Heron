@@ -145,6 +145,97 @@ describe('verification differ — purity', () => {
   });
 });
 
+describe('verification differ — AAP-156 scope-hierarchy readonly satisfaction', () => {
+  const FULL = 'https://www.googleapis.com/auth/spreadsheets';
+  const FULL_RO = 'https://www.googleapis.com/auth/spreadsheets.readonly';
+
+  function declaredScopes(scopes: { service: string; scope: string }[]): DeclaredInventory[] {
+    return [{ source: 'interview', capturedAt: 't0', scopes }];
+  }
+  function actualScopes(scopes: { service: string; scope: string }[]): ActualInventory {
+    return { source: 'oauth-scopes', capturedAt: 't1', scopes };
+  }
+  function missingScopes(diffs: DiffEntry[]): DiffEntry[] {
+    return diffs.filter((d) => d.kind === 'missing' && d.dimension === 'scope');
+  }
+
+  it('1: declared [full, full.readonly], actual [full] → no missing diff', () => {
+    const diffs = diff(
+      declaredScopes([
+        { service: 'google-workspace', scope: 'spreadsheets' },
+        { service: 'google-workspace', scope: 'spreadsheets.readonly' },
+      ]),
+      actualScopes([{ service: 'google-workspace', scope: 'spreadsheets' }]),
+    );
+    expect(missingScopes(diffs)).toEqual([]);
+    expect(diffs).toEqual([]);
+  });
+
+  it('2: declared [full.readonly] only, actual [full] → satisfied, no missing', () => {
+    const diffs = diff(
+      declaredScopes([{ service: 'google-workspace', scope: 'spreadsheets.readonly' }]),
+      actualScopes([{ service: 'google-workspace', scope: 'spreadsheets' }]),
+    );
+    expect(missingScopes(diffs)).toEqual([]);
+  });
+
+  it('3: declared [full], actual [full.readonly] → still MISSING (readonly does not satisfy full)', () => {
+    const diffs = diff(
+      declaredScopes([{ service: 'google-workspace', scope: 'spreadsheets' }]),
+      actualScopes([{ service: 'google-workspace', scope: 'spreadsheets.readonly' }]),
+    );
+    const missing = missingScopes(diffs);
+    expect(missing).toHaveLength(1);
+    expect((missing[0] as { declared: { scope: string } }).declared.scope).toBe('spreadsheets');
+  });
+
+  it('4: full-URL spellings canonicalize and behave identically to bare', () => {
+    // Case 1 in full-URL form: declared [full, full.readonly], actual [full].
+    const satisfied = diff(
+      declaredScopes([
+        { service: 'google-workspace', scope: FULL },
+        { service: 'google-workspace', scope: FULL_RO },
+      ]),
+      actualScopes([{ service: 'google-workspace', scope: FULL }]),
+    );
+    expect(satisfied).toEqual([]);
+
+    // Mixed spelling: declared readonly as full-URL, actual full as bare token.
+    const mixed = diff(
+      declaredScopes([{ service: 'google-workspace', scope: FULL_RO }]),
+      actualScopes([{ service: 'google-workspace', scope: 'spreadsheets' }]),
+    );
+    expect(missingScopes(mixed)).toEqual([]);
+
+    // Case 3 in full-URL form: declared full, actual readonly → still MISSING.
+    const stillMissing = diff(
+      declaredScopes([{ service: 'google-workspace', scope: FULL }]),
+      actualScopes([{ service: 'google-workspace', scope: FULL_RO }]),
+    );
+    expect(missingScopes(stillMissing)).toHaveLength(1);
+  });
+
+  it('5: a genuinely missing scope (nothing covering it) still reads MISSING', () => {
+    const diffs = diff(
+      declaredScopes([{ service: 'google-workspace', scope: 'spreadsheets.readonly' }]),
+      actualScopes([{ service: 'google-workspace', scope: 'documents' }]),
+    );
+    const missing = missingScopes(diffs);
+    expect(missing).toHaveLength(1);
+    expect((missing[0] as { declared: { scope: string } }).declared.scope).toBe(
+      'spreadsheets.readonly',
+    );
+  });
+
+  it('readonly suffix does not cross services (drive.readonly not satisfied by spreadsheets)', () => {
+    const diffs = diff(
+      declaredScopes([{ service: 'google-drive', scope: 'drive.readonly' }]),
+      actualScopes([{ service: 'google-workspace', scope: 'drive' }]),
+    );
+    expect(missingScopes(diffs)).toHaveLength(1);
+  });
+});
+
 describe('verification differ — prototype-pollution discipline', () => {
   it('a tool named "__proto__" does not pollute Object.prototype', () => {
     const before = (Object.prototype as Record<string, unknown>).polluted;

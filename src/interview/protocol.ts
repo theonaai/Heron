@@ -1,6 +1,6 @@
 import type { QAPair } from '../report/types.js';
 import type { LLMClient } from '../llm/client.js';
-import { getAllQuestionsSorted, type InterviewQuestion } from './questions.js';
+import { getAllQuestionsSorted, CORE_QUESTIONS, type InterviewQuestion } from './questions.js';
 import {
   INTERVIEW_SYSTEM_PROMPT,
   buildFollowUpPrompt,
@@ -266,6 +266,246 @@ export function findMostRecentCoreInCategory(
   return null;
 }
 
+// ─── Gap-topic ledger (AAP-146) ──────────────────────────────────────────────
+
+/**
+ * AAP-146 - session-level cap on how many times a single gap topic may be
+ * re-probed across the WHOLE interview. Consistency probing (re-asking a
+ * control from a different angle) is a legitimate audit technique, so we
+ * CAP it rather than remove it: at most 3 asks per gap topic (the initial
+ * ask plus 2 angles), regardless of which core question spawned the
+ * follow-up. When the cap is hit the over-cap follow-up is dropped and the
+ * gap stands as recorded (it already lands in findings via the normal
+ * analysis path).
+ *
+ * Two live audits motivated this (sess-20260604-032116-fcece0 and
+ * sess-20260610-035726-59fe71): 45+ questions where 58% circled two gaps
+ * that were fully recorded after the first one or two asks.
+ */
+export const MAX_GAP_TOPIC_ASKS = 3;
+
+/**
+ * Two follow-up questions are the same gap topic when their normalized
+ * content-word sets share at least GAP_TOPIC_MIN_SHARED words OR have
+ * Jaccard >= GAP_TOPIC_JACCARD.
+ *
+ * Why two arms. The live evidence is varied phrasings of one gap: "walk me
+ * through the concrete deletion flow", "what mechanism prevents deletion",
+ * "what artifact confirms deletion completed". After stopwords those share
+ * only the gap subject (e.g. {deletion, records}); Jaccard between them is
+ * 0.08-0.20, well under 0.5, so a Jaccard-only rule would let every repeat
+ * through. They DO reliably share 2+ content words (the gap nouns), and
+ * measured against genuinely distinct gap topics (scopes, blast radius,
+ * frequency) the shared-word count is 0. So shared-word count is the arm
+ * that actually clusters the audit evidence; Jaccard is kept as a second
+ * arm to also catch near-verbatim repeats of short questions where 2 shared
+ * words might not appear but the overlap fraction is high.
+ *
+ * False-positive risk: two unrelated gaps that happen to share 2 longer
+ * content words would be collapsed. Mitigated by stripping interrogation
+ * scaffolding (TOPIC_STOPWORDS) so only gap-subject nouns survive, and by
+ * the conservative length>3 filter. The audit data above shows distinct
+ * topics share 0 words, so the practical risk is low; raising
+ * GAP_TOPIC_MIN_SHARED to 3 would harden it further at the cost of letting
+ * some 2-noun repeats through.
+ */
+const GAP_TOPIC_MIN_SHARED = 2;
+const GAP_TOPIC_JACCARD = 0.5;
+
+/**
+ * A follow-up needs at least this many content words to be a re-probeable
+ * gap TOPIC. Real audit gap probes always reference a subject (a system,
+ * data type, or mechanism) and clear this easily: the live deletion /
+ * escalation phrasings carry 5-8 content words. Anything thinner (a 1-2
+ * word fragment) is not an identifiable gap and is exempt from the cap, so
+ * the cap targets recurring audit subjects rather than incidental
+ * two-word overlaps. Also keeps the GAP_TOPIC_MIN_SHARED=2 arm honest: a
+ * sub-floor set could never legitimately share 2 of its words as a topic.
+ */
+const MIN_TOPIC_CONTENT_WORDS = 3;
+
+/**
+ * Content-word stopwords. Question scaffolding ("what", "concrete",
+ * "agent", "specific") would otherwise dominate the overlap and make every
+ * audit question look like every other. Stripped so the Jaccard score
+ * reflects the gap SUBJECT (deletion, escalation, retention) rather than
+ * the interrogation frame.
+ */
+const TOPIC_STOPWORDS = new Set<string>([
+  'what', 'which', 'when', 'where', 'whom', 'whose', 'does', 'doesnt',
+  'this', 'that', 'these', 'those', 'their', 'there', 'here', 'have',
+  'would', 'could', 'should', 'will', 'with', 'within', 'into', 'onto',
+  'from', 'your', 'youre', 'about', 'they', 'them', 'then', 'than',
+  'each', 'every', 'some', 'such', 'into', 'over', 'under', 'upon',
+  'concrete', 'concretely', 'specific', 'specifically', 'exactly',
+  'actually', 'really', 'agent', 'deployment', 'question', 'answer',
+  'walk', 'tell', 'describe', 'explain', 'provide', 'give', 'give',
+  'using', 'used', 'uses', 'happen', 'happens', 'today', 'currently',
+  'mention', 'mentioned', 'said', 'claim', 'claimed', 'example',
+]);
+
+/**
+ * Reduce a follow-up question to its normalized content-word SET: lowercase,
+ * letters only, length > 3, stopwords removed. Deterministic (no LLM, no
+ * randomness) so the same question always maps to the same set and the cap
+ * survives a server restart (the planner rebuilds the ledger from the
+ * transcript). Returns a Set so callers can compute Jaccard directly.
+ */
+export function topicContentWords(text: string): Set<string> {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !TOPIC_STOPWORDS.has(w));
+  return new Set(words);
+}
+
+/**
+ * Decide whether two content-word sets describe the same gap topic. True
+ * when they share at least GAP_TOPIC_MIN_SHARED words, or their Jaccard
+ * meets GAP_TOPIC_JACCARD. Deterministic and symmetric. Empty sets never
+ * match (a question with no content words has no identifiable topic).
+ */
+function sameTopic(a: Set<string>, b: Set<string>): boolean {
+  if (a.size === 0 || b.size === 0) return false;
+  let intersection = 0;
+  for (const w of a) if (b.has(w)) intersection++;
+  if (intersection >= GAP_TOPIC_MIN_SHARED) return true;
+  const union = a.size + b.size - intersection;
+  return union > 0 && intersection / union >= GAP_TOPIC_JACCARD;
+}
+
+interface TopicCluster {
+  /** First phrasing seen in this cluster, used as the human-readable rep. */
+  rep: string;
+  /** Content-word sets of every member, for single-link membership tests. */
+  members: Set<string>[];
+}
+
+/**
+ * AAP-146 - group a list of follow-up texts into gap-topic clusters using
+ * SINGLE-LINK agglomeration: a text joins a cluster if it is `sameTopic`
+ * with ANY existing member (not just a fixed representative). This is what
+ * makes the cap genuinely topic-level on the live evidence: the deletion
+ * gap appears as "walk me through the deletion flow", "what artifact
+ * confirms deletion completed", "what mechanism prevents deletion". Those
+ * outer phrasings share fewer than 2 content words with each other but each
+ * shares >= 2 with a bridging phrasing, so single-link collapses the whole
+ * family into one cluster while representative-only matching would split it.
+ *
+ * Single-link can chain unrelated topics if a bridge exists; here the gap
+ * subject noun recurs across every phrasing of a gap and the audit data
+ * shows distinct gaps share 0 content words, so chaining across gaps does
+ * not occur in practice. Texts with no content words are dropped (no
+ * identifiable topic).
+ */
+function clusterTopics(texts: string[]): TopicCluster[] {
+  // Keep only texts substantial enough to be a gap topic; each is a node.
+  // Thin fragments (below MIN_TOPIC_CONTENT_WORDS) are not re-probeable
+  // gaps and are dropped so they never participate in the cap.
+  const nodes = texts
+    .map(text => ({ text, words: topicContentWords(text) }))
+    .filter(n => n.words.size >= MIN_TOPIC_CONTENT_WORDS);
+
+  // Union-find for full transitive closure: a later text that links two
+  // earlier sub-clusters MERGES them, which a single greedy pass would miss.
+  const parent = nodes.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]!]!;
+      i = parent[i]!;
+    }
+    return i;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (sameTopic(nodes[i]!.words, nodes[j]!.words)) union(i, j);
+    }
+  }
+
+  // Collect members per root, preserving first-seen order for the rep.
+  const byRoot = new Map<number, TopicCluster>();
+  for (let i = 0; i < nodes.length; i++) {
+    const root = find(i);
+    let cluster = byRoot.get(root);
+    if (!cluster) {
+      cluster = { rep: nodes[root]!.text, members: [] };
+      byRoot.set(root, cluster);
+    }
+    cluster.members.push(nodes[i]!.words);
+  }
+  return [...byRoot.values()];
+}
+
+/**
+ * AAP-146 - how many PRIOR asked follow-up questions belong to the same gap
+ * topic as the candidate. Single-link: the candidate counts a prior ask if
+ * it is `sameTopic` with that ask OR with any other prior ask transitively
+ * linked to it. This is the deterministic, cross-question gap-topic ledger
+ * the cap reads from.
+ *
+ * `priorFollowUpTexts` is the list of follow-up question texts already
+ * ASKED this session, in order. We deliberately compare against asked
+ * follow-ups only (not core questions): the cap governs how often a GAP is
+ * re-probed, and core questions are the fixed bank, not gap probes. The
+ * count is cross-question by construction: a deletion probe spawned under
+ * `writes` and another spawned under `data` both land in this list and both
+ * join the same topic cluster.
+ */
+export function countPriorAsksForTopic(
+  candidateText: string,
+  priorFollowUpTexts: string[],
+): number {
+  const candidate = topicContentWords(candidateText);
+  // Below the floor the candidate is not an identifiable gap topic; exempt.
+  if (candidate.size < MIN_TOPIC_CONTENT_WORDS) return 0;
+  // Cluster the PRIOR asks WITH the candidate appended, so the candidate can
+  // act as a bridge that merges two prior sub-clusters that no earlier ask
+  // connected. Then return the size of the candidate's cluster minus the
+  // candidate itself (the count of PRIOR asks sharing its topic). Without the
+  // bridge, varied phrasings that only connect through the candidate would be
+  // counted as separate topics and the cap would under-count.
+  const clusters = clusterTopics([...priorFollowUpTexts, candidateText]);
+  for (const c of clusters) {
+    if (c.members.some(m => sameTopic(candidate, m))) {
+      // Subtract 1 for the candidate's own membership entry.
+      return c.members.length - 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * AAP-146 - the set of gap topics already asked the cap number of times,
+ * one representative phrasing per topic. Fed to the follow-up-generating
+ * LLM as "these gaps are already recorded; do NOT ask about them again".
+ * Uses the same single-link clustering as the cap so the prompt list and
+ * the deterministic backstop agree on what counts as one topic.
+ */
+export function gapTopicsAtCap(priorFollowUpTexts: string[]): string[] {
+  return clusterTopics(priorFollowUpTexts)
+    .filter(c => c.members.length >= MAX_GAP_TOPIC_ASKS)
+    .map(c => c.rep);
+}
+
+/**
+ * AAP-146 - pull the follow-up question texts out of a transcript: every
+ * entry whose question text does NOT match a core question exactly is an
+ * LLM-generated follow-up (adversarial probe or vagueness follow-up). This
+ * is the same core-vs-follow-up test the planner uses during rehydration,
+ * which is why the ledger reconstructs identically after a restart.
+ */
+function followUpTextsFromTranscript(transcript: QAPair[]): string[] {
+  const coreTexts = new Set<string>(CORE_QUESTIONS.map(c => c.text));
+  return transcript
+    .filter(qa => !coreTexts.has(qa.question))
+    .map(qa => qa.question);
+}
+
 // ─── Protocol factory ────────────────────────────────────────────────────────
 
 /**
@@ -413,15 +653,39 @@ export function createProtocol(llmClient: LLMClient, maxFollowUps?: number): Int
         return null;
       }
 
+      // AAP-146 - gap topics already asked the cap number of times this
+      // session. Fed to the prompt so the LLM is told up front not to
+      // re-probe them, and used below as the deterministic backstop if it
+      // does anyway.
+      const priorFollowUpTexts = followUpTextsFromTranscript(transcript);
+      const atCapTopics = gapTopicsAtCap(priorFollowUpTexts);
+
       try {
         const prompt =
           isNewClaim && adversarialClaim
-            ? buildAdversarialProbePrompt(adversarialClaim.kind, adversarialClaim.probe, categoryQA)
-            : buildFollowUpPrompt(category, categoryQA, missingFields.length > 0 ? missingFields : undefined);
+            ? buildAdversarialProbePrompt(adversarialClaim.kind, adversarialClaim.probe, categoryQA, atCapTopics)
+            : buildFollowUpPrompt(
+                category,
+                categoryQA,
+                missingFields.length > 0 ? missingFields : undefined,
+                atCapTopics,
+              );
 
         const followUpText = await llmClient.chat(INTERVIEW_SYSTEM_PROMPT, prompt);
 
         if (!followUpText.trim()) return null;
+
+        // AAP-146 - deterministic session-level gap-topic cap. If this
+        // candidate re-probes a gap that has already been asked
+        // MAX_GAP_TOPIC_ASKS times (cross-question: a deletion probe under
+        // `writes` and another under `data` both count toward one topic),
+        // drop it. The gap stands as recorded; it still reaches findings
+        // via the normal analysis path. We must NOT have bumped any cap
+        // counter yet (the increments happen below) so dropping here
+        // leaves the per-question and ID counters untouched.
+        if (countPriorAsksForTopic(followUpText.trim(), priorFollowUpTexts) >= MAX_GAP_TOPIC_ASKS) {
+          return null;
+        }
 
         // Bump per-question cap counter for every follow-up (regular and
         // adversarial). Bump the global ID counter only for regular

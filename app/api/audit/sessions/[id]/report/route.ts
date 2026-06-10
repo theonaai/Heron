@@ -10,12 +10,16 @@ import {
   parseJsonBody,
   validateSessionId,
 } from '@/lib/api/audit-sessions';
+import { isSameOriginRequest } from '@/src/server/csrf';
 
 export const dynamic = 'force-dynamic';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, ctx: RouteContext): Promise<Response> {
+  if (!isSameOriginRequest(request)) {
+    return errorResponse(403, 'cross-origin POST refused', 'csrf');
+  }
   const { id } = await ctx.params;
   const idCheck = validateSessionId(id);
   if (!idCheck.ok) return idCheck.response;

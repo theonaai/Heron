@@ -195,6 +195,63 @@ describe('discovery API routes', () => {
       expect(JSON.stringify(result)).not.toContain('xoxb-secret-DO-NOT-LEAK');
     });
 
+    it('rejects cross-site POST (403) before doing any work', async () => {
+      // Cross-site browser fetch at 127.0.0.1 — refused at the guard,
+      // never reaching session lookup or the consent / fs readers.
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, { method: 'POST', body: { agentName: 'x' } }),
+      );
+      const { id } = (await readJson(created)) as { id: string };
+
+      const res = await scanPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+          method: 'POST',
+          body: { sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' },
+          headers: { 'Sec-Fetch-Site': 'cross-site' },
+        }),
+      );
+      expect(res.status).toBe(403);
+      const body = (await readJson(res)) as { error: string; code?: string };
+      expect(body.code).toBe('csrf');
+    });
+
+    it('rejects same-site sibling-port POST (403)', async () => {
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, { method: 'POST', body: { agentName: 'x' } }),
+      );
+      const { id } = (await readJson(created)) as { id: string };
+
+      const res = await scanPOST(
+        jsonRequest(`${ORIGIN}/api/discovery/scan`, {
+          method: 'POST',
+          body: { sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' },
+          headers: { 'Sec-Fetch-Site': 'same-site' },
+        }),
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it('passes the guard when Sec-Fetch-Site is absent (non-browser parity)', async () => {
+      // No header → allowed past the guard. It will still 403 LATER on
+      // consent_required (no consent stored), proving the guard let it
+      // through to the real handler rather than rejecting at the door.
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, { method: 'POST', body: { agentName: 'x' } }),
+      );
+      const { id } = (await readJson(created)) as { id: string };
+
+      const req = new Request(`${ORIGIN}/api/discovery/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', host: '127.0.0.1:3700' },
+        body: JSON.stringify({ sessionId: id, workspaceRoot: workspaceDir, runtime: 'codex' }),
+      });
+      const res = await scanPOST(req);
+      // Reached the handler — 403 here is consent_required, not the guard.
+      expect(res.status).toBe(403);
+      const body = (await readJson(res)) as { error: string; code?: string };
+      expect(body.code).toBe('consent_required');
+    });
+
     it('rejects when sessionId is invalid (400)', async () => {
       await consentPOST(
         jsonRequest(`${ORIGIN}/api/discovery/consent`, {

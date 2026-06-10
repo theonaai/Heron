@@ -260,3 +260,172 @@ describe('reconcileSlfWithEvidence — no-evidence and non-SLF cases', () => {
     expect(reconcileSlfWithEvidence([], {})).toEqual([]);
   });
 });
+
+describe('reconcileSlfWithEvidence — subject-scoped OAuth cross-ref (AAP-149 follow-up)', () => {
+  // The bug: the OAuth cross-ref was subject-blind. On a multi-connector audit
+  // (Google verified, Slack only self-reported), a Slack excessive-access
+  // finding got a `reconciledMitigation` claiming "Heron verified ... on
+  // google-workspace". That is a false verification claim. The cross-ref must
+  // only attach a verified connector when the finding's OWN text names it.
+
+  // Only google-workspace is verified. Slack is mentioned in a finding but was
+  // never introspected, so it is NOT in the verified OAuth section.
+  const googleVerifiedOnly = {
+    sources: [
+      {
+        connector: 'google-workspace' as const,
+        verdict: 'verified' as const,
+        actualScopes: [
+          { service: 'drive', scope: 'https://www.googleapis.com/auth/drive' },
+          { service: 'spreadsheets', scope: 'https://www.googleapis.com/auth/spreadsheets' },
+        ],
+      },
+    ],
+  };
+
+  const googleFinding = slfFinding({
+    id: 'slf-google',
+    findingType: 'excessive-access',
+    title: 'Broad Google Drive access enables large-scale unintended writes',
+    description: 'The agent holds full Drive and spreadsheets scope on Google Workspace.',
+  });
+
+  const slackFinding = slfFinding({
+    id: 'slf-slack',
+    findingType: 'excessive-access',
+    title: 'Slack bot token grants broad channel write access',
+    description: 'The Slack integration can post to any channel in the workspace.',
+  });
+
+  it('attaches the verified OAuth cross-ref ONLY to the finding whose text names that connector', () => {
+    const reconciled = reconcileSlfWithEvidence([googleFinding, slackFinding], {
+      oauthScopeVerification: googleVerifiedOnly,
+    });
+    const google = reconciled.find((f) => f.id === 'slf-google')!;
+    const slack = reconciled.find((f) => f.id === 'slf-slack')!;
+
+    // Google finding names Google -> gets the cross-ref to the verified Google grant.
+    expect(google.evidenceCrossRef?.kind).toBe('oauth-verified');
+    expect(google.evidenceCrossRef?.connectors).toEqual(['google-workspace']);
+    expect(google.reconciledMitigation).toMatch(/Heron verified/i);
+    expect(google.reconciledMitigation).toMatch(/google-workspace/i);
+
+    // Slack finding does NOT name a verified connector -> NO cross-ref, NO
+    // false "verified on google-workspace" mitigation. The finding is returned
+    // untouched (deep-equal to the input): prefer false negative over overclaim.
+    expect(slack).toEqual(slackFinding);
+    expect(slack.evidenceCrossRef).toBeUndefined();
+    expect(slack.reconciledMitigation).toBeUndefined();
+  });
+
+  it('when MULTIPLE verified connectors match, the cross-ref includes only the matched ones', () => {
+    const twoVerified = {
+      sources: [
+        {
+          connector: 'google-workspace' as const,
+          verdict: 'verified' as const,
+          actualScopes: [{ service: 'drive', scope: 'https://www.googleapis.com/auth/drive' }],
+        },
+        {
+          connector: 'greenhouse' as const,
+          verdict: 'verified' as const,
+          actualScopes: [{ service: 'greenhouse', scope: 'candidates.read' }],
+        },
+      ],
+    };
+    // The finding names ONLY Google, so greenhouse must be excluded even though
+    // it verified this session.
+    const reconciled = reconcileSlfWithEvidence([googleFinding], {
+      oauthScopeVerification: twoVerified,
+    });
+    const google = reconciled.find((f) => f.id === 'slf-google')!;
+    expect(google.evidenceCrossRef?.kind).toBe('oauth-verified');
+    expect(google.evidenceCrossRef?.connectors).toEqual(['google-workspace']);
+    expect(google.evidenceCrossRef?.connectors).not.toContain('greenhouse');
+    // The mitigation copy names only the matched connector.
+    expect(google.reconciledMitigation).toMatch(/google-workspace/i);
+    expect(google.reconciledMitigation).not.toMatch(/greenhouse/i);
+  });
+
+  it('env cross-ref stays workspace-global when the finding names no specific system', () => {
+    // A generic "workspace stores credentials" finding (no specific system
+    // named) still gets the global .env count: the .env fact IS workspace-global.
+    const generic = slfFinding({
+      id: 'slf-generic-creds',
+      findingType: 'sensitive-data',
+      title: 'Workspace stores high-sensitivity credentials',
+      description: 'The workspace reads local API keys and secrets from .env files.',
+    });
+    const [out] = reconcileSlfWithEvidence([generic], {
+      workspaceEnv: [{ keys: Array.from({ length: 12 }, (_, i) => `OPENAI_KEY_${i}`) }],
+      envCredentialSystemsCount: 3,
+    });
+    expect(out.evidenceCrossRef?.kind).toBe('env-secrets');
+    expect(out.evidenceCrossRef?.envKeyCount).toBe(12);
+  });
+});
+
+// ── Title-only subject matching + scope-label preference (live follow-up) ─
+//
+// Live evidence sess-20260610-052016-df8d8c: a "No application-level tenant
+// isolation" finding (typed scope-creep by the analyzer) mentioned Google
+// Drive/Sheets only in its DESCRIPTION and wrongly drew the verified-OAuth
+// cross-ref; and the cross-ref copy read "google-workspace scope on
+// google-workspace" because the current parser shape puts the connector name
+// in `service` and the service word in `scope`.
+describe('OAuth cross-ref attaches by TITLE only, with specific scope labels', () => {
+  it('a finding that mentions the connector only in its description gets NO cross-ref', () => {
+    const tenantIsolation = slfFinding({
+      id: 'slf-tenant-isolation',
+      findingType: 'scope-creep',
+      title: 'No application-level tenant isolation for reuse across customers',
+      description:
+        'If reused for multiple customers, isolation would depend on configuration and on Google Drive/Sheets permissions rather than an application-level boundary.',
+    });
+    const [out] = reconcileSlfWithEvidence([tenantIsolation], {
+      oauthScopeVerification,
+    });
+    expect(out.evidenceCrossRef).toBeUndefined();
+    expect(out.reconciledMitigation).toBeUndefined();
+    expect(out).toEqual(tenantIsolation);
+  });
+
+  it('a finding whose TITLE names the connector still gets the cross-ref', () => {
+    const [out] = reconcileSlfWithEvidence([excessiveAccessFinding], {
+      oauthScopeVerification,
+    });
+    expect(out.evidenceCrossRef?.kind).toBe('oauth-verified');
+  });
+
+  it('scope labels prefer the specific value over the connector-name service field', () => {
+    // Current forwarded-introspection parser shape: service = connector name,
+    // scope = the service word. The copy must list documents/drive, not
+    // repeat "google-workspace".
+    const currentShape = {
+      capturedAt: '2026-06-10T05:20:16.000Z',
+      sources: [
+        {
+          connector: 'google-workspace' as const,
+          verdict: 'verified' as const,
+          actualScopes: [
+            { service: 'google-workspace', scope: 'documents' },
+            { service: 'google-workspace', scope: 'drive' },
+          ],
+          diffs: [],
+        },
+      ],
+    };
+    const finding = slfFinding({
+      id: 'slf-google-title',
+      findingType: 'excessive-access',
+      title: 'Broad Google Workspace OAuth grants',
+      description: 'Full write access via OAuth user credentials.',
+    });
+    const [out] = reconcileSlfWithEvidence([finding], {
+      oauthScopeVerification: currentShape,
+    });
+    expect(out.evidenceCrossRef?.scopes).toEqual(['documents', 'drive']);
+    expect(out.evidenceCrossRef?.scopes).not.toContain('google-workspace');
+    expect(out.reconciledMitigation).toMatch(/documents/);
+  });
+});

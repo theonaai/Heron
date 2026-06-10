@@ -60,6 +60,17 @@ const CUSTOM_PATTERNS = [
   },
 ];
 
+/**
+ * Fail-closed sentinel. Returned (in place of the raw input) whenever a
+ * scrub path errors AFTER secretlint has already reported at least one
+ * finding, i.e. the engine saw a secret but the splice / re-parse could
+ * not be completed. Returning the raw input there would leak the exact
+ * secret the engine flagged, so every such path collapses the value to
+ * this marker instead. The fast path (`result.ok`, no findings) is
+ * unaffected and still returns the input byte-identically.
+ */
+const SCRUB_ERROR_PLACEHOLDER = '[REDACTED:scrub-error]';
+
 interface SecretlintFinding {
   range: [number, number];
   ruleId: string;
@@ -104,43 +115,81 @@ export async function secretlintScrubString(input: string): Promise<string> {
     content: input,
     filePath: 'projected-inventory.json',
   });
+  // Fast path: secretlint affirmatively found NO secrets. `result.ok` is
+  // true ONLY for a clean lint; an engine failure surfaces as a thrown
+  // rejection from `executeOnContent` (propagated to the caller, which
+  // bails closed), never as `ok: true`. So returning the input here is
+  // safe: it is the only path that returns raw input.
   if (result.ok) return input; // no findings, fast path
+
+  // From here, secretlint reported a problem. Any failure to complete the
+  // redaction must fail CLOSED: returning the raw input would leak the
+  // exact secret the engine flagged.
   let parsed: SecretlintResult[];
   try {
     parsed = JSON.parse(result.output);
   } catch {
-    // Output wasn't JSON — bail and return input to avoid silently
-    // returning corrupted data.
-    return input;
+    // Output wasn't JSON: the engine flagged a finding but we can't read
+    // its offsets. Fail closed: collapse the whole value to the sentinel
+    // rather than return the unscrubbed input.
+    console.warn(
+      '[secretlint-scrub] failed to parse engine output after a non-clean lint; failing closed',
+    );
+    return SCRUB_ERROR_PLACEHOLDER;
   }
   const findings = parsed[0]?.messages ?? [];
   if (findings.length === 0) return input;
 
-  // Splice from the end backwards so earlier offsets stay valid.
-  const sorted = [...findings].sort((a, b) => b.range[0] - a.range[0]);
-  let out = input;
-  for (const f of sorted) {
-    const [start, end] = f.range;
-    const ruleShort = f.ruleId.split('/').pop() ?? f.ruleId;
-    out = out.slice(0, start) + `[REDACTED:${ruleShort}]` + out.slice(end);
+  // Splice from the end backwards so earlier offsets stay valid. A crafted
+  // secret could carry out-of-range / overlapping offsets that corrupt the
+  // splice (e.g. produce an invalid string or throw); guard the whole loop
+  // and fail closed on any error so a corrupting payload cannot smuggle the
+  // raw secret through.
+  try {
+    const sorted = [...findings].sort((a, b) => b.range[0] - a.range[0]);
+    let out = input;
+    for (const f of sorted) {
+      const [start, end] = f.range;
+      const ruleShort = f.ruleId.split('/').pop() ?? f.ruleId;
+      out = out.slice(0, start) + `[REDACTED:${ruleShort}]` + out.slice(end);
+    }
+    return out;
+  } catch {
+    console.warn(
+      '[secretlint-scrub] splice over reported findings failed; failing closed',
+    );
+    return SCRUB_ERROR_PLACEHOLDER;
   }
-  return out;
 }
 
 /**
  * Scrub an arbitrary JSON-serialisable value. Serialises to JSON,
  * scrubs the resulting string, parses back. Type-preserving for
  * plain JSON shapes (objects / arrays / strings / numbers / null).
- * If parsing back fails (which shouldn't happen given valid input +
- * deterministic redaction tokens), returns the original input.
+ *
+ * Fail-closed contract: if the post-scrub string fails to parse back to
+ * JSON (a crafted secret positioned to corrupt the splice can produce
+ * exactly this), we MUST NOT return the original unscrubbed value: that
+ * would leak the secret straight into report.json. Instead we return the
+ * `[REDACTED:scrub-error]` sentinel cast to `T`, dropping the structured
+ * payload entirely. The fast path (no findings -> `scrubbed === serialised`)
+ * is byte-identical to before.
  */
 export async function secretlintScrub<T>(value: T): Promise<T> {
   const serialised = JSON.stringify(value);
   const scrubbed = await secretlintScrubString(serialised);
   if (scrubbed === serialised) return value;
+  // `secretlintScrubString` already fails closed to the sentinel string on
+  // its own internal errors; surface that here too rather than re-parsing it.
+  if (scrubbed === SCRUB_ERROR_PLACEHOLDER) {
+    return SCRUB_ERROR_PLACEHOLDER as unknown as T;
+  }
   try {
     return JSON.parse(scrubbed) as T;
   } catch {
-    return value;
+    console.warn(
+      '[secretlint-scrub] scrubbed value did not re-parse as JSON; failing closed and dropping the field',
+    );
+    return SCRUB_ERROR_PLACEHOLDER as unknown as T;
   }
 }
