@@ -1344,3 +1344,313 @@ describe('start_verification — idempotency guard + durable failure marker (AAP
     }
   });
 });
+
+describe('start_verification — persist workspaceHints + refuse silent cwd fallback (AAP-158)', () => {
+  let tmpDir: string;
+  const origEnv = process.env.HERON_SESSIONS_DIR;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'heron-aap158-'));
+    process.env.HERON_SESSIONS_DIR = tmpDir;
+  });
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.HERON_SESSIONS_DIR;
+    else process.env.HERON_SESSIONS_DIR = origEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function minimalReport() {
+    return {
+      summary: 'Slack reminder agent.',
+      agentPurpose: 'Slack reminders',
+      systems: [],
+      risks: [],
+      recommendations: [],
+      overallRiskLevel: 'low',
+      transcript: [],
+      metadata: {
+        date: '2026-06-10',
+        target: 'slack-bot',
+        interviewDuration: 1,
+        questionsAsked: 0,
+      },
+    };
+  }
+
+  // A ctx that advertises the given workspace hints (mirrors what
+  // contextFromExtra builds from Codex's `_meta['x-codex-turn-metadata']`).
+  function makeCtxWithHints(hints: string[]): RequestContext {
+    return { ...makeCtx(), workspaceHints: hints };
+  }
+
+  // Seed a status=complete session (no workspace hints) with a minimal
+  // report.json so the handler reaches workspace resolution.
+  async function seedHintlessCompleteSession(agentName: string): Promise<string> {
+    const { id } = await createSession({ agentName, mode: 'tool-call' });
+    await updateSessionMeta(id, { status: 'complete' });
+    await writeReport(id, { markdown: '# stub', json: minimalReport() });
+    return id;
+  }
+
+  it('Test 1 (RED-first) — hint-less verify on a hint-less session refuses to scan cwd: returns workspace-hint-required and leaves report.json untouched', async () => {
+    const { readFileSync, statSync } = await import('node:fs');
+    const { getSessionsDir } = await import('../../src/storage/sessions.js');
+
+    const server = makeServer();
+    const id = await seedHintlessCompleteSession('aap158-no-hint');
+
+    const reportJsonPath = join(getSessionsDir(), id, 'report.json');
+    const beforeBytes = readFileSync(reportJsonPath, 'utf8');
+    const beforeMtimeMs = statSync(reportJsonPath).mtimeMs;
+    const beforeReportMd = readFileSync(
+      join(getSessionsDir(), id, 'report.md'),
+      'utf8',
+    );
+
+    // No workspace_hint arg, no ctx hints — the only place a cwd fallback
+    // could fire. Pre-fix this scanned process.cwd() (Heron's own checkout)
+    // and rebaked a wrong-workspace report.
+    const r = await server.invoke(
+      'start_verification',
+      { session_id: id, runtime: 'codex' },
+      makeCtx(),
+    );
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.verification_status).toBe('workspace-hint-required');
+    expect(r.value.error?.reason).toBe('workspace_hint_required');
+    // The summary must steer the agent to re-call with an absolute path.
+    expect(r.value.summary).toMatch(/workspace_hint/);
+    expect(r.value.summary).toMatch(/start_verification/);
+
+    // No scan ran: report.json is byte-identical and its mtime is unchanged,
+    // and report.md was not re-rendered.
+    expect(readFileSync(reportJsonPath, 'utf8')).toBe(beforeBytes);
+    expect(statSync(reportJsonPath).mtimeMs).toBe(beforeMtimeMs);
+    expect(
+      readFileSync(join(getSessionsDir(), id, 'report.md'), 'utf8'),
+    ).toBe(beforeReportMd);
+
+    // Precondition failure, not a verification failure: no durable
+    // verification-failed marker is recorded.
+    const after = await getSession(id);
+    expect(after!.verificationFailure ?? null).toBeNull();
+    const verif = (after!.reportJson as {
+      verification?: { status?: string };
+      localAgentDiscovery?: unknown;
+    });
+    expect(verif.verification?.status).toBeUndefined();
+    expect(verif.localAgentDiscovery).toBeUndefined();
+  });
+
+  it('Test 2 — hints persisted at session start survive a re-read from disk; a hint-less re-verify resolves them', async () => {
+    const home = (() => {
+      const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap158-home2-'));
+      const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+      process.env.HERON_DISCOVERY_HOME = fakeHome;
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(
+        join(fakeHome, '.codex/config.toml'),
+        '[mcp_servers.slack]\n' +
+          'url = "https://slack-mcp.example.com"\n' +
+          '[mcp_servers.slack.env]\n' +
+          'SLACK_BOT_TOKEN = "xoxb-aap158-DO-NOT-LEAK"\n',
+      );
+      return {
+        restore: () => {
+          if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+          else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+          rmSync(fakeHome, { recursive: true, force: true });
+        },
+      };
+    })();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap158-ws2-'));
+    try {
+      // Session created WITH a workspace hint (the audited workspace).
+      const { id } = await createSession({
+        agentName: 'aap158-persisted',
+        mode: 'tool-call',
+        workspaceHints: [workspace],
+      });
+      await updateSessionMeta(id, { status: 'complete' });
+      await writeReport(id, { markdown: '# stub', json: minimalReport() });
+
+      // Fresh read from disk surfaces the persisted hint.
+      const reread = await getSession(id);
+      expect(reread!.workspaceHints).toEqual([workspace]);
+
+      // Hint-less re-verify (no workspace_hint arg, no ctx hints) resolves
+      // the persisted hint and proceeds to a real scan, NOT hint-required.
+      const cap = captureEvents(id);
+      const r = await server_invoke_hintless(id);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.verification_status).toBe('verifying');
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap.dispose();
+
+      const after = await getSession(id);
+      const verif = (after!.reportJson as {
+        verification?: { status?: string };
+        localAgentDiscovery?: unknown;
+      });
+      expect(verif.localAgentDiscovery).toBeDefined();
+      expect(verif.verification?.status).toBe('partially-verified');
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('Test 3 — opportunistic capture: a verify carrying ctx hints on a hint-less session persists them; later hint-less re-verify works', async () => {
+    const home = (() => {
+      const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap158-home3-'));
+      const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+      process.env.HERON_DISCOVERY_HOME = fakeHome;
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(
+        join(fakeHome, '.codex/config.toml'),
+        '[mcp_servers.slack]\n' +
+          'url = "https://slack-mcp.example.com"\n' +
+          '[mcp_servers.slack.env]\n' +
+          'SLACK_BOT_TOKEN = "xoxb-aap158-cap-DO-NOT-LEAK"\n',
+      );
+      return {
+        restore: () => {
+          if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+          else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+          rmSync(fakeHome, { recursive: true, force: true });
+        },
+      };
+    })();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap158-ws3-'));
+    try {
+      const server = makeServer();
+      const id = await seedHintlessCompleteSession('aap158-capture');
+
+      // First verify carries ctx hints (Codex turn metadata) but no explicit
+      // workspace_hint arg. The handler must persist the ctx hint onto meta.
+      const cap = captureEvents(id);
+      const r1 = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex' },
+        makeCtxWithHints([workspace]),
+      );
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      // ctx hint resolved → a real scan, not hint-required.
+      expect(r1.value.verification_status).toBe('verifying');
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap.dispose();
+
+      // The ctx hint was persisted onto meta (survives a fresh read).
+      const afterCapture = await getSession(id);
+      expect(afterCapture!.workspaceHints).toContain(workspace);
+
+      // A later hint-less re-verify (no arg, no ctx) now resolves the
+      // persisted hint instead of refusing.
+      const cap2 = captureEvents(id);
+      const r2 = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex' },
+        makeCtx(),
+      );
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.verification_status).toBe('verifying');
+      await cap2.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap2.dispose();
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('Test 4 — the in-flight idempotency slot is NOT left locked after a hint-required return', async () => {
+    const home = (() => {
+      const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap158-home4-'));
+      const origHomeEnv = process.env.HERON_DISCOVERY_HOME;
+      process.env.HERON_DISCOVERY_HOME = fakeHome;
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(
+        join(fakeHome, '.codex/config.toml'),
+        '[mcp_servers.slack]\n' +
+          'url = "https://slack-mcp.example.com"\n' +
+          '[mcp_servers.slack.env]\n' +
+          'SLACK_BOT_TOKEN = "xoxb-aap158-lock-DO-NOT-LEAK"\n',
+      );
+      return {
+        restore: () => {
+          if (origHomeEnv === undefined) delete process.env.HERON_DISCOVERY_HOME;
+          else process.env.HERON_DISCOVERY_HOME = origHomeEnv;
+          rmSync(fakeHome, { recursive: true, force: true });
+        },
+      };
+    })();
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap158-ws4-'));
+    try {
+      const server = makeServer();
+      const id = await seedHintlessCompleteSession('aap158-lock');
+
+      // First call: no hint anywhere → hint-required. If this return left the
+      // in-flight slot locked, the follow-up valid-hint call would be wrongly
+      // short-circuited as "already in progress".
+      const r1 = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex' },
+        makeCtx(),
+      );
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.value.verification_status).toBe('workspace-hint-required');
+
+      // Follow-up with a valid explicit hint must PROCEED (not blocked).
+      const cap = captureEvents(id);
+      const r2 = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.verification_status).toBe('verifying');
+      expect(r2.value.summary).not.toMatch(/already in progress/i);
+      await cap.waitFor(
+        (e) => e.type === 'status-change' && e.status === 'complete',
+        8000,
+      );
+      cap.dispose();
+    } finally {
+      home.restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+// Module-level helper used by AAP-158 Test 2: invoke start_verification with
+// no workspace_hint arg and no ctx hints (the hint-less re-verify path).
+async function server_invoke_hintless(
+  sessionId: string,
+): Promise<Awaited<ReturnType<HeronMCPServer['invoke']>>> {
+  const server = new HeronMCPServer({ differ: { async diff() { return ''; } } });
+  return server.invoke(
+    'start_verification',
+    { session_id: sessionId, runtime: 'codex' },
+    {
+      authPrincipal: null,
+      sessionId: 'mcp-aap158-hintless',
+      progress: () => undefined,
+      signal: new AbortController().signal,
+    },
+  );
+}

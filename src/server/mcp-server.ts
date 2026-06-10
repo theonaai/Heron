@@ -468,8 +468,10 @@ const START_VERIFICATION_DEF: ToolDefinition = {
         type: 'string',
         description:
           'Optional absolute workspace path the verification scan should target. ' +
-          'When omitted, Heron uses the workspace path the MCP client advertised at ' +
-          'session start, falling back to the server process cwd.',
+          'When omitted, Heron uses the workspace path the MCP client advertised ' +
+          'at session start (or on this turn). If none can be resolved, the call ' +
+          'returns verification_status=workspace-hint-required and runs no scan — ' +
+          're-call with this set to the absolute path of the audited workspace.',
       },
     },
     required: ['session_id', 'runtime'],
@@ -1773,14 +1775,39 @@ export class HeronMCPServer {
       };
     }
 
+    // AAP-158 — opportunistic capture. Codex advertises workspace paths
+    // per-request in `_meta['x-codex-turn-metadata']`; a session can reach
+    // verification without ever having persisted them (e.g. the start_audit
+    // / submit_answer turns carried no usable metadata, or a re-verify
+    // arrives on a server that restarted after the interview). When this
+    // turn DOES carry ctx hints the session lacks, merge+persist them onto
+    // meta so a later hint-less re-verify can resolve them from disk. The
+    // merge is dedupe-guarded and skips the write when nothing is new, so
+    // this is cheap. Best-effort: a persistence failure must not block the
+    // resolution below (the ctx hints are still consulted in-memory).
+    const ctxHints = ctx.workspaceHints ?? [];
+    if (ctxHints.length > 0) {
+      try {
+        await mergeWorkspaceHints(sessionId, ctxHints);
+      } catch {
+        // Non-fatal — resolution below still uses the in-memory ctx hints.
+      }
+    }
+
     // Resolve the workspace root. Priority order mirrors the dashboard
     // scan route (AAP-58):
     //   1. Explicit `workspace_hint` from the tool call.
-    //   2. session.workspaceHints[0] (captured at session start from
-    //      `_meta['x-codex-turn-metadata']`).
-    //   3. process.cwd() — Heron's own checkout (last resort).
+    //   2. session.workspaceHints (persisted at session start or captured
+    //      opportunistically above).
+    //   3. ctx hints advertised on this turn.
+    //
+    // AAP-158 — there is NO `process.cwd()` fallback. For a verification
+    // product, silently scanning Heron's own checkout when no audited
+    // workspace can be resolved is an honesty bug: it rebakes a real report
+    // with wrong-workspace evidence (spurious findings, emptied env section,
+    // shifted posture). When nothing resolves to an existing directory we
+    // refuse with `workspace-hint-required` (see below) instead.
     const additionalHints = (session.workspaceHints ?? []).slice();
-    const ctxHints = ctx.workspaceHints ?? [];
     for (const h of ctxHints) {
       if (!additionalHints.includes(h)) additionalHints.push(h);
     }
@@ -1813,7 +1840,35 @@ export class HeronMCPServer {
         }
       }
       if (!workspaceRoot) {
-        workspaceRoot = process.cwd();
+        // AAP-158 — no audited workspace resolved. This is a precondition
+        // failure, NOT a verification failure: we run NO scan, do NOT touch
+        // report.json, and do NOT record a verification-failed marker
+        // (persistVerificationFailure is reserved for a workspace that was
+        // given but is invalid, or a scan that actually ran and broke).
+        //
+        // This return happens BEFORE the in-flight check-and-set below, so
+        // it cannot leave the idempotency slot locked — the slot is never
+        // entered on this path. A follow-up call with a valid hint proceeds
+        // cleanly. The agent's LLM is the audience for `summary`: tell it to
+        // re-call start_verification with the absolute path of the audited
+        // workspace.
+        const summary =
+          'Cannot start verification: no workspace could be resolved. ' +
+          'Re-call start_verification with `workspace_hint` set to the ' +
+          'absolute path of the workspace being audited (the directory the ' +
+          'agent operates in), not Heron\'s own checkout.';
+        return {
+          ok: true,
+          value: {
+            session_id: sessionId,
+            verification_status: 'workspace-hint-required',
+            summary,
+            high_severity_findings: 0,
+            total_findings: 0,
+            completed_at: new Date().toISOString(),
+            error: { reason: 'workspace_hint_required', message: summary },
+          },
+        };
       }
     }
 

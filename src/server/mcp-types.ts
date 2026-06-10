@@ -375,12 +375,21 @@ export interface StartVerificationOutput {
    * `get_report` or the session status to read the settled outcome. The
    * synchronous early-error paths (`workspace_invalid`) still return
    * `'verification-failed'` directly.
+   *
+   * AAP-158 added `'workspace-hint-required'`. When no workspace can be
+   * resolved (no explicit `workspace_hint`, no persisted session hints, no
+   * ctx hints), the handler refuses to silently scan `process.cwd()`
+   * (Heron's own checkout) and rebake a wrong-workspace report. This is a
+   * calm precondition failure, NOT a verification failure: no scan runs,
+   * report.json is untouched, and the agent is told to re-call with
+   * `workspace_hint` set to the absolute path of the audited workspace.
    */
   verification_status:
     | 'verifying'
     | 'verified'
     | 'partially-verified'
-    | 'verification-failed';
+    | 'verification-failed'
+    | 'workspace-hint-required';
   /** Short prose summary of what changed. */
   summary: string;
   /** Number of HIGH severity findings from the scan. */
@@ -389,12 +398,17 @@ export interface StartVerificationOutput {
   total_findings: number;
   /** ISO-8601 timestamp of the scan completion. */
   completed_at: string;
-  /** Present when verification_status === 'verification-failed'. */
+  /**
+   * Present when verification_status is `'verification-failed'`
+   * (`workspace_invalid` / `scan_error`) or `'workspace-hint-required'`
+   * (`workspace_hint_required`).
+   */
   error?: {
     reason:
       | 'session_not_found'
       | 'interview_not_complete'
       | 'workspace_invalid'
+      | 'workspace_hint_required'
       | 'scan_error';
     message: string;
   };

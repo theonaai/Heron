@@ -27,6 +27,12 @@ import {
 import { buildSamplingDeps } from '@/src/server/sampling-factory';
 import * as logger from '@/src/util/logger';
 
+import {
+  buildSessionRejectionResponse,
+  extractRequestId,
+  isMissingSessionRejection,
+} from './session-rejection';
+
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -132,16 +138,32 @@ async function dispatch(req: Request): Promise<Response> {
   await logMcpInvocation(req, parsedBody);
 
   if (!transport) {
-    // No session yet — must be an initialize POST.
+    // No live transport for this request. Either it is a fresh initialize
+    // POST (which establishes a new session below), or it names a session
+    // the server does not have - missing, unknown, or already closed.
+    //
+    // AAP-159 — the closed/unknown-session case used to return a bare 400
+    // ("Bad Request: no session and not initialize") that gave a driving LLM
+    // agent nothing to recover from: the live Codex incident closed its
+    // session with DELETE, called start_verification against the dead id,
+    // got the bare 400, and reported success without ever re-initializing.
+    // We now answer that case with a JSON-RPC error whose message names the
+    // condition AND the recovery (re-initialize, read the new id from the
+    // response header, retry). This rejection originates here in our route,
+    // before `transport.handleRequest`, since the SDK never sees a request
+    // for a session id it has no transport for.
     const body = parsedBody;
-    if (req.method !== 'POST' || !body || !isInitializeRequest(body)) {
-      return new Response(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32000, message: 'Bad Request: no session and not initialize' },
-        }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } },
+    const isInitialize =
+      req.method === 'POST' && !!body && isInitializeRequest(body);
+    if (
+      isMissingSessionRejection(
+        { method: req.method, sessionId: sessionHeader, isInitialize },
+        false,
+      )
+    ) {
+      return buildSessionRejectionResponse(
+        sessionHeader,
+        extractRequestId(body),
       );
     }
     transport = new WebStandardStreamableHTTPServerTransport({
