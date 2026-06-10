@@ -32,6 +32,10 @@ The report rework + deterministic-verification release. Everything that shipped 
 
 - Agent-controlled strings escaped across the Markdown export; the secret scrub fails closed (`[REDACTED:scrub-error]`, never raw passthrough); interview transcript fenced as untrusted data in the analysis prompt; uniform same-origin guard on all state-changing dashboard routes; MCP session-rejection responses now tell the client how to recover (re-initialize and retry).
 
+### Packaging
+
+- The npm package now ships the built dashboard (`.next/standalone/`), so `npx heron-ai` boots the browser dashboard and the `/mcp` audit endpoint out of the box. Previously the published package contained only the CLI, and the browser-first start errored with "browser bundle is missing" for registry installs. Packed size grows ~1 MB -> ~19 MB.
+
 ### Docs
 
 - README rewritten to the current product with a scroll-through GIF of the live demo report; the deep CLI verification reference moved to `docs/cli-verification.md`.
