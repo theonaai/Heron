@@ -328,6 +328,115 @@ describe('G10 — start_verification with agent-forwarded OAuth scopes', () => {
     }
   });
 
+  // AAP-149 follow-up — subject-scoped cross-ref end to end. Only Google is
+  // forwarded + verified. The report carries TWO SLF excessive-access findings:
+  // one about Google (must get the verified cross-ref) and one about Slack
+  // (mentioned, never introspected). The Slack finding must NOT pick up the
+  // Google verification — that would be a false "verified on google-workspace"
+  // claim. This is the production bug the scoping fix closes.
+  it('AAP-149 follow-up — verified Google cross-ref attaches ONLY to the Google finding, not a Slack finding', async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'heron-aap149scope-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'heron-aap149scope-ws-'));
+    process.env.HERON_DISCOVERY_HOME = fakeHome;
+    try {
+      mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+      writeFileSync(join(fakeHome, '.codex/config.toml'), '# no mcp servers\n');
+
+      const server = makeServer();
+      const { id } = await createSession({ agentName: 'aap149-scope-e2e', mode: 'tool-call' });
+      await updateSessionMeta(id, { status: 'complete' });
+      await writeReport(id, {
+        markdown: STUB_MD,
+        json: {
+          ...MINIMAL_REPORT,
+          systems: [
+            {
+              systemId: 'google-workspace',
+              scopesRequested: [
+                'https://www.googleapis.com/auth/drive',
+                'https://www.googleapis.com/auth/spreadsheets',
+              ],
+              scopesNeeded: [],
+              scopesDelta: [],
+              dataSensitivity: '',
+              blastRadius: 'single-user',
+              frequencyAndVolume: '',
+              writeOperations: [],
+            },
+          ],
+          risks: [
+            {
+              severity: 'high',
+              title: 'Broad Google OAuth access enables large-scale unintended writes',
+              description: 'OAuth user credentials with spreadsheets and full Drive scope.',
+              findingType: 'excessive-access',
+            },
+            {
+              severity: 'high',
+              title: 'Slack bot token grants broad channel write access',
+              description: 'The Slack integration can post to any channel in the workspace.',
+              findingType: 'excessive-access',
+            },
+          ],
+        },
+      });
+
+      const forward = await server.invoke(
+        'report_oauth_scopes',
+        { session_id: id, provider: 'google-workspace', raw_response: FORWARDED_TOKENINFO_BROAD },
+        makeCtx(),
+      );
+      expect(forward.ok).toBe(true);
+      if (!forward.ok) return;
+
+      const completed = waitForComplete(id);
+      const r = await server.invoke(
+        'start_verification',
+        { session_id: id, runtime: 'codex', workspace_hint: workspace },
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      await completed;
+
+      const after = await getSession(id);
+      const reportJson = after!.reportJson as {
+        verdict?: {
+          findings?: Array<{
+            evidenceSource: string;
+            findingType?: string;
+            title: string;
+            evidenceCrossRef?: { kind: string; connectors?: string[] };
+            reconciledMitigation?: string;
+          }>;
+        };
+        oauthScopeVerification?: { sources?: Array<{ verdict: string }> };
+      };
+
+      expect(reportJson.oauthScopeVerification?.sources?.[0]?.verdict).toBe('verified');
+
+      const slfFindings = (reportJson.verdict?.findings ?? []).filter(
+        (f) => f.evidenceSource === 'SLF' && f.findingType === 'excessive-access',
+      );
+      const googleFinding = slfFindings.find((f) => /google/i.test(f.title));
+      const slackFinding = slfFindings.find((f) => /slack/i.test(f.title));
+
+      // Google finding names the verified connector -> gets the cross-ref.
+      expect(googleFinding?.evidenceCrossRef?.kind).toBe('oauth-verified');
+      expect(googleFinding?.evidenceCrossRef?.connectors).toContain('google-workspace');
+      expect(googleFinding?.reconciledMitigation).toMatch(/Heron verified/i);
+
+      // Slack finding names no verified connector -> NO cross-ref, NO false
+      // "verified on google-workspace" mitigation. Stays a bare SLF claim.
+      expect(slackFinding).toBeDefined();
+      expect(slackFinding?.evidenceSource).toBe('SLF');
+      expect(slackFinding?.evidenceCrossRef).toBeUndefined();
+      expect(slackFinding?.reconciledMitigation).toBeUndefined();
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('forwarded expired token → honest unverified OAuth section, not a silent N/A or false verified', async () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'heron-g10-home-exp-'));
     const workspace = mkdtempSync(join(tmpdir(), 'heron-g10-ws-exp-'));

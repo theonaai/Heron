@@ -78,6 +78,24 @@ export interface SlfReconciliationEvidence {
    * + mitigation when present.
    */
   envCredentialSystemsCount?: number;
+  /**
+   * The systemIds of the declared systems that carry the `.env` credential glyph
+   * (the subset the AAP-140 token matcher flagged). Used to SUBJECT-SCOPE the
+   * .env cross-ref: when a finding names a specific declared system, the env
+   * evidence only attaches if that system is among these detected ones.
+   * Optional. When absent the .env cross-ref keeps the workspace-global behavior
+   * (any sensitive-data / credential-exposure finding gets the global count).
+   */
+  envCredentialSystemIds?: ReadonlyArray<string>;
+  /**
+   * The systemIds of EVERY declared system this session (from report.json
+   * `systems[]`). Used only to tell whether a finding NAMES A SPECIFIC SYSTEM at
+   * all: an env finding that names a declared system NOT in
+   * `envCredentialSystemIds` must not claim the global .env fact. A finding that
+   * names no specific declared system (workspace-general phrasing) keeps the
+   * global behavior. Optional; absent => workspace-global behavior preserved.
+   */
+  declaredSystemIds?: ReadonlyArray<string>;
 }
 
 // ── findingType -> evidence mapping ──────────────────────────────────────
@@ -104,25 +122,126 @@ interface VerifiedOAuth {
   scopes: string[];
 }
 
+/** One verified OAuth connector with the brand-stem tokens that name it. */
+interface VerifiedConnector {
+  /** Connector kind as introspected (e.g. `google-workspace`). */
+  connector: string;
+  /** Verified service-level scope labels (documents / drive / spreadsheets). */
+  scopes: string[];
+  /**
+   * Lowercase brand-stem tokens that, if present in a finding's text, mean the
+   * finding is about THIS connector. Derived deterministically from the
+   * connector id (split on `-`/`_`) plus its verified service scope labels.
+   */
+  subjectTokens: Set<string>;
+}
+
 /**
- * Collect the connectors whose introspection verdict came back `verified` and
- * the service-level scopes they returned. Returns null when no source verified.
+ * Map of well-known connector kinds to extra brand synonyms a finding's prose
+ * is likely to use that are NOT already in the connector id or scope labels.
+ * Conservative and explainable: each entry is an unambiguous product term for
+ * that connector kind. The base matcher already derives `google`, `workspace`,
+ * `drive`, `spreadsheets`, `documents` from the id + scopes; this only adds the
+ * common prose synonyms (`gmail`, `sheets`, `docs`) that map to the same kind.
+ * Not vendor-hardcoded routing — purely a synonym dictionary keyed off the
+ * connector kind the introspection already returned.
+ */
+const CONNECTOR_BRAND_SYNONYMS: Record<string, string[]> = {
+  'google-workspace': ['google', 'gmail', 'sheets', 'spreadsheet', 'docs', 'gdrive', 'gsuite'],
+  greenhouse: ['greenhouse'],
+  bamboohr: ['bamboohr', 'bamboo'],
+};
+
+/**
+ * Build the lowercase brand-stem token set that identifies a verified connector
+ * inside a finding's free text. Conservative: id tokens (split on `-`/`_`, len
+ * > 2 to drop noise like `hr`), the verified scope service labels, and any
+ * curated prose synonyms for that connector kind. `workspace` is dropped as a
+ * subject token because it is too generic (Slack/MS/Notion all use it) — a
+ * finding must name a real product stem, not just the word "workspace".
+ */
+function subjectTokensForConnector(connector: string, scopes: string[]): Set<string> {
+  const tokens = new Set<string>();
+  const add = (raw: string): void => {
+    const t = raw.toLowerCase().trim();
+    // `workspace` alone is too generic to attribute a finding to a connector.
+    if (t.length > 2 && t !== 'workspace') tokens.add(t);
+  };
+  for (const t of connector.split(/[-_]/)) add(t);
+  for (const s of scopes) {
+    // Scope labels can be short service words or dotted/colon scope strings;
+    // take the leading service segment (drive.readonly -> drive).
+    add(s.split(/[.:/]/)[0] ?? s);
+  }
+  for (const syn of CONNECTOR_BRAND_SYNONYMS[connector.toLowerCase()] ?? []) add(syn);
+  return tokens;
+}
+
+/**
+ * Collect the connectors whose introspection verdict came back `verified`, each
+ * with its service-level scopes and the brand-stem tokens that name it. Returns
+ * null when no source verified.
  */
 function collectVerifiedOAuth(
   section: OAuthScopeVerificationEvidence | undefined,
-): VerifiedOAuth | null {
+): VerifiedConnector[] | null {
   const sources = section?.sources ?? [];
-  const connectors: string[] = [];
-  const scopeSet = new Set<string>();
+  const verified: VerifiedConnector[] = [];
   for (const s of sources) {
     if (s.verdict !== 'verified') continue;
-    if (s.connector) connectors.push(s.connector);
+    if (!s.connector) continue;
+    const scopeSet = new Set<string>();
     for (const a of s.actualScopes ?? []) {
       // Prefer the short service identifier (documents / drive / spreadsheets);
       // fall back to the raw scope string when no service was provided.
       const label = a.service || a.scope;
       if (label) scopeSet.add(label);
     }
+    const scopes = [...scopeSet];
+    verified.push({
+      connector: s.connector,
+      scopes,
+      subjectTokens: subjectTokensForConnector(s.connector, scopes),
+    });
+  }
+  if (verified.length === 0) return null;
+  return verified;
+}
+
+/** Lowercase word tokens (len > 1) of a finding's title + description. */
+function findingTextTokens(f: VerdictFinding): Set<string> {
+  const text = `${f.title} ${f.description}`.toLowerCase();
+  const out = new Set<string>();
+  for (const t of text.split(/[^a-z0-9]+/)) {
+    if (t.length > 1) out.add(t);
+  }
+  return out;
+}
+
+/**
+ * Subset of verified connectors whose brand-stem tokens appear in the finding's
+ * own text. Empty when the finding names no verified connector. This is what
+ * scopes the cross-ref to the finding's subject: a Slack finding never matches
+ * a verified `google-workspace` source, so it gets no false cross-ref.
+ */
+function connectorsNamedBy(
+  finding: VerdictFinding,
+  verified: VerifiedConnector[],
+): VerifiedOAuth | null {
+  const words = findingTextTokens(finding);
+  const connectors: string[] = [];
+  const scopeSet = new Set<string>();
+  for (const vc of verified) {
+    let named = false;
+    for (const tok of vc.subjectTokens) {
+      if (words.has(tok)) {
+        named = true;
+        break;
+      }
+    }
+    if (!named) continue;
+    connectors.push(vc.connector);
+    for (const s of vc.scopes) scopeSet.add(s);
   }
   if (connectors.length === 0) return null;
   return { connectors, scopes: [...scopeSet] };
@@ -138,6 +257,53 @@ function countEnvKeys(
   let n = 0;
   for (const f of workspaceEnv) n += f.keys?.length ?? 0;
   return n;
+}
+
+/**
+ * Lowercase brand-stem tokens of a systemId (split on `-`/`_`, len > 2). Mirrors
+ * the AAP-140 env-credential-systems token matcher (mcp-server.ts) so the same
+ * vocabulary identifies a system in a finding's prose as identifies it on the
+ * systems table.
+ */
+function systemBrandTokens(systemId: string): string[] {
+  return systemId
+    .toLowerCase()
+    .split(/[-_]/)
+    .filter((t) => t.length > 2);
+}
+
+/**
+ * Decide whether the .env evidence may attach to an SLF credential finding.
+ *
+ * Workspace-global by default: when the finding names no specific declared
+ * system (or no system context was supplied), the .env fact IS workspace-global
+ * so the cross-ref attaches. But when the finding names a SPECIFIC declared
+ * system that did NOT carry the `.env` glyph, attaching the global count would
+ * overclaim against that system — so it is suppressed (prefer false negative
+ * over overclaim). A finding naming an env-detected system attaches as normal.
+ */
+function envEvidenceAppliesTo(
+  finding: VerdictFinding,
+  detectedSystemIds: ReadonlyArray<string> | undefined,
+  declaredSystemIds: ReadonlyArray<string> | undefined,
+): boolean {
+  // No system context supplied: preserve the legacy workspace-global behavior.
+  if (!declaredSystemIds || declaredSystemIds.length === 0) return true;
+  const words = findingTextTokens(finding);
+  const detected = new Set((detectedSystemIds ?? []).map((s) => s.toLowerCase()));
+
+  let namesSpecificSystem = false;
+  for (const sysId of declaredSystemIds) {
+    const named = systemBrandTokens(sysId).some((t) => words.has(t));
+    if (!named) continue;
+    // The finding names this declared system. If it carried the .env glyph, the
+    // evidence applies; record that the finding is system-specific either way.
+    namesSpecificSystem = true;
+    if (detected.has(sysId.toLowerCase())) return true;
+  }
+  // Names a specific declared system, none of which were env-detected -> suppress.
+  // Names no specific system (workspace-general) -> keep workspace-global behavior.
+  return !namesSpecificSystem;
 }
 
 // ── Mitigation rewriters ─────────────────────────────────────────────────
@@ -197,12 +363,21 @@ function operatorArtifactMitigation(): string {
  * `findingType`, and SLF findings whose findingType has no matching evidence
  * this session pass through unchanged.
  *
- *   - `excessive-access` / `scope-creep` + at least one VERIFIED OAuth source
+ *   - `excessive-access` / `scope-creep` + a VERIFIED OAuth source WHOSE
+ *     CONNECTOR THE FINDING NAMES
  *     -> `evidenceCrossRef { kind: 'oauth-verified', connectors, scopes }`
  *        + a `reconciledMitigation` opening with what Heron verified.
+ *     The cross-ref is SUBJECT-SCOPED: a finding only gets a connector's
+ *     evidence when its own text (title + description) names that connector via
+ *     its brand-stem tokens. A finding that names no verified connector keeps
+ *     the honest legacy SLF render (no cross-ref). When several verified
+ *     connectors are named, only the matched ones appear in the cross-ref.
  *   - `sensitive-data` / `credential-exposure` + .env secret detection
  *     -> `evidenceCrossRef { kind: 'env-secrets', envKeyCount, ... }`
  *        + a `reconciledMitigation` opening with what Heron detected.
+ *     The .env fact is workspace-global, so a finding that names no specific
+ *     system still attaches it; a finding that names a specific declared system
+ *     NOT among the env-detected ones is suppressed (see `envEvidenceAppliesTo`).
  *   - `regulatory-flags` (governance) -> `verificationPath: 'operator-artifact'`
  *        + a `reconciledMitigation` naming the operator-artifact path, NO link.
  */
@@ -210,7 +385,7 @@ export function reconcileSlfWithEvidence(
   findings: ReadonlyArray<VerdictFinding>,
   evidence: SlfReconciliationEvidence,
 ): VerdictFinding[] {
-  const verifiedOAuth = collectVerifiedOAuth(evidence.oauthScopeVerification);
+  const verifiedConnectors = collectVerifiedOAuth(evidence.oauthScopeVerification);
   const envKeyCount = countEnvKeys(evidence.workspaceEnv);
 
   return findings.map((f): VerdictFinding => {
@@ -220,20 +395,30 @@ export function reconcileSlfWithEvidence(
     const ft = f.findingType;
     if (!ft) return f;
 
-    if (OAUTH_EVIDENCE_TYPES.has(ft) && verifiedOAuth) {
-      const crossRef: SlfEvidenceCrossRef = {
-        kind: 'oauth-verified',
-        connectors: verifiedOAuth.connectors,
-        scopes: verifiedOAuth.scopes,
-      };
-      return {
-        ...f,
-        evidenceCrossRef: crossRef,
-        reconciledMitigation: oauthVerifiedMitigation(verifiedOAuth),
-      };
+    if (OAUTH_EVIDENCE_TYPES.has(ft) && verifiedConnectors) {
+      // Subject-scope: attach only the verified connectors THIS finding names.
+      // No named connector -> no cross-ref (honest legacy SLF render).
+      const named = connectorsNamedBy(f, verifiedConnectors);
+      if (named) {
+        const crossRef: SlfEvidenceCrossRef = {
+          kind: 'oauth-verified',
+          connectors: named.connectors,
+          scopes: named.scopes,
+        };
+        return {
+          ...f,
+          evidenceCrossRef: crossRef,
+          reconciledMitigation: oauthVerifiedMitigation(named),
+        };
+      }
+      // Falls through to the no-evidence return below (no overclaim).
     }
 
-    if (ENV_EVIDENCE_TYPES.has(ft) && envKeyCount > 0) {
+    if (
+      ENV_EVIDENCE_TYPES.has(ft) &&
+      envKeyCount > 0 &&
+      envEvidenceAppliesTo(f, evidence.envCredentialSystemIds, evidence.declaredSystemIds)
+    ) {
       const crossRef: SlfEvidenceCrossRef = {
         kind: 'env-secrets',
         envKeyCount,

@@ -2754,20 +2754,39 @@ export async function runVerificationAndPatch(
       if (t.length > 0) reconcileEnvTokens.add(t);
     }
   }
-  const reconcileCredentialSystemsCount = Array.isArray(reportJson?.systems)
-    ? reportJson.systems.filter((s) => {
-        const sysTokens = (s.systemId || '')
-          .toLowerCase()
-          .split(/[-_]/)
-          .filter((t) => t.length > 2);
-        return sysTokens.some((t) => reconcileEnvTokens.has(t));
-      }).length
-    : 0;
+  const reconcileDeclaredSystemIds: string[] = Array.isArray(reportJson?.systems)
+    ? reportJson.systems
+        .map((s) => (typeof s.systemId === 'string' ? s.systemId : ''))
+        .filter((id) => id.length > 0)
+    : [];
+  // The declared systems whose brand-stem tokens intersect the .env key tokens
+  // carry the ".env" credential glyph (AAP-140). The subset id list is threaded
+  // so `reconcileSlfWithEvidence` can SUBJECT-SCOPE the .env cross-ref: a finding
+  // that names a specific declared system NOT in this set does not claim the
+  // global .env fact against it.
+  const reconcileEnvCredentialSystemIds: string[] = Array.isArray(reportJson?.systems)
+    ? reportJson.systems
+        .filter((s) => {
+          const sysTokens = (s.systemId || '')
+            .toLowerCase()
+            .split(/[-_]/)
+            .filter((t) => t.length > 2);
+          return sysTokens.some((t) => reconcileEnvTokens.has(t));
+        })
+        .map((s) => (typeof s.systemId === 'string' ? s.systemId : ''))
+        .filter((id) => id.length > 0)
+    : [];
   verdict.findings = reconcileSlfWithEvidence(verdict.findings, {
     ...(oauthForward.section ? { oauthScopeVerification: oauthForward.section } : {}),
     workspaceEnv: scrubbed.workspaceEnv ?? [],
-    ...(reconcileCredentialSystemsCount > 0
-      ? { envCredentialSystemsCount: reconcileCredentialSystemsCount }
+    ...(reconcileEnvCredentialSystemIds.length > 0
+      ? {
+          envCredentialSystemsCount: reconcileEnvCredentialSystemIds.length,
+          envCredentialSystemIds: reconcileEnvCredentialSystemIds,
+        }
+      : {}),
+    ...(reconcileDeclaredSystemIds.length > 0
+      ? { declaredSystemIds: reconcileDeclaredSystemIds }
       : {}),
   });
 
