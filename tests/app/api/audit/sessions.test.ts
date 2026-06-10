@@ -255,6 +255,111 @@ describe('audit-sessions API routes', () => {
     });
   });
 
+  describe('same-origin guard on state-changing routes', () => {
+    // The dashboard runs loopback-only, so the realistic CSRF vector is a
+    // malicious browser page issuing fetches at 127.0.0.1. Browsers attach
+    // Sec-Fetch-Site; a sibling local-app port is `same-site` (cross-origin)
+    // and a foreign page is `cross-site` — both must be refused. Requests
+    // with no header (curl / CLI) are allowed for non-browser parity.
+
+    async function seedSession(): Promise<string> {
+      const created = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, { method: 'POST', body: { agentName: 'guard' } }),
+      );
+      return ((await readJson(created)) as { id: string }).id;
+    }
+
+    it('POST /api/audit/sessions refuses cross-site (403)', async () => {
+      const res = await listPOST(
+        jsonRequest(`${ORIGIN}/api/audit/sessions`, {
+          method: 'POST',
+          body: { agentName: 'evil' },
+          headers: { 'Sec-Fetch-Site': 'cross-site' },
+        }),
+      );
+      expect(res.status).toBe(403);
+      // No session created: list stays empty.
+      const list = await listGET(jsonRequest(`${ORIGIN}/api/audit/sessions`));
+      expect(await readJson(list)).toEqual([]);
+    });
+
+    it('PATCH /api/audit/sessions/:id refuses cross-site (403) and does not mutate', async () => {
+      const id = await seedSession();
+      const res = await itemPATCH(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}`, {
+          method: 'PATCH',
+          body: { status: 'analyzing', riskLevel: 'high' },
+          headers: { 'Sec-Fetch-Site': 'cross-site' },
+        }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(res.status).toBe(403);
+      // State unchanged — still the default 'interrogating' status, no riskLevel.
+      const detail = await itemGET(jsonRequest(`${ORIGIN}/api/audit/sessions/${id}`), {
+        params: Promise.resolve({ id }),
+      });
+      const body = (await readJson(detail)) as { status: string; riskLevel?: string };
+      expect(body.status).not.toBe('analyzing');
+      expect(body.riskLevel).not.toBe('high');
+    });
+
+    it('PATCH /api/audit/sessions/:id refuses same-site sibling port (403)', async () => {
+      const id = await seedSession();
+      const res = await itemPATCH(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}`, {
+          method: 'PATCH',
+          body: { status: 'analyzing' },
+          headers: { 'Sec-Fetch-Site': 'same-site' },
+        }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it('DELETE /api/audit/sessions/:id refuses cross-site (403) and does not soft-delete', async () => {
+      const id = await seedSession();
+      const res = await itemDELETE(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}`, {
+          method: 'DELETE',
+          headers: { 'Sec-Fetch-Site': 'cross-site' },
+        }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(res.status).toBe(403);
+      // Still listed — soft-delete never ran.
+      const list = await listGET(jsonRequest(`${ORIGIN}/api/audit/sessions`));
+      const body = (await readJson(list)) as Array<{ id: string }>;
+      expect(body.find((s) => s.id === id)).toBeDefined();
+    });
+
+    it('PATCH passes the guard for same-origin (not 403-by-guard)', async () => {
+      const id = await seedSession();
+      const res = await itemPATCH(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}`, {
+          method: 'PATCH',
+          body: { status: 'analyzing', riskLevel: 'high' },
+          headers: { 'Sec-Fetch-Site': 'same-origin' },
+        }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it('PATCH passes the guard when Sec-Fetch-Site is absent (non-browser parity)', async () => {
+      const id = await seedSession();
+      const res = await itemPATCH(
+        jsonRequest(`${ORIGIN}/api/audit/sessions/${id}`, {
+          method: 'PATCH',
+          body: { status: 'analyzing' },
+        }),
+        { params: Promise.resolve({ id }) },
+      );
+      // No header → allowed (curl / CLI). Not a 403 from the guard.
+      expect(res.status).not.toBe(403);
+      expect(res.status).toBe(200);
+    });
+  });
+
   describe('POST /api/audit/sessions/:id/report', () => {
     it('writes markdown + structured report and flips status to complete', async () => {
       const created = await listPOST(

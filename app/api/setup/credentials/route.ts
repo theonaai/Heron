@@ -24,6 +24,7 @@ import { loadCredentials, saveCredentials } from '@/src/commands/credentials-sto
 import {
   CSRF_COOKIE_NAME,
   csrfCookieHeader,
+  isSameOriginRequest,
   issueCsrfToken,
   validateCsrf,
 } from '@/src/server/csrf';
@@ -98,6 +99,16 @@ const PostBodySchema = z
  * POST — save credentials. CSRF-protected; same-origin only.
  */
 export async function POST(request: Request): Promise<Response> {
+  // Same-origin fast-reject first (browser-driven cross-origin writes),
+  // then the stronger cookie+header token check. The token dance is the
+  // primary control here and is NOT weakened; the same-origin guard is an
+  // additive front-line filter shared with the other dashboard routes.
+  if (!isSameOriginRequest(request)) {
+    return jsonResponse(
+      { error: 'cross-origin POST refused', code: 'csrf_forbidden' },
+      { status: 403 },
+    );
+  }
   if (!validateCsrf(request)) {
     return jsonResponse(
       { error: 'csrf token missing or mismatched', code: 'csrf_forbidden' },

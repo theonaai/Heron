@@ -19,6 +19,7 @@ import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 
 import { errorResponse, jsonResponse, parseJsonBody, validateSessionId } from '@/lib/api/audit-sessions';
+import { isSameOriginRequest } from '@/src/server/csrf';
 import { getConsent, setConsent } from '@/src/discovery/consent';
 import { getSession } from '@/src/storage/sessions';
 
@@ -42,13 +43,6 @@ const ConsentBodyBySessionSchema = z
     decision: z.enum(['allow-once', 'allow-for-workspace', 'deny']),
   })
   .strict();
-
-function isSameOrigin(request: Request): boolean {
-  const site = request.headers.get('sec-fetch-site');
-  // When absent (older clients, curl), allow — same as Next defaults.
-  if (!site) return true;
-  return site === 'same-origin' || site === 'none';
-}
 
 async function isDirectory(path: string): Promise<boolean> {
   try {
@@ -86,7 +80,7 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (!isSameOrigin(request)) {
+  if (!isSameOriginRequest(request)) {
     return errorResponse(403, 'cross-origin POST refused', 'csrf');
   }
   const parsed = await parseJsonBody<unknown>(request);

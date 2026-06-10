@@ -28,6 +28,43 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 export const CSRF_COOKIE_NAME = 'csrf-token';
 export const CSRF_HEADER_NAME = 'x-csrf-token';
 
+/**
+ * Same-origin guard for state-changing dashboard routes.
+ *
+ * The dashboard runs loopback-only (middleware.ts rejects non-loopback
+ * Host headers), so the realistic CSRF threat is a malicious web page in
+ * the user's browser issuing fetches at 127.0.0.1. We gate writes on the
+ * `Sec-Fetch-Site` Fetch-metadata header, which every modern browser
+ * (Chrome, Firefox, Safari) attaches to outgoing requests and which page
+ * scripts cannot forge.
+ *
+ * Header values (Fetch Metadata spec):
+ *  - `same-origin` — same scheme+host+port. ALLOW (the dashboard's own SPA).
+ *  - `none`        — user-initiated, no initiator (typed URL, bookmark). ALLOW.
+ *  - `same-site`   — same registrable site, different origin. A page on
+ *                    another 127.0.0.1 PORT (a sibling local app) is
+ *                    same-site but cross-origin, so the browser sends
+ *                    `same-site`. REJECT — this is the sibling-local-app
+ *                    attack we defend against.
+ *  - `cross-site`  — different site. REJECT.
+ *
+ * Absence handling (deliberate): when the header is missing we ALLOW.
+ * Non-browser clients (curl, the CLI, server-to-server) never send
+ * Sec-Fetch-Site, and this guard exists only to stop a browser-driven
+ * cross-origin write. Failing open on absence keeps CLI / scripting
+ * parity; the loopback middleware + the browser's own preflight remain
+ * the backstops for the browser path. This is defense-in-depth, not the
+ * sole control.
+ */
+export function isSameOriginRequest(request: Request): boolean {
+  const site = request.headers.get('sec-fetch-site');
+  // Header absent → non-browser client (curl / CLI). Allow — see above.
+  if (!site) return true;
+  // Header present → only the two safe values pass. `same-site` (sibling
+  // local-app port) and `cross-site` are rejected.
+  return site === 'same-origin' || site === 'none';
+}
+
 /** Mint a new random CSRF token. */
 export function issueCsrfToken(): string {
   return randomBytes(24).toString('base64url');

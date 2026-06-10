@@ -51,6 +51,7 @@ import {
   parseJsonBody,
   validateSessionId,
 } from '@/lib/api/audit-sessions';
+import { isSameOriginRequest } from '@/src/server/csrf';
 import { consumeAllowOnce, getConsent } from '@/src/discovery/consent';
 import { diffAgainstTranscript } from '@/src/discovery/diff';
 import { runDiscovery } from '@/src/discovery/index';
@@ -208,12 +209,6 @@ const ScanBodySchema = z
   })
   .strict();
 
-function isSameOrigin(request: Request): boolean {
-  const site = request.headers.get('sec-fetch-site');
-  if (!site) return true;
-  return site === 'same-origin' || site === 'none';
-}
-
 /**
  * Verify a path exists AND is a directory. Returns the path on success,
  * null otherwise — callers translate null into a 400.
@@ -229,7 +224,7 @@ async function verifyExistingDirectory(path: string): Promise<string | null> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (!isSameOrigin(request)) {
+  if (!isSameOriginRequest(request)) {
     return errorResponse(403, 'cross-origin POST refused', 'csrf');
   }
   const parsed = await parseJsonBody<unknown>(request);
